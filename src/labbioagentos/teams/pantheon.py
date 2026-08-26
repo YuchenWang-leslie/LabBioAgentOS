@@ -9,6 +9,9 @@ from pantheon.team import PantheonTeam
 from pydantic import BaseModel, ValidationError
 
 from labbioagentos.contracts import AgentStageResult, StageContext
+from labbioagentos.policy import DelegationPolicy
+
+from .delegation import DelegationPolicyPlugin, delegation_session
 
 
 class StageAdapterError(RuntimeError):
@@ -35,10 +38,35 @@ class StageResultValidationError(StageAdapterError):
 class PantheonStageAdapter:
     """Invoke a PantheonTeam for one stage without sharing WorkflowRun state."""
 
-    def __init__(self, team: PantheonTeam):
+    def __init__(
+        self,
+        team: PantheonTeam,
+        delegation_policy: DelegationPolicy | None = None,
+    ):
         if not isinstance(team, PantheonTeam):
             raise TypeError("team must be an existing PantheonTeam instance")
         self._team = team
+        existing = next(
+            (
+                plugin
+                for plugin in team.plugins
+                if isinstance(plugin, DelegationPolicyPlugin)
+            ),
+            None,
+        )
+        self._delegation_plugin: DelegationPolicyPlugin | None = existing
+        if delegation_policy is not None:
+            if existing is not None:
+                if existing.policy is not delegation_policy:
+                    raise ValueError(
+                        "PantheonTeam already has a different delegation policy"
+                    )
+                self._delegation_plugin = existing
+            else:
+                self._delegation_plugin = DelegationPolicyPlugin(
+                    delegation_policy
+                )
+                self._delegation_plugin.attach_to(team)
 
     @property
     def team(self) -> PantheonTeam:
@@ -63,11 +91,23 @@ class PantheonStageAdapter:
             }
         }
 
+        active_session = None
         try:
-            response = await self._team.run(
-                context.instruction,
-                context_variables=runtime_context,
-            )
+            if self._delegation_plugin is None:
+                response = await self._team.run(
+                    context.instruction,
+                    context_variables=runtime_context,
+                )
+            else:
+                await self._team.async_setup()
+                await self._delegation_plugin.install(self._team)
+                with delegation_session(context) as active_session:
+                    response = await self._team.run(
+                        context.instruction,
+                        context_variables=runtime_context,
+                        process_step_message=active_session.observe,
+                        process_chunk=active_session.observe,
+                    )
         except Exception as exc:
             raise StageInvocationError(context, exc) from exc
 
@@ -78,6 +118,12 @@ class PantheonStageAdapter:
                 f"Pantheon result stage {result.stage.value!r} does not match "
                 f"requested stage {context.stage.value!r}."
             )
+        verified_delegations = (
+            tuple(active_session.records) if active_session is not None else ()
+        )
+        result = result.model_copy(
+            update={"delegations": verified_delegations}
+        )
         return result
 
     @staticmethod

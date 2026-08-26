@@ -1,7 +1,11 @@
 """LabBioAgentOS public contracts and PantheonOS adapters."""
 
 from .contracts import (
+    AgentDescriptor,
     AgentStageResult,
+    DelegationDecision,
+    DelegationOutcome,
+    DelegationRecord,
     NextAction,
     NextActionProposal,
     RunStatus,
@@ -14,7 +18,9 @@ from .contracts import (
     WorkflowStage,
     WorkflowTransition,
 )
+from .policy import DelegationPolicy, InMemoryDelegationPolicy
 from .teams import (
+    DelegationPolicyPlugin,
     PantheonStageAdapter,
     StageInvocationError,
     StageResultValidationError,
@@ -22,7 +28,14 @@ from .teams import (
 from .workflow import WorkflowEngine, default_workflow_definition
 
 __all__ = [
+    "AgentDescriptor",
     "AgentStageResult",
+    "DelegationDecision",
+    "DelegationOutcome",
+    "DelegationPolicy",
+    "DelegationPolicyPlugin",
+    "DelegationRecord",
+    "InMemoryDelegationPolicy",
     "NextAction",
     "NextActionProposal",
     "PantheonStageAdapter",

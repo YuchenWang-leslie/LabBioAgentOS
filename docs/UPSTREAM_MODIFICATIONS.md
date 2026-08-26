@@ -1,8 +1,17 @@
 # PantheonOS Upstream Modifications
 
-## Phase 0 result
+## Result through Phase 3
 
-No PantheonOS core file was modified in Phase 0. No direct core modification is currently approved.
+No PantheonOS core file was modified through Phase 3. No direct core
+modification is currently required or proposed.
+
+Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
+`list_agents` and `call_agent` functions. Allowed calls still execute the
+original Pantheon closure, while the decorator can reject policy violations and
+catch child exceptions before `Agent._handle_tool_calls` converts them to prose.
+The Phase 3 tests preserve execution IDs, parent tool-call IDs, chain paths,
+depth protection, and ancestor protection, so neither watchlist file requires a
+patch for controlled delegation.
 
 The default implementation strategy remains LabBio extension -> adapter/plugin/provider/subclass -> PantheonOS. The following is a deliberately small conditional watchlist, not a request to edit these files now.
 
@@ -10,8 +19,8 @@ The default implementation strategy remains LabBio extension -> adapter/plugin/p
 
 | Core file | Potential future need | Why wrapper/plugin/subclass may be sufficient | When a minimal core change would be justified | Compatibility risk |
 |---|---|---|---|---|
-| `pantheon/agent.py` | Preserve a structured delegation/tool failure instead of converting every tool-task exception to `repr(exception)` model content; optionally expose a stable per-tool lifecycle event | A LabBio team/tool wrapper can catch expected capability failures and return a typed envelope; existing pre/post/tracking hooks cover most tracing | Only if Phase 3 acceptance tests prove a child Agent exception cannot reach the stage adapter as structured failure without copying/replacing the large `_handle_tool_calls` implementation | High: central tool dispatch, streaming, background adoption, and all providers pass through this code |
-| `pantheon/team/pantheon.py` | Add an explicit delegation-policy/list-filter extension point without replacing `call_agent` internals | A `PantheonTeam` subclass plus plugin-registered pre-tool gate can enforce policy and preserve the existing closure; stage context can travel in `context_variables` | Only if policy-filtered `list_agents` and `call_agent` cannot be implemented without duplicating substantial upstream delegation code or weakening execution/chain metadata | Medium-high: delegation, child memory, chain safety, and plugin behavior are concentrated here |
+| `pantheon/agent.py` | A future generic typed failure event for non-delegation tools might be useful | The Phase 3 `call_agent` decorator is sufficient for delegation failure; future tools can return their own typed envelopes | Only if a later authorized phase proves a generic tool failure cannot be observed at its capability boundary | High: central tool dispatch, streaming, background adoption, and all providers pass through this code |
+| `pantheon/team/pantheon.py` | A future public policy hook could reduce reliance on decorating registered functions | The Phase 3 TeamPlugin wrapper preserves all required delegation mechanics and passes its contract tests | Only if an upstream API change makes registered-function decoration unavailable or demonstrably unsafe | Medium-high: delegation, child memory, chain safety, and plugin behavior are concentrated here |
 
 ## Files explicitly not expected to require direct changes
 

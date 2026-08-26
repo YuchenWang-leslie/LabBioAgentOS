@@ -3,10 +3,11 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 2. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 3. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
-WorkflowEngine without adding bioinformatics methods, runtime scientific
-reasoning, Docker execution, artifact storage, or Gold Skills.
+WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
+existing team tools without adding bioinformatics methods, runtime scientific
+reasoning, Docker execution, artifact storage, RunTrace, or Gold Skills.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -94,6 +95,33 @@ Capabilities translate runtime decisions into controlled operations. The preferr
 
 Delegation policy is a safety constraint, not a scientific router. It may answer whether caller X can invoke target Y in a given `StageContext`; it must not decide that Y is scientifically appropriate.
 
+### Phase 3 controlled delegation contract
+
+`DelegationPolicy.can_call(caller, target, StageContext)` returns a typed
+allow/deny decision. `list_allowed_agents` filters candidates in Pantheon's
+existing order and has no selection or ranking operation. The runtime model
+still supplies the target name to `call_agent`.
+
+`DelegationPolicyPlugin` is installed after Pantheon creates its native
+`list_agents` and `call_agent` functions. It decorates those registered
+functions: discovery first uses Pantheon's self/ancestor filtering and then
+intersects the result with policy; an allowed call invokes the original
+Pantheon closure unchanged. A denied call never reaches the target. Thus child
+Memory, `execution_context_id`, `parent_tool_call_id`, `chain_path`, depth
+checks, and ancestor-loop checks remain Pantheon-owned.
+
+The adapter activates a task-local `DelegationSession` containing only the
+immutable stage context and structural records. Pantheon receives the existing
+serialized stage-context copy and no `WorkflowRun` or `WorkflowEngine`
+reference. Verified records are appended by LabBio to
+`AgentStageResult.delegations`; this is preparation for Phase 4, not RunTrace.
+
+The same `call_agent` decorator catches child execution exceptions at the tool
+function boundary, before `Agent._handle_tool_calls` converts them to `repr`
+text. It emits a structured failure envelope to the parent model and records a
+typed `FAILED` delegation for the adapter. This resolves Phase 3 child-failure
+observability without modifying Pantheon core.
+
 ### Execution and artifact plane
 
 Raw biological data remains local and must not be inserted into agent prompts, tool-result `content`, arbitrary dataframe previews, or unrestricted file reads. A Docker execution capability will consume artifact references and an LLM-generated execution plan, apply deterministic command/path/resource restrictions, and return execution records plus artifact references.
@@ -141,7 +169,7 @@ Pantheon's file-based skill parser, layered store, index, and viewing tools are 
 
 The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
 
-## Out of scope after Phase 2
+## Out of scope after Phase 3
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -149,4 +177,4 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no Docker installation or configuration;
 - no R or `rpy2` work;
 - no Pantheon UI/chat integration work;
-- no Phase 3 delegation-policy implementation.
+- no Phase 4 RunTrace or EventBus implementation.

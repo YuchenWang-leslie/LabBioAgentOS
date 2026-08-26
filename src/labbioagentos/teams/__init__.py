@@ -1,5 +1,6 @@
 """Team runtime adapters."""
 
+from .delegation import DelegationPolicyPlugin
 from .pantheon import (
     PantheonStageAdapter,
     StageInvocationError,
@@ -7,8 +8,8 @@ from .pantheon import (
 )
 
 __all__ = [
+    "DelegationPolicyPlugin",
     "PantheonStageAdapter",
     "StageInvocationError",
     "StageResultValidationError",
 ]
-

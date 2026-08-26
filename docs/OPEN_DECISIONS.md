@@ -13,18 +13,27 @@ Phase 1 initializes `/Users/wangyuchen/Coding/LabBioAgentOS` as its own git
 repository and uses the distribution/package name `labbioagentos` with a `src`
 layout. PantheonOS remains in `/Users/wangyuchen/Coding/PantheonOS`.
 
-## OPEN-002 — Structured child-failure contract before Phase 3
+## RESOLVED-002 — Structured child-failure contract
 
-**Decision deadline:** before Phase 3 implementation, not before Phase 1 contracts.
+Resolved in Phase 3 without a Pantheon core modification.
 
 **Observed state:** delegated child success returns only `response.content`. A tool-task exception is caught in `Agent._handle_tool_calls` and converted to `repr(exception)` as ordinary tool content, so a stage adapter cannot reliably distinguish failure from prose by type alone.
 
-**Question:** Which generic, non-scientific envelope should represent delegated invocation success/failure to the LabBio stage adapter while preserving the text result visible to the parent runtime LLM?
+`DelegationPolicyPlugin` decorates the registered native `call_agent` function.
+It records `SUCCEEDED`, `DENIED`, or `FAILED` as a typed
+`DelegationRecord`. Denial and failure also return a `labbio_delegation`
+envelope as ordinary tool content, so the parent runtime model can react while
+the adapter receives the same outcome through
+`AgentStageResult.delegations`.
 
-**Why a decision is required:** Phase 3 acceptance requires structural failure propagation. Inferring failure from strings is unsafe; changing Pantheon core prematurely is also unsafe.
+Allowed calls execute Pantheon's original closure. The decorator catches child
+exceptions before Pantheon's general tool dispatcher converts them to
+`repr(exception)`, avoiding string inference while preserving all native
+delegation metadata and safety checks.
 
-**Allowed resolution space:** first test a LabBio wrapper/subclass with an explicit invocation record; consider the conditional `pantheon/agent.py` hook in `UPSTREAM_MODIFICATIONS.md` only if the wrapper cannot meet the contract.
+No upstream patch is proposed. The full Phase 3 contract is covered by offline
+tests.
 
-## Deferred beyond Phase 2
+## Deferred beyond Phase 3
 
-The following are intentionally deferred to their roadmap phases and must not be invented now: workflow persistence backend, Docker resource limits, artifact type taxonomy, exposure approval UX, long-term memory schema, Gold Skill similarity/adaptation policy, and bioinformatics agent roster. None is needed to complete Phase 2.
+The following are intentionally deferred to their roadmap phases and must not be invented now: RunTrace/EventBus, workflow persistence backend, Docker resource limits, artifact type taxonomy, exposure approval UX, long-term memory schema, Gold Skill similarity/adaptation policy, and bioinformatics agent roster. None is needed to complete Phase 3.

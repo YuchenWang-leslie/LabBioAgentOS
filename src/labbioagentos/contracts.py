@@ -72,6 +72,53 @@ class WorkflowEventType(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class DelegationOutcome(StrEnum):
+    """Structural outcome of one runtime-selected delegation attempt."""
+
+    SUCCEEDED = "SUCCEEDED"
+    DENIED = "DENIED"
+    FAILED = "FAILED"
+
+
+class AgentDescriptor(BaseModel):
+    """Policy-visible agent metadata with no routing or ranking semantics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    name: StrictStr = Field(min_length=1)
+    description: StrictStr | None = None
+    tags: frozenset[StrictStr] = Field(default_factory=frozenset)
+
+
+class DelegationDecision(BaseModel):
+    """Structured allow/deny response from a DelegationPolicy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    allowed: bool
+    caller: StrictStr = Field(min_length=1)
+    target: StrictStr = Field(min_length=1)
+    reason: StrictStr = Field(min_length=1)
+
+
+class DelegationRecord(BaseModel):
+    """LabBio-observed metadata for a delegation; not a Phase 4 RunTrace."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    sequence: int = Field(ge=0)
+    caller: StrictStr = Field(min_length=1)
+    target: StrictStr = Field(min_length=1)
+    stage: WorkflowStage
+    outcome: DelegationOutcome
+    reason: StrictStr | None = None
+    execution_context_id: StrictStr | None = None
+    parent_tool_call_id: StrictStr | None = None
+    chain_path: tuple[StrictStr, ...] = ()
+    error_type: StrictStr | None = None
+    error_message: StrictStr | None = None
+
+
 class StageContext(BaseModel):
     """Immutable, minimum input supplied to one Pantheon reasoning stage."""
 
@@ -91,6 +138,7 @@ class AgentStageResult(BaseModel):
     stage: WorkflowStage
     summary: StrictStr = Field(min_length=1)
     payload: dict[str, JsonValue] = Field(default_factory=dict)
+    delegations: tuple[DelegationRecord, ...] = ()
 
 
 class WorkflowTransition(BaseModel):
