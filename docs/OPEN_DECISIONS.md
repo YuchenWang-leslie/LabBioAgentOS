@@ -25,6 +25,6 @@ layout. PantheonOS remains in `/Users/wangyuchen/Coding/PantheonOS`.
 
 **Allowed resolution space:** first test a LabBio wrapper/subclass with an explicit invocation record; consider the conditional `pantheon/agent.py` hook in `UPSTREAM_MODIFICATIONS.md` only if the wrapper cannot meet the contract.
 
-## Not open in Phase 0
+## Deferred beyond Phase 2
 
-The following are intentionally deferred to their roadmap phases and must not be invented now: workflow persistence backend, Docker resource limits, artifact type taxonomy, exposure approval UX, long-term memory schema, Gold Skill similarity/adaptation policy, and bioinformatics agent roster. None is needed to complete the Phase 0 mapping.
+The following are intentionally deferred to their roadmap phases and must not be invented now: workflow persistence backend, Docker resource limits, artifact type taxonomy, exposure approval UX, long-term memory schema, Gold Skill similarity/adaptation policy, and bioinformatics agent roster. None is needed to complete Phase 2.

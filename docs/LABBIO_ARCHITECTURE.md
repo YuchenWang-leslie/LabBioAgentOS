@@ -3,10 +3,10 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved by the minimal Phase 1 extension skeleton. Phase 1 adds typed stage
-contracts and a composition adapter around PantheonTeam; it does not implement a
-workflow engine, bioinformatics methods, Docker execution, artifact storage, or
-Gold Skills.
+preserved through Phase 2. Phase 1 adds typed stage contracts and a composition
+adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
+WorkflowEngine without adding bioinformatics methods, runtime scientific
+reasoning, Docker execution, artifact storage, or Gold Skills.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -66,6 +66,23 @@ A LabBio adapter will provide stage context and return a typed stage result. The
 
 `PantheonTeam` must receive no mutable `WorkflowRun` reference. A stage result can propose a next action, but only `WorkflowEngine` may accept it and mutate run state.
 
+### Phase 2 WorkflowEngine contract
+
+`WorkflowDefinition` stores nodes and directed allowed-transition edges as data;
+the engine does not encode a fixed stage sequence. Workflow stage identity and
+run lifecycle status remain separate. The engine owns start, transition,
+workflow-result recording, user gates, explicit resume, retry accounting,
+failure, completion, cancellation, and minimal workflow history.
+
+`NextActionProposal` expresses only structural intentions: transition, request
+user input, retry, or finish. It contains no scientific method choice. A proposal
+may request a USER_GATE but cannot approve it. Resumption requires a separate,
+matching LabBio `UserDecision`, and both edges must exist in the workflow graph.
+
+Workflow history records deterministic lifecycle/stage events and sequence
+numbers sufficient to reconstruct the workflow path. It is not the Phase 4
+RunTrace and contains no hidden reasoning trace.
+
 ### Capability plane
 
 Capabilities translate runtime decisions into controlled operations. The preferred implementation order is:
@@ -124,7 +141,7 @@ Pantheon's file-based skill parser, layered store, index, and viewing tools are 
 
 The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
 
-## Out of scope after Phase 1
+## Out of scope after Phase 2
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -132,4 +149,4 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no Docker installation or configuration;
 - no R or `rpy2` work;
 - no Pantheon UI/chat integration work;
-- no Phase 2 WorkflowEngine behavior.
+- no Phase 3 delegation-policy implementation.
