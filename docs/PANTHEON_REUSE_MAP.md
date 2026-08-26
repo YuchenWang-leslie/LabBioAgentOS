@@ -36,7 +36,7 @@
 | `chain_path`, depth, and loop checks | Tracks agent/call ancestry, rejects self/ancestor calls and excess depth | REUSE | Existing structural delegation safety must remain intact | No |
 | `pantheon.internal.memory.Memory` | Flat message store with metadata, persistence backends, and `execution_context_id` filtering | REUSE / WRAP | Reuse for team short-term memory; add LabBio scope/persistence outside it | No |
 | `MemoryManager`, JSON/JSONL backends | Conversation-memory persistence | WRAP | May back scoped short-term conversations, but must not own WorkflowRun/artifacts/Gold Skills | No |
-| `TeamPlugin` | Declares toolsets and lifecycle hooks | EXTEND | Preferred cross-cutting integration surface for trace, policy helpers, memory, and skills | No |
+| `TeamPlugin` | Declares toolsets and lifecycle hooks | EXTEND | Phase 3/4 use a LabBio plugin wrapper for policy and trace correlation while keeping Pantheon execution unchanged | No |
 | Plugin registry | Creates enabled plugins by priority from settings | REUSE | Existing plugin lifecycle/configuration is sufficient for optional LabBio adapters | No |
 | Memory/compression plugins | Retrieval injection and context compression | REUSE / WRAP | Useful for runtime conversation context; must obey artifact exposure and LabBio scope | No |
 | `LearningRuntime`, `SkillStore`, `SkillInjector` | Layered project/global/factory skill discovery, parsing, indexing, and file operations | WRAP | Reuse mechanics, add Gold Skill provenance/approval/validation/scope outside upstream | No |
@@ -96,7 +96,10 @@ The configured `max_delegate_depth` is checked from the inherited chain length b
 
 After `target_agent.run` completes, `call_agent` submits a child run result to team `on_run_end` hooks, extracts `response.content`, and returns it as the ordinary tool result. Parent `Agent._handle_tool_calls` converts it into a tool message; the current parent LLM loop sees that tool message and can continue reasoning.
 
-The return contract is content-oriented, not a typed child invocation result. Exceptions raised by the tool task are currently converted by `_handle_tool_calls` to `repr(exception)` content. A future LabBio stage must not infer structural success solely from prose; this limitation is tracked in `UPSTREAM_MODIFICATIONS.md`.
+The upstream return contract is content-oriented, not a typed child invocation
+result. Phase 3's LabBio decorator catches delegation exceptions before
+`_handle_tool_calls` converts them to `repr(exception)`, and Phase 4 emits typed
+delegation/agent failure events from that record. No Pantheon change is needed.
 
 ### 8. Where tool output becomes LLM-visible
 

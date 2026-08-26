@@ -21,6 +21,7 @@ from labbioagentos.contracts import (
     WorkflowRun,
     WorkflowStage,
 )
+from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 
 class WorkflowEngineError(RuntimeError):
@@ -54,8 +55,13 @@ class UserDecisionRequiredError(WorkflowEngineError):
 class WorkflowEngine:
     """Own and validate mutable WorkflowRun state for one workflow graph."""
 
-    def __init__(self, definition: WorkflowDefinition):
+    def __init__(
+        self,
+        definition: WorkflowDefinition,
+        trace_recorder: RunTraceRecorder | None = None,
+    ):
         self.definition = definition
+        self.trace_recorder = trace_recorder
         self._runs: dict[UUID, WorkflowRun] = {}
 
     def create_run(self, *, retry_limit: int = 0) -> WorkflowRun:
@@ -67,6 +73,7 @@ class WorkflowEngine:
         )
         self._runs[run.run_id] = run
         self._append_history(run, WorkflowEventType.RUN_CREATED)
+        self._emit(run, TraceEventType.RUN_CREATED)
         return run
 
     def start(self, run: WorkflowRun) -> WorkflowRun:
@@ -77,9 +84,15 @@ class WorkflowEngine:
         run.current_stage = self.definition.initial_stage
         run.status = RunStatus.RUNNING
         self._append_history(run, WorkflowEventType.RUN_STARTED)
+        self._emit(run, TraceEventType.RUN_STARTED)
         self._append_history(
             run,
             WorkflowEventType.STAGE_ENTERED,
+            stage=run.current_stage,
+        )
+        self._emit(
+            run,
+            TraceEventType.STAGE_ENTERED,
             stage=run.current_stage,
         )
         return run
@@ -100,6 +113,19 @@ class WorkflowEngine:
             WorkflowEventType.STAGE_RESULT_RECORDED,
             stage=run.current_stage,
             detail=result.summary,
+        )
+        self._emit(
+            run,
+            TraceEventType.RESULT_RECORDED,
+            stage=run.current_stage,
+            payload={
+                "result": {
+                    "stage": result.stage.value,
+                    "summary": result.summary,
+                    "payload": result.payload,
+                },
+                "delegation_count": len(result.delegations),
+            },
         )
         return run
 
@@ -135,9 +161,20 @@ class WorkflowEngine:
             source_stage=source,
             target_stage=target_stage,
         )
+        self._emit(
+            run,
+            TraceEventType.STAGE_TRANSITION,
+            stage=target_stage,
+            payload={"source": source.value, "target": target_stage.value},
+        )
         self._append_history(
             run,
             WorkflowEventType.STAGE_ENTERED,
+            stage=target_stage,
+        )
+        self._emit(
+            run,
+            TraceEventType.STAGE_ENTERED,
             stage=target_stage,
         )
         return run
@@ -170,9 +207,23 @@ class WorkflowEngine:
             source_stage=source,
             target_stage=WorkflowStage.USER_GATE,
         )
+        self._emit(
+            run,
+            TraceEventType.STAGE_TRANSITION,
+            stage=WorkflowStage.USER_GATE,
+            payload={
+                "source": source.value,
+                "target": WorkflowStage.USER_GATE.value,
+            },
+        )
         self._append_history(
             run,
             WorkflowEventType.STAGE_ENTERED,
+            stage=WorkflowStage.USER_GATE,
+        )
+        self._emit(
+            run,
+            TraceEventType.STAGE_ENTERED,
             stage=WorkflowStage.USER_GATE,
         )
         self._append_history(
@@ -180,6 +231,12 @@ class WorkflowEngine:
             WorkflowEventType.USER_INPUT_REQUESTED,
             stage=WorkflowStage.USER_GATE,
             detail=prompt,
+        )
+        self._emit(
+            run,
+            TraceEventType.USER_GATE_ENTERED,
+            stage=WorkflowStage.USER_GATE,
+            payload={"gate_id": gate.gate_id, "prompt": prompt},
         )
         return run
 
@@ -209,6 +266,15 @@ class WorkflowEngine:
             target_stage=decision.target_stage,
             detail=decision.gate_id,
         )
+        self._emit(
+            run,
+            TraceEventType.USER_GATE_RESUMED,
+            stage=WorkflowStage.USER_GATE,
+            payload={
+                "gate_id": decision.gate_id,
+                "target": decision.target_stage.value,
+            },
+        )
         run.current_stage = decision.target_stage
         self._append_history(
             run,
@@ -217,9 +283,23 @@ class WorkflowEngine:
             source_stage=WorkflowStage.USER_GATE,
             target_stage=decision.target_stage,
         )
+        self._emit(
+            run,
+            TraceEventType.STAGE_TRANSITION,
+            stage=decision.target_stage,
+            payload={
+                "source": WorkflowStage.USER_GATE.value,
+                "target": decision.target_stage.value,
+            },
+        )
         self._append_history(
             run,
             WorkflowEventType.STAGE_ENTERED,
+            stage=decision.target_stage,
+        )
+        self._emit(
+            run,
+            TraceEventType.STAGE_ENTERED,
             stage=decision.target_stage,
         )
         return run
@@ -245,6 +325,12 @@ class WorkflowEngine:
             stage=stage,
             retry_count=new_count,
         )
+        self._emit(
+            run,
+            TraceEventType.RETRY_STARTED,
+            stage=stage,
+            payload={"retry_count": new_count, "retry_limit": run.retry_limit},
+        )
         return run
 
     def fail(self, run: WorkflowRun, reason: str) -> WorkflowRun:
@@ -260,6 +346,18 @@ class WorkflowEngine:
             WorkflowEventType.FAILED,
             stage=run.current_stage,
             detail=reason,
+        )
+        self._emit(
+            run,
+            TraceEventType.STAGE_FAILED,
+            stage=run.current_stage,
+            payload={"reason": reason},
+        )
+        self._emit(
+            run,
+            TraceEventType.RUN_FAILED,
+            stage=run.current_stage,
+            payload={"reason": reason},
         )
         return run
 
@@ -279,6 +377,11 @@ class WorkflowEngine:
             WorkflowEventType.COMPLETED,
             stage=stage,
         )
+        self._emit(
+            run,
+            TraceEventType.RUN_COMPLETED,
+            stage=stage,
+        )
         return run
 
     def cancel(self, run: WorkflowRun, reason: str | None = None) -> WorkflowRun:
@@ -293,6 +396,12 @@ class WorkflowEngine:
             WorkflowEventType.CANCELLED,
             stage=run.current_stage,
             detail=reason,
+        )
+        self._emit(
+            run,
+            TraceEventType.RUN_CANCELLED,
+            stage=run.current_stage,
+            payload={"reason": reason} if reason is not None else {},
         )
         return run
 
@@ -391,6 +500,24 @@ class WorkflowEngine:
             raise InvalidRunStateError(
                 f"Run status {run.status.value!r} is terminal"
             )
+
+    def _emit(
+        self,
+        run: WorkflowRun,
+        event_type: TraceEventType,
+        *,
+        stage: WorkflowStage | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        if self.trace_recorder is None:
+            return
+        self.trace_recorder.emit(
+            run.run_id,
+            event_type,
+            stage_id=stage,
+            status=run.status.value,
+            payload=payload,
+        )
 
     @staticmethod
     def _append_history(

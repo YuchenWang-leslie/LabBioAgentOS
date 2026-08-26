@@ -1,8 +1,8 @@
 # PantheonOS Upstream Modifications
 
-## Result through Phase 3
+## Result through Phase 4
 
-No PantheonOS core file was modified through Phase 3. No direct core
+No PantheonOS core file was modified through Phase 4. No direct core
 modification is currently required or proposed.
 
 Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
@@ -12,6 +12,11 @@ catch child exceptions before `Agent._handle_tool_calls` converts them to prose.
 The Phase 3 tests preserve execution IDs, parent tool-call IDs, chain paths,
 depth protection, and ancestor protection, so neither watchlist file requires a
 patch for controlled delegation.
+
+Phase 4 reuses the adapter boundary, the Phase 3 decorated delegation function,
+and Pantheon's existing step/chunk metadata. LabBio task-local invocation IDs
+and append-only sinks provide workflow/agent correlation without changing
+`pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension -> adapter/plugin/provider/subclass -> PantheonOS. The following is a deliberately small conditional watchlist, not a request to edit these files now.
 

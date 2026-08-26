@@ -107,6 +107,8 @@ class DelegationRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     sequence: int = Field(ge=0)
+    invocation_id: UUID | None = None
+    parent_invocation_id: UUID | None = None
     caller: StrictStr = Field(min_length=1)
     target: StrictStr = Field(min_length=1)
     stage: WorkflowStage

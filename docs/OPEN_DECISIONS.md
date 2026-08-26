@@ -34,6 +34,10 @@ delegation metadata and safety checks.
 No upstream patch is proposed. The full Phase 3 contract is covered by offline
 tests.
 
-## Deferred beyond Phase 3
+## Deferred beyond Phase 4
 
-The following are intentionally deferred to their roadmap phases and must not be invented now: RunTrace/EventBus, workflow persistence backend, Docker resource limits, artifact type taxonomy, exposure approval UX, long-term memory schema, Gold Skill similarity/adaptation policy, and bioinformatics agent roster. None is needed to complete Phase 3.
+The following are intentionally deferred to their roadmap phases and must not
+be invented now: EventBus, durable/cross-process trace delivery, workflow
+persistence backend, Docker resource limits, artifact type taxonomy, exposure
+approval UX, long-term memory schema, Gold Skill similarity/adaptation policy,
+and bioinformatics agent roster. None is needed to complete Phase 4.

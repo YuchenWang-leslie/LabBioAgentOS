@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Iterator
+from uuid import UUID, uuid4
 
 from pantheon.agent import Agent, get_current_run_context
 from pantheon.team import PantheonTeam
@@ -21,6 +22,12 @@ from labbioagentos.contracts import (
     StageContext,
 )
 from labbioagentos.policy import DelegationPolicy
+from labbioagentos.trace import (
+    InstructionKind,
+    InstructionRecord,
+    RunTraceRecorder,
+    TraceEventType,
+)
 
 
 def canonical_agent_name(name: str) -> str:
@@ -41,8 +48,10 @@ class DelegationSession:
     """Task-local Phase 3 collector; it stores no WorkflowRun reference."""
 
     stage_context: StageContext
+    trace_recorder: RunTraceRecorder | None = None
     records: list[DelegationRecord] = field(default_factory=list)
     observations: dict[str, _StructuralObservation] = field(default_factory=dict)
+    trace_errors: list[Exception] = field(default_factory=list)
 
     def observe(self, message: dict[str, Any]) -> None:
         execution_context_id = message.get("execution_context_id")
@@ -68,6 +77,8 @@ class DelegationSession:
     def add_record(
         self,
         *,
+        invocation_id: UUID | None = None,
+        parent_invocation_id: UUID | None = None,
         caller: str,
         target: str,
         outcome: DelegationOutcome,
@@ -83,6 +94,8 @@ class DelegationSession:
         )
         record = DelegationRecord(
             sequence=len(self.records),
+            invocation_id=invocation_id,
+            parent_invocation_id=parent_invocation_id,
             caller=caller,
             target=target,
             stage=self.stage_context.stage,
@@ -101,22 +114,66 @@ class DelegationSession:
         self.records.append(record)
         return record
 
+    def emit_trace(self, event_type: TraceEventType, **kwargs):
+        if self.trace_recorder is None:
+            return None
+        try:
+            return self.trace_recorder.emit(
+                self.stage_context.run_id,
+                event_type,
+                stage_id=self.stage_context.stage,
+                **kwargs,
+            )
+        except Exception as exc:
+            self.trace_errors.append(exc)
+            raise
+
+    def record_instruction(self, record: InstructionRecord) -> None:
+        if self.trace_recorder is None:
+            return
+        try:
+            self.trace_recorder.record_instruction(record)
+        except Exception as exc:
+            self.trace_errors.append(exc)
+            raise
+
+    def raise_trace_error(self) -> None:
+        if self.trace_errors:
+            raise self.trace_errors[0]
+
+    def is_trace_error(self, error: Exception) -> bool:
+        return any(item is error for item in self.trace_errors)
+
 
 _CURRENT_DELEGATION_SESSION: ContextVar[DelegationSession | None] = ContextVar(
     "labbio_delegation_session",
     default=None,
 )
+_CURRENT_INVOCATION_ID: ContextVar[UUID | None] = ContextVar(
+    "labbio_trace_invocation_id",
+    default=None,
+)
 
 
 @contextmanager
-def delegation_session(stage_context: StageContext) -> Iterator[DelegationSession]:
+def delegation_session(
+    stage_context: StageContext,
+    *,
+    trace_recorder: RunTraceRecorder | None = None,
+    root_invocation_id: UUID | None = None,
+) -> Iterator[DelegationSession]:
     """Activate one task-local policy context for a stage invocation."""
 
-    session = DelegationSession(stage_context=stage_context)
+    session = DelegationSession(
+        stage_context=stage_context,
+        trace_recorder=trace_recorder,
+    )
     token = _CURRENT_DELEGATION_SESSION.set(session)
+    invocation_token = _CURRENT_INVOCATION_ID.set(root_invocation_id)
     try:
         yield session
     finally:
+        _CURRENT_INVOCATION_ID.reset(invocation_token)
         _CURRENT_DELEGATION_SESSION.reset(token)
 
 
@@ -264,18 +321,56 @@ class DelegationPolicyPlugin(TeamPlugin):
             if session is None:
                 return self._unscoped_denial(caller.name, target.name)
 
-            decision = self._evaluate(caller, target, session.stage_context)
+            invocation_id = uuid4()
+            parent_invocation_id = _CURRENT_INVOCATION_ID.get()
             parent_tool_call_id = self._parent_tool_call_id(context_variables)
+            session.emit_trace(
+                TraceEventType.DELEGATION_STARTED,
+                invocation_id=invocation_id,
+                parent_invocation_id=parent_invocation_id,
+                caller=caller.name,
+                target=target.name,
+                parent_tool_call_id=parent_tool_call_id,
+                status="STARTED",
+            )
+            session.record_instruction(
+                InstructionRecord(
+                    run_id=session.stage_context.run_id,
+                    stage_id=session.stage_context.stage,
+                    invocation_id=invocation_id,
+                    kind=InstructionKind.DELEGATION,
+                    sanitized_rendered_instruction=instruction,
+                )
+            )
+            decision = self._evaluate(caller, target, session.stage_context)
             if not decision.allowed:
                 record = session.add_record(
+                    invocation_id=invocation_id,
+                    parent_invocation_id=parent_invocation_id,
                     caller=caller.name,
                     target=target.name,
                     outcome=DelegationOutcome.DENIED,
                     reason=decision.reason,
                     parent_tool_call_id=parent_tool_call_id,
                 )
+                self._emit_record(
+                    session,
+                    record,
+                    TraceEventType.DELEGATION_DENIED,
+                )
                 return self._tool_result(record)
 
+            session.emit_trace(
+                TraceEventType.AGENT_STARTED,
+                invocation_id=invocation_id,
+                parent_invocation_id=parent_invocation_id,
+                agent_name=target.name,
+                caller=caller.name,
+                target=target.name,
+                parent_tool_call_id=parent_tool_call_id,
+                status="STARTED",
+            )
+            invocation_token = _CURRENT_INVOCATION_ID.set(invocation_id)
             try:
                 result = await run_func(
                     original_call,
@@ -284,10 +379,14 @@ class DelegationPolicyPlugin(TeamPlugin):
                     context_variables=context_variables,
                 )
             except Exception as exc:
+                if session.is_trace_error(exc):
+                    raise
                 execution_context_id = self._execution_context_id(
                     parent_tool_call_id
                 )
                 record = session.add_record(
+                    invocation_id=invocation_id,
+                    parent_invocation_id=parent_invocation_id,
                     caller=caller.name,
                     target=target.name,
                     outcome=DelegationOutcome.FAILED,
@@ -296,10 +395,25 @@ class DelegationPolicyPlugin(TeamPlugin):
                     parent_tool_call_id=parent_tool_call_id,
                     error=exc,
                 )
+                self._emit_record(
+                    session,
+                    record,
+                    TraceEventType.AGENT_FAILED,
+                    agent_name=target.name,
+                )
+                self._emit_record(
+                    session,
+                    record,
+                    TraceEventType.DELEGATION_FAILED,
+                )
                 return self._tool_result(record)
+            finally:
+                _CURRENT_INVOCATION_ID.reset(invocation_token)
 
             execution_context_id = self._execution_context_id(parent_tool_call_id)
-            session.add_record(
+            record = session.add_record(
+                invocation_id=invocation_id,
+                parent_invocation_id=parent_invocation_id,
                 caller=caller.name,
                 target=target.name,
                 outcome=DelegationOutcome.SUCCEEDED,
@@ -307,10 +421,50 @@ class DelegationPolicyPlugin(TeamPlugin):
                 execution_context_id=execution_context_id,
                 parent_tool_call_id=parent_tool_call_id,
             )
+            self._emit_record(
+                session,
+                record,
+                TraceEventType.AGENT_COMPLETED,
+                agent_name=target.name,
+            )
+            self._emit_record(
+                session,
+                record,
+                TraceEventType.DELEGATION_COMPLETED,
+            )
             return result
 
         call_agent.__name__ = "call_agent"
         return call_agent
+
+    @staticmethod
+    def _emit_record(
+        session: DelegationSession,
+        record: DelegationRecord,
+        event_type: TraceEventType,
+        *,
+        agent_name: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {}
+        if record.reason is not None:
+            payload["reason"] = record.reason
+        if record.error_type is not None:
+            payload["error_type"] = record.error_type
+        if record.error_message is not None:
+            payload["error_message"] = record.error_message
+        session.emit_trace(
+            event_type,
+            invocation_id=record.invocation_id,
+            parent_invocation_id=record.parent_invocation_id,
+            agent_name=agent_name,
+            caller=record.caller,
+            target=record.target,
+            execution_context_id=record.execution_context_id,
+            parent_tool_call_id=record.parent_tool_call_id,
+            chain_path=record.chain_path,
+            status=record.outcome.value,
+            payload=payload,
+        )
 
     def _evaluate(
         self,

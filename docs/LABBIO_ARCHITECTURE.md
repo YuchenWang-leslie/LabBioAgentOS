@@ -3,11 +3,12 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 3. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 4. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
-existing team tools without adding bioinformatics methods, runtime scientific
-reasoning, Docker execution, artifact storage, RunTrace, or Gold Skills.
+existing team tools. Phase 4 adds append-only RunTrace observation without
+adding bioinformatics methods, runtime scientific reasoning, Docker execution,
+artifact storage, or Gold Skills.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -114,7 +115,7 @@ The adapter activates a task-local `DelegationSession` containing only the
 immutable stage context and structural records. Pantheon receives the existing
 serialized stage-context copy and no `WorkflowRun` or `WorkflowEngine`
 reference. Verified records are appended by LabBio to
-`AgentStageResult.delegations`; this is preparation for Phase 4, not RunTrace.
+`AgentStageResult.delegations` and are also emitted as Phase 4 trace events.
 
 The same `call_agent` decorator catches child execution exceptions at the tool
 function boundary, before `Agent._handle_tool_calls` converts them to `repr`
@@ -143,19 +144,39 @@ The intended stage-level sequence is:
 
 No fixed Planner -> Specialist -> Reviewer chain is part of the architecture. Such a chain may be used in tests, while real collaboration remains an LLM decision within allowed boundaries.
 
-## RunTrace boundary
+## Phase 4 RunTrace boundary
 
-RunTrace is an explicit event and artifact record, not hidden chain-of-thought. It should eventually record:
+RunTrace is implemented as immutable `TraceEvent` values appended through a
+small optional `RunTraceRecorder`. It is not a shared mutable run object and is
+not hidden chain-of-thought. `WorkflowEngine`, `PantheonStageAdapter`, and the
+delegation wrapper emit observations but do not consult tracing when making
+workflow, policy, or runtime decisions.
 
-- workflow stage entry, exit, status, transition, retry, and user gates;
-- agent invocation and parent/child linkage;
-- `execution_context_id`, `parent_tool_call_id`, and `chain_path`;
-- sanitized rendered instructions or prompt references and their versions/hashes;
-- structured proposals/results and errors;
-- generated script references, Docker commands, parameters, exit status, and validation;
-- artifact creation and exposure decisions.
+The recorder assigns a contiguous sequence per `run_id` and UTC timestamps.
+`InMemoryTraceSink` supports deterministic tests; `JsonlTraceSink` writes one
+validated event per line. `project_run_trace` reconstructs stage path, root and
+delegated agent invocations, delegation edges, failures, retries, and explicit
+instruction records from ordered events alone.
 
-Pantheon's step/chunk callbacks, `AgentRunContext`, tool tracking hooks, and team lifecycle hooks provide most observation points. LabBio trace code should wrap these points without changing their reasoning behavior.
+LabBio-generated invocation IDs form the parent/child tree. Pantheon still owns
+`execution_context_id`, `parent_tool_call_id`, and `chain_path`; completion and
+failure events preserve those values when Pantheon makes them available. A
+task-local invocation context correlates nested delegation without adding
+anything to `WorkflowRun` or altering Pantheon context semantics.
+
+`InstructionRecord` stores only caller-declared, sanitized rendered
+instructions plus optional template identifier/version/hash. Provider
+conversations and hidden reasoning are not recorded. Result events store typed
+stage results, not conversation history. Payload validation rejects explicit
+raw-matrix, unrestricted file-content, dataframe-row, h5ad, FASTQ, and BAM
+fields; future phases should store `ArtifactRef` identifiers instead.
+
+Trace failures are fail-loud. In-memory validation errors and JSONL read/write
+errors propagate to the caller. The workflow state change that immediately
+preceded an emission is not rolled back, so callers must treat a raised sink
+error as an observable persistence failure, not retry the workflow operation
+blindly. Cross-process JSONL coordination and resilient delivery are explicitly
+outside Phase 4.
 
 ## Memory boundary
 
@@ -169,7 +190,7 @@ Pantheon's file-based skill parser, layered store, index, and viewing tools are 
 
 The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
 
-## Out of scope after Phase 3
+## Out of scope after Phase 4
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -177,4 +198,5 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no Docker installation or configuration;
 - no R or `rpy2` work;
 - no Pantheon UI/chat integration work;
-- no Phase 4 RunTrace or EventBus implementation.
+- no EventBus, remote trace service, or production timeline UI;
+- no Phase 5 ArtifactStore or ArtifactExposure implementation.

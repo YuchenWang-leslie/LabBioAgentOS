@@ -21,9 +21,28 @@ from .contracts import (
 from .policy import DelegationPolicy, InMemoryDelegationPolicy
 from .teams import (
     DelegationPolicyPlugin,
+    InstructionRecordValidationError,
     PantheonStageAdapter,
     StageInvocationError,
     StageResultValidationError,
+)
+from .trace import (
+    DelegationProjection,
+    InMemoryTraceSink,
+    InstructionKind,
+    InstructionRecord,
+    InvocationProjection,
+    JsonlTraceSink,
+    RunTraceProjection,
+    RunTraceRecorder,
+    TraceEvent,
+    TraceEventType,
+    TracePayloadError,
+    TraceProjectionError,
+    TraceSequenceError,
+    TraceSink,
+    TraceSinkError,
+    project_run_trace,
 )
 from .workflow import WorkflowEngine, default_workflow_definition
 
@@ -34,15 +53,31 @@ __all__ = [
     "DelegationOutcome",
     "DelegationPolicy",
     "DelegationPolicyPlugin",
+    "DelegationProjection",
     "DelegationRecord",
     "InMemoryDelegationPolicy",
+    "InMemoryTraceSink",
+    "InstructionKind",
+    "InstructionRecord",
+    "InstructionRecordValidationError",
+    "InvocationProjection",
+    "JsonlTraceSink",
     "NextAction",
     "NextActionProposal",
     "PantheonStageAdapter",
     "RunStatus",
+    "RunTraceProjection",
+    "RunTraceRecorder",
     "StageContext",
     "StageInvocationError",
     "StageResultValidationError",
+    "TraceEvent",
+    "TraceEventType",
+    "TracePayloadError",
+    "TraceProjectionError",
+    "TraceSequenceError",
+    "TraceSink",
+    "TraceSinkError",
     "UserDecision",
     "WorkflowDefinition",
     "WorkflowEngine",
@@ -52,6 +87,7 @@ __all__ = [
     "WorkflowStage",
     "WorkflowTransition",
     "default_workflow_definition",
+    "project_run_trace",
 ]
 
 __version__ = "0.1.0"
