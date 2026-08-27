@@ -5,6 +5,12 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from labbioagentos.governance import (
+    AccessAction,
+    AccessService,
+    AuthorizationDenied,
+    Principal,
+)
 from labbioagentos.trace import RunTraceRecorder, TraceEvent, TraceEventType
 
 from .curator import SkillCuratorPort
@@ -31,10 +37,12 @@ class GoldSkillService:
         store: InMemorySkillStore,
         source_projector: SkillSourceProjector,
         *,
+        access_service: AccessService | None = None,
         trace_recorder: RunTraceRecorder | None = None,
     ):
         self.store = store
         self.source_projector = source_projector
+        self.access_service = access_service
         self.trace_recorder = trace_recorder
 
     def create_source_bundle(
@@ -106,8 +114,31 @@ class GoldSkillService:
         self,
         proposal_id: UUID,
         decision: SkillUserDecision,
+        *,
+        principal: Principal | None = None,
     ) -> GoldSkill | None:
         proposal = self.store.get_proposal(proposal_id)
+        if self.access_service is not None:
+            actor = self._require_principal(principal)
+            if decision.decided_by != actor.user_id:
+                raise AuthorizationDenied(
+                    "Skill decision identity does not match the Principal"
+                )
+            action = {
+                "PERSONAL": AccessAction.APPROVE_PERSONAL_SKILL,
+                "PROJECT": AccessAction.APPROVE_PROJECT_SKILL,
+                "LAB": AccessAction.APPROVE_LAB_SKILL,
+            }[proposal.scope.value]
+            self.access_service.require_skill_scope(
+                actor,
+                scope=proposal.scope.value,
+                owner_user_id=proposal.owner_user_id,
+                project_id=proposal.project_id,
+                lab_id=proposal.lab_id,
+                action=action,
+                resource_id=str(proposal.proposal_id),
+                run_id=proposal.source_run_id,
+            )
         gold = self.store.decide_proposal(proposal_id, decision)
         if gold is None:
             self._emit(
@@ -135,7 +166,21 @@ class GoldSkillService:
         )
         return gold
 
-    def submit_use_proposal(self, proposal: SkillUseProposal) -> None:
+    def submit_use_proposal(
+        self,
+        proposal: SkillUseProposal,
+        *,
+        principal: Principal | None = None,
+    ) -> None:
+        if self.access_service is not None:
+            skill = self.store.get_gold(proposal.skill_id, proposal.skill_version)
+            actor = self._require_principal(principal)
+            self.access_service.require_skill(
+                actor,
+                skill,
+                self._use_action(skill.scope.value),
+                run_id=proposal.run_id,
+            )
         self.store.save_use_proposal(proposal)
         self._emit(
             proposal.run_id,
@@ -154,8 +199,23 @@ class GoldSkillService:
         self,
         proposal_id: UUID,
         decision: SkillUserDecision,
+        *,
+        principal: Principal | None = None,
     ) -> SkillUseAuthorization:
         proposal = self.store.get_use_proposal(proposal_id)
+        if self.access_service is not None:
+            actor = self._require_principal(principal)
+            if decision.decided_by != actor.user_id:
+                raise AuthorizationDenied(
+                    "Skill use decision identity does not match the Principal"
+                )
+            skill = self.store.get_gold(proposal.skill_id, proposal.skill_version)
+            self.access_service.require_skill(
+                actor,
+                skill,
+                self._use_action(skill.scope.value),
+                run_id=proposal.run_id,
+            )
         authorization = self.store.decide_use(proposal_id, decision)
         event_type = (
             TraceEventType.SKILL_USE_APPROVED
@@ -210,8 +270,65 @@ class GoldSkillService:
         )
         return usage
 
-    def search(self, context: SkillSearchContext) -> tuple[GoldSkill, ...]:
-        return self.store.search(context)
+    def get_gold(
+        self,
+        skill_id: UUID,
+        version: int,
+        *,
+        principal: Principal | None = None,
+    ) -> GoldSkill:
+        skill = self.store.get_gold(skill_id, version)
+        if self.access_service is not None:
+            actor = self._require_principal(principal)
+            self.access_service.require_skill(
+                actor,
+                skill,
+                self._use_action(skill.scope.value),
+            )
+        return skill
+
+    def search(
+        self,
+        context: SkillSearchContext,
+        *,
+        principal: Principal | None = None,
+    ) -> tuple[GoldSkill, ...]:
+        if self.access_service is None:
+            return self.store.search(context)
+        actor = self._require_principal(principal)
+        if context.user_id is not None and context.user_id != actor.user_id:
+            raise AuthorizationDenied("Skill search cannot impersonate another user")
+        if context.lab_id is not None and context.lab_id != actor.lab_id:
+            raise AuthorizationDenied("Skill search cannot cross lab scope")
+        secured_context = context.model_copy(
+            update={"user_id": actor.user_id, "lab_id": actor.lab_id}
+        )
+        visible: list[GoldSkill] = []
+        for skill in self.store.search(secured_context):
+            try:
+                self.access_service.require_skill(
+                    actor,
+                    skill,
+                    self._use_action(skill.scope.value),
+                )
+            except AuthorizationDenied:
+                continue
+            visible.append(skill)
+        return tuple(visible)
+
+    @staticmethod
+    def _use_action(scope: str) -> AccessAction:
+        return {
+            "PERSONAL": AccessAction.USE_PERSONAL_SKILL,
+            "PROJECT": AccessAction.USE_PROJECT_SKILL,
+            "LAB": AccessAction.USE_LAB_SKILL,
+        }[scope]
+
+    @staticmethod
+    def _require_principal(principal: Principal | None) -> Principal:
+        if principal is None:
+            raise AuthorizationDenied("A Principal is required for governed Skill access")
+        return principal
 
     def _emit(
         self,

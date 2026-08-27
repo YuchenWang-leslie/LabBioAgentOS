@@ -110,6 +110,9 @@ class ArtifactRef(BaseModel):
 
     artifact_id: UUID = Field(default_factory=uuid4)
     artifact_type: StrictStr = Field(min_length=1)
+    owner_user_id: StrictStr = Field(default="local-user", min_length=1)
+    project_id: StrictStr = Field(default="local-project", min_length=1)
+    lab_id: StrictStr = Field(default="local-lab", min_length=1)
     run_id: UUID | None = None
     stage_id: WorkflowStage | None = None
     producer_invocation_id: UUID | None = None
@@ -176,6 +179,9 @@ class ArtifactProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    owner_user_id: StrictStr = Field(min_length=1)
+    project_id: StrictStr = Field(min_length=1)
+    lab_id: StrictStr = Field(min_length=1)
     run_id: UUID | None = None
     stage_id: WorkflowStage | None = None
     producer_invocation_id: UUID | None = None

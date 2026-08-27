@@ -201,6 +201,7 @@ class SkillProposal(BaseModel):
     scope: SkillScope
     owner_user_id: StrictStr | None = Field(default=None, min_length=1)
     project_id: StrictStr | None = Field(default=None, min_length=1)
+    lab_id: StrictStr = Field(default="local-lab", min_length=1)
     procedure: SkillProcedure
     parent_skill_id: UUID | None = None
     parent_version: int | None = Field(default=None, ge=1)
@@ -264,6 +265,7 @@ class GoldSkill(BaseModel):
     source_usage_record_id: UUID | None = None
     owner_user_id: StrictStr | None = Field(default=None, min_length=1)
     project_id: StrictStr | None = Field(default=None, min_length=1)
+    lab_id: StrictStr = Field(default="local-lab", min_length=1)
     procedure: SkillProcedure
     approved_by: StrictStr = Field(min_length=1)
     approved_at: datetime
@@ -300,6 +302,7 @@ class SkillSearchContext(BaseModel):
 
     user_id: StrictStr | None = Field(default=None, min_length=1)
     project_id: StrictStr | None = Field(default=None, min_length=1)
+    lab_id: StrictStr | None = Field(default=None, min_length=1)
     include_lab: bool = True
     query_text: StrictStr | None = Field(default=None, min_length=1, max_length=500)
     required_tags: frozenset[ShortText] = Field(default_factory=frozenset)

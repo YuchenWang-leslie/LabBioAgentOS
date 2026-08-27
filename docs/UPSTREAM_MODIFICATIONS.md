@@ -1,8 +1,8 @@
 # PantheonOS Upstream Modifications
 
-## Result through Phase 7
+## Result through Phase 8
 
-No PantheonOS core file was modified through Phase 7. No direct core
+No PantheonOS core file was modified through Phase 8. No direct core
 modification is currently required or proposed.
 
 Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
@@ -36,6 +36,13 @@ immutable versions, scoped candidate retrieval, and usage evidence in LabBio.
 Pantheon's learning system is not changed or used to auto-publish Gold Skills;
 future integration can wrap its read/index mechanics without changing core.
 
+Phase 8 adds Principal/project policy, frozen WorkflowRun ownership, governed
+Artifact/Gold Skill service entry points, proposal-only persistent Memory, and
+ID-only workspace resolution entirely within LabBio. Authorization services and
+stores are never supplied to Pantheon agents. A future Pantheon-facing adapter
+can pin a Principal exactly as the artifact consumer is pinned today, so no
+Pantheon memory, provider, agent, or team modification is needed.
+
 ## Conditional watchlist
 
 | Core file | Potential future need | Why wrapper/plugin/subclass may be sufficient | When a minimal core change would be justified | Compatibility risk |
@@ -48,7 +55,7 @@ future integration can wrap its read/index mechanics without changing core.
 - `pantheon/team/base.py`: the LabBio adapter can implement stage invocation outside it.
 - `pantheon/team/plugin.py`: the existing plugin contract and documented per-agent hook registration are sufficient for the first extension attempt.
 - `pantheon/providers.py`: new safe execution/artifact providers can implement `ToolProvider` without altering existing providers.
-- `pantheon/internal/memory/*`: LabBio workflow/artifact/scope stores remain outside conversation memory.
+- `pantheon/internal/memory/*`: Phase 8 governed persistent Memory remains outside Pantheon conversation memory.
 - `pantheon/internal/learning_system/*`: Gold Skill approval and RunTrace provenance belong in a LabBio wrapper/store, not in automatic upstream extraction.
 - `pantheon/background.py`: background tasks are ignored for the initial deterministic workflow.
 

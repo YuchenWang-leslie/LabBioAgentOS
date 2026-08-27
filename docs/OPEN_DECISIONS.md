@@ -75,14 +75,39 @@ scientific recommendation.
 The Phase 7 in-memory store and identifier-based trace integration are
 development contracts, not production persistence, identity, or ACL decisions.
 
-## Deferred beyond Phase 7
+## RESOLVED-006 — Phase 8 identity and persistent-Memory boundary
+
+Phase 8 uses a minimal Principal with user/lab identity and MEMBER/LAB_ADMIN
+roles, plus immutable WorkspaceContext IDs. Project access is OWNER,
+READ_ONLY_COLLABORATOR, or same-lab LAB_ADMIN; it is not a general RBAC DSL.
+WorkflowRun identity is frozen, while authentication and principal creation are
+external responsibilities.
+
+Artifact authorization and exposure remain separate decisions. Governed
+services enforce scope before returning references or views. PERSONAL Gold is
+owner-only, PROJECT Gold follows project read access, LAB Gold is same-lab, and
+LAB promotion requires LAB_ADMIN. Trusted low-level stores are not agent-facing
+authorization APIs.
+
+Persistent Memory is proposal-only and immutable/versioned. PERSONAL mutation
+requires its owner, PROJECT mutation requires owner/LAB_ADMIN, and LAB mutation
+requires LAB_ADMIN. The runtime supplies MemoryKind and content; governance does
+not classify or rank them. Workspace paths are derived only from validated IDs
+and fixed area enums.
+
+The in-memory stores, local resolver, synthetic Principal inputs, and
+local-development WorkflowRun identity defaults do not decide production
+authentication, persistence, transactions, or ACL administration.
+
+## Deferred beyond Phase 8
 
 The following are intentionally deferred to their roadmap phases and must not
 be invented now: EventBus, durable/cross-process trace delivery, workflow and
 artifact production persistence, production image registry and scheduler,
 deployment-specific Docker identities/limits, trusted producer authorization,
-user/project permissions, exposure approval UX, long-term memory schema,
-production Gold Skill persistence/indexing, real curator implementation,
-candidate-retrieval backend, and bioinformatics agent roster. Scientific Skill
+exposure approval UX, production Project/Artifact/Memory/Gold persistence,
+cross-process transactions, identity provider/authentication, ACL administration,
+real curator implementation, semantic Memory retrieval, candidate-retrieval
+backend, and bioinformatics agent roster. Scientific Skill
 similarity and adaptation remain runtime-LLM/user decisions rather than an
-unresolved deterministic policy. None is needed to complete Phase 7.
+unresolved deterministic policy. None is needed to complete Phase 8.

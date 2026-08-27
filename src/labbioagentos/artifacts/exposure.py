@@ -8,6 +8,12 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from labbioagentos.governance import (
+    AccessAction,
+    AccessService,
+    AuthorizationDenied,
+    Principal,
+)
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import (
@@ -160,12 +166,14 @@ class ArtifactExposureService:
         store: ArtifactStore,
         policy: ExposurePolicy,
         *,
+        access_service: AccessService | None = None,
         trace_recorder: RunTraceRecorder | None = None,
     ):
         if not isinstance(store, ArtifactStore):
             raise TypeError("store must implement ArtifactStore")
         self.store = store
         self.policy = policy
+        self.access_service = access_service
         self.trace_recorder = trace_recorder
 
     def artifact_query(
@@ -173,6 +181,8 @@ class ArtifactExposureService:
         artifact_id: UUID | str,
         query: ArtifactQuery | dict[str, Any],
         consumer: ArtifactConsumer | str,
+        *,
+        principal: Principal | None = None,
     ) -> ArtifactView:
         try:
             identifier = coerce_artifact_id(artifact_id)
@@ -182,6 +192,7 @@ class ArtifactExposureService:
             raise ArtifactQueryError(f"Invalid artifact query: {exc}") from exc
 
         ref = self.store.get_ref(identifier)
+        self._authorize(principal, ref)
         self._emit(
             ref,
             TraceEventType.ARTIFACT_VIEW_REQUESTED,
@@ -252,10 +263,39 @@ class ArtifactExposureService:
             record_count=representation.record_count,
             truncated=truncated,
             provenance=ArtifactProvenance(
+                owner_user_id=ref.owner_user_id,
+                project_id=ref.project_id,
+                lab_id=ref.lab_id,
                 run_id=ref.run_id,
                 stage_id=ref.stage_id,
                 producer_invocation_id=ref.producer_invocation_id,
             ),
+        )
+
+    def artifact_ref(
+        self,
+        artifact_id: UUID | str,
+        *,
+        principal: Principal | None = None,
+    ):
+        """Return metadata only after the same identity/scope authorization."""
+
+        identifier = coerce_artifact_id(artifact_id)
+        ref = self.store.get_ref(identifier)
+        self._authorize(principal, ref)
+        return ref
+
+    def _authorize(self, principal: Principal | None, ref) -> None:
+        if self.access_service is None:
+            return
+        if principal is None:
+            raise AuthorizationDenied(
+                "A Principal is required for governed Artifact access"
+            )
+        self.access_service.require_artifact(
+            principal,
+            ref,
+            AccessAction.READ_ARTIFACT,
         )
 
     def _emit(
@@ -299,9 +339,11 @@ class PantheonArtifactQueryAdapter:
         service: ArtifactExposureService,
         *,
         consumer: ArtifactConsumer = ArtifactConsumer.REMOTE_LLM,
+        principal: Principal | None = None,
     ):
         self.service = service
         self.consumer = consumer
+        self.principal = principal
 
     async def artifact_query(
         self,
@@ -324,4 +366,5 @@ class PantheonArtifactQueryAdapter:
             artifact_id,
             query,
             requested_consumer,
+            principal=self.principal,
         )

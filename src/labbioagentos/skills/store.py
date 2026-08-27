@@ -144,6 +144,7 @@ class InMemorySkillStore:
                     proposal.scope is not parent.scope
                     or proposal.owner_user_id != parent.owner_user_id
                     or proposal.project_id != parent.project_id
+                    or proposal.lab_id != parent.lab_id
                 ):
                     raise SkillStoreError(
                         "A new Gold Skill version must preserve scope and ownership"
@@ -168,6 +169,7 @@ class InMemorySkillStore:
                 source_usage_record_id=proposal.source_usage_record_id,
                 owner_user_id=proposal.owner_user_id,
                 project_id=proposal.project_id,
+                lab_id=proposal.lab_id,
                 procedure=proposal.procedure,
                 approved_by=decision.decided_by,
                 approved_at=decision.decided_at,
@@ -328,6 +330,8 @@ class InMemorySkillStore:
     @staticmethod
     def _eligible(skill: GoldSkill, context: SkillSearchContext) -> bool:
         if skill.status is not SkillStatus.GOLD:
+            return False
+        if context.lab_id is not None and skill.lab_id != context.lab_id:
             return False
         if skill.scope is SkillScope.PERSONAL:
             if context.user_id is None or skill.owner_user_id != context.user_id:

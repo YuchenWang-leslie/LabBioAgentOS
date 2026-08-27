@@ -3,15 +3,17 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 6. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 8. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
 adds metadata-only artifact references, local development storage, and bounded
 exposure views. Phase 6 adds policy-controlled Docker command construction,
 trusted artifact mounts, local script/log handling, and conservative output
-registration without adding bioinformatics methods, runtime scientific
-reasoning, production data readers, or Gold Skills.
+registration. Phase 7 adds user-approved immutable Gold Skill records. Phase 8
+adds identity/scope authorization, project isolation, governed persistent
+Memory, and deterministic workspace resolution without adding authentication,
+bioinformatics methods, runtime scientific reasoning, or production services.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -291,7 +293,11 @@ outside Phase 4.
 
 Pantheon short-term `Memory` remains valid for an agent/team conversation. A delegated child receives a distinct in-memory `Memory`, while callbacks also project tagged child messages into the parent conversation for display and traceability. Context filtering uses `execution_context_id`.
 
-Long-term LabBio memory, workflow state, artifact metadata, and Gold Skills are separate stores with user/project/lab scoping. They must not be placed implicitly in Pantheon conversation memory.
+Long-term LabBio memory, workflow state, artifact metadata, and Gold Skills are
+separate stores with user/project/lab scoping. They must not be placed
+implicitly in Pantheon conversation memory. Phase 8 implements persistent
+Memory through proposals and explicit governance; Pantheon agents receive no
+Memory store or authorization-service handle.
 
 ## Gold Skill boundary
 
@@ -343,7 +349,77 @@ lifecycle because it lacks the successful-trace and explicit-approval gates.
 Its parser/index may be adapted later as a presentation or discovery layer, but
 it is not Phase 7's source of truth.
 
-## Out of scope after Phase 7
+## Phase 8 identity, authorization, and persistent Memory boundary
+
+Phase 8 adds two immutable identity contracts. `Principal` contains a synthetic
+or future-authenticated user ID, lab ID, and the small MEMBER/LAB_ADMIN role
+set. `WorkspaceContext` contains acting user, project, and lab IDs but no path.
+Authentication, tokens, passwords, and session establishment remain outside the
+repository. A caller must supply real identity in production.
+
+`WorkflowRun` now carries frozen `owner_user_id`, `project_id`, and `lab_id`
+fields. Local-development defaults preserve the accepted Phase 1–7 constructors;
+applications creating governed runs must supply their actual workspace IDs.
+Pantheon still receives only `StageContext`, so neither the team nor an agent can
+mutate run ownership.
+
+`Project` supports OWNER, read-only collaborator, and same-lab LAB_ADMIN access.
+`AuthorizationPolicy` is pure identity/scope logic. `AccessService` resolves
+trusted project metadata, applies that policy, raises on denial, and optionally
+emits reference-only authorization/project-access events. UUID knowledge is not
+an access capability. Stores are trusted infrastructure; callers use governed
+services rather than receiving store or policy handles as agent tools.
+
+The governed artifact path is:
+
+```text
+fixed Principal on trusted adapter/service
+  -> canonical ArtifactRef scope + AuthorizationPolicy
+  -> ExposurePolicy
+  -> bounded ArtifactView
+```
+
+No representation is returned or used to construct a view until the access
+check has succeeded. Authorization answers who may access the project Artifact;
+ExposurePolicy independently answers which representation a specified consumer
+may see. `ArtifactRef` and exposed provenance carry owner/project/lab IDs.
+
+The governed Gold Skill service pins search to the Principal's user and lab,
+then filters candidates by project access. PERSONAL is owner-only, PROJECT is
+visible to project readers, and LAB is visible only inside the same lab. Gold
+retrieval/use uses the same checks. LAB proposal approval requires LAB_ADMIN;
+there is still no automatic promotion, ranking, or mode selection. The
+underlying in-memory store is a trusted persistence implementation, not a
+caller-facing authorization boundary.
+
+Persistent Memory follows:
+
+```text
+runtime/user supplied MemoryUpdateProposal
+  -> scope visibility check
+  -> matching explicit MemoryDecision by authorized owner/admin
+  -> immutable MemoryEntry version
+```
+
+The proposed `MemoryKind` is never inferred from content. PERSONAL decisions
+require the owner, PROJECT decisions require project owner/LAB_ADMIN, and LAB
+decisions require LAB_ADMIN. Rejection creates no version. Updates preserve
+scope/ownership and create the next version while retaining prior versions.
+Evidence is stored as run and Artifact IDs rather than artifact payloads. The
+in-memory store intentionally exposes no public direct entry-write method.
+
+`WorkspaceResolver` accepts only validated IDs, a fixed `WorkspaceArea` enum,
+and a matching Principal/WorkspaceContext. Project paths are derived from the
+trusted Project owner; callers cannot submit path fragments or construct a
+different user's namespace. It returns paths under a configured root and does
+not expose them to Pantheon agents.
+
+Governance trace events contain principal/resource/project IDs, action, scope,
+version, and status only. They exclude Memory content, proposal reason,
+collaborator lists, artifact representations, and secrets. Tracing remains
+observational and fail-loud.
+
+## Out of scope after Phase 8
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -355,10 +431,13 @@ it is not Phase 7's source of truth.
 - no production scheduler, image registry, or artifact persistence;
 - no automatic image pull/build or Docker installation/configuration;
 - no arbitrary agent file reader or raw biological data parser;
-- no user/project permission layer or production approval UI;
+- no production approval UI;
 - no real SkillCuratorAgent or scientific Skill extraction;
 - no embedding similarity, scientific ranking, or automatic use mode;
 - no automatic Gold or lab-wide promotion;
 - no production Skill persistence, authentication, or ACL enforcement;
+- no production Project/Memory database or cross-process transactions;
+- no login, OAuth, SSO, password, token, or identity-provider implementation;
+- no semantic Memory retrieval, embedding, ranking, or automatic writes;
 - no executable Gold Skills or direct workflow control;
 - no scientific-agent implementation.

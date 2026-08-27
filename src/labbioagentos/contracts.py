@@ -246,6 +246,21 @@ class WorkflowRun(BaseModel):
 
     run_id: UUID = Field(default_factory=uuid4)
     workflow_id: StrictStr = "unbound"
+    owner_user_id: StrictStr = Field(
+        default="local-user",
+        min_length=1,
+        frozen=True,
+    )
+    project_id: StrictStr = Field(
+        default="local-project",
+        min_length=1,
+        frozen=True,
+    )
+    lab_id: StrictStr = Field(
+        default="local-lab",
+        min_length=1,
+        frozen=True,
+    )
     status: RunStatus = RunStatus.CREATED
     current_stage: WorkflowStage | None = None
     stage_results: tuple[AgentStageResult, ...] = ()
