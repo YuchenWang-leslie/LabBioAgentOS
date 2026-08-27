@@ -109,6 +109,11 @@ class ArtifactStore(ABC):
     def load_for_view(self, artifact_id: UUID | str) -> StoredArtifact:
         """Trusted exposure-service read; never register this as an agent tool."""
 
+    def list_refs(self) -> tuple[ArtifactRef, ...]:
+        """Optional trusted enumeration used by bounded governed projections."""
+
+        raise ArtifactStoreError("This ArtifactStore does not support enumeration")
+
 
 class LocalArtifactStore(ArtifactStore):
     """Small JSON store for local development and synthetic tests."""
@@ -243,6 +248,21 @@ class LocalArtifactStore(ArtifactStore):
 
     def get_ref(self, artifact_id: UUID | str) -> ArtifactRef:
         return self.load_for_view(artifact_id).ref
+
+    def list_refs(self) -> tuple[ArtifactRef, ...]:
+        refs: list[ArtifactRef] = []
+        for path in sorted(self.root.glob("*.json"), key=lambda item: item.name):
+            try:
+                refs.append(
+                    StoredArtifact.model_validate_json(
+                        path.read_text(encoding="utf-8")
+                    ).ref
+                )
+            except (OSError, ValidationError) as exc:
+                raise ArtifactStoreError(
+                    f"Could not enumerate artifact envelope {path.name}: {exc}"
+                ) from exc
+        return tuple(refs)
 
     def load_for_view(self, artifact_id: UUID | str) -> StoredArtifact:
         identifier = coerce_artifact_id(artifact_id)
