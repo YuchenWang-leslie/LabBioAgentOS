@@ -54,6 +54,7 @@ class NextAction(StrEnum):
     REQUEST_USER_INPUT = "request_user_input"
     RETRY = "retry"
     FINISH = "finish"
+    FAIL = "fail"
 
 
 class WorkflowEventType(StrEnum):
@@ -187,22 +188,37 @@ class NextActionProposal(BaseModel):
 
     action: NextAction
     target_stage: WorkflowStage | None = None
-    user_prompt: StrictStr | None = Field(default=None, min_length=1)
-    reason: StrictStr | None = Field(default=None, min_length=1)
+    user_prompt: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
+    reason: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
+    domain_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
 
     @model_validator(mode="after")
     def validate_shape(self) -> "NextActionProposal":
         if self.action is NextAction.TRANSITION:
             if self.target_stage is None:
                 raise ValueError("transition proposals require target_stage")
-        elif self.target_stage is not None:
-            raise ValueError("target_stage is only valid for transition proposals")
+        elif self.action is not NextAction.RETRY and self.target_stage is not None:
+            raise ValueError(
+                "target_stage is only valid for transition or retry proposals"
+            )
 
         if self.action is NextAction.REQUEST_USER_INPUT:
             if self.user_prompt is None:
                 raise ValueError("request_user_input proposals require user_prompt")
         elif self.user_prompt is not None:
             raise ValueError("user_prompt is only valid for request_user_input proposals")
+
+        if self.action is not NextAction.REQUEST_USER_INPUT:
+            if self.domain_reference_id is not None:
+                raise ValueError(
+                    "domain_reference_id is only valid for request_user_input proposals"
+                )
+        if self.action is NextAction.FAIL and self.reason is None:
+            raise ValueError("fail proposals require reason")
         return self
 
 
@@ -213,6 +229,12 @@ class PendingUserGate(BaseModel):
 
     gate_id: StrictStr = Field(min_length=1)
     prompt: StrictStr = Field(min_length=1)
+    source_stage: WorkflowStage
+    domain_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
 
 
 class UserDecision(BaseModel):
@@ -222,6 +244,51 @@ class UserDecision(BaseModel):
 
     gate_id: StrictStr = Field(min_length=1)
     target_stage: WorkflowStage
+
+
+class GateUserDecision(BaseModel):
+    """External decision for a source-resuming runtime gate.
+
+    It deliberately contains no target stage. Domain services remain
+    authoritative for applying the referenced proposal decision.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    gate_id: StrictStr = Field(min_length=1, max_length=256)
+    approved: bool
+    decided_by: StrictStr = Field(min_length=1, max_length=128)
+    domain_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
+    decision_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
+
+
+class GateDecisionRecord(BaseModel):
+    """Immutable correlation record presented to the resumed source stage."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    gate_id: StrictStr = Field(min_length=1, max_length=256)
+    source_stage: WorkflowStage
+    approved: bool
+    decided_by: StrictStr = Field(min_length=1, max_length=128)
+    domain_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
+    decision_reference_id: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+    )
 
 
 class WorkflowHistoryEntry(BaseModel):
@@ -267,6 +334,7 @@ class WorkflowRun(BaseModel):
     retry_limit: int = Field(default=0, ge=0)
     retry_counts: dict[WorkflowStage, int] = Field(default_factory=dict)
     pending_user_gate: PendingUserGate | None = None
+    gate_decisions: tuple[GateDecisionRecord, ...] = ()
     failure_reason: StrictStr | None = None
     history: tuple[WorkflowHistoryEntry, ...] = ()
 

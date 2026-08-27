@@ -10,6 +10,8 @@ from pydantic import ValidationError
 
 from labbioagentos.contracts import (
     AgentStageResult,
+    GateDecisionRecord,
+    GateUserDecision,
     NextAction,
     NextActionProposal,
     PendingUserGate,
@@ -20,6 +22,13 @@ from labbioagentos.contracts import (
     WorkflowHistoryEntry,
     WorkflowRun,
     WorkflowStage,
+)
+from labbioagentos.governance import (
+    AccessAction,
+    AccessService,
+    AuthorizationDenied,
+    Principal,
+    WorkspaceContext,
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
@@ -65,11 +74,60 @@ class WorkflowEngine:
         self._runs: dict[UUID, WorkflowRun] = {}
 
     def create_run(self, *, retry_limit: int = 0) -> WorkflowRun:
-        """Create, but do not start, a run owned by this engine."""
+        """Create a local-development run with legacy default scope."""
+
+        return self._create_run(retry_limit=retry_limit)
+
+    def create_scoped_run(
+        self,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+        access_service: AccessService,
+        retry_limit: int = 0,
+    ) -> WorkflowRun:
+        """Create a run only after trusted workspace write access is verified."""
+
+        if principal.user_id != workspace.user_id:
+            raise AuthorizationDenied(
+                "Workspace acting user does not match the trusted Principal."
+            )
+        if principal.lab_id != workspace.lab_id:
+            raise AuthorizationDenied(
+                "Workspace lab does not match the trusted Principal."
+            )
+        project = access_service.require_project(
+            principal,
+            workspace.project_id,
+            AccessAction.WRITE_PROJECT,
+        )
+        if project.lab_id != workspace.lab_id:
+            raise AuthorizationDenied(
+                "Workspace lab does not match the authorized Project."
+            )
+        return self._create_run(
+            retry_limit=retry_limit,
+            owner_user_id=workspace.user_id,
+            project_id=workspace.project_id,
+            lab_id=workspace.lab_id,
+        )
+
+    def _create_run(
+        self,
+        *,
+        retry_limit: int,
+        owner_user_id: str = "local-user",
+        project_id: str = "local-project",
+        lab_id: str = "local-lab",
+    ) -> WorkflowRun:
+        """Construct and register a run after any required trust checks."""
 
         run = WorkflowRun(
             workflow_id=self.definition.workflow_id,
             retry_limit=retry_limit,
+            owner_user_id=owner_user_id,
+            project_id=project_id,
+            lab_id=lab_id,
         )
         self._runs[run.run_id] = run
         self._append_history(run, WorkflowEventType.RUN_CREATED)
@@ -179,7 +237,13 @@ class WorkflowEngine:
         )
         return run
 
-    def pause_for_user(self, run: WorkflowRun, prompt: str) -> WorkflowRun:
+    def pause_for_user(
+        self,
+        run: WorkflowRun,
+        prompt: str,
+        *,
+        domain_reference_id: str | None = None,
+    ) -> WorkflowRun:
         """Enter USER_GATE and require explicit LabBio-owned input to resume."""
 
         self._require_run(run)
@@ -196,6 +260,8 @@ class WorkflowEngine:
         gate = PendingUserGate(
             gate_id=f"{run.run_id}:gate:{gate_number}",
             prompt=prompt,
+            source_stage=source,
+            domain_reference_id=domain_reference_id,
         )
         run.current_stage = WorkflowStage.USER_GATE
         run.pending_user_gate = gate
@@ -236,7 +302,12 @@ class WorkflowEngine:
             run,
             TraceEventType.USER_GATE_ENTERED,
             stage=WorkflowStage.USER_GATE,
-            payload={"gate_id": gate.gate_id, "prompt": prompt},
+            payload={
+                "gate_id": gate.gate_id,
+                "source_stage": source.value,
+                "domain_reference_id": domain_reference_id,
+                "prompt": prompt,
+            },
         )
         return run
 
@@ -247,14 +318,71 @@ class WorkflowEngine:
         self._require_status(run, RunStatus.WAITING_FOR_USER)
         if not isinstance(decision, UserDecision):
             raise UserDecisionRequiredError("A typed UserDecision is required")
+        gate = self._matching_gate(run, decision.gate_id)
+        return self._resume_to(run, gate, decision.target_stage)
+
+    def resume_to_source(
+        self,
+        run: WorkflowRun,
+        decision: GateUserDecision,
+    ) -> WorkflowRun:
+        """Resume a runtime gate to its recorded source without target input."""
+
+        self._require_run(run)
+        self._require_status(run, RunStatus.WAITING_FOR_USER)
+        if not isinstance(decision, GateUserDecision):
+            raise UserDecisionRequiredError("A typed GateUserDecision is required")
+        gate = self._matching_gate(run, decision.gate_id)
+        if decision.domain_reference_id != gate.domain_reference_id:
+            raise UserDecisionRequiredError(
+                "Gate decision domain_reference_id does not match"
+            )
+        if not self.definition.allows(
+            WorkflowStage.USER_GATE,
+            gate.source_stage,
+        ):
+            raise InvalidTransitionError(
+                f"Transition 'USER_GATE' -> {gate.source_stage.value!r} is not allowed"
+            )
+        decision_record = GateDecisionRecord(
+            gate_id=gate.gate_id,
+            source_stage=gate.source_stage,
+            approved=decision.approved,
+            decided_by=decision.decided_by,
+            domain_reference_id=decision.domain_reference_id,
+            decision_reference_id=decision.decision_reference_id,
+        )
+        run.gate_decisions = (*run.gate_decisions, decision_record)
+        return self._resume_to(
+            run,
+            gate,
+            gate.source_stage,
+            decision_record=decision_record,
+        )
+
+    def _matching_gate(
+        self,
+        run: WorkflowRun,
+        gate_id: str,
+    ) -> PendingUserGate:
         gate = run.pending_user_gate
         if gate is None or run.current_stage is not WorkflowStage.USER_GATE:
             raise UserDecisionRequiredError("No pending USER_GATE exists")
-        if decision.gate_id != gate.gate_id:
+        if gate_id != gate.gate_id:
             raise UserDecisionRequiredError("UserDecision gate_id does not match")
-        if not self.definition.allows(WorkflowStage.USER_GATE, decision.target_stage):
+        return gate
+
+    def _resume_to(
+        self,
+        run: WorkflowRun,
+        gate: PendingUserGate,
+        target_stage: WorkflowStage,
+        *,
+        decision_record: GateDecisionRecord | None = None,
+    ) -> WorkflowRun:
+        if not self.definition.allows(WorkflowStage.USER_GATE, target_stage):
             raise InvalidTransitionError(
-                f"Transition 'USER_GATE' -> {decision.target_stage.value!r} is not allowed"
+                f"Transition 'USER_GATE' -> {target_stage.value!r} is not allowed"
             )
 
         run.pending_user_gate = None
@@ -263,44 +391,54 @@ class WorkflowEngine:
             run,
             WorkflowEventType.USER_DECISION_RECORDED,
             stage=WorkflowStage.USER_GATE,
-            target_stage=decision.target_stage,
-            detail=decision.gate_id,
+            target_stage=target_stage,
+            detail=gate.gate_id,
         )
+        resume_payload = {
+            "gate_id": gate.gate_id,
+            "source_stage": gate.source_stage.value,
+            "target": target_stage.value,
+        }
+        if decision_record is not None:
+            resume_payload.update(
+                {
+                    "approved": decision_record.approved,
+                    "domain_reference_id": decision_record.domain_reference_id,
+                    "decision_reference_id": decision_record.decision_reference_id,
+                }
+            )
         self._emit(
             run,
             TraceEventType.USER_GATE_RESUMED,
             stage=WorkflowStage.USER_GATE,
-            payload={
-                "gate_id": decision.gate_id,
-                "target": decision.target_stage.value,
-            },
+            payload=resume_payload,
         )
-        run.current_stage = decision.target_stage
+        run.current_stage = target_stage
         self._append_history(
             run,
             WorkflowEventType.TRANSITIONED,
-            stage=decision.target_stage,
+            stage=target_stage,
             source_stage=WorkflowStage.USER_GATE,
-            target_stage=decision.target_stage,
+            target_stage=target_stage,
         )
         self._emit(
             run,
             TraceEventType.STAGE_TRANSITION,
-            stage=decision.target_stage,
+            stage=target_stage,
             payload={
                 "source": WorkflowStage.USER_GATE.value,
-                "target": decision.target_stage.value,
+                "target": target_stage.value,
             },
         )
         self._append_history(
             run,
             WorkflowEventType.STAGE_ENTERED,
-            stage=decision.target_stage,
+            stage=target_stage,
         )
         self._emit(
             run,
             TraceEventType.STAGE_ENTERED,
-            stage=decision.target_stage,
+            stage=target_stage,
         )
         return run
 
@@ -439,6 +577,16 @@ class WorkflowEngine:
                 raise RetryLimitExceededError(
                     f"Retry limit {run.retry_limit} reached for stage {stage.value!r}"
                 )
+            if normalized.target_stage is not None:
+                if normalized.target_stage is WorkflowStage.USER_GATE:
+                    raise InvalidTransitionError(
+                        "Retry cannot target USER_GATE"
+                    )
+                if not self.definition.allows(stage, normalized.target_stage):
+                    raise InvalidTransitionError(
+                        f"Retry transition {stage.value!r} -> "
+                        f"{normalized.target_stage.value!r} is not allowed"
+                    )
         elif normalized.action is NextAction.FINISH:
             self._require_status(run, RunStatus.RUNNING)
             stage = self._require_current_stage(run)
@@ -446,6 +594,8 @@ class WorkflowEngine:
                 raise InvalidRunStateError(
                     f"Stage {stage.value!r} is not terminal in this workflow"
                 )
+        elif normalized.action is NextAction.FAIL:
+            self._require_status(run, RunStatus.RUNNING)
         else:  # pragma: no cover - enum validation makes this defensive only
             raise InvalidProposalError(
                 f"Unsupported next-action proposal: {normalized.action!r}"
@@ -465,11 +615,21 @@ class WorkflowEngine:
             return self.transition(run, normalized.target_stage)
         if normalized.action is NextAction.REQUEST_USER_INPUT:
             assert normalized.user_prompt is not None
-            return self.pause_for_user(run, normalized.user_prompt)
+            return self.pause_for_user(
+                run,
+                normalized.user_prompt,
+                domain_reference_id=normalized.domain_reference_id,
+            )
         if normalized.action is NextAction.RETRY:
-            return self.retry(run)
+            self.retry(run)
+            if normalized.target_stage is not None:
+                return self.transition(run, normalized.target_stage)
+            return run
         if normalized.action is NextAction.FINISH:
             return self.complete(run)
+        if normalized.action is NextAction.FAIL:
+            assert normalized.reason is not None
+            return self.fail(run, normalized.reason)
         raise InvalidProposalError(
             f"Unsupported next-action proposal: {normalized.action!r}"
         )

@@ -1,6 +1,6 @@
 """Deterministic workflow control plane."""
 
-from .definition import default_workflow_definition
+from .definition import default_workflow_definition, runtime_workflow_definition
 from .engine import (
     InvalidProposalError,
     InvalidRunStateError,
@@ -22,5 +22,5 @@ __all__ = [
     "WorkflowEngine",
     "WorkflowEngineError",
     "default_workflow_definition",
+    "runtime_workflow_definition",
 ]
-
