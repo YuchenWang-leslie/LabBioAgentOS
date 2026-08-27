@@ -3,13 +3,15 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 5. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 6. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
 adds metadata-only artifact references, local development storage, and bounded
-exposure views without adding bioinformatics methods, runtime scientific
-reasoning, Docker execution, production data readers, or Gold Skills.
+exposure views. Phase 6 adds policy-controlled Docker command construction,
+trusted artifact mounts, local script/log handling, and conservative output
+registration without adding bioinformatics methods, runtime scientific
+reasoning, production data readers, or Gold Skills.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -174,6 +176,68 @@ production raw-data reader, content-classification engine, or concrete Pantheon
 ToolProvider yet. Those limitations must be resolved in their authorized phases
 rather than bypassing `ArtifactExposureService`.
 
+### Phase 6 Docker execution contract
+
+The implemented execution path is:
+
+```text
+runtime-generated ExecutionPlan
+  -> ApprovedImageRegistry + ExecutionPolicy
+  -> MountResolver + ExecutionWorkspaceManager
+  -> deterministic Docker argv
+  -> host-enforced process timeout
+  -> local stdout/stderr references + declared OutputCollector
+  -> ArtifactRegistrationPolicy
+  -> ArtifactRef
+  -> existing ExposurePolicy / ArtifactView
+```
+
+`ExecutionPlan` represents Python runtime intent: an approved image key, script
+content, artifact IDs, JSON parameters, declared output specs, resource requests,
+and an explicit network requirement. Its schema rejects extra fields, so model
+output cannot contain raw Docker args, host paths, `privileged`, socket mounts,
+or arbitrary image references. The approved in-memory registry resolves a key
+to a trusted image reference/runtime and does not pull or build images.
+
+`ExecutionPolicy` enforces host-configured CPU, memory, pids, timeout, and network
+limits. Network is `none` by default. Enabling the Docker `bridge` network
+requires the plan flag, host policy, and image registry entry all to allow it.
+The Docker command is an argument tuple executed with `shell=False` and always
+includes `cap-drop ALL`, `no-new-privileges`, read-only container root, fixed
+work directory, controlled bind mounts, resource limits, and a host timeout.
+Neither privileged mode nor host networking is expressible.
+
+`MountResolver` accepts artifact UUIDs only, reloads the canonical `ArtifactRef`
+from `ArtifactStore`, resolves its internal locator, and requires a regular,
+non-symlink file below configured roots. Input targets are fixed under
+`/labbio/inputs/<artifact-id>/` and read-only. Script/parameters mounts are
+read-only; only the execution output directory is writable.
+
+Generated script content is written locally, hashed, and registered as a RAW
+artifact reference. Captured stdout and stderr are also stored as RAW file
+artifacts. `ExecutionResult` contains their references and bounded process
+metadata, never stream content. Non-zero exit, timeout, container-start failure,
+output-contract failure, and registration failure remain structural technical
+outcomes; no DebugAgent or scientific diagnosis is performed.
+
+`OutputCollector` visits declared paths only and rejects traversal, missing
+files, directories, and symlinks. `requested_exposure` is an untrusted proposal.
+Unstructured output is registered RAW even when DERIVED was requested. A file
+becomes DERIVED only when it matches a trusted generic structured-JSON contract:
+known schema ID, bounded record/file sizes, declared flat scalar fields, and no
+arbitrary nesting. Producer record order is preserved. The original output file
+remains store-owned; only its validated representation can reach an
+`ArtifactView`.
+
+Execution trace events store execution/image IDs, script hash/reference, input
+and output artifact IDs, resource/network settings, exit code, duration, and
+technical failure class. They exclude script text, stdout/stderr, and output
+contents. Tracing remains optional and fail-loud.
+
+Phase 6 unit tests inject a process runner and require no Docker daemon. The
+local development host did not have a `docker` executable during acceptance, so
+no optional real-container smoke test ran and no installation was attempted.
+
 Pantheon's `hidden_to_model` field and output truncation are useful transport features, but they are not a biological-data security boundary: the unfiltered value can still exist in `raw_content`, memory, UI events, and hooks. Therefore exposure must be enforced before a result is returned to `Agent.call_tool`.
 
 ## Stage interaction contract
@@ -235,7 +299,7 @@ Pantheon's file-based skill parser, layered store, index, and viewing tools are 
 
 The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
 
-## Out of scope after Phase 5
+## Out of scope after Phase 6
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -244,7 +308,8 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no R or `rpy2` work;
 - no Pantheon UI/chat integration work;
 - no EventBus, remote trace service, or production timeline UI;
-- no Docker executor or production artifact persistence;
+- no production scheduler, image registry, or artifact persistence;
+- no automatic image pull/build or Docker installation/configuration;
 - no arbitrary agent file reader or raw biological data parser;
 - no user/project permission layer or production approval UI;
 - no Gold Skill or scientific-agent implementation.

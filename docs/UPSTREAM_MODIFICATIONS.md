@@ -1,8 +1,8 @@
 # PantheonOS Upstream Modifications
 
-## Result through Phase 5
+## Result through Phase 6
 
-No PantheonOS core file was modified through Phase 5. No direct core
+No PantheonOS core file was modified through Phase 6. No direct core
 modification is currently required or proposed.
 
 Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
@@ -24,6 +24,12 @@ Phase 5 adds a LabBio-owned local store, deterministic exposure service, and a
 narrow Pantheon-facing query adapter. Because controlled views are generated
 before any value reaches Pantheon's tool-result conversion, no change to
 `pantheon/providers.py`, `pantheon/agent.py`, or team code is required.
+
+Phase 6 remains entirely in the LabBio execution/artifact plane. Typed plans,
+approved image resolution, mount validation, Docker argv construction, process
+execution, output collection, and trace emission need no Pantheon hook. A later
+authorized ToolProvider can wrap `DockerExecutor` and return `ExecutionResult`
+references without changing Pantheon core.
 
 ## Conditional watchlist
 

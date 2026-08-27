@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import shutil
 from pathlib import Path
 from threading import Lock
 from uuid import UUID, uuid4
@@ -78,6 +79,23 @@ class ArtifactStore(ABC):
         """Return whether a UUID-addressed artifact exists."""
 
     @abstractmethod
+    def register_file(
+        self,
+        source: str | Path,
+        *,
+        artifact_type: str,
+        exposure_class: ArtifactExposureClass,
+        representation: ArtifactRepresentation,
+        run_id: UUID | None = None,
+        stage_id: WorkflowStage | None = None,
+        producer_invocation_id: UUID | None = None,
+        schema: ArtifactSchema | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+        artifact_id: UUID | None = None,
+    ) -> ArtifactRef:
+        """Copy a trusted local file into store ownership and return its reference."""
+
+    @abstractmethod
     def get_ref(self, artifact_id: UUID | str) -> ArtifactRef:
         """Return metadata only."""
 
@@ -142,24 +160,68 @@ class LocalArtifactStore(ArtifactStore):
                 raise ArtifactStoreError(
                     f"Could not register artifact {identifier}: {exc}"
                 ) from exc
-        if self.trace_recorder is not None and run_id is not None:
-            self.trace_recorder.emit(
-                run_id,
-                TraceEventType.ARTIFACT_REGISTERED,
-                stage_id=stage_id,
-                invocation_id=producer_invocation_id,
-                status="REGISTERED",
-                payload={
-                    "artifact_id": str(identifier),
-                    "artifact_type": artifact_type,
-                    "exposure_class": exposure_class.value,
-                },
-            )
+        self._emit_registered(ref)
         return ref
 
     def exists(self, artifact_id: UUID | str) -> bool:
         identifier = coerce_artifact_id(artifact_id)
         return self._path_for(identifier).is_file()
+
+    def register_file(
+        self,
+        source: str | Path,
+        *,
+        artifact_type: str,
+        exposure_class: ArtifactExposureClass,
+        representation: ArtifactRepresentation,
+        run_id: UUID | None = None,
+        stage_id: WorkflowStage | None = None,
+        producer_invocation_id: UUID | None = None,
+        schema: ArtifactSchema | None = None,
+        metadata: dict[str, JsonValue] | None = None,
+        artifact_id: UUID | None = None,
+    ) -> ArtifactRef:
+        source_path = Path(source)
+        if source_path.is_symlink():
+            raise ArtifactStoreError("Artifact source cannot be a symlink")
+        try:
+            source_path = source_path.resolve(strict=True)
+        except OSError as exc:
+            raise ArtifactStoreError(f"Artifact source does not exist: {source}") from exc
+        if not source_path.is_file():
+            raise ArtifactStoreError(f"Artifact source is not a file: {source_path}")
+
+        identifier = artifact_id or uuid4()
+        envelope_path = self._path_for(identifier)
+        blob_directory = self.root / "blobs" / str(identifier)
+        blob_path = blob_directory / "content"
+        ref = ArtifactRef(
+            artifact_id=identifier,
+            artifact_type=artifact_type,
+            run_id=run_id,
+            stage_id=stage_id,
+            producer_invocation_id=producer_invocation_id,
+            storage_locator=str(blob_path),
+            artifact_schema=schema,
+            exposure_class=exposure_class,
+            metadata=metadata or {},
+        )
+        stored = StoredArtifact(ref=ref, representation=representation)
+        with self._lock:
+            if envelope_path.exists() or blob_directory.exists():
+                raise ArtifactStoreError(f"Artifact already exists: {identifier}")
+            try:
+                blob_directory.mkdir(parents=True, exist_ok=False)
+                shutil.copyfile(source_path, blob_path)
+                with envelope_path.open("x", encoding="utf-8") as handle:
+                    handle.write(stored.model_dump_json())
+                    handle.write("\n")
+            except OSError as exc:
+                raise ArtifactStoreError(
+                    f"Could not register artifact file {identifier}: {exc}"
+                ) from exc
+        self._emit_registered(ref)
+        return ref
 
     def get_ref(self, artifact_id: UUID | str) -> ArtifactRef:
         return self.load_for_view(artifact_id).ref
@@ -181,3 +243,19 @@ class LocalArtifactStore(ArtifactStore):
         if path.parent != self.root:
             raise ArtifactIdentifierError("Artifact path escaped the configured root")
         return path
+
+    def _emit_registered(self, ref: ArtifactRef) -> None:
+        if self.trace_recorder is None or ref.run_id is None:
+            return
+        self.trace_recorder.emit(
+            ref.run_id,
+            TraceEventType.ARTIFACT_REGISTERED,
+            stage_id=ref.stage_id,
+            invocation_id=ref.producer_invocation_id,
+            status="REGISTERED",
+            payload={
+                "artifact_id": str(ref.artifact_id),
+                "artifact_type": ref.artifact_type,
+                "exposure_class": ref.exposure_class.value,
+            },
+        )

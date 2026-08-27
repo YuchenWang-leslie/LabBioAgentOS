@@ -45,11 +45,24 @@ addressed and limited to metadata, schema, summary, and bounded TOP_N views.
 The current local JSON store and in-memory approval registry are development
 implementations, not decisions for production persistence or identity.
 
-## Deferred beyond Phase 5
+## RESOLVED-004 — Phase 6 isolated execution boundary
+
+Resolved by the Phase 6 authorization: model execution intent uses typed plans
+and approved image keys rather than Docker CLI. Artifact inputs are resolved by
+UUID through trusted store locators and mounted read-only. Network is disabled
+unless the plan, host policy, and image entry all explicitly allow it. Scripts
+and process streams are local RAW references, never unrestricted model output.
+
+Output exposure requests are untrusted. Arbitrary output remains RAW; only a
+file matching a host-approved bounded flat-JSON contract can be registered as
+DERIVED. This is structural validation and does not determine scientific value.
+
+## Deferred beyond Phase 6
 
 The following are intentionally deferred to their roadmap phases and must not
 be invented now: EventBus, durable/cross-process trace delivery, workflow and
-artifact production persistence, Docker resource limits, trusted producer and
-artifact-classification authorization, user/project permissions, exposure
-approval UX, long-term memory schema, Gold Skill similarity/adaptation policy,
-and bioinformatics agent roster. None is needed to complete Phase 5.
+artifact production persistence, production image registry and scheduler,
+deployment-specific Docker identities/limits, trusted producer authorization,
+user/project permissions, exposure approval UX, long-term memory schema, Gold
+Skill similarity/adaptation policy, and bioinformatics agent roster. None is
+needed to complete Phase 6.
