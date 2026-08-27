@@ -3,12 +3,13 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 4. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 5. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
-existing team tools. Phase 4 adds append-only RunTrace observation without
-adding bioinformatics methods, runtime scientific reasoning, Docker execution,
-artifact storage, or Gold Skills.
+existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
+adds metadata-only artifact references, local development storage, and bounded
+exposure views without adding bioinformatics methods, runtime scientific
+reasoning, Docker execution, production data readers, or Gold Skills.
 
 The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
 
@@ -129,6 +130,50 @@ Raw biological data remains local and must not be inserted into agent prompts, t
 
 `ArtifactStore` owns artifact bytes and metadata. `ExposurePolicy` produces an explicit LLM-visible view. Examples of potentially exposable derived results include aggregate QC, top DEGs, enrichment tables, marker summaries, ligand-receptor results, and trajectory-associated genes, subject to artifact policy and user approval.
 
+### Phase 5 artifact and exposure contract
+
+The implemented access path is:
+
+```text
+trusted local producer
+  -> LocalArtifactStore
+  -> ArtifactRef
+  -> ArtifactExposureService + ExposurePolicy
+  -> bounded ArtifactView
+  -> Pantheon-facing query adapter / future ToolProvider
+```
+
+`ArtifactRef` contains identity, classification, structural schema, provenance,
+safe metadata, and a store-owned locator. It contains no stored representation,
+and its locator is deliberately not accepted as a query target. Artifact
+lookups accept UUIDs only; the store derives the JSON path beneath its configured
+root and exposes no arbitrary path/file-read operation.
+
+`ArtifactView` is the only artifact value intended for runtime-model context.
+It contains safe provenance and one requested projection: metadata, schema,
+summary, or bounded records. `TOP_N` preserves producer-supplied record order;
+it does not rank scientific results. The configured maximum clamps the number
+of returned records, and `record_count` plus `truncated` make omission explicit.
+
+`ExposurePolicy` applies a deterministic matrix. `REMOTE_LLM` cannot view RAW
+artifacts. STRUCTURAL permits metadata/schema, AGGREGATE additionally permits
+summary, and DERIVED permits all bounded view types. USER_APPROVED is a
+classification, not approval: a separate approval record matching the artifact
+and intended consumer is required. The Pantheon-facing adapter pins its consumer
+identity so tool input cannot claim a more privileged consumer.
+
+Artifact trace events contain artifact ID, type, classification, consumer,
+view type, status, and bounded counts only. They never contain representation
+records, stored content, or storage paths. Trace failures remain fail-loud and
+artifact behavior remains available when tracing is disabled.
+
+Phase 5 persistence is intentionally local-development only: representations
+are JSON-compatible, approvals are in-memory, and artifact classification is
+trusted producer input. There is no user authentication, permission scope,
+production raw-data reader, content-classification engine, or concrete Pantheon
+ToolProvider yet. Those limitations must be resolved in their authorized phases
+rather than bypassing `ArtifactExposureService`.
+
 Pantheon's `hidden_to_model` field and output truncation are useful transport features, but they are not a biological-data security boundary: the unfiltered value can still exist in `raw_content`, memory, UI events, and hooks. Therefore exposure must be enforced before a result is returned to `Agent.call_tool`.
 
 ## Stage interaction contract
@@ -190,7 +235,7 @@ Pantheon's file-based skill parser, layered store, index, and viewing tools are 
 
 The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
 
-## Out of scope after Phase 4
+## Out of scope after Phase 5
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -199,4 +244,7 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no R or `rpy2` work;
 - no Pantheon UI/chat integration work;
 - no EventBus, remote trace service, or production timeline UI;
-- no Phase 5 ArtifactStore or ArtifactExposure implementation.
+- no Docker executor or production artifact persistence;
+- no arbitrary agent file reader or raw biological data parser;
+- no user/project permission layer or production approval UI;
+- no Gold Skill or scientific-agent implementation.

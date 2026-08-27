@@ -34,10 +34,22 @@ delegation metadata and safety checks.
 No upstream patch is proposed. The full Phase 3 contract is covered by offline
 tests.
 
-## Deferred beyond Phase 4
+## RESOLVED-003 — Phase 5 artifact exposure boundary
+
+Resolved by the Phase 5 authorization: artifacts use the explicit RAW,
+STRUCTURAL, AGGREGATE, DERIVED, and USER_APPROVED classifications. A
+USER_APPROVED classification alone is insufficient; a separate record must
+approve the artifact for the intended consumer. Agent-facing queries are UUID
+addressed and limited to metadata, schema, summary, and bounded TOP_N views.
+
+The current local JSON store and in-memory approval registry are development
+implementations, not decisions for production persistence or identity.
+
+## Deferred beyond Phase 5
 
 The following are intentionally deferred to their roadmap phases and must not
-be invented now: EventBus, durable/cross-process trace delivery, workflow
-persistence backend, Docker resource limits, artifact type taxonomy, exposure
+be invented now: EventBus, durable/cross-process trace delivery, workflow and
+artifact production persistence, Docker resource limits, trusted producer and
+artifact-classification authorization, user/project permissions, exposure
 approval UX, long-term memory schema, Gold Skill similarity/adaptation policy,
-and bioinformatics agent roster. None is needed to complete Phase 4.
+and bioinformatics agent roster. None is needed to complete Phase 5.
