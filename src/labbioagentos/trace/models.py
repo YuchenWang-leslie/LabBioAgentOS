@@ -53,6 +53,14 @@ class TraceEventType(StrEnum):
     EXECUTION_FAILED = "EXECUTION_FAILED"
     OUTPUT_COLLECTED = "OUTPUT_COLLECTED"
     OUTPUT_REGISTERED = "OUTPUT_REGISTERED"
+    SKILL_SOURCE_CREATED = "SKILL_SOURCE_CREATED"
+    SKILL_PROPOSAL_CREATED = "SKILL_PROPOSAL_CREATED"
+    SKILL_PROPOSAL_APPROVED = "SKILL_PROPOSAL_APPROVED"
+    SKILL_PROPOSAL_REJECTED = "SKILL_PROPOSAL_REJECTED"
+    SKILL_USE_PROPOSED = "SKILL_USE_PROPOSED"
+    SKILL_USE_APPROVED = "SKILL_USE_APPROVED"
+    SKILL_USE_REJECTED = "SKILL_USE_REJECTED"
+    SKILL_USAGE_RECORDED = "SKILL_USAGE_RECORDED"
 
 
 class InstructionKind(StrEnum):
@@ -60,6 +68,11 @@ class InstructionKind(StrEnum):
 
     STAGE = "STAGE"
     DELEGATION = "DELEGATION"
+    PLANNING = "PLANNING"
+    EXECUTION = "EXECUTION"
+    DEBUGGING = "DEBUGGING"
+    VALIDATION = "VALIDATION"
+    INTERPRETATION = "INTERPRETATION"
     OTHER = "OTHER"
 
 
@@ -115,6 +128,7 @@ class InstructionRecord(BaseModel):
     template_version: StrictStr | None = Field(default=None, min_length=1)
     template_hash: StrictStr | None = Field(default=None, min_length=1)
     sanitized_rendered_instruction: StrictStr = Field(min_length=1)
+    procedural_reuse_relevant: bool = False
 
 
 class TraceEvent(BaseModel):

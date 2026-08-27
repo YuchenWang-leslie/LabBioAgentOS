@@ -1,8 +1,8 @@
 # PantheonOS Upstream Modifications
 
-## Result through Phase 6
+## Result through Phase 7
 
-No PantheonOS core file was modified through Phase 6. No direct core
+No PantheonOS core file was modified through Phase 7. No direct core
 modification is currently required or proposed.
 
 Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
@@ -30,6 +30,11 @@ approved image resolution, mount validation, Docker argv construction, process
 execution, output collection, and trace emission need no Pantheon hook. A later
 authorized ToolProvider can wrap `DockerExecutor` and return `ExecutionResult`
 references without changing Pantheon core.
+
+Phase 7 keeps successful-trace projection, curator proposals, explicit approval,
+immutable versions, scoped candidate retrieval, and usage evidence in LabBio.
+Pantheon's learning system is not changed or used to auto-publish Gold Skills;
+future integration can wrap its read/index mechanics without changing core.
 
 ## Conditional watchlist
 

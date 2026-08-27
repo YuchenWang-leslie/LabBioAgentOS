@@ -39,9 +39,9 @@
 | `TeamPlugin` | Declares toolsets and lifecycle hooks | EXTEND | Phase 3/4 use a LabBio plugin wrapper for policy and trace correlation while keeping Pantheon execution unchanged | No |
 | Plugin registry | Creates enabled plugins by priority from settings | REUSE | Existing plugin lifecycle/configuration is sufficient for optional LabBio adapters | No |
 | Memory/compression plugins | Retrieval injection and context compression | REUSE / WRAP | Useful for runtime conversation context; must obey artifact exposure and LabBio scope | No |
-| `LearningRuntime`, `SkillStore`, `SkillInjector` | Layered project/global/factory skill discovery, parsing, indexing, and file operations | WRAP | Reuse mechanics, add Gold Skill provenance/approval/validation/scope outside upstream | No |
-| `SkillToolSet` | LLM tools for list/view/manage plus marketplace operations | IGNORE FOR NOW | Gold Skill lifecycle is later and user-approved; Phase 0 must not enable runtime-created Gold Skills | No |
-| `LearningPlugin` auto-extraction | Optionally extracts skills after runs; disabled by default | IGNORE FOR NOW | Automatic extraction does not satisfy validated RunTrace + explicit approval | No |
+| `LearningRuntime`, `SkillStore`, `SkillInjector` | Layered project/global/factory skill discovery, parsing, indexing, and file operations | WRAP | Phase 7 keeps immutable Gold records in LabBio; upstream parsing/index mechanics may later present approved procedural memory but cannot own approval or lineage | No |
+| `SkillToolSet` | LLM tools for list/view/manage plus marketplace operations | IGNORE FOR NOW | Its mutable management tools could bypass the Phase 7 successful-trace and explicit-user-approval gates | No |
+| `LearningPlugin` auto-extraction | Optionally extracts skills after runs; disabled by default | IGNORE FOR NOW | Phase 7 uses a curator port plus user decision; automatic extraction cannot publish Gold | No |
 | `BackgroundTaskManager` and Agent background tools | In-process asyncio task launch/adoption, status, cancellation, and notifications | IGNORE FOR NOW | Not durable workflow state and must not bypass WorkflowEngine; reassess for non-critical capabilities later | No |
 | `pantheon.internal.background_agent` | Creates a generic temporary background Agent | IGNORE FOR NOW | Not the deterministic outer workflow and not required by Phase 0 | No |
 | `SequentialTeam`, `SwarmTeam`, AAT, MoA | Alternative team orchestration strategies | IGNORE FOR NOW | `PantheonTeam` is the approved stage-level runtime | No |

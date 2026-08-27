@@ -1,0 +1,385 @@
+"""Typed procedural-memory contracts with no executable Gold Skill behavior."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import StrEnum
+from typing import Annotated
+from uuid import UUID, uuid4
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+from labbioagentos.artifacts import ArtifactRef
+from labbioagentos.contracts import RunStatus, WorkflowStage
+from labbioagentos.trace import DelegationProjection, InvocationProjection, InstructionKind
+
+
+BoundedText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
+]
+ShortText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
+]
+
+
+class SkillScope(StrEnum):
+    PERSONAL = "PERSONAL"
+    PROJECT = "PROJECT"
+    LAB = "LAB"
+
+
+class SkillStatus(StrEnum):
+    GOLD = "GOLD"
+
+
+class SkillUseMode(StrEnum):
+    REUSE = "REUSE"
+    ADAPT = "ADAPT"
+    REFERENCE = "REFERENCE"
+
+
+class SkillUsageOutcome(StrEnum):
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class SkillTraceRef(BaseModel):
+    """Reference to one trace fact without copying its payload."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    event_id: UUID
+    sequence: int = Field(ge=0)
+    event_type: StrictStr = Field(min_length=1)
+    stage_id: WorkflowStage | None = None
+    invocation_id: UUID | None = None
+    status: StrictStr | None = Field(default=None, min_length=1)
+
+
+class SkillInstructionRef(BaseModel):
+    """Explicitly marked, sanitized instruction evidence; never hidden reasoning."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    instruction_id: UUID
+    trace_event_id: UUID
+    stage_id: WorkflowStage
+    invocation_id: UUID | None = None
+    kind: InstructionKind
+    template_id: StrictStr | None = Field(default=None, min_length=1)
+    template_version: StrictStr | None = Field(default=None, min_length=1)
+    template_hash: StrictStr | None = Field(default=None, min_length=1)
+    sanitized_instruction: StrictStr = Field(min_length=1, max_length=16_000)
+
+
+class SkillExecutionRef(BaseModel):
+    """Safe execution lineage reconstructed from execution trace metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    execution_id: UUID
+    planned_event_id: UUID | None = None
+    terminal_event_id: UUID | None = None
+    image_key: StrictStr | None = Field(default=None, min_length=1)
+    resolved_image: StrictStr | None = Field(default=None, min_length=1)
+    script_hash: StrictStr | None = Field(default=None, min_length=1)
+    script_artifact_id: UUID | None = None
+    input_artifact_ids: tuple[UUID, ...] = ()
+    output_artifact_ids: tuple[UUID, ...] = ()
+    status: StrictStr
+    exit_code: int | None = None
+
+
+class SkillSourceBundle(BaseModel):
+    """Deterministic evidence projection; it is not a curated or executable Skill."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    bundle_id: UUID = Field(default_factory=uuid4)
+    source_run_id: UUID
+    task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    final_status: RunStatus
+    workflow_stage_path: tuple[WorkflowStage, ...]
+    invocations: tuple[InvocationProjection, ...] = ()
+    delegations: tuple[DelegationProjection, ...] = ()
+    instruction_refs: tuple[SkillInstructionRef, ...] = ()
+    execution_refs: tuple[SkillExecutionRef, ...] = ()
+    artifact_ids: tuple[UUID, ...] = ()
+    artifact_refs: tuple[ArtifactRef, ...] = ()
+    failure_refs: tuple[SkillTraceRef, ...] = ()
+    retry_refs: tuple[SkillTraceRef, ...] = ()
+    validation_refs: tuple[SkillTraceRef, ...] = ()
+    trace_event_ids: tuple[UUID, ...]
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillSourceBundle created_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillProcedure(BaseModel):
+    """Curator-provided procedural context; it grants no execution authority."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    applicability: BoundedText
+    workflow_outline: tuple[BoundedText, ...] = Field(min_length=1, max_length=100)
+    agent_collaboration_guidance: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    important_instruction_ids: tuple[UUID, ...] = ()
+    execution_guidance: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    parameter_guidance: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    input_contract_ids: tuple[ShortText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    output_contract_ids: tuple[ShortText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    validation_expectations: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    known_failure_modes: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    debug_lessons: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    known_limitations: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    script_artifact_ids: tuple[UUID, ...] = ()
+    source_trace_event_ids: tuple[UUID, ...] = ()
+    tags: frozenset[ShortText] = Field(default_factory=frozenset, max_length=100)
+    artifact_types: frozenset[ShortText] = Field(
+        default_factory=frozenset,
+        max_length=100,
+    )
+
+
+class SkillProposal(BaseModel):
+    """Runtime-curator proposal that remains non-Gold until user approval."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposal_id: UUID = Field(default_factory=uuid4)
+    approval_gate_id: StrictStr = Field(
+        default_factory=lambda: f"skill-proposal:{uuid4()}",
+        min_length=1,
+    )
+    source_bundle_id: UUID
+    source_run_id: UUID
+    proposed_name: ShortText
+    description: BoundedText
+    scope: SkillScope
+    owner_user_id: StrictStr | None = Field(default=None, min_length=1)
+    project_id: StrictStr | None = Field(default=None, min_length=1)
+    procedure: SkillProcedure
+    parent_skill_id: UUID | None = None
+    parent_version: int | None = Field(default=None, ge=1)
+    source_usage_record_id: UUID | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @model_validator(mode="after")
+    def validate_scope_and_parent(self) -> "SkillProposal":
+        if self.scope is SkillScope.PERSONAL and self.owner_user_id is None:
+            raise ValueError("PERSONAL Skill proposals require owner_user_id")
+        if self.scope is SkillScope.PROJECT and self.project_id is None:
+            raise ValueError("PROJECT Skill proposals require project_id")
+        if (self.parent_skill_id is None) != (self.parent_version is None):
+            raise ValueError("parent_skill_id and parent_version must be set together")
+        return self
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillProposal created_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillUserDecision(BaseModel):
+    """Explicit LabBio-owned approval/rejection matching one pending gate."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision_id: UUID = Field(default_factory=uuid4)
+    subject_id: UUID
+    gate_id: StrictStr = Field(min_length=1)
+    approved: bool
+    decided_by: StrictStr = Field(min_length=1)
+    decided_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("decided_at")
+    @classmethod
+    def require_utc_decided_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillUserDecision decided_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class GoldSkill(BaseModel):
+    """Immutable approved procedural memory; deliberately has no run/apply API."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    skill_id: UUID
+    version: int = Field(ge=1)
+    status: SkillStatus = SkillStatus.GOLD
+    name: StrictStr = Field(min_length=1, max_length=256)
+    description: StrictStr = Field(min_length=1, max_length=4000)
+    scope: SkillScope
+    source_run_id: UUID
+    source_bundle_id: UUID
+    source_proposal_id: UUID
+    parent_skill_id: UUID | None = None
+    parent_version: int | None = Field(default=None, ge=1)
+    source_usage_record_id: UUID | None = None
+    owner_user_id: StrictStr | None = Field(default=None, min_length=1)
+    project_id: StrictStr | None = Field(default=None, min_length=1)
+    procedure: SkillProcedure
+    approved_by: StrictStr = Field(min_length=1)
+    approved_at: datetime
+
+    @model_validator(mode="after")
+    def validate_scope_and_lineage(self) -> "GoldSkill":
+        if self.scope is SkillScope.PERSONAL and self.owner_user_id is None:
+            raise ValueError("PERSONAL Gold Skills require owner_user_id")
+        if self.scope is SkillScope.PROJECT and self.project_id is None:
+            raise ValueError("PROJECT Gold Skills require project_id")
+        if (self.parent_skill_id is None) != (self.parent_version is None):
+            raise ValueError("parent_skill_id and parent_version must be set together")
+        if self.version == 1 and self.parent_skill_id is not None:
+            raise ValueError("Gold Skill v1 cannot have parent version lineage")
+        if self.version > 1:
+            if self.parent_skill_id != self.skill_id:
+                raise ValueError("A later version must preserve its parent skill_id")
+            if self.parent_version != self.version - 1:
+                raise ValueError("A later version must reference the preceding version")
+        return self
+
+    @field_validator("approved_at")
+    @classmethod
+    def require_utc_approved_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("GoldSkill approved_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillSearchContext(BaseModel):
+    """Deterministic eligibility filters, never a scientific similarity query."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    user_id: StrictStr | None = Field(default=None, min_length=1)
+    project_id: StrictStr | None = Field(default=None, min_length=1)
+    include_lab: bool = True
+    query_text: StrictStr | None = Field(default=None, min_length=1, max_length=500)
+    required_tags: frozenset[ShortText] = Field(default_factory=frozenset)
+    artifact_types: frozenset[ShortText] = Field(default_factory=frozenset)
+
+
+class SkillUseProposal(BaseModel):
+    """Runtime-selected use mode; the Skill service never generates this choice."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposal_id: UUID = Field(default_factory=uuid4)
+    approval_gate_id: StrictStr = Field(
+        default_factory=lambda: f"skill-use:{uuid4()}",
+        min_length=1,
+    )
+    run_id: UUID
+    skill_id: UUID
+    skill_version: int = Field(ge=1)
+    proposed_mode: SkillUseMode
+    reason: BoundedText
+    proposed_deviations: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillUseProposal created_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillUseAuthorization(BaseModel):
+    """Recorded user decision; only approved records authorize contextual use."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authorization_id: UUID = Field(default_factory=uuid4)
+    use_proposal_id: UUID
+    run_id: UUID
+    skill_id: UUID
+    skill_version: int = Field(ge=1)
+    approved: bool
+    decided_by: StrictStr = Field(min_length=1)
+    decided_at: datetime
+
+    @field_validator("decided_at")
+    @classmethod
+    def require_utc_decided_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillUseAuthorization decided_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillUsageRecord(BaseModel):
+    """Evidence linking one run to the exact approved Skill version used."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    usage_id: UUID = Field(default_factory=uuid4)
+    authorization_id: UUID
+    run_id: UUID
+    skill_id: UUID
+    skill_version: int = Field(ge=1)
+    proposed_mode: SkillUseMode
+    user_approved: bool
+    runtime_provided_deviations: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=100,
+    )
+    outcome: SkillUsageOutcome
+    resulting_proposal_id: UUID | None = None
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("recorded_at")
+    @classmethod
+    def require_utc_recorded_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillUsageRecord recorded_at must be timezone-aware")
+        return value.astimezone(timezone.utc)

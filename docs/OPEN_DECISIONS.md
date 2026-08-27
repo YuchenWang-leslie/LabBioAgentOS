@@ -57,12 +57,32 @@ Output exposure requests are untrusted. Arbitrary output remains RAW; only a
 file matching a host-approved bounded flat-JSON contract can be registered as
 DERIVED. This is structural validation and does not determine scientific value.
 
-## Deferred beyond Phase 6
+## RESOLVED-005 — Phase 7 Gold Skill governance boundary
+
+Gold Skills are immutable LabBio procedural-memory records projected only from
+successfully completed RunTrace evidence. A `SkillCuratorPort` supplies typed
+proposals but has no heuristic production implementation. Matching explicit
+user decisions are required both for promotion to Gold and, by default, for
+use. Runtime-provided REUSE, ADAPT, and REFERENCE proposals are recorded as
+intent; deterministic code does not select a mode or assess scientific
+similarity.
+
+New versions preserve their predecessors. A later version must be based on a
+successful approved ADAPT usage and a newly approved proposal. Candidate search
+is eligibility filtering only and returns no score, best candidate, or
+scientific recommendation.
+
+The Phase 7 in-memory store and identifier-based trace integration are
+development contracts, not production persistence, identity, or ACL decisions.
+
+## Deferred beyond Phase 7
 
 The following are intentionally deferred to their roadmap phases and must not
 be invented now: EventBus, durable/cross-process trace delivery, workflow and
 artifact production persistence, production image registry and scheduler,
 deployment-specific Docker identities/limits, trusted producer authorization,
-user/project permissions, exposure approval UX, long-term memory schema, Gold
-Skill similarity/adaptation policy, and bioinformatics agent roster. None is
-needed to complete Phase 6.
+user/project permissions, exposure approval UX, long-term memory schema,
+production Gold Skill persistence/indexing, real curator implementation,
+candidate-retrieval backend, and bioinformatics agent roster. Scientific Skill
+similarity and adaptation remain runtime-LLM/user decisions rather than an
+unresolved deterministic policy. None is needed to complete Phase 7.

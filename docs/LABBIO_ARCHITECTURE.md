@@ -295,11 +295,55 @@ Long-term LabBio memory, workflow state, artifact metadata, and Gold Skills are 
 
 ## Gold Skill boundary
 
-Pantheon's file-based skill parser, layered store, index, and viewing tools are reusable foundations. The existing learning system is not itself the LabBio Gold Skill lifecycle: it can create/update procedural skills from agent activity, while a Gold Skill requires a validated successful RunTrace and explicit user approval.
+Phase 7 implements Gold Skills as LabBio-owned, immutable procedural memory.
+They are neither Pantheon skills nor executable workflows. `GoldSkill` exposes no
+`run`, `apply`, or `execute` operation and cannot transition `WorkflowRun`.
 
-The LabBio layer will therefore wrap or extend skill storage with provenance, validation status, scope, and approval. Automatic extraction must not publish a Gold Skill. The runtime LLM, not deterministic code, decides whether and how an approved skill should be adapted after the user elects to use it.
+The deterministic path is:
 
-## Out of scope after Phase 6
+```text
+successful RunTrace
+  -> SkillSourceBundle evidence projection
+  -> SkillCuratorPort (future runtime intelligence)
+  -> SkillProposal
+  -> explicit SkillUserDecision
+  -> immutable GoldSkill version
+```
+
+`SkillSourceProjector` accepts a single run only when its latest terminal event
+is `RUN_COMPLETED`. It retains the workflow path, invocation and delegation
+projections, explicitly marked sanitized instructions, execution/script hashes,
+ArtifactRefs/IDs, and trace references for validation, retries, and failures. It
+does not rank evidence, infer scientific importance, copy artifact
+representations, or reconstruct provider conversations or chain-of-thought.
+
+`SkillCuratorPort` is deliberately an interface only. A future Pantheon/runtime
+LLM may populate the typed `SkillProposal`; production code contains no fallback
+heuristic curator. A proposal is stored as a candidate and cannot become Gold
+without a matching user-owned decision for its approval gate. Skill-use
+proposals use the same explicit gate pattern. A workflow caller may pair these
+gate IDs with the existing deterministic `USER_GATE`; the Skill service never
+mutates workflow state itself.
+
+`InMemorySkillStore` is a development store. It preserves every `(skill_id,
+version)` record, requires a successful approved ADAPT usage as the source of a
+later version, and leaves the prior version unchanged. PERSONAL and PROJECT
+visibility use exact owner/project filters; LAB visibility is explicit.
+Metadata, tags, artifact types, and bounded text may narrow candidates, but the
+store returns no similarity score, scientific ranking, or REUSE/ADAPT/REFERENCE
+decision. Those modes arrive only in a runtime-provided `SkillUseProposal` and
+require user confirmation by default.
+
+Skill lifecycle trace events carry identifiers, versions, modes, outcomes, and
+approval references only. Full Skill content and raw artifact payloads are not
+duplicated into RunTrace.
+
+Pantheon's automatic learning/extraction path remains disabled for this
+lifecycle because it lacks the successful-trace and explicit-approval gates.
+Its parser/index may be adapted later as a presentation or discovery layer, but
+it is not Phase 7's source of truth.
+
+## Out of scope after Phase 7
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -312,4 +356,9 @@ The LabBio layer will therefore wrap or extend skill storage with provenance, va
 - no automatic image pull/build or Docker installation/configuration;
 - no arbitrary agent file reader or raw biological data parser;
 - no user/project permission layer or production approval UI;
-- no Gold Skill or scientific-agent implementation.
+- no real SkillCuratorAgent or scientific Skill extraction;
+- no embedding similarity, scientific ranking, or automatic use mode;
+- no automatic Gold or lab-wide promotion;
+- no production Skill persistence, authentication, or ACL enforcement;
+- no executable Gold Skills or direct workflow control;
+- no scientific-agent implementation.
