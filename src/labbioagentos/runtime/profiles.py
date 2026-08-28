@@ -33,6 +33,13 @@ class ProviderTransport(StrEnum):
     OPENAI_CHAT_COMPLETIONS = "OPENAI_CHAT_COMPLETIONS"
 
 
+class RuntimeInvocationMode(StrEnum):
+    """Protocol mode, not a scientific agent role."""
+
+    CAPABILITY = "CAPABILITY"
+    FINALIZE = "FINALIZE"
+
+
 class ModelProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     profile_key: Key

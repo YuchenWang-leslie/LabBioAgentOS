@@ -56,6 +56,7 @@ from labbioagentos import (
     RunTraceRecorder,
     RuntimeCapabilityContext,
     RuntimeCapabilityServices,
+    RuntimeInvocationMode,
     RuntimeProfileCatalog,
     RuntimeStageInput,
     RuntimeStageResult,
@@ -361,6 +362,7 @@ async def test_native_pantheon_delegation_is_separate_from_labbio_tools(boundary
             "execution": {"boundary": "bounded"},
         },
         toolsets={"coordinator": toolset},
+        invocation_mode=RuntimeInvocationMode.CAPABILITY,
     )
     await team.async_setup()
     assert {"list_agents", "call_agent"}.issubset(team.team_agents[0].functions)

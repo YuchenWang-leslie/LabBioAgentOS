@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from enum import StrEnum
 from typing import Annotated, Literal, TypeAlias
 from uuid import UUID, uuid4
@@ -10,8 +12,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StrictStr,
     StringConstraints,
+    field_validator,
     model_validator,
 )
 
@@ -39,6 +43,110 @@ SafeIdentifier = Annotated[
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
     ),
 ]
+
+
+class CapabilityEvidenceStatus(StrEnum):
+    """Technical capability outcome only; it has no scientific meaning."""
+
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+_FORBIDDEN_EVIDENCE_KEYS = {
+    "api_key",
+    "authorization",
+    "bam_contents",
+    "biological_matrix",
+    "chain_of_thought",
+    "count_matrix",
+    "dataframe_rows",
+    "expression_matrix",
+    "fastq_contents",
+    "file_contents",
+    "h5ad_contents",
+    "host_path",
+    "provider_raw_body",
+    "raw_data",
+    "raw_matrix",
+    "raw_provider_body",
+    "reasoning_content",
+    "storage_locator",
+}
+
+
+def _normalized_evidence_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+
+
+def _validate_safe_evidence(value: JsonValue, *, depth: int = 0) -> int:
+    """Validate bounded model-safe DTO output without interpreting its content."""
+
+    if depth > 8:
+        raise ValueError("Capability evidence nesting exceeds 8 levels")
+    nodes = 1
+    if isinstance(value, dict):
+        if len(value) > 256:
+            raise ValueError("Capability evidence object exceeds 256 fields")
+        for key, item in value.items():
+            if _normalized_evidence_key(key) in _FORBIDDEN_EVIDENCE_KEYS:
+                raise ValueError(f"Capability evidence field {key!r} is prohibited")
+            nodes += _validate_safe_evidence(item, depth=depth + 1)
+    elif isinstance(value, list):
+        if len(value) > 256:
+            raise ValueError("Capability evidence list exceeds 256 items")
+        for item in value:
+            nodes += _validate_safe_evidence(item, depth=depth + 1)
+    elif isinstance(value, str) and len(value) > 8_000:
+        raise ValueError("Capability evidence string exceeds 8000 characters")
+    if nodes > 4_096:
+        raise ValueError("Capability evidence exceeds 4096 JSON nodes")
+    return nodes
+
+
+class CapabilityEvidenceItem(BaseModel):
+    """One bounded governed-tool outcome, never a provider conversation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capability_invocation_id: UUID = Field(default_factory=uuid4)
+    capability_name: SafeIdentifier
+    status: CapabilityEvidenceStatus
+    trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=4)
+    reference_ids: tuple[SafeIdentifier, ...] = Field(default=(), max_length=128)
+    safe_result: JsonValue | None = None
+    error_code: SafeIdentifier | None = None
+    correlation_id: UUID | None = None
+
+    @field_validator("safe_result")
+    @classmethod
+    def validate_safe_result(cls, value: JsonValue | None) -> JsonValue | None:
+        if value is not None:
+            _validate_safe_evidence(value)
+            if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) > 64_000:
+                raise ValueError("Capability evidence exceeds 64000 serialized characters")
+        return value
+
+    @model_validator(mode="after")
+    def status_matches_fields(self) -> "CapabilityEvidenceItem":
+        if self.status is CapabilityEvidenceStatus.COMPLETED and self.error_code is not None:
+            raise ValueError("Completed capability evidence cannot contain an error")
+        if self.status is CapabilityEvidenceStatus.FAILED and self.error_code is None:
+            raise ValueError("Failed capability evidence requires an error code")
+        return self
+
+
+class CapabilityEvidenceBundle(BaseModel):
+    """Bounded projection passed from capability interaction to finalization."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_id: UUID = Field(default_factory=uuid4)
+    run_id: UUID
+    stage_id: WorkflowStage
+    invocation_id: UUID
+    items: tuple[CapabilityEvidenceItem, ...] = Field(default=(), max_length=64)
+    delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    technical_status: Literal["COMPLETED"] = "COMPLETED"
 
 
 class RuntimeReferenceKind(StrEnum):

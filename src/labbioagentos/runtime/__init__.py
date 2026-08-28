@@ -1,6 +1,9 @@
 """LabBio-owned runtime integration contracts and deterministic control bridge."""
 
 from .contracts import (
+    CapabilityEvidenceBundle,
+    CapabilityEvidenceItem,
+    CapabilityEvidenceStatus,
     ExecuteStageBody,
     IntakeStageBody,
     InterpretStageBody,
@@ -32,9 +35,11 @@ from .registry import (
     StageRuntimeSpec,
 )
 from .pantheon import (
+    PantheonCapabilityStageInvoker,
     PantheonRuntimeFactory,
     PantheonRuntimeIntegrationError,
     PantheonTypedStageInvoker,
+    PantheonTwoModeStageInvoker,
     RuntimeProfileCatalog,
     RuntimeProfileConfigurationError,
 )
@@ -47,6 +52,7 @@ from .profiles import (
     ProviderTransport,
     RenderedPrompt,
     ResponseSchemaRef,
+    RuntimeInvocationMode,
     default_agent_profiles,
 )
 from .reporting import ReportReceipt, ReportSubmissionService
@@ -71,6 +77,9 @@ __all__ = [
     "ArtifactListItem",
     "CAPABILITY_CEILINGS",
     "CapabilityProfile",
+    "CapabilityEvidenceBundle",
+    "CapabilityEvidenceItem",
+    "CapabilityEvidenceStatus",
     "ExecuteStageBody",
     "IntakeStageBody",
     "InterpretStageBody",
@@ -80,8 +89,10 @@ __all__ = [
     "MemoryDetailView",
     "ModelProfile",
     "PantheonRuntimeFactory",
+    "PantheonCapabilityStageInvoker",
     "PantheonRuntimeIntegrationError",
     "PantheonTypedStageInvoker",
+    "PantheonTwoModeStageInvoker",
     "PlanStageBody",
     "PreflightStageBody",
     "ReportStageBody",
@@ -103,6 +114,7 @@ __all__ = [
     "PromptProfile",
     "ProviderConfigRef",
     "ProviderTransport",
+    "RuntimeInvocationMode",
     "RenderedPrompt",
     "ReportReceipt",
     "ReportSubmissionService",

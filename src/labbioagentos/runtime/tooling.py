@@ -37,6 +37,10 @@ from labbioagentos.skills import (
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
+from .contracts import (
+    CapabilityEvidenceItem,
+    CapabilityEvidenceStatus,
+)
 from .reporting import ReportSubmissionService
 
 
@@ -213,6 +217,7 @@ class LabBioRuntimeToolSet(ToolSet):
     def __init__(self, binding: RuntimeCapabilityContext, services: RuntimeCapabilityServices):
         self.binding = binding
         self.services = services
+        self._evidence_items: list[CapabilityEvidenceItem] = []
         super().__init__(name=f"labbio-{binding.stage_id.value.lower()}")
         allowed = frozenset(binding.capability_allowlist)
         self.functions = {
@@ -234,15 +239,22 @@ class LabBioRuntimeToolSet(ToolSet):
         *,
         request_ids: dict[str, JsonValue] | None = None,
     ) -> dict[str, Any]:
+        capability_invocation_id = uuid4()
+        trace_event_ids: list[UUID] = []
         try:
             self._guard(capability)
             bounded_ids = self._bounded_identifiers(request_ids or {})
-            self._emit(
+            event = self._emit(
                 TraceEventType.CAPABILITY_INVOKED,
                 capability,
                 "STARTED",
-                bounded_ids,
+                {
+                    "capability_invocation_id": str(capability_invocation_id),
+                    **bounded_ids,
+                },
             )
+            if event is not None:
+                trace_event_ids.append(event.event_id)
             value = operation()
             if hasattr(value, "__await__"):
                 value = await value
@@ -253,20 +265,56 @@ class LabBioRuntimeToolSet(ToolSet):
             result = ToolResult(success=True, data=value)
         except Exception as exc:
             error = self._safe_error(exc)
-            self._emit(
+            event = self._emit(
                 TraceEventType.CAPABILITY_FAILED,
                 capability,
                 "FAILED",
-                {"error_code": error.error_code, "correlation_id": str(error.correlation_id)},
+                {
+                    "capability_invocation_id": str(capability_invocation_id),
+                    "error_code": error.error_code,
+                    "correlation_id": str(error.correlation_id),
+                },
+            )
+            if event is not None:
+                trace_event_ids.append(event.event_id)
+            self._evidence_items.append(
+                CapabilityEvidenceItem(
+                    capability_invocation_id=capability_invocation_id,
+                    capability_name=capability,
+                    status=CapabilityEvidenceStatus.FAILED,
+                    trace_event_ids=tuple(trace_event_ids),
+                    error_code=error.error_code,
+                    correlation_id=error.correlation_id,
+                )
             )
             return ToolResult(success=False, error=error).model_dump(mode="json")
-        self._emit(
+        event = self._emit(
             TraceEventType.CAPABILITY_COMPLETED,
             capability,
             "COMPLETED",
-            self._bounded_identifiers(request_ids or {}),
+            {
+                "capability_invocation_id": str(capability_invocation_id),
+                **self._bounded_identifiers(request_ids or {}),
+            },
+        )
+        if event is not None:
+            trace_event_ids.append(event.event_id)
+        self._evidence_items.append(
+            CapabilityEvidenceItem(
+                capability_invocation_id=capability_invocation_id,
+                capability_name=capability,
+                status=CapabilityEvidenceStatus.COMPLETED,
+                trace_event_ids=tuple(trace_event_ids),
+                reference_ids=self._reference_ids(value),
+                safe_result=value,
+            )
         )
         return result.model_dump(mode="json", by_alias=True)
+
+    def evidence_items(self) -> tuple[CapabilityEvidenceItem, ...]:
+        """Return immutable bounded outcomes accumulated by model-selected calls."""
+
+        return tuple(self._evidence_items)
 
     @tool
     async def artifact_list(self, offset: int = 0, limit: int = 20) -> dict:
@@ -622,9 +670,43 @@ class LabBioRuntimeToolSet(ToolSet):
                 bounded[key] = value
         return bounded
 
+    @staticmethod
+    def _reference_ids(value: JsonValue) -> tuple[str, ...]:
+        """Collect opaque IDs structurally; no relevance or ranking is inferred."""
+
+        found: list[str] = []
+
+        def visit(item: JsonValue) -> None:
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if key.endswith("_id") and isinstance(child, str):
+                        try:
+                            UUID(child)
+                        except ValueError:
+                            pass
+                        else:
+                            found.append(child)
+                    elif key.endswith("_ids") and isinstance(child, list):
+                        for identifier in child:
+                            if not isinstance(identifier, str):
+                                continue
+                            try:
+                                UUID(identifier)
+                            except ValueError:
+                                continue
+                            found.append(identifier)
+                    else:
+                        visit(child)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child)
+
+        visit(value)
+        return tuple(dict.fromkeys(found))[:128]
+
     def _emit(self, event_type, capability, status, payload=None):
         if self.services.trace_recorder is not None:
-            self.services.trace_recorder.emit(
+            return self.services.trace_recorder.emit(
                 self.binding.run_id,
                 event_type,
                 stage_id=self.binding.stage_id,
@@ -632,3 +714,4 @@ class LabBioRuntimeToolSet(ToolSet):
                 status=status,
                 payload={"capability": capability, **(payload or {})},
             )
+        return None
