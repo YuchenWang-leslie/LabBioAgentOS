@@ -115,12 +115,15 @@ class PantheonRuntimeFactory:
                 f"Unknown runtime profile {profile_key!r}"
             ) from exc
         self._configure_transport(model)
+        model_params = {"thinking": model.thinking_enabled}
+        if model.max_output_tokens is not None:
+            model_params["max_tokens"] = model.max_output_tokens
         agent = Agent(
             name=profile.agent_name,
             description=profile.role_description,
             instructions=prompt.sanitized_text,
             model=model.model_identifier,
-            model_params={"thinking": model.thinking_enabled},
+            model_params=model_params,
             response_format=schema.response_format(),
             use_memory=False,
         )

@@ -41,6 +41,7 @@ class ModelProfile(BaseModel):
     provider_config: ProviderConfigRef
     transport: ProviderTransport = ProviderTransport.AUTO
     thinking_enabled: bool = False
+    max_output_tokens: int | None = Field(default=None, ge=256, le=32_768)
 
 
 class ResponseSchemaRef(BaseModel):
