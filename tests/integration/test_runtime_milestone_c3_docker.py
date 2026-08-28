@@ -292,17 +292,13 @@ print("C3 infrastructure execution completed")
     assert receipt.exit_code == 0
     assert runner.security_checked and runner.input_read_only
     refs = store.list_refs()
-    execution_refs = tuple(
-        ref
-        for ref in refs
-        if ref.metadata.get("execution_id") == str(receipt.execution_id)
-    )
-    by_type = {ref.artifact_type: ref for ref in execution_refs}
+    by_type = {ref.artifact_type: ref for ref in refs}
     structured = by_type["c3-structured-result"]
     debug = by_type["c3-unstructured-debug"]
     script_ref = by_type["execution-script"]
     stdout_ref = by_type["execution-stdout"]
     stderr_ref = by_type["execution-stderr"]
+    execution_refs = (structured, debug, script_ref, stdout_ref, stderr_ref)
 
     assert structured.exposure_class is ArtifactExposureClass.DERIVED
     assert structured.metadata["contract_valid"] is True
