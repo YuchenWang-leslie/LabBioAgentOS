@@ -28,6 +28,7 @@ from .profiles import (
     CapabilityProfile,
     ModelProfile,
     PromptProfile,
+    ProviderTransport,
     RenderedPrompt,
     ResponseSchemaRef,
 )
@@ -113,17 +114,45 @@ class PantheonRuntimeFactory:
             raise RuntimeProfileConfigurationError(
                 f"Unknown runtime profile {profile_key!r}"
             ) from exc
+        self._configure_transport(model)
         agent = Agent(
             name=profile.agent_name,
             description=profile.role_description,
             instructions=prompt.sanitized_text,
             model=model.model_identifier,
+            model_params={"thinking": model.thinking_enabled},
             response_format=schema.response_format(),
             use_memory=False,
         )
         if toolset is not None:
             await agent.toolset(toolset)
         return agent, prompt
+
+    @staticmethod
+    def _configure_transport(model: ModelProfile) -> None:
+        if model.transport is ProviderTransport.AUTO:
+            return
+        if model.transport is not ProviderTransport.OPENAI_CHAT_COMPLETIONS:
+            raise RuntimeProfileConfigurationError(
+                f"Unsupported provider transport {model.transport.value!r}"
+            )
+        # Pantheon normally probes the Responses API first. Some compatible
+        # endpoints support Pydantic structured output only through Chat
+        # Completions. Mark this exact configured endpoint/model pair without
+        # changing Pantheon or weakening LabBio validation.
+        from pantheon.utils.llm_providers import (
+            detect_provider,
+            get_openai_effective_config,
+            mark_responses_api_unavailable,
+        )
+
+        config = detect_provider(model.model_identifier, False)
+        config.base_url, config.api_key = get_openai_effective_config()
+        if not config.base_url or not config.api_key:
+            raise RuntimeProfileConfigurationError(
+                "Chat Completions transport requires external provider configuration"
+            )
+        mark_responses_api_unavailable(config)
 
     async def create_team(
         self,

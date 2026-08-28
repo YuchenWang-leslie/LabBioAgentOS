@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from enum import StrEnum
 from string import Formatter
 from typing import Annotated
 
@@ -25,12 +26,21 @@ class ProviderConfigRef(BaseModel):
     provider: Key
 
 
+class ProviderTransport(StrEnum):
+    """Narrow provider transport override selected by trusted configuration."""
+
+    AUTO = "AUTO"
+    OPENAI_CHAT_COMPLETIONS = "OPENAI_CHAT_COMPLETIONS"
+
+
 class ModelProfile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     profile_key: Key
     version: Key
     model_identifier: StrictStr = Field(min_length=1, max_length=256)
     provider_config: ProviderConfigRef
+    transport: ProviderTransport = ProviderTransport.AUTO
+    thinking_enabled: bool = False
 
 
 class ResponseSchemaRef(BaseModel):

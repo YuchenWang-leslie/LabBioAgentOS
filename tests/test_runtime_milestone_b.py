@@ -49,6 +49,7 @@ from labbioagentos import (
     Project,
     PromptProfile,
     ProviderConfigRef,
+    ProviderTransport,
     ReportSubmissionService,
     ResponseSchemaRef,
     RunStatus,
@@ -151,6 +152,21 @@ def test_prompt_is_versioned_hashed_bounded_and_rejects_bad_input():
         prompt.render({"value": "x" * 2001})
     with pytest.raises(ValueError):
         prompt.render({"wrong": "value"})
+
+
+def test_provider_transport_and_thinking_are_trusted_model_configuration():
+    profile = ModelProfile(
+        profile_key="mimo",
+        version="1",
+        model_identifier="mimo-v2.5-pro",
+        provider_config=ProviderConfigRef(config_id="external", provider="mimo"),
+        transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
+        thinking_enabled=False,
+    )
+    dumped = profile.model_dump(mode="json")
+    assert dumped["transport"] == "OPENAI_CHAT_COMPLETIONS"
+    assert dumped["thinking_enabled"] is False
+    assert "api_key" not in dumped and "base_url" not in dumped
 
 
 def _intake_input():
