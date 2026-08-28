@@ -245,6 +245,28 @@ async def test_malformed_runtime_result_is_bounded_and_raw_body_not_traced():
     assert secret not in json.dumps([event.model_dump(mode="json") for event in sink.read()])
 
 
+@pytest.mark.asyncio
+async def test_pantheon_native_validation_failure_is_classified_as_malformed():
+    factory = PantheonRuntimeFactory(_catalog())
+    team, rendered = await factory.create_team(
+        ("coordinator",), prompt_values={"coordinator": {"boundary": "bounded"}}
+    )
+
+    async def run(_self, _message):
+        RuntimeStageResult.model_validate({"invalid": "provider value"})
+
+    team.run = MethodType(run, team)
+    invoker = PantheonTypedStageInvoker(
+        team,
+        profile=_catalog().agents["coordinator"],
+        prompt=rendered["coordinator"],
+        response_schema=ResponseSchemaRef(),
+    )
+    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
+        await invoker.invoke(_intake_input())
+    assert caught.value.error_code == "MALFORMED_RUNTIME_RESULT"
+
+
 def _toolset(boundary, stage, capabilities, **service_overrides):
     _, recorder, access, principal, workspace, store, exposure = boundary
     services = RuntimeCapabilityServices(

@@ -262,6 +262,15 @@ class PantheonTypedStageInvoker:
                         process_chunk=active_session.observe,
                     )
                     active_session.raise_trace_error()
+        except ValidationError as exc:
+            if active_session is not None and active_session.is_trace_error(exc):
+                raise
+            error = PantheonRuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Pantheon returned a response that does not satisfy RuntimeStageResult.",
+            )
+            self._emit_failure(stage_input, error)
+            raise error from exc
         except Exception as exc:
             if active_session is not None and active_session.is_trace_error(exc):
                 raise
