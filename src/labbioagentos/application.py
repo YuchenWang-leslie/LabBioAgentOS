@@ -24,7 +24,14 @@ from .artifacts import (
     ExposurePolicy,
     LocalArtifactStore,
 )
-from .bioformats import H5ADInspectionError, H5ADInspectionPolicy, H5ADInspector
+from .bioformats import (
+    BioFormatInspectionError,
+    BioFormatInspectionRegistry,
+    BioFormatInspector,
+    H5ADInspectionError,
+    H5ADInspectionPolicy,
+    H5ADInspector,
+)
 from .contracts import (
     GateUserDecision,
     RunStatus,
@@ -116,6 +123,18 @@ class ApplicationH5ADInspectionArtifacts(BaseModel):
     source_artifact_id: UUID
     structural_artifact: ApplicationArtifactReference
     aggregate_artifact: ApplicationArtifactReference
+
+
+class ApplicationBioFormatInspectionArtifacts(BaseModel):
+    """Format-neutral safe references created by trusted local inspection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source_artifact_id: UUID
+    format_key: StrictStr = Field(min_length=1, max_length=128)
+    artifacts: tuple[ApplicationArtifactReference, ...] = Field(
+        min_length=1, max_length=8
+    )
 
 
 class ApplicationExecutionProfile(BaseModel):
@@ -245,6 +264,7 @@ class ApplicationRuntimeConfiguration:
     h5ad_inspection_policy: H5ADInspectionPolicy = field(
         default_factory=H5ADInspectionPolicy
     )
+    bioformat_inspectors: tuple[BioFormatInspector, ...] = ()
     boundary_observer: BoundaryObserver | None = None
     retry_limit: int = 1
     max_stage_invocations: int = 64
@@ -386,6 +406,14 @@ class LabBioApplication:
             configuration.allowed_input_roots
         )
         self.h5ad_inspector = H5ADInspector(configuration.h5ad_inspection_policy)
+        try:
+            self.bioformat_inspections = BioFormatInspectionRegistry(
+                (self.h5ad_inspector, *configuration.bioformat_inspectors)
+            )
+        except BioFormatInspectionError as exc:
+            raise ApplicationConfigurationError(
+                "Bioformat inspection configuration is invalid"
+            ) from exc
 
     def register_input_file(
         self,
@@ -445,7 +473,48 @@ class LabBioApplication:
         principal: Principal,
         workspace: WorkspaceContext,
     ) -> ApplicationH5ADInspectionArtifacts:
-        """Inspect one authorized RAW Artifact and register safe bounded views."""
+        """H5AD application adapter over the generic trusted inspection boundary."""
+
+        try:
+            inspected = self.inspect_bioformat(
+                source_artifact_id,
+                format_key="h5ad",
+                principal=principal,
+                workspace=workspace,
+            )
+        except H5ADInspectionError:
+            raise
+        except BioFormatInspectionError as exc:
+            raise H5ADInspectionError(str(exc)) from exc
+        structural = tuple(
+            item
+            for item in inspected.artifacts
+            if item.exposure_class is ArtifactExposureClass.STRUCTURAL
+        )
+        aggregate = tuple(
+            item
+            for item in inspected.artifacts
+            if item.exposure_class is ArtifactExposureClass.AGGREGATE
+        )
+        if len(structural) != 1 or len(aggregate) != 1:
+            raise H5ADInspectionError(
+                "H5AD inspector did not return its required safe Artifact classes"
+            )
+        return ApplicationH5ADInspectionArtifacts(
+            source_artifact_id=inspected.source_artifact_id,
+            structural_artifact=structural[0],
+            aggregate_artifact=aggregate[0],
+        )
+
+    def inspect_bioformat(
+        self,
+        source_artifact_id: UUID,
+        *,
+        format_key: str,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationBioFormatInspectionArtifacts:
+        """Inspect one authorized RAW Artifact through a selected trusted inspector."""
 
         self._require_trusted_scope(principal, workspace)
         source_ref = self.artifact_store.get_ref(source_artifact_id)
@@ -460,53 +529,31 @@ class LabBioApplication:
             principal, source_ref, AccessAction.READ_ARTIFACT
         )
         if source_ref.exposure_class is not ArtifactExposureClass.RAW:
-            raise H5ADInspectionError("h5ad inspection source must be RAW")
+            raise BioFormatInspectionError("Bioformat inspection source must be RAW")
         source_path = self._trusted_artifact_path(source_ref.storage_locator)
-        inspection = self.h5ad_inspector.inspect(source_path)
+        inspection = self.bioformat_inspections.inspect(format_key, source_path)
         lineage = {
-            "format": "h5ad",
-            "inspection_schema_version": "1",
+            "format": inspection.format_key,
+            "inspection_schema_version": inspection.inspection_schema_version,
             "source_artifact_id": str(source_ref.artifact_id),
         }
-        obs_fields = inspection.structural.obs.fields
-        structural_ref = self.artifact_store.register(
-            artifact_type="h5ad-structural",
-            exposure_class=ArtifactExposureClass.STRUCTURAL,
-            representation=ArtifactRepresentation(),
-            owner_user_id=source_ref.owner_user_id,
-            project_id=source_ref.project_id,
-            lab_id=source_ref.lab_id,
-            schema=ArtifactSchema(
-                shape=(inspection.structural.n_obs, inspection.structural.n_vars),
-                columns=tuple(field.name for field in obs_fields),
-                dtypes={field.name: field.dtype for field in obs_fields},
-                properties=inspection.structural.model_dump(mode="json"),
-            ),
-            metadata=lineage,
+        refs = tuple(
+            self.artifact_store.register(
+                artifact_type=spec.artifact_type,
+                exposure_class=spec.exposure_class,
+                representation=spec.representation,
+                owner_user_id=source_ref.owner_user_id,
+                project_id=source_ref.project_id,
+                lab_id=source_ref.lab_id,
+                schema=spec.artifact_schema,
+                metadata=lineage,
+            )
+            for spec in inspection.artifacts
         )
-        aggregate = inspection.aggregate
-        aggregate_fields = (*aggregate.categorical, *aggregate.numeric)
-        aggregate_ref = self.artifact_store.register(
-            artifact_type="h5ad-aggregate",
-            exposure_class=ArtifactExposureClass.AGGREGATE,
-            representation=ArtifactRepresentation(
-                summary=aggregate.model_dump(mode="json")
-            ),
-            owner_user_id=source_ref.owner_user_id,
-            project_id=source_ref.project_id,
-            lab_id=source_ref.lab_id,
-            schema=ArtifactSchema(
-                shape=(aggregate.returned_field_count,),
-                columns=tuple(field.field_name for field in aggregate_fields),
-                dtypes={field.field_name: field.dtype for field in aggregate_fields},
-                properties={"summary_kind": "bounded_obs_aggregates"},
-            ),
-            metadata=lineage,
-        )
-        return ApplicationH5ADInspectionArtifacts(
+        return ApplicationBioFormatInspectionArtifacts(
             source_artifact_id=source_ref.artifact_id,
-            structural_artifact=self._safe_artifact_reference(structural_ref),
-            aggregate_artifact=self._safe_artifact_reference(aggregate_ref),
+            format_key=inspection.format_key,
+            artifacts=tuple(self._safe_artifact_reference(ref) for ref in refs),
         )
 
     def create_run(self, request: ApplicationRunRequest) -> ApplicationRunHandle:
@@ -768,13 +815,19 @@ class LabBioApplication:
     def _trusted_artifact_path(self, locator: str) -> Path:
         path = Path(locator)
         if path.is_symlink():
-            raise H5ADInspectionError("Stored h5ad source cannot be a symlink")
+            raise BioFormatInspectionError(
+                "Stored bioformat source cannot be a symlink"
+            )
         try:
             resolved = path.resolve(strict=True)
         except OSError as exc:
-            raise H5ADInspectionError("Stored h5ad source does not exist") from exc
+            raise BioFormatInspectionError(
+                "Stored bioformat source does not exist"
+            ) from exc
         if not resolved.is_file() or self.artifact_store.root not in resolved.parents:
-            raise H5ADInspectionError("Stored h5ad source is outside the Artifact store")
+            raise BioFormatInspectionError(
+                "Stored bioformat source is outside the Artifact store"
+            )
         return resolved
 
     @staticmethod
@@ -822,6 +875,7 @@ class LabBioApplication:
 
 __all__ = [
     "ApplicationArtifactReference",
+    "ApplicationBioFormatInspectionArtifacts",
     "ApplicationConfigurationError",
     "ApplicationExecutionProfile",
     "ApplicationH5ADInspectionArtifacts",

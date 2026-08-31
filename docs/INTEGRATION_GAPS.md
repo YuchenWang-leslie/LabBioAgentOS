@@ -61,6 +61,12 @@ routes the runtime, and no model-visible path reader exists.
   near-unique fields are suppressed and category overflow is explicit.
 - Both safe Artifacts retain exact owner/project/lab scope and an opaque
   `source_artifact_id` relationship to the RAW Artifact.
+- C6.1 places format-specific Artifact construction behind an explicit trusted
+  inspector registry and adds HDF5 metadata resource preflight before AnnData
+  eager metadata loading.
+- Cardinality suppression is not semantic sensitivity classification. Any
+  future caller/user-approved field exposure policy must run inside the trusted
+  inspection boundary before safe Artifact registration.
 - C6 does not choose QC thresholds or implement downstream single-cell methods.
 
 ## DEFERRED

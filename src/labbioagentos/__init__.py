@@ -25,6 +25,11 @@ from .artifacts import (
     PantheonArtifactQueryAdapter,
 )
 from .bioformats import (
+    BioFormatArtifactSpec,
+    BioFormatInspectionBundle,
+    BioFormatInspectionError,
+    BioFormatInspectionRegistry,
+    BioFormatInspector,
     H5ADAggregateSummary,
     H5ADCategoryCount,
     H5ADCategoryEnumeration,
@@ -265,6 +270,7 @@ from .runtime import (
 )
 from .application import (
     ApplicationArtifactReference,
+    ApplicationBioFormatInspectionArtifacts,
     ApplicationConfigurationError,
     ApplicationExecutionProfile,
     ApplicationH5ADInspectionArtifacts,
@@ -287,6 +293,7 @@ __all__ = [
     "AgentDescriptor",
     "AgentStageResult",
     "ApplicationArtifactReference",
+    "ApplicationBioFormatInspectionArtifacts",
     "ApplicationConfigurationError",
     "ApplicationExecutionProfile",
     "ApplicationH5ADInspectionArtifacts",
@@ -320,6 +327,11 @@ __all__ = [
     "ArtifactViewType",
     "AuthorizationDenied",
     "AuthorizationPolicy",
+    "BioFormatArtifactSpec",
+    "BioFormatInspectionBundle",
+    "BioFormatInspectionError",
+    "BioFormatInspectionRegistry",
+    "BioFormatInspector",
     "ArtifactRegistrationDecision",
     "ArtifactRegistrationPolicy",
     "CollectedOutput",

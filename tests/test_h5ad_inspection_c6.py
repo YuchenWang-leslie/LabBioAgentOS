@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 from scipy.sparse import csr_matrix
 
+import labbioagentos.bioformats as bioformats
 from labbioagentos import (
     AgentProfile,
     ApplicationRunRequest,
@@ -18,9 +19,12 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureDenied,
     ArtifactQuery,
+    ArtifactRepresentation,
     ArtifactSchema,
     ArtifactViewType,
     AuthorizationDenied,
+    BioFormatArtifactSpec,
+    BioFormatInspectionBundle,
     CapabilityProfile,
     H5ADCategoryEnumeration,
     H5ADInspectionError,
@@ -82,6 +86,76 @@ def _write_h5ad(path) -> None:
     data.write_h5ad(path)
 
 
+def _write_alternative_h5ad(
+    path,
+    *,
+    colliding_obs_names: bool = False,
+    colliding_obsm_names: bool = False,
+) -> None:
+    n_obs = 37
+    obs = pd.DataFrame(
+        {
+            "batch_code": pd.Categorical(
+                [f"batch-{index % 4}" for index in range(n_obs)]
+            ),
+            "low_cardinality_sensitive_example": pd.Categorical(
+                ["restricted", "ordinary"] * 18 + ["restricted"]
+            ),
+            "quality_score": np.linspace(-2.5, 3.5, n_obs, dtype=np.float64),
+            "reviewed": np.asarray([index % 3 == 0 for index in range(n_obs)]),
+            "record_key": [
+                f"alternative-record-{index:03d}" for index in range(n_obs)
+            ],
+        },
+        index=[f"alternative-index-{index:03d}" for index in range(n_obs)],
+    )
+    if colliding_obs_names:
+        obs["collision-prefix-alpha-tail"] = np.arange(n_obs, dtype=np.float64)
+        obs["collision-prefix-beta-tail"] = np.arange(n_obs, dtype=np.float64)
+    var = pd.DataFrame(
+        {
+            "feature_family": pd.Categorical(
+                ["family-a", "family-b", "family-a", "family-c", "family-b"]
+            )
+        },
+        index=[f"alternative-feature-{index}" for index in range(5)],
+    )
+    data = ad.AnnData(
+        X=np.arange(n_obs * 5, dtype=np.int16).reshape(n_obs, 5),
+        obs=obs,
+        var=var,
+    )
+    if colliding_obsm_names:
+        data.obsm["collision-prefix-alpha-tail"] = np.ones(
+            (n_obs, 2), dtype=np.float32
+        )
+        data.obsm["collision-prefix-beta-tail"] = np.ones(
+            (n_obs, 3), dtype=np.float32
+        )
+    data.write_h5ad(path)
+
+
+class _AlternativeFormatInspector:
+    format_key = "alternative-format"
+
+    def inspect_artifacts(self, source) -> BioFormatInspectionBundle:
+        assert source.is_file()
+        return BioFormatInspectionBundle(
+            format_key=self.format_key,
+            inspection_schema_version="test-1",
+            artifacts=(
+                BioFormatArtifactSpec(
+                    artifact_type="alternative-structural",
+                    exposure_class=ArtifactExposureClass.STRUCTURAL,
+                    representation=ArtifactRepresentation(),
+                    artifact_schema=ArtifactSchema(
+                        shape=(3,), columns=("field",), dtypes={"field": "string"}
+                    ),
+                ),
+            ),
+        )
+
+
 def _catalog() -> RuntimeProfileCatalog:
     return RuntimeProfileCatalog(
         agents=(
@@ -124,7 +198,7 @@ def _catalog() -> RuntimeProfileCatalog:
     )
 
 
-def _application(tmp_path) -> LabBioApplication:
+def _application(tmp_path, *, bioformat_inspectors=()) -> LabBioApplication:
     input_root = tmp_path / "inputs"
     input_root.mkdir()
     return LabBioApplication(
@@ -156,6 +230,7 @@ def _application(tmp_path) -> LabBioApplication:
                 max_categories_per_field=3,
                 high_cardinality_fraction=0.8,
             ),
+            bioformat_inspectors=bioformat_inspectors,
         )
     )
 
@@ -210,6 +285,122 @@ def test_h5ad_inspector_emits_bounded_structure_and_aggregates(tmp_path):
     serialized = result.model_dump_json()
     assert not any(value in serialized for value in PRIVATE_BARCODES)
     assert not any(value in serialized for value in PRIVATE_GENES)
+
+
+def test_alternative_h5ad_schema_is_inspected_without_fixture_assumptions(tmp_path):
+    source = tmp_path / "alternative-37-by-5.h5ad"
+    _write_alternative_h5ad(source)
+
+    inspector = H5ADInspector(
+        H5ADInspectionPolicy(
+            max_categories_per_field=5,
+            high_cardinality_fraction=0.75,
+        )
+    )
+    result = inspector.inspect(source)
+    bundle = inspector.inspect_artifacts(source)
+
+    assert (result.structural.n_obs, result.structural.n_vars) == (37, 5)
+    assert result.structural.x.storage == "DENSE"
+    assert result.structural.x.dtype == "int16"
+    assert result.structural.layer_names == ()
+    assert result.structural.raw_present is False
+    categorical = {item.field_name: item for item in result.aggregate.categorical}
+    assert (
+        categorical["record_key"].enumeration
+        is H5ADCategoryEnumeration.HIGH_CARDINALITY_SUPPRESSED
+    )
+    assert {
+        item.label
+        for item in categorical["low_cardinality_sensitive_example"].categories
+    } == {"ordinary", "restricted"}
+    structural_spec, aggregate_spec = bundle.artifacts
+    assert structural_spec.artifact_schema.shape == (37, 5)
+    assert len(structural_spec.artifact_schema.columns) == len(
+        structural_spec.artifact_schema.dtypes
+    )
+    assert aggregate_spec.exposure_class is ArtifactExposureClass.AGGREGATE
+    serialized = bundle.model_dump_json()
+    assert "alternative-index-" not in serialized
+    assert "alternative-feature-" not in serialized
+    assert "alternative-record-" not in serialized
+
+
+def test_h5ad_resource_policy_rejects_before_anndata_eager_load(tmp_path, monkeypatch):
+    source = tmp_path / "alternative-over-limit.h5ad"
+    _write_alternative_h5ad(source)
+    called = False
+
+    def unexpected_read(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("AnnData read must not begin after failed preflight")
+
+    monkeypatch.setattr(bioformats.ad, "read_h5ad", unexpected_read)
+    with pytest.raises(H5ADInspectionError, match="axis-row limit"):
+        H5ADInspector(H5ADInspectionPolicy(max_axis_rows=20)).inspect(source)
+    assert called is False
+
+
+def test_h5ad_bounded_names_cannot_collide_in_safe_artifacts(tmp_path):
+    obs_collision = tmp_path / "alternative-obs-collision.h5ad"
+    _write_alternative_h5ad(obs_collision, colliding_obs_names=True)
+    with pytest.raises(H5ADInspectionError, match="collide after safe bounding") as exc:
+        H5ADInspector(H5ADInspectionPolicy(max_name_length=16)).inspect_artifacts(
+            obs_collision
+        )
+    assert "alpha-tail" not in str(exc.value)
+    assert "beta-tail" not in str(exc.value)
+
+    aggregate_collision = tmp_path / "alternative-aggregate-collision.h5ad"
+    _write_alternative_h5ad(aggregate_collision, colliding_obs_names=True)
+    with pytest.raises(H5ADInspectionError, match="collide after safe bounding"):
+        H5ADInspector(
+            H5ADInspectionPolicy(
+                max_name_length=16,
+                max_axis_fields=1,
+                max_aggregate_fields=16,
+            )
+        ).inspect_artifacts(aggregate_collision)
+
+    key_collision = tmp_path / "alternative-key-collision.h5ad"
+    _write_alternative_h5ad(key_collision, colliding_obsm_names=True)
+    with pytest.raises(H5ADInspectionError, match="collide after safe bounding"):
+        H5ADInspector(H5ADInspectionPolicy(max_name_length=16)).inspect_artifacts(
+            key_collision
+        )
+
+
+def test_generic_bioformat_inspection_does_not_require_application_changes(tmp_path):
+    application = _application(
+        tmp_path, bioformat_inspectors=(_AlternativeFormatInspector(),)
+    )
+    principal = Principal(user_id="user-a", lab_id="lab-c6")
+    workspace = WorkspaceContext(
+        user_id="user-a", project_id="project-a", lab_id="lab-c6"
+    )
+    source = tmp_path / "inputs" / "alternative.input"
+    source.write_bytes(b"opaque alternative format")
+    raw = application.register_input_file(
+        source,
+        principal=principal,
+        workspace=workspace,
+        artifact_type="alternative-format",
+    )
+
+    inspected = application.inspect_bioformat(
+        raw.artifact_id,
+        format_key="alternative-format",
+        principal=principal,
+        workspace=workspace,
+    )
+
+    assert inspected.format_key == "alternative-format"
+    assert len(inspected.artifacts) == 1
+    ref = application.artifact_store.get_ref(inspected.artifacts[0].artifact_id)
+    assert ref.artifact_type == "alternative-structural"
+    assert ref.metadata["format"] == "alternative-format"
+    assert ref.metadata["source_artifact_id"] == str(raw.artifact_id)
 
 
 def test_application_registers_scoped_safe_inspection_artifacts(tmp_path):

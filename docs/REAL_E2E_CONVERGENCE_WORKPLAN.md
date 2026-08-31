@@ -22,6 +22,25 @@ production deployment claim.
 - **Non-goals:** QC thresholds, filtering, normalization, dimensionality
   reduction, clustering, DEG, annotation, or any complete scRNA workflow.
 
+## C6.1 — H5AD boundary generality and anti-overfitting audit
+
+**Status:** accepted on the isolated C6.1 source branch after the full regression
+completed with 193 passed, 3 skipped, and 1 pre-existing warning. No C7 work is
+authorized.
+
+- **Finding:** no fixture-specific production behavior or hidden compatibility
+  fallback was present. Backed AnnData inspection did have an unbounded eager
+  metadata path, bounded-name collisions, and format-specific Artifact assembly
+  in the generic application method.
+- **Resolution:** add pre-read resource ceilings, reject bounded-name
+  collisions without exposing originals, and place format Artifact assembly
+  behind an explicitly configured neutral inspector registry while retaining
+  the accepted H5AD adapter.
+- **Boundary:** cardinality suppression is not semantic sensitivity policy;
+  future approved metadata filtering belongs before safe Artifact registration.
+- **Live decision:** existing successful H5AD model-visible views and runtime
+  contracts are unchanged, so no live provider rerun is required.
+
 ## C7 — First runtime-selected real scRNA analysis
 
 **Status:** not started; requires separate authorization.

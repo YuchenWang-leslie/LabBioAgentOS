@@ -9,6 +9,7 @@ description = "Architecture-first bioinformatics agent system extending Pantheon
 requires-python = ">=3.11"
 dependencies = [
     "anndata>=0.12,<0.13",
+    "h5py>=3.10,<4",
     "pantheon-agents>=0.6.4,<0.7",
     "pydantic>=2,<3",
 ]

@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Protocol
 
 import anndata as ad
+import h5py
 import numpy as np
 from pandas.api.types import is_bool_dtype, is_numeric_dtype
 from pydantic import (
@@ -16,6 +17,13 @@ from pydantic import (
     Field,
     StrictStr,
     StringConstraints,
+    model_validator,
+)
+
+from .artifacts import (
+    ArtifactExposureClass,
+    ArtifactRepresentation,
+    ArtifactSchema,
 )
 
 
@@ -29,7 +37,86 @@ BoundedDType = Annotated[
 ]
 
 
-class H5ADInspectionError(ValueError):
+class BioFormatInspectionError(ValueError):
+    """A trusted biological-format inspection request cannot be completed."""
+
+
+class BioFormatArtifactSpec(BaseModel):
+    """One safe Artifact emitted by a trusted format inspector."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_type: BoundedName
+    exposure_class: ArtifactExposureClass
+    representation: ArtifactRepresentation
+    artifact_schema: ArtifactSchema
+
+    @model_validator(mode="after")
+    def require_safe_inspection_class(self) -> "BioFormatArtifactSpec":
+        if self.exposure_class not in {
+            ArtifactExposureClass.STRUCTURAL,
+            ArtifactExposureClass.AGGREGATE,
+        }:
+            raise ValueError(
+                "Bioformat inspection Artifacts must be STRUCTURAL or AGGREGATE"
+            )
+        return self
+
+
+class BioFormatInspectionBundle(BaseModel):
+    """Format-neutral safe Artifact specifications for one inspected RAW input."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    format_key: BoundedName
+    inspection_schema_version: BoundedName
+    artifacts: tuple[BioFormatArtifactSpec, ...] = Field(
+        min_length=1, max_length=8
+    )
+
+
+class BioFormatInspector(Protocol):
+    """Small trusted seam implemented by each supported biological format."""
+
+    format_key: str
+
+    def inspect_artifacts(self, source: str | Path) -> BioFormatInspectionBundle:
+        """Inspect a local source and return only safe Artifact specifications."""
+
+
+class BioFormatInspectionRegistry:
+    """Explicit host-selected format inspectors; it performs no content routing."""
+
+    def __init__(self, inspectors: tuple[BioFormatInspector, ...]):
+        configured: dict[str, BioFormatInspector] = {}
+        for inspector in inspectors:
+            key = str(inspector.format_key)
+            if not key:
+                raise BioFormatInspectionError(
+                    "Bioformat inspector key cannot be empty"
+                )
+            if key in configured:
+                raise BioFormatInspectionError(
+                    "Bioformat inspector keys must be unique"
+                )
+            configured[key] = inspector
+        self._inspectors = configured
+
+    def inspect(self, format_key: str, source: str | Path) -> BioFormatInspectionBundle:
+        inspector = self._inspectors.get(format_key)
+        if inspector is None:
+            raise BioFormatInspectionError(
+                "No trusted inspector is configured for this biological format"
+            )
+        bundle = inspector.inspect_artifacts(source)
+        if bundle.format_key != format_key:
+            raise BioFormatInspectionError(
+                "Bioformat inspector returned a mismatched format key"
+            )
+        return bundle
+
+
+class H5ADInspectionError(BioFormatInspectionError):
     """A trusted local input is not suitable for bounded h5ad inspection."""
 
 
@@ -63,6 +150,11 @@ class H5ADInspectionPolicy(BaseModel):
     max_name_length: int = Field(default=128, ge=16, le=128)
     max_category_label_length: int = Field(default=128, ge=16, le=256)
     high_cardinality_fraction: float = Field(default=0.8, gt=0.0, le=1.0)
+    max_source_bytes: int = Field(default=4_294_967_296, ge=1)
+    max_axis_rows: int = Field(default=1_000_000, ge=1)
+    max_source_axis_fields: int = Field(default=256, ge=1)
+    max_axis_metadata_cells: int = Field(default=25_000_000, ge=1)
+    max_eager_array_bytes: int = Field(default=1_073_741_824, ge=1)
 
 
 class H5ADFieldStructure(BaseModel):
@@ -180,6 +272,8 @@ class H5ADInspectionResult(BaseModel):
 class H5ADInspector:
     """Read one h5ad locally in backed mode and emit only bounded safe DTOs."""
 
+    format_key = "h5ad"
+
     def __init__(self, policy: H5ADInspectionPolicy | None = None):
         self.policy = policy or H5ADInspectionPolicy()
 
@@ -196,7 +290,12 @@ class H5ADInspector:
 
         data = None
         try:
+            expected_shape = self._preflight(path)
             data = ad.read_h5ad(path, backed="r")
+            if (int(data.n_obs), int(data.n_vars)) != expected_shape:
+                raise H5ADInspectionError(
+                    "h5ad axis shape changed during trusted inspection"
+                )
             return H5ADInspectionResult(
                 structural=self._structural(data),
                 aggregate=self._aggregate(data),
@@ -208,6 +307,124 @@ class H5ADInspector:
         finally:
             if data is not None and getattr(data, "isbacked", False):
                 data.file.close()
+
+    def inspect_artifacts(self, source: str | Path) -> BioFormatInspectionBundle:
+        """Convert the format-specific result into generic safe Artifact specs."""
+
+        inspection = self.inspect(source)
+        obs_fields = inspection.structural.obs.fields
+        aggregate = inspection.aggregate
+        aggregate_fields = (*aggregate.categorical, *aggregate.numeric)
+        return BioFormatInspectionBundle(
+            format_key=self.format_key,
+            inspection_schema_version="1",
+            artifacts=(
+                BioFormatArtifactSpec(
+                    artifact_type="h5ad-structural",
+                    exposure_class=ArtifactExposureClass.STRUCTURAL,
+                    representation=ArtifactRepresentation(),
+                    artifact_schema=ArtifactSchema(
+                        shape=(
+                            inspection.structural.n_obs,
+                            inspection.structural.n_vars,
+                        ),
+                        columns=tuple(field.name for field in obs_fields),
+                        dtypes={field.name: field.dtype for field in obs_fields},
+                        properties=inspection.structural.model_dump(mode="json"),
+                    ),
+                ),
+                BioFormatArtifactSpec(
+                    artifact_type="h5ad-aggregate",
+                    exposure_class=ArtifactExposureClass.AGGREGATE,
+                    representation=ArtifactRepresentation(
+                        summary=aggregate.model_dump(mode="json")
+                    ),
+                    artifact_schema=ArtifactSchema(
+                        shape=(aggregate.returned_field_count,),
+                        columns=tuple(
+                            field.field_name for field in aggregate_fields
+                        ),
+                        dtypes={
+                            field.field_name: field.dtype
+                            for field in aggregate_fields
+                        },
+                        properties={"summary_kind": "bounded_obs_aggregates"},
+                    ),
+                ),
+            ),
+        )
+
+    def _preflight(self, path: Path) -> tuple[int, int]:
+        if path.stat().st_size > self.policy.max_source_bytes:
+            raise H5ADInspectionError("h5ad input exceeds the source-size limit")
+
+        with h5py.File(path, "r") as handle:
+            n_obs, obs_fields = self._axis_layout(handle, "obs")
+            n_vars, var_fields = self._axis_layout(handle, "var")
+            if max(n_obs, n_vars) > self.policy.max_axis_rows:
+                raise H5ADInspectionError("h5ad input exceeds the axis-row limit")
+            if max(obs_fields, var_fields) > self.policy.max_source_axis_fields:
+                raise H5ADInspectionError(
+                    "h5ad input exceeds the source-axis-field limit"
+                )
+            metadata_cells = n_obs * obs_fields + n_vars * var_fields
+            if metadata_cells > self.policy.max_axis_metadata_cells:
+                raise H5ADInspectionError(
+                    "h5ad input exceeds the axis-metadata limit"
+                )
+            if self._eager_array_bytes(handle) > self.policy.max_eager_array_bytes:
+                raise H5ADInspectionError(
+                    "h5ad input exceeds the eager-array memory limit"
+                )
+        return n_obs, n_vars
+
+    @classmethod
+    def _axis_layout(cls, handle: h5py.File, axis: str) -> tuple[int, int]:
+        node = handle.get(axis)
+        if isinstance(node, h5py.Dataset):
+            if not node.shape:
+                raise H5ADInspectionError("h5ad axis metadata is malformed")
+            return int(node.shape[0]), len(node.dtype.names or ())
+        if not isinstance(node, h5py.Group):
+            raise H5ADInspectionError("h5ad axis metadata is missing")
+
+        index_key = cls._hdf5_text(node.attrs.get("_index"))
+        column_order = node.attrs.get("column-order")
+        if not index_key or column_order is None:
+            raise H5ADInspectionError("h5ad axis metadata is malformed")
+        index_node = node.get(index_key)
+        if isinstance(index_node, h5py.Dataset) and index_node.shape:
+            row_count = int(index_node.shape[0])
+        elif isinstance(index_node, h5py.Group):
+            codes = index_node.get("codes")
+            if not isinstance(codes, h5py.Dataset) or not codes.shape:
+                raise H5ADInspectionError("h5ad axis index is malformed")
+            row_count = int(codes.shape[0])
+        else:
+            raise H5ADInspectionError("h5ad axis index is malformed")
+        return row_count, len(column_order)
+
+    @staticmethod
+    def _hdf5_text(value) -> str | None:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="strict")
+        return value if isinstance(value, str) else None
+
+    @staticmethod
+    def _eager_array_bytes(handle: h5py.File) -> int:
+        total = 0
+
+        def add_dataset(name: str, node) -> None:
+            nonlocal total
+            parts = name.split("/")
+            if parts[0] == "X" or parts[:2] == ["raw", "X"]:
+                return
+            if isinstance(node, h5py.Dataset):
+                logical_bytes = int(node.size) * max(1, int(node.dtype.itemsize))
+                total += max(logical_bytes, int(node.id.get_storage_size()))
+
+        handle.visititems(add_dataset)
+        return total
 
     def _structural(self, data) -> H5ADStructuralSummary:
         layer_names, layer_overflow = self._bounded_names(data.layers.keys())
@@ -237,14 +454,15 @@ class H5ADInspector:
     def _axis(self, frame) -> H5ADAxisStructure:
         columns = list(frame.columns)
         selected = columns[: self.policy.max_axis_fields]
+        bounded = self._unique_bounded_names(selected)
         return H5ADAxisStructure(
             field_count=len(columns),
             fields=tuple(
                 H5ADFieldStructure(
-                    name=self._name(column),
+                    name=name,
                     dtype=self._dtype(frame[column].dtype),
                 )
-                for column in selected
+                for column, name in zip(selected, bounded, strict=True)
             ),
             overflow_field_count=max(0, len(columns) - len(selected)),
             index_dtype=self._dtype(frame.index.dtype),
@@ -276,12 +494,13 @@ class H5ADInspector:
     def _named_arrays(self, mapping) -> tuple[tuple[H5ADNamedArrayStructure, ...], int]:
         keys = list(mapping.keys())
         selected = keys[: self.policy.max_named_arrays]
+        bounded = self._unique_bounded_names(selected)
         values = tuple(
             H5ADNamedArrayStructure(
-                key=self._name(key),
+                key=name,
                 shape=tuple(int(item) for item in mapping[key].shape),
             )
-            for key in selected
+            for key, name in zip(selected, bounded, strict=True)
         )
         return values, max(0, len(keys) - len(selected))
 
@@ -289,25 +508,24 @@ class H5ADInspector:
         names = list(values)
         selected = names[: self.policy.max_named_arrays]
         return (
-            tuple(self._name(value) for value in selected),
+            self._unique_bounded_names(selected),
             max(0, len(names) - len(selected)),
         )
 
     def _aggregate(self, data) -> H5ADAggregateSummary:
         categorical = []
         numeric = []
-        supported = 0
-        returned = 0
-        for column in data.obs.columns:
+        columns = list(data.obs.columns)
+        supported = len(columns)
+        selected = columns[: self.policy.max_aggregate_fields]
+        self._unique_bounded_names(selected)
+        for column in selected:
             series = data.obs[column]
-            supported += 1
-            if returned >= self.policy.max_aggregate_fields:
-                continue
             if is_numeric_dtype(series.dtype) and not is_bool_dtype(series.dtype):
                 numeric.append(self._numeric(column, series))
             else:
                 categorical.append(self._categorical(column, series, int(data.n_obs)))
-            returned += 1
+        returned = len(selected)
         return H5ADAggregateSummary(
             n_obs=int(data.n_obs),
             supported_field_count=supported,
@@ -387,6 +605,14 @@ class H5ADInspector:
         text = str(value) or "(empty)"
         return text[: self.policy.max_name_length]
 
+    def _unique_bounded_names(self, values) -> tuple[str, ...]:
+        bounded = tuple(self._name(value) for value in values)
+        if len(bounded) != len(set(bounded)):
+            raise H5ADInspectionError(
+                "h5ad field or key names collide after safe bounding"
+            )
+        return bounded
+
     @staticmethod
     def _dtype(value) -> str:
         text = str(value) or "unknown"
@@ -401,6 +627,11 @@ class H5ADInspector:
 
 
 __all__ = [
+    "BioFormatArtifactSpec",
+    "BioFormatInspectionBundle",
+    "BioFormatInspectionError",
+    "BioFormatInspectionRegistry",
+    "BioFormatInspector",
     "H5ADAggregateSummary",
     "H5ADCategoryCount",
     "H5ADCategoryEnumeration",
