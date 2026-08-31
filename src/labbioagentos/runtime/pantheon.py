@@ -242,6 +242,7 @@ class PantheonCapabilityStageInvoker:
         evidence_sources: tuple[LabBioRuntimeToolSet, ...] = (),
         trace_recorder: RunTraceRecorder | None = None,
         preserve_explicit_completion: bool = False,
+        max_turns: int | None = None,
     ):
         if not isinstance(team, PantheonTeam):
             raise TypeError("team must be a PantheonTeam")
@@ -255,6 +256,7 @@ class PantheonCapabilityStageInvoker:
         self.evidence_sources = evidence_sources
         self.trace_recorder = trace_recorder
         self.preserve_explicit_completion = preserve_explicit_completion
+        self.max_turns = max_turns
 
     async def invoke(self, stage_input: RuntimeStageInput) -> CapabilityEvidenceBundle:
         for source in self.evidence_sources:
@@ -293,9 +295,12 @@ class PantheonCapabilityStageInvoker:
             None,
         )
         active_session = None
+        run_kwargs = {"max_turns": self.max_turns} if self.max_turns is not None else {}
         try:
             if plugin is None:
-                response = await self.team.run(stage_input.model_dump_json())
+                response = await self.team.run(
+                    stage_input.model_dump_json(), **run_kwargs
+                )
             else:
                 context = StageContext(
                     run_id=stage_input.run_id,
@@ -317,6 +322,7 @@ class PantheonCapabilityStageInvoker:
                         stage_input.model_dump_json(),
                         process_step_message=active_session.observe,
                         process_chunk=active_session.observe,
+                        **run_kwargs,
                     )
                     active_session.raise_trace_error()
         except Exception as exc:
@@ -421,6 +427,7 @@ class PantheonTwoModeStageInvoker:
         capability_invoker: PantheonCapabilityStageInvoker,
         finalization_invoker: "PantheonTypedStageInvoker",
         boundary_observer: Callable[[str, object], None] | None = None,
+        evidence_validator: Callable[[CapabilityEvidenceBundle], None] | None = None,
     ):
         if capability_invoker.profile.profile_key != finalization_invoker.profile.profile_key:
             raise RuntimeProfileConfigurationError(
@@ -429,11 +436,14 @@ class PantheonTwoModeStageInvoker:
         self.capability_invoker = capability_invoker
         self.finalization_invoker = finalization_invoker
         self.boundary_observer = boundary_observer
+        self.evidence_validator = evidence_validator
 
     async def invoke(self, stage_input: RuntimeStageInput) -> RuntimeStageResult:
         evidence = await self.capability_invoker.invoke(stage_input)
         if self.boundary_observer is not None:
             self.boundary_observer("capability_evidence", evidence)
+        if self.evidence_validator is not None:
+            self.evidence_validator(evidence)
         return await self.finalization_invoker.invoke(
             stage_input,
             capability_evidence=evidence,

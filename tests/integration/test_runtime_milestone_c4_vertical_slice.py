@@ -224,7 +224,13 @@ def _capability_protocol(stage: WorkflowStage) -> str:
         ),
         WorkflowStage.EXECUTE: (
             "Generate task-specific Python now and call execution_submit exactly once. "
-            "Submit an ExecutionPlanDraft only. Python 3.11 standard library is guaranteed; "
+            "The tool call has exactly one outer argument named draft. That draft object "
+            "must have these exact fields: runtime, image_key, script_content, "
+            "input_artifact_ids, parameters, requested_outputs, resources, and "
+            "network_required. Each requested_outputs item has relative_path, "
+            "artifact_type, requested_exposure, and output_contract_id. The resources "
+            "object has cpus, memory_mb, pids_limit, and timeout_seconds. Do not send "
+            "trusted identity or scope fields. Python 3.11 standard library is guaranteed; "
             "pandas/numpy are not. Input files are below LABBIO_INPUT_DIR, outputs below "
             "LABBIO_OUTPUT_DIR, and LABBIO_PARAMETERS_PATH names the parameters file. "
             "Use image_key python-c4, the opaque RAW Artifact ID, network_required false, "
@@ -402,6 +408,11 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
             finalization_prompt_values={"protocol": _finalization_protocol(stage)},
             capability_phase_enabled=(stage is not WorkflowStage.LEARN),
             preserve_capability_completion=(stage is WorkflowStage.PLAN),
+            required_capabilities=(
+                ("execution_submit",)
+                if stage is WorkflowStage.EXECUTE
+                else (("report_submit",) if stage is WorkflowStage.REPORT else ())
+            ),
         )
         invoker = PerInvocationPantheonStageInvoker(
             assembly=assembly,

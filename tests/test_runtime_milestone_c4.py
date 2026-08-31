@@ -171,11 +171,11 @@ async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_m
             mode = kwargs.get("invocation_mode")
             made_teams.append((mode, team))
             if mode is RuntimeInvocationMode.CAPABILITY:
-                async def run(_self, _message):
+                async def run(_self, _message, **_kwargs):
                     assert workflow_state["stage"] == "INTAKE"
                     return SimpleNamespace(content="Explicit capability outcome.")
             else:
-                async def run(_self, _message):
+                async def run(_self, _message, **_kwargs):
                     return SimpleNamespace(content=_result().model_dump(mode="json"))
             team.run = MethodType(run, team)
             return team, prompts

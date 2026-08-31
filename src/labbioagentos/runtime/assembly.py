@@ -9,7 +9,12 @@ from labbioagentos.contracts import WorkflowStage
 from labbioagentos.governance import Principal, WorkspaceContext
 from labbioagentos.trace import RunTraceRecorder
 
-from .contracts import RuntimeStageInput, RuntimeStageResult
+from .contracts import (
+    CapabilityEvidenceBundle,
+    CapabilityEvidenceStatus,
+    RuntimeStageInput,
+    RuntimeStageResult,
+)
 from .pantheon import (
     PantheonCapabilityStageInvoker,
     PantheonRuntimeFactory,
@@ -39,6 +44,8 @@ class RuntimeStageAssemblySpec:
     max_delegate_depth: int = 5
     capability_phase_enabled: bool = True
     preserve_capability_completion: bool = False
+    required_capabilities: tuple[str, ...] = ()
+    max_capability_turns: int = 24
 
     def __post_init__(self) -> None:
         if self.stage_id in {
@@ -49,10 +56,15 @@ class RuntimeStageAssemblySpec:
             raise ValueError("Runtime assembly is limited to the nine main stages")
         if self.max_delegate_depth < 1:
             raise ValueError("max_delegate_depth must be positive")
+        if self.max_capability_turns < 4 or self.max_capability_turns > 128:
+            raise ValueError("max_capability_turns must be between 4 and 128")
+        if not set(self.required_capabilities).issubset(self.capability_allowlist):
+            raise ValueError("required_capabilities must be within the allowlist")
         if not self.capability_phase_enabled and (
             self.capability_allowlist
             or self.capability_peer_profile_keys
             or self.preserve_capability_completion
+            or self.required_capabilities
         ):
             raise ValueError(
                 "Disabled capability phase cannot expose capabilities or peers"
@@ -169,12 +181,32 @@ class PerInvocationPantheonStageInvoker:
             preserve_explicit_completion=(
                 self.assembly.preserve_capability_completion
             ),
+            max_turns=self.assembly.max_capability_turns,
         )
         return await PantheonTwoModeStageInvoker(
             capability,
             finalizer,
             boundary_observer=self.boundary_observer,
+            evidence_validator=self._validate_required_capabilities,
         ).invoke(stage_input)
+
+    def _validate_required_capabilities(
+        self, evidence: CapabilityEvidenceBundle
+    ) -> None:
+        completed = {
+            item.capability_name
+            for item in evidence.items
+            if item.status is CapabilityEvidenceStatus.COMPLETED
+        }
+        missing = tuple(
+            capability
+            for capability in self.assembly.required_capabilities
+            if capability not in completed
+        )
+        if missing:
+            raise RuntimeProfileConfigurationError(
+                "Required stage capabilities did not complete: " + ", ".join(missing)
+            )
 
     def _validate_catalog_binding(self) -> None:
         try:
