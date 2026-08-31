@@ -388,7 +388,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
             plugin_factory = lambda: [
                 DelegationPolicyPlugin(
                     InMemoryDelegationPolicy(
-                        {"coordinator_agent": {"reviewer_agent"}}
+                        {"coordinatoragent": {"revieweragent"}}
                     )
                 )
             ]
@@ -505,8 +505,8 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         for event in checkpoint_a
         if event.event_type is TraceEventType.DELEGATION_COMPLETED
     )
-    assert delegation.caller == "coordinator_agent"
-    assert delegation.target == "reviewer_agent"
+    assert delegation.caller == "coordinatoragent"
+    assert delegation.target == "revieweragent"
     assert delegation.parent_invocation_id is not None
     assert delegation.execution_context_id
     assert delegation.parent_tool_call_id
