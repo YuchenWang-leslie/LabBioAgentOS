@@ -2,41 +2,48 @@
 
 ## Overall finding
 
-The architecture is structurally suitable but the repository is not yet ready
-to execute a governed real-LLM vertical slice. The blockers below require
-LabBio integration work, not a redesign and not a PantheonOS core patch.
+The historical integration blockers below were resolved through the C2-C4
+runtime milestones. C4 was accepted at
+`4c13e8d853f1b478b914992bdcb360c420966c4c` after a real MiMo, Pantheon, and
+Docker nine-stage synthetic vertical slice. This is source/runtime acceptance,
+not evidence of production deployment or production health.
 
-## BLOCKING
+C5 resolves the application-composition gap through a generic
+`LabBioApplication` boundary: callers can admit trusted inputs, create a scoped
+run, and drive the existing coordinator without reproducing the C4 integration
+test wiring. The opt-in real MiMo, Pantheon, and Docker test completed the same
+nine-stage synthetic path through this application boundary. C5 does not add a
+biological workflow.
 
-| Gap | Evidence in current code | Why it blocks the slice | Required boundary (not implementation here) |
-|---|---|---|---|
-| Scope-bound run creation is missing | `WorkflowRun` ownership fields are frozen, while `WorkflowEngine.create_run()` accepts only `retry_limit` and constructs local default IDs | A real authenticated/project run cannot be created with its true immutable scope | Accept a trusted `WorkspaceContext`/scope at run creation and validate it before storing the run |
-| No runtime coordinator or stage registry | Tests manually build context, invoke the adapter, record results, and transition; no application service composes these operations | There is no end-to-end loop from current stage to configured team/result/proposal while preserving WorkflowEngine ownership | Add a non-intelligent coordinator and configuration registry; never route on scientific content |
-| No real agent/profile/provider assembly | LabBio has no versioned stage prompts, agent profiles, response schemas, team factory, model selection configuration, or credential wiring | `PantheonStageAdapter` can call a supplied team, but no real governed team can currently be assembled | Configure Pantheon `Agent`/`PantheonTeam` through LabBio profiles and external credentials; use existing Pantheon model/provider mechanisms |
-| Current stage result boundary is too generic | `StageContext.metadata` and `AgentStageResult.payload` are arbitrary JSON; `NextActionProposal` is separate | The coordinator would need convention/prose inference, and arbitrary payload can carry unsafe content into trace | Introduce a bounded discriminated stage input/result envelope with an explicit typed proposal and stage-specific bodies |
-| Model-visible capability adapters are not wired | `PantheonArtifactQueryAdapter` is a plain adapter, and there are no runtime ToolSets for artifact discovery, execution, Skill, Memory, or search | A real model has no safe way to inspect inputs, submit execution, or use governed context | Add narrow per-stage ToolSets/adapter DTOs and inject them using Pantheon's existing plugin/provider extension points |
-| Execution input authorization and scope propagation are absent | `ExecutionPlan` has no workspace ownership; `MountResolver.resolve_inputs()` calls `ArtifactStore.get_ref()` directly; executor/output registration omits owner/project/lab and falls back to local defaults | A known cross-project UUID could reach mount resolution, and produced artifacts would be mis-scoped | Govern execution submission with a bound Principal/WorkspaceContext, authorize each input before resolution, and propagate exact scope to every registered artifact |
-| Execution result is not safe for model serialization | `ExecutionResult` contains full `ArtifactRef` values, whose `storage_locator` is a host path | Returning the current object through a Pantheon tool would disclose internal host paths | Define a model-safe execution receipt containing IDs and bounded status/issues only; keep full refs internal |
-| Approval-capable runtime graph is not configured | `default_workflow_definition()` contains only the nine linear stages and no USER_GATE/SEARCH/DEBUG nodes or edges | Skill use, Memory update, and policy approval cannot be represented in the default run | Provide a reviewed runtime workflow definition with only the required gate/auxiliary edges; keep general graph validation unchanged |
+## RESOLVED FOR C4
 
-The arbitrary-payload issue is also a data-safety issue: both
-`PantheonStageAdapter` and `WorkflowEngine.record_stage_result()` currently emit
-the payload into RunTrace. A typed and bounded result must replace that path
-before real artifact-derived content is used.
+| Historical gap | Current resolution |
+|---|---|
+| Scope-bound run creation | `RuntimeCoordinatorService.create_run()` validates trusted immutable `Principal` and `WorkspaceContext` through `AccessService`. |
+| Runtime coordinator and stage registry | `RuntimeCoordinatorService` and `StageRuntimeRegistry` drive exact current-stage configuration without task-content routing. |
+| Agent/profile/provider assembly | Versioned runtime profiles and `PantheonRuntimeFactory` assemble real Pantheon agents using external provider credentials. |
+| Typed stage boundary | `RuntimeStageInput` and stage-bound `RuntimeStageResult` schemas carry explicit typed proposals and bounded bodies. |
+| Model-visible capability adapters | Per-invocation `LabBioRuntimeToolSet` exposes exact-stage allowlists with bounded tool results/errors. |
+| Execution scope propagation | `ExecutionSubmissionService` injects trusted run/workspace identity, authorizes inputs, and validates output provenance. |
+| Safe execution receipt | Model-facing execution receives bounded `ExecutionReceipt`; internal `ArtifactRef.storage_locator` remains host-only. |
+| Runtime workflow and gates | `runtime_workflow_definition()` includes reviewed source-resuming USER_GATE edges while `WorkflowEngine` owns state. |
+| Artifact discovery and exposure | Paginated `artifact_list` and controlled `artifact_query` preserve absolute REMOTE_LLM denial for RAW. |
+| Report registration | `ReportSubmissionService` registers a scoped report Artifact and returns only a receipt ID. |
+| Real provider and Docker path | C4 completed all nine stages with MiMo, native Pantheon delegation, runtime-generated Python, and digest-pinned Docker. |
 
-## IMPORTANT
+## C5 APPLICATION COMPOSITION AND AUDIT
 
-| Gap | Current effect | Integration direction |
+| Classification | C4 test objects | C5 boundary |
 |---|---|---|
-| No scoped artifact discovery tool | A model must already know an artifact UUID | Add paginated `artifact_list` returning authorized metadata only |
-| No common safe tool-error contract | Provider/tool exceptions may expose inconsistent prose or internal details | Map capability errors to bounded typed envelopes at each adapter boundary |
-| No explicit model-facing result/view DTOs for Gold and Memory | Governed services return trusted domain records suitable for application code, not necessarily bounded prompt use | Add authorized, bounded candidate/view DTOs; stores remain internal |
-| Workflow gate and domain approval decisions are not coordinated | Workflow `UserDecision`, Skill decisions, and Memory decisions are separate correct contracts | Coordinator must correlate a gate ID with one pending domain proposal, apply the external decision, and resume only after success |
-| Prompt/instruction versioning is not assembled into runtime profiles | RunTrace supports InstructionRecord, but no production templates create it | Profiles should render sanitized, versioned/hashable instructions and record references without provider conversation dumps |
-| Provider-native structured output is not configured | Adapter performs post-return validation only | Prefer Pantheon `response_format`/profile schema where supported, while retaining LabBio validation as authoritative |
-| Report submission/registration boundary is unspecified | REPORT can return prose but has no narrow governed registration capability | Define a bounded report DTO and deterministic artifact registration path |
-| Search provider/citation contract is absent | Runtime cannot perform governed literature retrieval | Add later only when a selected provider and bounded citation result contract are approved; not needed by the synthetic slice |
-| Docker is unavailable on the inspected command path | The execution implementation cannot run locally in the current environment | User/environment must provide a working Docker installation and daemon; repository code must not install it |
+| APPLICATION CONFIGURATION | projects, authorization/exposure policies, storage/workspace roots, approved images, execution ceilings, output contracts, runtime profile catalog, workflow definition, stage assembly, delegation plugin | Construct and wire once in the application composition root. |
+| PER-RUN STATE | trusted Principal/WorkspaceContext, task text, WorkflowRun, input/context Artifact IDs, preflight receipt, accumulated results | Validate and bind inside one application-owned run session; callers receive an opaque handle and safe result. |
+| PER-STAGE STATE | exact stage spec, invocation ID, fresh Pantheon team, ToolSet, capability evidence, stage input/result | Continue using `PerInvocationPantheonStageInvoker`; do not cache teams or let Pantheon mutate WorkflowRun. |
+| TEST FIXTURE ONLY | synthetic CSV, grouped-mean truth, C4 prompts, inspecting Docker runner, boundary capture, expected A/B/C values | Keep in integration tests; never move into production application code. |
+
+The C5 composition root must remain configuration/orchestration only. It may
+admit a trusted local file as a scope-bound Artifact and accept caller-produced
+STRUCTURAL metadata, but it must not inspect bioformats or add a model-visible
+path reader.
 
 ## DEFERRED
 
@@ -57,24 +64,13 @@ slice:
 - production bioinformatics agent roster, images, output contracts, and
   scientific validation behavior.
 
-## Decisions requiring user approval before implementation
+## Historical decisions resolved by the accepted runtime
 
-1. **Stage result shape:** approve a common envelope with a discriminated
-   stage-specific body and explicit `NextActionProposal` (recommended), or
-   separate unrelated result models per stage.
-2. **First-slice team topology:** approve the minimal coordinator + execution +
-   reviewer profiles (recommended), recognizing that model-selected delegation
-   remains dynamic.
-3. **Runtime workflow graph:** approve which stages may enter USER_GATE and the
-   allowed resume edges for Skill use, Memory updates, and execution policy.
-4. **Execution submission contract:** approve host injection of
-   run/stage/invocation/workspace identity into a model-supplied plan draft
-   (recommended); those fields must not be model-controlled.
-5. **Live model/provider:** choose the Pantheon-supported model and credential
-   source for the opt-in integration test. Credentials remain external.
-6. **Docker prerequisite:** provide/approve a working local Docker environment
-   before the execution portion of the slice; this project must not install or
-   reconfigure it.
+The accepted choices are a common discriminated result envelope, the minimal
+coordinator/execution/reviewer profiles with model-selected delegation, the
+reviewed runtime graph, host injection of execution authority, external MiMo
+credentials, and an externally available digest-pinned Docker image. These
+choices are runtime evidence, not production deployment approval.
 
 ## PantheonOS assessment
 
@@ -82,4 +78,3 @@ No blocking gap is located in PantheonOS. Local ToolSets, LocalProvider,
 TeamPlugin injection, Agent model configuration, response formats, and native
 delegation provide the required extension points. All identified fixes belong
 in LabBioAgentOS. No Pantheon core file is proposed for modification.
-

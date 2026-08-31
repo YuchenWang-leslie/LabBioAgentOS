@@ -1,4 +1,4 @@
-"""Opt-in real MiMo + Pantheon + Docker nine-stage C4 vertical slice."""
+"""Opt-in real MiMo + Pantheon + Docker nine-stage slice through C5."""
 
 from __future__ import annotations
 
@@ -8,71 +8,47 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from labbioagentos import (
-    AccessService,
+    ApplicationExecutionProfile,
+    ApplicationRunRequest,
+    ApplicationRuntimeConfiguration,
+    ApplicationStagePlugin,
     ApprovedImage,
-    ApprovedImageRegistry,
     ArtifactConsumer,
     ArtifactExposureClass,
     ArtifactExposureDenied,
-    ArtifactExposureService,
     ArtifactQuery,
-    ArtifactRegistrationPolicy,
-    ArtifactRepresentation,
     ArtifactSchema,
     ArtifactViewType,
-    AuthorizationPolicy,
     CapabilityProfile,
     DelegationPolicyPlugin,
-    DockerCommandBuilder,
-    DockerExecutor,
     ExecutionPolicy,
-    ExecutionPreflightRequest,
-    ExecutionPreflightService,
     ExecutionRuntime,
-    ExecutionStatus,
-    ExecutionSubmissionService,
-    ExecutionWorkspaceManager,
-    ExposurePolicy,
     InMemoryDelegationPolicy,
-    InMemoryProjectStore,
     InMemoryTraceSink,
-    LocalArtifactStore,
+    LabBioApplication,
     ModelProfile,
-    PerInvocationPantheonStageInvoker,
-    PreflightInputRequirement,
+    PantheonRuntimeIntegrationError,
     Principal,
     Project,
     PromptProfile,
     ProviderConfigRef,
     ProviderTransport,
-    ReportSubmissionService,
     RequestedResources,
     ResponseSchemaRef,
     RunStatus,
-    RunTraceRecorder,
-    RuntimeCapabilityServices,
-    RuntimeCoordinatorService,
-    RuntimeInputBody,
     RuntimeProfileCatalog,
-    RuntimeReference,
-    RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
-    StageRuntimeRegistry,
-    StageRuntimeSpec,
     StructuredOutputContract,
     SubprocessDockerRunner,
     TraceEventType,
-    WorkflowEngine,
     WorkflowStage,
     WorkspaceContext,
     default_agent_profiles,
     project_run_trace,
-    runtime_workflow_definition,
 )
-from labbioagentos.execution import MountResolver, OutputCollector
-from labbioagentos.runtime import PantheonRuntimeFactory
 
 
 pytestmark = pytest.mark.skipif(
@@ -349,22 +325,9 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     resolved_image = f"{image_reference}@{image_digest}"
 
     sink = InMemoryTraceSink()
-    recorder = RunTraceRecorder(sink)
-    projects = InMemoryProjectStore()
-    projects.register(
-        Project(project_id="project-c4", lab_id="lab-c4", owner_user_id="user-c4")
-    )
-    access = AccessService(projects, AuthorizationPolicy(), trace_recorder=recorder)
     principal = Principal(user_id="user-c4", lab_id="lab-c4")
     workspace = WorkspaceContext(
         user_id="user-c4", project_id="project-c4", lab_id="lab-c4"
-    )
-    store = LocalArtifactStore(tmp_path / "artifacts", trace_recorder=recorder)
-    exposure = ArtifactExposureService(
-        store,
-        ExposurePolicy(),
-        access_service=access,
-        trace_recorder=recorder,
     )
     contract = StructuredOutputContract(
         contract_id="c4-group-summary-records-v1",
@@ -375,18 +338,13 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         required_fields=frozenset({"record_type"}),
         max_records=16,
     )
-    registration_policy = ArtifactRegistrationPolicy((contract,))
-    image_registry = ApprovedImageRegistry(
-        (
-            ApprovedImage(
-                key="python-c4",
-                reference=image_reference,
-                digest=image_digest,
-                runtime=ExecutionRuntime.PYTHON,
-                executable=("python",),
-                network_allowed=False,
-            ),
-        )
+    image = ApprovedImage(
+        key="python-c4",
+        reference=image_reference,
+        digest=image_digest,
+        runtime=ExecutionRuntime.PYTHON,
+        executable=("python",),
+        network_allowed=False,
     )
     execution_policy = ExecutionPolicy(
         allow_network=False,
@@ -396,122 +354,98 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         max_timeout_seconds=30,
     )
     runner = InspectingRunner(expected_image=resolved_image)
-    executor = DockerExecutor(
-        store=store,
-        image_registry=image_registry,
-        execution_policy=execution_policy,
-        mount_resolver=MountResolver(store, approved_input_roots=(store.root,)),
-        workspace_manager=ExecutionWorkspaceManager(tmp_path / "executions"),
-        output_collector=OutputCollector(
-            store, registration_policy, trace_recorder=recorder
-        ),
-        process_runner=runner,
-        command_builder=DockerCommandBuilder(),
-        trace_recorder=recorder,
-    )
-    submission = ExecutionSubmissionService(
-        artifact_store=store,
-        access_service=access,
-        executor=executor,
-        trace_recorder=recorder,
-    )
-    report_service = ReportSubmissionService(
-        store, access, trace_recorder=recorder
-    )
-    services = RuntimeCapabilityServices(
-        artifact_store=store,
-        artifact_exposure=exposure,
-        execution_submission=submission,
-        report_submission=report_service,
-        trace_recorder=recorder,
-    )
     visible_boundaries: list[str] = []
 
     def observe(_kind: str, value: object) -> None:
         visible_boundaries.append(_model_visible_json(value))
 
-    factory = PantheonRuntimeFactory(_catalog())
-    specs = []
+    assemblies = []
     for stage in MAIN_PATH:
-        plugin_factory = None
         peers = ()
         if stage is WorkflowStage.PLAN:
             peers = ("reviewer",)
-            plugin_factory = lambda: [
-                DelegationPolicyPlugin(
-                    InMemoryDelegationPolicy(
-                        {"coordinatoragent": {"revieweragent"}}
-                    )
-                )
-            ]
-        assembly = RuntimeStageAssemblySpec(
-            stage_id=stage,
-            root_profile_key=ROOTS[stage],
-            prompt_template_key="runtime-generic",
-            capability_allowlist=CAPABILITIES[stage],
-            capability_peer_profile_keys=peers,
-            capability_prompt_values={"protocol": _capability_protocol(stage)},
-            finalization_prompt_values={"protocol": _finalization_protocol(stage)},
-            capability_phase_enabled=(stage is not WorkflowStage.LEARN),
-            preserve_capability_completion=(stage is WorkflowStage.PLAN),
-            required_capabilities=(
-                ("execution_submit",)
-                if stage is WorkflowStage.EXECUTE
-                else (("report_submit",) if stage is WorkflowStage.REPORT else ())
-            ),
-        )
-        invoker = PerInvocationPantheonStageInvoker(
-            assembly=assembly,
-            factory=factory,
-            principal=principal,
-            workspace=workspace,
-            services=services,
-            trace_recorder=recorder,
-            plugin_factory=plugin_factory,
-            boundary_observer=observe,
-        )
-        specs.append(
-            StageRuntimeSpec(
+        assemblies.append(
+            RuntimeStageAssemblySpec(
                 stage_id=stage,
-                profile_key=ROOTS[stage],
+                root_profile_key=ROOTS[stage],
                 prompt_template_key="runtime-generic",
                 capability_allowlist=CAPABILITIES[stage],
-                invoker=invoker,
+                capability_peer_profile_keys=peers,
+                capability_prompt_values={"protocol": _capability_protocol(stage)},
+                finalization_prompt_values={
+                    "protocol": _finalization_protocol(stage)
+                },
+                capability_phase_enabled=(stage is not WorkflowStage.LEARN),
+                preserve_capability_completion=(stage is WorkflowStage.PLAN),
+                required_capabilities=(
+                    ("execution_submit",)
+                    if stage is WorkflowStage.EXECUTE
+                    else (
+                        ("report_submit",)
+                        if stage is WorkflowStage.REPORT
+                        else ()
+                    )
+                ),
             )
         )
-    coordinator = RuntimeCoordinatorService(
-        WorkflowEngine(runtime_workflow_definition(), trace_recorder=recorder),
-        StageRuntimeRegistry(specs),
-    )
-    run = coordinator.create_run(
-        principal=principal,
-        workspace=workspace,
-        access_service=access,
-        retry_limit=1,
+    application = LabBioApplication(
+        ApplicationRuntimeConfiguration(
+            artifact_root=tmp_path / "artifacts",
+            execution_workspace_root=tmp_path / "executions",
+            allowed_input_roots=(tmp_path,),
+            projects=(
+                Project(
+                    project_id="project-c4",
+                    lab_id="lab-c4",
+                    owner_user_id="user-c4",
+                ),
+            ),
+            profile_catalog=_catalog(),
+            stage_assemblies=tuple(assemblies),
+            approved_images=(image,),
+            output_contracts=(contract,),
+            execution_policy=execution_policy,
+            execution_profile=ApplicationExecutionProfile(
+                image_key="python-c4",
+                resources=RequestedResources(
+                    cpus=1,
+                    memory_mb=256,
+                    pids_limit=64,
+                    timeout_seconds=30,
+                ),
+                network_required=False,
+                output_contract_ids=(contract.contract_id,),
+            ),
+            stage_plugins=(
+                ApplicationStagePlugin(
+                    stage_id=WorkflowStage.PLAN,
+                    factory=lambda: [
+                        DelegationPolicyPlugin(
+                            InMemoryDelegationPolicy(
+                                {"coordinatoragent": {"revieweragent"}}
+                            )
+                        )
+                    ],
+                ),
+            ),
+            trace_sink=sink,
+            process_runner=runner,
+            boundary_observer=observe,
+        )
     )
 
     fixture_path = tmp_path / "synthetic.csv"
     fixture_path.write_text(FIXTURE, encoding="utf-8")
-    raw_ref = store.register_file(
+    raw_ref = application.register_input_file(
         fixture_path,
+        principal=principal,
+        workspace=workspace,
         artifact_type="c4-synthetic-csv",
-        exposure_class=ArtifactExposureClass.RAW,
-        representation=ArtifactRepresentation(),
-        owner_user_id=principal.user_id,
-        project_id=workspace.project_id,
-        lab_id=workspace.lab_id,
-        run_id=run.run_id,
-        stage_id=WorkflowStage.INTAKE,
     )
-    structural_ref = store.register(
+    structural_ref = application.register_structural_artifact(
+        principal=principal,
+        workspace=workspace,
         artifact_type="c4-synthetic-csv-structure",
-        exposure_class=ArtifactExposureClass.STRUCTURAL,
-        representation=ArtifactRepresentation(),
-        owner_user_id=principal.user_id,
-        project_id=workspace.project_id,
-        lab_id=workspace.lab_id,
-        run_id=run.run_id,
-        stage_id=WorkflowStage.INTAKE,
         schema=ArtifactSchema(
             shape=(6, 3),
             columns=("group", "value", "weight"),
@@ -519,38 +453,41 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         ),
         metadata={"source_artifact_id": str(raw_ref.artifact_id), "row_count": 6},
     )
-    artifact_references = (
-        RuntimeReference(
-            reference_id=str(raw_ref.artifact_id),
-            kind=RuntimeReferenceKind.ARTIFACT,
-            label="Opaque RAW execution input; never query or expose",
-        ),
-        RuntimeReference(
-            reference_id=str(structural_ref.artifact_id),
-            kind=RuntimeReferenceKind.ARTIFACT,
-            label="STRUCTURAL companion available for controlled views",
-        ),
-    )
-    coordinator.engine.start(run)
-
-    async def run_stage(stage: WorkflowStage, body: RuntimeInputBody | None = None):
-        assert run.current_stage is stage and run.status is RunStatus.RUNNING
-        return await coordinator.run_current_stage(
-            run,
-            instruction=(
-                USER_REQUEST
-                + f"\nOperate only within the current {stage.value} stage and its typed contract."
-            ),
-            artifact_references=artifact_references,
-            body=body,
+    handle = application.create_run(
+        ApplicationRunRequest(
+            task_text=USER_REQUEST,
+            principal=principal,
+            workspace=workspace,
+            input_artifact_ids=(raw_ref.artifact_id,),
+            context_artifact_ids=(structural_ref.artifact_id,),
         )
+    )
+    try:
+        outcome = await application.run(handle)
+    except PantheonRuntimeIntegrationError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, ValidationError):
+            safe_errors = [
+                {
+                    "location": [str(item) for item in error.get("loc", ())],
+                    "type": error.get("type"),
+                    "message": error.get("msg"),
+                }
+                for error in cause.errors(
+                    include_url=False,
+                    include_context=False,
+                    include_input=False,
+                )[:16]
+            ]
+            print("safe_runtime_validation_errors=" + json.dumps(safe_errors))
+        raise
+    run_id = handle.run_id
+    store = application.artifact_store
+    exposure = application.artifact_exposure
+    events = application.trace_events(handle)
 
-    # C4-A: real model, controlled Artifact access, and native delegation.
-    await run_stage(WorkflowStage.INTAKE)
-    await run_stage(WorkflowStage.UNDERSTAND)
-    await run_stage(WorkflowStage.PLAN)
-    assert run.current_stage is WorkflowStage.PREFLIGHT
-    checkpoint_a = sink.read(run.run_id)
+    # C4-A through C5: real model, controlled Artifact access, native delegation.
+    checkpoint_a = events
     assert any(
         event.event_type is TraceEventType.CAPABILITY_COMPLETED
         and event.payload.get("capability") in {"artifact_list", "artifact_query"}
@@ -569,56 +506,20 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     assert delegation.parent_tool_call_id
     assert delegation.chain_path
 
-    # C4-B: deterministic readiness, model-submitted draft, and real Docker.
-    preflight = ExecutionPreflightService(
-        artifact_store=store,
-        access_service=access,
-        image_registry=image_registry,
-        execution_policy=execution_policy,
-        registration_policy=registration_policy,
-        trace_recorder=recorder,
-    ).require_ready(
-        ExecutionPreflightRequest(
-            image_key="python-c4",
-            input_requirements=(
-                PreflightInputRequirement(
-                    artifact_id=raw_ref.artifact_id,
-                    exposure_class=ArtifactExposureClass.RAW,
-                ),
-            ),
-            resources=RequestedResources(
-                cpus=1, memory_mb=256, pids_limit=64, timeout_seconds=30
-            ),
-            network_required=False,
-            output_contract_ids=(contract.contract_id,),
-        ),
-        principal=principal,
-        workspace=workspace,
-        run_id=run.run_id,
-    )
-    visible_boundaries.append(preflight.model_dump_json())
-    await run_stage(
-        WorkflowStage.PREFLIGHT,
-        RuntimeInputBody(
-            notes=("Deterministic preflight receipt: " + preflight.model_dump_json(),)
-        ),
-    )
-    execute_result = await run_stage(WorkflowStage.EXECUTE)
-    assert run.current_stage is WorkflowStage.VALIDATE
+    # C4-B through C5: application-owned preflight and real governed Docker.
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.final_stage is WorkflowStage.LEARN
     assert runner.checked
     derived_refs = tuple(
         ref
         for ref in store.list_refs()
-        if ref.run_id == run.run_id
+        if ref.run_id == run_id
         and ref.stage_id is WorkflowStage.EXECUTE
         and ref.exposure_class is ArtifactExposureClass.DERIVED
     )
     assert len(derived_refs) == 1
     derived_ref = derived_refs[0]
-    assert derived_ref.artifact_id in {
-        __import__("uuid").UUID(reference.reference_id)
-        for reference in execute_result.body.output_artifact_references
-    }
+    assert outcome.derived_artifact_ids == (derived_ref.artifact_id,)
     result_view = exposure.artifact_query(
         derived_ref.artifact_id,
         ArtifactQuery(view_type=ArtifactViewType.TOP_N, limit=16),
@@ -640,7 +541,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     ]
     assert winner_records and winner_records[0].get("group") == "B"
     internal_types = {
-        ref.artifact_type: ref for ref in store.list_refs() if ref.run_id == run.run_id
+        ref.artifact_type: ref for ref in store.list_refs() if ref.run_id == run_id
     }
     for artifact_type in ("execution-script", "execution-stdout", "execution-stderr"):
         assert internal_types[artifact_type].exposure_class is ArtifactExposureClass.RAW
@@ -652,22 +553,15 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
             principal=principal,
         )
 
-    # C4-C: controlled validation/interpretation, governed report, real LEARN.
-    validate_result = await run_stage(WorkflowStage.VALIDATE)
-    interpret_result = await run_stage(WorkflowStage.INTERPRET)
-    report_result = await run_stage(WorkflowStage.REPORT)
-    learn_result = await run_stage(WorkflowStage.LEARN)
-    assert validate_result.stage_id is WorkflowStage.VALIDATE
-    assert interpret_result.stage_id is WorkflowStage.INTERPRET
-    assert report_result.stage_id is WorkflowStage.REPORT
-    assert learn_result.stage_id is WorkflowStage.LEARN
-    assert run.status is RunStatus.COMPLETED
-
+    # C4-C through C5: controlled validation/interpretation, report, and LEARN.
     report_refs = tuple(
-        ref for ref in store.list_refs() if ref.artifact_type == "report"
+        ref
+        for ref in store.list_refs()
+        if ref.run_id == run_id and ref.artifact_type == "report"
     )
     assert len(report_refs) == 1
     report_ref = report_refs[0]
+    assert outcome.report_artifact_ids == (report_ref.artifact_id,)
     assert (
         report_ref.owner_user_id,
         report_ref.project_id,
@@ -678,7 +572,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         principal.user_id,
         workspace.project_id,
         workspace.lab_id,
-        run.run_id,
+        run_id,
         WorkflowStage.REPORT,
     )
     report_text = store.load_for_view(report_ref.artifact_id).representation.stored_content
@@ -686,8 +580,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     assert "B" in report_text and "mean" in report_text.lower()
     assert str(tmp_path) not in report_text
 
-    events = sink.read(run.run_id)
-    projection = project_run_trace(events, run.run_id)
+    projection = project_run_trace(events, run_id)
     assert projection.stage_path == MAIN_PATH
     event_types = {event.event_type for event in events}
     assert {
