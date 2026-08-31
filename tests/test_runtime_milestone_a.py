@@ -254,6 +254,7 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "goal_reference",
         "workspace",
         "prior_result_references",
+        "prior_results",
         "artifact_references",
         "memory_candidate_references",
         "gold_candidate_references",

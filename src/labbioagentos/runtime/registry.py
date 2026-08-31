@@ -82,6 +82,9 @@ class StageRuntimeRegistry:
                     f"Duplicate runtime specification for {spec.stage_id.value}"
                 )
             configured[spec.stage_id] = spec
+            validator = getattr(spec.invoker, "validate_stage_spec", None)
+            if callable(validator):
+                validator(spec)
         self._specs = configured
 
     def get(self, stage_id: WorkflowStage) -> StageRuntimeSpec:
@@ -94,4 +97,3 @@ class StageRuntimeRegistry:
 
     def stages(self) -> tuple[WorkflowStage, ...]:
         return tuple(self._specs)
-

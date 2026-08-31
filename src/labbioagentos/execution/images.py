@@ -7,7 +7,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from .errors import ExecutionPlanRejected, ImageNotApprovedError
-from .models import ExecutionPlan, ExecutionRuntime
+from .models import ExecutionPlan, ExecutionRuntime, RequestedResources
 
 
 class ApprovedImage(BaseModel):
@@ -88,7 +88,21 @@ class ExecutionPolicy(BaseModel):
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
 
     def validate_plan(self, plan: ExecutionPlan, image: ApprovedImage) -> None:
-        requested = plan.resources
+        self.validate_request(
+            plan.resources,
+            network_required=plan.network_required,
+            image=image,
+        )
+
+    def validate_request(
+        self,
+        requested: RequestedResources,
+        *,
+        network_required: bool,
+        image: ApprovedImage,
+    ) -> None:
+        """Validate a script-free resource/network request during preflight."""
+
         if requested.cpus > self.max_cpus:
             raise ExecutionPlanRejected("Requested CPU limit exceeds host policy")
         if requested.memory_mb > self.max_memory_mb:
@@ -97,9 +111,9 @@ class ExecutionPolicy(BaseModel):
             raise ExecutionPlanRejected("Requested pids limit exceeds host policy")
         if requested.timeout_seconds > self.max_timeout_seconds:
             raise ExecutionPlanRejected("Requested timeout exceeds host policy")
-        if plan.network_required and not self.allow_network:
+        if network_required and not self.allow_network:
             raise ExecutionPlanRejected("Network was requested but host policy denies it")
-        if plan.network_required and not image.network_allowed:
+        if network_required and not image.network_allowed:
             raise ExecutionPlanRejected(
                 "Network was requested but the approved image does not permit it"
             )

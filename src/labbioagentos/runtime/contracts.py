@@ -146,6 +146,7 @@ class CapabilityEvidenceBundle(BaseModel):
     invocation_id: UUID
     items: tuple[CapabilityEvidenceItem, ...] = Field(default=(), max_length=64)
     delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    explicit_completion: LongText | None = None
     technical_status: Literal["COMPLETED"] = "COMPLETED"
 
 
@@ -217,6 +218,46 @@ class RuntimeInputBody(BaseModel):
     notes: tuple[ShortText, ...] = Field(default=(), max_length=32)
 
 
+class RuntimePriorResultView(BaseModel):
+    """Bounded mechanical projection of one already-validated stage result.
+
+    This is deliberately procedural context, not a provider conversation or a
+    model-generated summary of another result.  The structured body is copied
+    from the validated ``RuntimeStageResult`` and rechecked against the same
+    raw-data denylist used for capability evidence.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    result_id: UUID
+    stage_id: WorkflowStage
+    summary: LongText
+    body_kind: SafeIdentifier
+    structured_body: JsonValue
+    references: tuple[RuntimeReference, ...] = Field(default=(), max_length=128)
+
+    @field_validator("structured_body")
+    @classmethod
+    def validate_structured_body(cls, value: JsonValue) -> JsonValue:
+        if not isinstance(value, dict):
+            raise ValueError("Prior result structured_body must be an object")
+        _validate_safe_evidence(value)
+        if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) > 64_000:
+            raise ValueError("Prior result structured_body exceeds 64000 characters")
+        return value
+
+    @classmethod
+    def from_result(cls, result: "RuntimeStageResult") -> "RuntimePriorResultView":
+        return cls(
+            result_id=result.result_id,
+            stage_id=result.stage_id,
+            summary=result.summary,
+            body_kind=result.body.kind,
+            structured_body=result.body.model_dump(mode="json"),
+            references=result.references,
+        )
+
+
 class RuntimeStageInput(BaseModel):
     """Bounded value passed to a stage runtime instead of mutable domain state."""
 
@@ -231,6 +272,10 @@ class RuntimeStageInput(BaseModel):
     prior_result_references: tuple[RuntimeReference, ...] = Field(
         default=(),
         max_length=64,
+    )
+    prior_results: tuple[RuntimePriorResultView, ...] = Field(
+        default=(),
+        max_length=9,
     )
     artifact_references: tuple[RuntimeReference, ...] = Field(
         default=(),
@@ -264,6 +309,12 @@ class RuntimeStageInput(BaseModel):
             raise ValueError(
                 f"{self.stage_id.value} is not a configured main runtime stage"
             )
+        prior_json = json.dumps(
+            [item.model_dump(mode="json") for item in self.prior_results],
+            separators=(",", ":"),
+        )
+        if len(prior_json.encode("utf-8")) > 256_000:
+            raise ValueError("Prior result context exceeds 256000 bytes")
         return self
 
 

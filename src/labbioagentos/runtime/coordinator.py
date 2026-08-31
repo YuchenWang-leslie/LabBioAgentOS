@@ -21,6 +21,7 @@ from labbioagentos.workflow import InvalidRunStateError, WorkflowEngine
 from .contracts import (
     RuntimeGateDecisionView,
     RuntimeInputBody,
+    RuntimePriorResultView,
     RuntimeReference,
     RuntimeReferenceKind,
     RuntimeStageInput,
@@ -87,7 +88,7 @@ class RuntimeCoordinatorService:
             )
         stage = run.current_stage
         spec = self.registry.get(stage)
-        prior_results = self._results.get(run.run_id, ())[-64:]
+        prior_results = self._results.get(run.run_id, ())[-9:]
         prior_references = tuple(
             RuntimeReference(
                 reference_id=str(result.result_id),
@@ -95,6 +96,9 @@ class RuntimeCoordinatorService:
                 label=result.stage_id.value,
             )
             for result in prior_results
+        )
+        prior_views = tuple(
+            RuntimePriorResultView.from_result(result) for result in prior_results
         )
         gate_decisions = tuple(
             RuntimeGateDecisionView.from_record(record)
@@ -113,6 +117,7 @@ class RuntimeCoordinatorService:
                 lab_id=run.lab_id,
             ),
             prior_result_references=prior_references,
+            prior_results=prior_views,
             artifact_references=artifact_references,
             memory_candidate_references=memory_candidate_references,
             gold_candidate_references=gold_candidate_references,

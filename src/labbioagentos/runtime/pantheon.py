@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from uuid import UUID, uuid4
 
 from pantheon.agent import Agent
@@ -241,6 +241,7 @@ class PantheonCapabilityStageInvoker:
         prompt: RenderedPrompt,
         evidence_sources: tuple[LabBioRuntimeToolSet, ...] = (),
         trace_recorder: RunTraceRecorder | None = None,
+        preserve_explicit_completion: bool = False,
     ):
         if not isinstance(team, PantheonTeam):
             raise TypeError("team must be a PantheonTeam")
@@ -253,6 +254,7 @@ class PantheonCapabilityStageInvoker:
         self.prompt = prompt
         self.evidence_sources = evidence_sources
         self.trace_recorder = trace_recorder
+        self.preserve_explicit_completion = preserve_explicit_completion
 
     async def invoke(self, stage_input: RuntimeStageInput) -> CapabilityEvidenceBundle:
         for source in self.evidence_sources:
@@ -293,7 +295,7 @@ class PantheonCapabilityStageInvoker:
         active_session = None
         try:
             if plugin is None:
-                await self.team.run(stage_input.model_dump_json())
+                response = await self.team.run(stage_input.model_dump_json())
             else:
                 context = StageContext(
                     run_id=stage_input.run_id,
@@ -311,7 +313,7 @@ class PantheonCapabilityStageInvoker:
                     trace_recorder=self.trace_recorder,
                     root_invocation_id=stage_input.invocation_id,
                 ) as active_session:
-                    await self.team.run(
+                    response = await self.team.run(
                         stage_input.model_dump_json(),
                         process_step_message=active_session.observe,
                         process_chunk=active_session.observe,
@@ -357,6 +359,11 @@ class PantheonCapabilityStageInvoker:
             invocation_id=stage_input.invocation_id,
             items=tuple(items),
             delegation_trace_event_ids=delegation_event_ids,
+            explicit_completion=(
+                self._explicit_completion(response)
+                if self.preserve_explicit_completion
+                else None
+            ),
         )
         self._emit(
             stage_input,
@@ -370,6 +377,22 @@ class PantheonCapabilityStageInvoker:
             },
         )
         return bundle
+
+    @staticmethod
+    def _explicit_completion(response) -> str:
+        """Extract one bounded explicit outcome, never a provider conversation."""
+
+        content = getattr(response, "content", response)
+        if not isinstance(content, str):
+            raise RuntimeProfileConfigurationError(
+                "Preserved capability completion must be explicit text"
+            )
+        value = content.strip()
+        if not value or len(value) > 8_000:
+            raise RuntimeProfileConfigurationError(
+                "Preserved capability completion is empty or too large"
+            )
+        return value
 
     def _emit(self, stage_input, event_type, status, payload):
         if self.trace_recorder is not None:
@@ -397,6 +420,7 @@ class PantheonTwoModeStageInvoker:
         self,
         capability_invoker: PantheonCapabilityStageInvoker,
         finalization_invoker: "PantheonTypedStageInvoker",
+        boundary_observer: Callable[[str, object], None] | None = None,
     ):
         if capability_invoker.profile.profile_key != finalization_invoker.profile.profile_key:
             raise RuntimeProfileConfigurationError(
@@ -404,9 +428,12 @@ class PantheonTwoModeStageInvoker:
             )
         self.capability_invoker = capability_invoker
         self.finalization_invoker = finalization_invoker
+        self.boundary_observer = boundary_observer
 
     async def invoke(self, stage_input: RuntimeStageInput) -> RuntimeStageResult:
         evidence = await self.capability_invoker.invoke(stage_input)
+        if self.boundary_observer is not None:
+            self.boundary_observer("capability_evidence", evidence)
         return await self.finalization_invoker.invoke(
             stage_input,
             capability_evidence=evidence,

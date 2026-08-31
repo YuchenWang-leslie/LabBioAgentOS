@@ -42,6 +42,13 @@ from .registration import (
     CollectedOutput,
     OutputCollector,
 )
+from .preflight import (
+    ExecutionPreflightError,
+    ExecutionPreflightReceipt,
+    ExecutionPreflightRequest,
+    ExecutionPreflightService,
+    PreflightInputRequirement,
+)
 
 __all__ = [
     "ApprovedImage",
@@ -59,6 +66,10 @@ __all__ = [
     "ExecutionPlan",
     "ExecutionPlanDraft",
     "ExecutionPlanRejected",
+    "ExecutionPreflightError",
+    "ExecutionPreflightReceipt",
+    "ExecutionPreflightRequest",
+    "ExecutionPreflightService",
     "ExecutionReceipt",
     "ExecutionSubmissionError",
     "ExecutionSubmissionService",
@@ -76,6 +87,7 @@ __all__ = [
     "OutputCollectionError",
     "OutputCollector",
     "ProcessOutcome",
+    "PreflightInputRequirement",
     "RequestedResources",
     "ResolvedMount",
     "StructuredOutputContract",

@@ -70,6 +70,16 @@ class ArtifactRegistrationPolicy:
             entries[contract.contract_id] = contract
         self._contracts = entries
 
+    def resolve_contract(self, contract_id: str) -> StructuredOutputContract:
+        """Resolve trusted output shape without reading a future output file."""
+
+        try:
+            return self._contracts[contract_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"Output contract {contract_id!r} is not approved"
+            ) from exc
+
     def assess(
         self,
         spec: OutputArtifactSpec,
@@ -86,8 +96,9 @@ class ArtifactRegistrationPolicy:
                 spec,
                 "Requested DERIVED exposure has no approved output contract.",
             )
-        contract = self._contracts.get(spec.output_contract_id)
-        if contract is None:
+        try:
+            contract = self.resolve_contract(spec.output_contract_id)
+        except ValueError:
             return self._raw_decision(
                 spec,
                 "Requested output contract is not approved.",

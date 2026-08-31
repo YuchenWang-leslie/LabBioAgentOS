@@ -13,6 +13,7 @@ from .contracts import (
     ReportStageBody,
     RuntimeGateDecisionView,
     RuntimeInputBody,
+    RuntimePriorResultView,
     RuntimeReference,
     RuntimeReferenceKind,
     RuntimeStageBody,
@@ -21,6 +22,10 @@ from .contracts import (
     RuntimeWorkspaceIdentifiers,
     UnderstandStageBody,
     ValidateStageBody,
+)
+from .assembly import (
+    PerInvocationPantheonStageInvoker,
+    RuntimeStageAssemblySpec,
 )
 from .coordinator import (
     RuntimeCoordinatorError,
@@ -93,6 +98,7 @@ __all__ = [
     "PantheonRuntimeIntegrationError",
     "PantheonTypedStageInvoker",
     "PantheonTwoModeStageInvoker",
+    "PerInvocationPantheonStageInvoker",
     "PlanStageBody",
     "PreflightStageBody",
     "ReportStageBody",
@@ -100,6 +106,7 @@ __all__ = [
     "RuntimeCoordinatorError",
     "RuntimeCoordinatorService",
     "RuntimeInputBody",
+    "RuntimePriorResultView",
     "RuntimeCapabilityContext",
     "RuntimeCapabilityServices",
     "RuntimeProfileCatalog",
@@ -110,6 +117,7 @@ __all__ = [
     "RuntimeStageBody",
     "RuntimeStageInput",
     "RuntimeStageResult",
+    "RuntimeStageAssemblySpec",
     "RuntimeWorkspaceIdentifiers",
     "PromptProfile",
     "ProviderConfigRef",
