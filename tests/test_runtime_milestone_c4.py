@@ -43,6 +43,7 @@ from labbioagentos import (
     ResponseSchemaRef,
     RunTraceRecorder,
     RuntimeCapabilityServices,
+    RuntimeCapabilityContext,
     RuntimeInvocationMode,
     RuntimePriorResultView,
     RuntimeProfileCatalog,
@@ -223,7 +224,13 @@ async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_m
     capability_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.CAPABILITY]
     final_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.FINALIZE]
     assert all(team.team_agents[0].response_format is None for team in capability_teams)
-    assert all(team.team_agents[0].response_format is RuntimeStageResult for team in final_teams)
+    assert all(
+        issubclass(team.team_agents[0].response_format, RuntimeStageResult)
+        and team.team_agents[0]
+        .response_format.model_json_schema()["properties"]["stage_id"]["const"]
+        == WorkflowStage.INTAKE.value
+        for team in final_teams
+    )
     assert all(
         not any(
             isinstance(provider, LabBioRuntimeToolSet)
@@ -411,3 +418,48 @@ def test_deterministic_preflight_rejects_unapproved_execution_envelope(boundary,
             workspace=workspace,
             run_id=uuid4(),
         )
+
+
+@pytest.mark.asyncio
+async def test_execution_draft_validation_returns_safe_actionable_field_feedback(
+    boundary,
+):
+    _, principal, workspace, store, exposure = boundary
+    toolset = LabBioRuntimeToolSet(
+        RuntimeCapabilityContext(
+            principal=principal,
+            workspace=workspace,
+            run_id=uuid4(),
+            stage_id=WorkflowStage.EXECUTE,
+            invocation_id=uuid4(),
+            capability_allowlist=("execution_submit",),
+        ),
+        RuntimeCapabilityServices(
+            artifact_store=store,
+            artifact_exposure=exposure,
+            execution_submission=SimpleNamespace(submit=lambda *_args, **_kwargs: None),
+        ),
+    )
+
+    result = await toolset.execution_submit(
+        {
+            "runtime": "python",
+            "image_key": "python-c4",
+            "script_content": "print('safe synthetic script')",
+        }
+    )
+
+    assert result["error"]["error_code"] == "INVALID_REQUEST"
+    assert result["error"]["safe_message"] == (
+        "Invalid request fields: runtime (expected 'PYTHON')."
+    )
+
+
+def test_non_schema_value_errors_remain_generic_and_do_not_echo_input():
+    secret = "/private/host/path/SHOULD_NOT_LEAK"
+
+    error = LabBioRuntimeToolSet._safe_error(ValueError(secret))
+
+    assert error.error_code == "INVALID_REQUEST"
+    assert error.safe_message == "The capability request is invalid."
+    assert secret not in error.model_dump_json()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from enum import StrEnum
+from functools import lru_cache
 from typing import Annotated, Literal, TypeAlias
 from uuid import UUID, uuid4
 
@@ -15,6 +16,7 @@ from pydantic import (
     JsonValue,
     StrictStr,
     StringConstraints,
+    create_model,
     field_validator,
     model_validator,
 )
@@ -455,3 +457,34 @@ class RuntimeStageResult(BaseModel):
                 f"{self.stage_id.value!r}"
             )
         return self
+
+
+_STAGE_BODY_TYPES = {
+    WorkflowStage.INTAKE: IntakeStageBody,
+    WorkflowStage.UNDERSTAND: UnderstandStageBody,
+    WorkflowStage.PLAN: PlanStageBody,
+    WorkflowStage.PREFLIGHT: PreflightStageBody,
+    WorkflowStage.EXECUTE: ExecuteStageBody,
+    WorkflowStage.VALIDATE: ValidateStageBody,
+    WorkflowStage.INTERPRET: InterpretStageBody,
+    WorkflowStage.REPORT: ReportStageBody,
+    WorkflowStage.LEARN: LearnStageBody,
+}
+
+
+@lru_cache(maxsize=9)
+def runtime_stage_result_format(
+    stage_id: WorkflowStage,
+) -> type[RuntimeStageResult]:
+    """Constrain provider generation to the assembly's exact trusted stage."""
+
+    try:
+        body_type = _STAGE_BODY_TYPES[stage_id]
+    except KeyError as exc:
+        raise ValueError(f"No runtime result format for stage {stage_id.value}") from exc
+    return create_model(
+        f"{stage_id.value.title()}RuntimeStageResult",
+        __base__=RuntimeStageResult,
+        stage_id=(Literal[stage_id], stage_id),
+        body=(body_type, ...),
+    )

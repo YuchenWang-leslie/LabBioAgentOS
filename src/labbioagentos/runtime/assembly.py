@@ -136,6 +136,7 @@ class PerInvocationPantheonStageInvoker:
             (root_key,),
             prompt_values=prompt_values,
             invocation_mode=RuntimeInvocationMode.FINALIZE,
+            finalization_stage=self.assembly.stage_id,
         )
         finalizer = PantheonTypedStageInvoker(
             final_team,

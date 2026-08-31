@@ -131,8 +131,20 @@ CAPABILITIES = {
 }
 
 
+def _required_environment(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        pytest.fail(f"{name} is required when LABBIO_RUN_LIVE_C4=1")
+    return value
+
+
+def _mount_fields(value: str) -> dict[str, str]:
+    return dict(part.split("=", 1) for part in value.split(",") if "=" in part)
+
+
 class InspectingRunner(SubprocessDockerRunner):
-    def __init__(self):
+    def __init__(self, *, expected_image: str):
+        self.expected_image = expected_image
         self.checked = False
         self.container_name = None
 
@@ -145,10 +157,30 @@ class InspectingRunner(SubprocessDockerRunner):
         assert argv[argv.index("--pids-limit") + 1] == "64"
         assert argv[argv.index("--cap-drop") + 1] == "ALL"
         assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+        assert argv[argv.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+        assert argv[argv.index("--tmpfs") + 1].startswith(
+            "/tmp:rw,noexec,nosuid,size=64m"
+        )
         assert timeout_seconds == 30
-        assert f"python:3.11-slim@{IMAGE_DIGEST}" in argv
+        assert self.expected_image in argv
         assert "--privileged" not in argv
-        assert not any("docker.sock" in item for item in argv)
+        assert "--network=host" not in argv
+        assert not any("/var/run/docker.sock" in item for item in argv)
+        mounts = [
+            argv[index + 1]
+            for index, value in enumerate(argv[:-1])
+            if value == "--mount"
+        ]
+        by_target = {_mount_fields(value)["target"]: value for value in mounts}
+        assert by_target["/labbio/script.py"].endswith(",readonly")
+        assert by_target["/labbio/parameters.json"].endswith(",readonly")
+        assert not by_target["/workspace/outputs"].endswith(",readonly")
+        inputs = [
+            value
+            for target, value in by_target.items()
+            if target.startswith("/labbio/inputs/")
+        ]
+        assert len(inputs) == 1 and inputs[0].endswith(",readonly")
         self.container_name = argv[argv.index("--name") + 1]
         self.checked = True
         return super().run(argv, timeout_seconds=timeout_seconds)
@@ -185,7 +217,7 @@ def _catalog() -> RuntimeProfileCatalog:
                 ),
                 transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
                 thinking_enabled=False,
-                max_output_tokens=4_096,
+                max_output_tokens=8_192,
             ),
         ),
         schemas=(ResponseSchemaRef(),),
@@ -215,8 +247,10 @@ def _capability_protocol(stage: WorkflowStage) -> str:
             "METADATA and/or SCHEMA; do not query the RAW artifact."
         ),
         WorkflowStage.PLAN: (
-            "Use list_agents and native call_agent to obtain exactly one independent "
-            "peer review from an allowed agent, then synthesize a task plan."
+            "Use list_agents synchronously with _background false, then use native "
+            "call_agent to obtain exactly one independent peer review. The allowed "
+            "target's canonical agent_name is ReviewerAgent; use that exact name, "
+            "then synthesize a task plan."
         ),
         WorkflowStage.PREFLIGHT: (
             "You may inspect the STRUCTURAL companion. Treat the supplied deterministic "
@@ -233,7 +267,10 @@ def _capability_protocol(stage: WorkflowStage) -> str:
             "trusted identity or scope fields. Python 3.11 standard library is guaranteed; "
             "pandas/numpy are not. Input files are below LABBIO_INPUT_DIR, outputs below "
             "LABBIO_OUTPUT_DIR, and LABBIO_PARAMETERS_PATH names the parameters file. "
-            "Use image_key python-c4, the opaque RAW Artifact ID, network_required false, "
+            "Mounted Artifact filenames are opaque and do not preserve source suffixes; "
+            "recursively discover regular input files without filtering by extension. "
+            "Use runtime PYTHON, image_key python-c4, the opaque RAW Artifact ID, "
+            "network_required false, "
             "resources cpus=1 memory_mb=256 pids_limit=64 timeout_seconds=30, and declare "
             "result.json as artifact_type c4-group-summary requested_exposure DERIVED with "
             "output_contract_id c4-group-summary-records-v1. The JSON must contain exactly "
@@ -282,6 +319,9 @@ def _finalization_protocol(stage: WorkflowStage) -> str:
     return (
         f"FINALIZE MODE for exact stage {stage.value}. LabBio tools are unavailable. "
         "Use only bounded stage input, validated prior_results, and capability_evidence. "
+        "Project that evidence compactly: do not repeat the input or evidence, keep the "
+        "summary under 500 characters, use at most eight items in any list, and keep "
+        "each list item under 500 characters. "
         f"Return exactly one strict RuntimeStageResult whose stage_id and body kind are "
         f"{stage.value}. {requirements} For NextActionProposal use {action}. "
         "TRANSITION requires target_stage. user_prompt and domain_reference_id are only "
@@ -301,6 +341,12 @@ def _model_visible_json(value) -> str:
 async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     assert os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY must be mapped externally"
     assert os.environ.get("OPENAI_API_BASE"), "OPENAI_API_BASE must be mapped externally"
+    image_reference = _required_environment("LABBIO_C4_IMAGE_REFERENCE")
+    image_digest = _required_environment("LABBIO_C4_IMAGE_DIGEST")
+    assert "@" not in image_reference
+    assert image_reference.rsplit("/", 1)[-1] == "python:3.11-slim"
+    assert image_digest == IMAGE_DIGEST
+    resolved_image = f"{image_reference}@{image_digest}"
 
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink)
@@ -334,8 +380,8 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         (
             ApprovedImage(
                 key="python-c4",
-                reference="python:3.11-slim",
-                digest=IMAGE_DIGEST,
+                reference=image_reference,
+                digest=image_digest,
                 runtime=ExecutionRuntime.PYTHON,
                 executable=("python",),
                 network_allowed=False,
@@ -349,7 +395,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         max_pids=64,
         max_timeout_seconds=30,
     )
-    runner = InspectingRunner()
+    runner = InspectingRunner(expected_image=resolved_image)
     executor = DockerExecutor(
         store=store,
         image_registry=image_registry,

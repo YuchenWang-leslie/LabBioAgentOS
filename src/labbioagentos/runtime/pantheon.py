@@ -19,7 +19,7 @@ from labbioagentos.trace import (
     RunTraceRecorder,
     TraceEventType,
 )
-from labbioagentos.contracts import StageContext
+from labbioagentos.contracts import StageContext, WorkflowStage
 from labbioagentos.teams.delegation import (
     DelegationPolicyPlugin,
     delegation_session,
@@ -115,6 +115,7 @@ class PantheonRuntimeFactory:
         prompt_values: dict[str, str] | None = None,
         toolset: ToolSet | None = None,
         invocation_mode: RuntimeInvocationMode = RuntimeInvocationMode.FINALIZE,
+        finalization_stage: WorkflowStage | None = None,
     ) -> tuple[Agent, RenderedPrompt]:
         try:
             profile = self.catalog.agents[profile_key]
@@ -129,6 +130,13 @@ class PantheonRuntimeFactory:
             raise RuntimeProfileConfigurationError(
                 "FINALIZE mode cannot expose a LabBio ToolSet"
             )
+        if (
+            invocation_mode is RuntimeInvocationMode.CAPABILITY
+            and finalization_stage is not None
+        ):
+            raise RuntimeProfileConfigurationError(
+                "CAPABILITY mode cannot bind a finalization stage schema"
+            )
         model_identifier = self._configure_transport(model)
         model_params = {"thinking": model.thinking_enabled}
         if model.max_output_tokens is not None:
@@ -142,7 +150,7 @@ class PantheonRuntimeFactory:
             response_format=(
                 None
                 if invocation_mode is RuntimeInvocationMode.CAPABILITY
-                else schema.response_format()
+                else schema.response_format(finalization_stage)
             ),
             use_memory=False,
         )
@@ -208,6 +216,7 @@ class PantheonRuntimeFactory:
         plugins: list | None = None,
         max_delegate_depth: int = 5,
         invocation_mode: RuntimeInvocationMode = RuntimeInvocationMode.FINALIZE,
+        finalization_stage: WorkflowStage | None = None,
     ) -> tuple[PantheonTeam, dict[str, RenderedPrompt]]:
         agents = []
         rendered = {}
@@ -217,6 +226,7 @@ class PantheonRuntimeFactory:
                 prompt_values=(prompt_values or {}).get(profile_key),
                 toolset=(toolsets or {}).get(profile_key),
                 invocation_mode=invocation_mode,
+                finalization_stage=finalization_stage,
             )
             agents.append(agent)
             rendered[profile_key] = prompt

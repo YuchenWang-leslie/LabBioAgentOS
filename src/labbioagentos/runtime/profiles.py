@@ -9,7 +9,9 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, model_validator
 
-from .contracts import RuntimeStageResult
+from labbioagentos.contracts import WorkflowStage
+
+from .contracts import RuntimeStageResult, runtime_stage_result_format
 
 
 Key = Annotated[
@@ -56,8 +58,10 @@ class ResponseSchemaRef(BaseModel):
     schema_id: Key = "runtime-stage-result"
     version: Key = "1"
 
-    def response_format(self):
-        return RuntimeStageResult
+    def response_format(self, stage_id: WorkflowStage | None = None):
+        if stage_id is None:
+            return RuntimeStageResult
+        return runtime_stage_result_format(stage_id)
 
 
 class CapabilityProfile(BaseModel):

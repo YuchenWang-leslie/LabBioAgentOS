@@ -334,7 +334,7 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @tool
     async def execution_submit(self, draft: dict) -> dict:
-        """Submit an untrusted execution draft through the governed executor bridge."""
+        """Submit a governed draft; use the exact PYTHON literal for draft.runtime."""
         async def submit():
             service = self._required(self.services.execution_submission, "execution")
             return await service.submit(
@@ -651,7 +651,42 @@ class LabBioRuntimeToolSet(ToolSet):
     def _safe_error(exc: Exception) -> ToolError:
         if isinstance(exc, AuthorizationDenied):
             return ToolError(error_code="AUTHORIZATION_DENIED", safe_message="Access denied by policy.")
-        if isinstance(exc, (ValueError, ValidationError)):
+        if isinstance(exc, ValidationError):
+            summaries: list[str] = []
+            for issue in exc.errors(include_url=False, include_input=False)[:8]:
+                location = ".".join(str(item) for item in issue.get("loc", ()))
+                location = location or "<request>"
+                issue_type = str(issue.get("type", "invalid"))
+                if issue_type == "enum":
+                    expected = issue.get("ctx", {}).get("expected")
+                    if (
+                        isinstance(expected, str)
+                        and len(expected) <= 128
+                        and "\n" not in expected
+                        and "\r" not in expected
+                    ):
+                        description = f"expected {expected}"
+                    else:
+                        description = "invalid enum value"
+                elif issue_type == "missing":
+                    description = "field required"
+                elif issue_type == "extra_forbidden":
+                    description = "field not allowed"
+                elif issue_type in {"dict_type", "model_type"}:
+                    description = "expected object"
+                else:
+                    description = issue_type.replace("_", " ")[:128]
+                summaries.append(f"{location} ({description})")
+            detail = "; ".join(summaries)
+            return ToolError(
+                error_code="INVALID_REQUEST",
+                safe_message=(
+                    f"Invalid request fields: {detail}."
+                    if detail
+                    else "The capability request is invalid."
+                )[:1000],
+            )
+        if isinstance(exc, ValueError):
             return ToolError(error_code="INVALID_REQUEST", safe_message="The capability request is invalid.")
         return ToolError(error_code="CAPABILITY_FAILED", safe_message="The capability could not complete.")
 
