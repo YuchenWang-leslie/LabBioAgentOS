@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -129,6 +130,8 @@ class DockerCommandBuilder:
             "ALL",
             "--security-opt",
             "no-new-privileges",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
             "--network",
             network,
             "--cpus",

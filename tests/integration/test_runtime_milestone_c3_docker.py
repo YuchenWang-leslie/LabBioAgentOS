@@ -86,6 +86,7 @@ class InspectingSubprocessDockerRunner(SubprocessDockerRunner):
         assert "--rm" in argv
         assert argv[argv.index("--cap-drop") + 1] == "ALL"
         assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+        assert argv[argv.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
         assert argv[argv.index("--network") + 1] == "none"
         assert argv[argv.index("--cpus") + 1] == "1"
         assert argv[argv.index("--memory") + 1] == "256m"
@@ -125,7 +126,8 @@ class InspectingSubprocessDockerRunner(SubprocessDockerRunner):
 async def test_real_governed_docker_execution_boundary(tmp_path):
     image_reference = _required_environment("LABBIO_C3_IMAGE_REFERENCE")
     image_digest = _required_environment("LABBIO_C3_IMAGE_DIGEST")
-    assert image_reference == "python:3.11-slim"
+    assert "@" not in image_reference
+    assert image_reference.rsplit("/", 1)[-1] == "python:3.11-slim"
     assert image_digest.startswith("sha256:") and len(image_digest) == 71
     resolved_image = f"{image_reference}@{image_digest}"
 

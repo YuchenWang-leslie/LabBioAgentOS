@@ -279,6 +279,7 @@ def test_docker_command_is_deterministic_argument_list_with_security_defaults(tm
     assert "/var/run/docker.sock" not in " ".join(command)
     assert command[command.index("--cap-drop") + 1] == "ALL"
     assert command[command.index("--security-opt") + 1] == "no-new-privileges"
+    assert command[command.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
     assert command[command.index("--cpus") + 1] == "1.5"
     assert command[command.index("--memory") + 1] == "256m"
     assert command[command.index("--pids-limit") + 1] == "64"
