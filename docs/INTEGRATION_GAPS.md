@@ -15,6 +15,12 @@ test wiring. The opt-in real MiMo, Pantheon, and Docker test completed the same
 nine-stage synthetic path through this application boundary. C5 does not add a
 biological workflow.
 
+C6 adds one explicit trusted data-plane extension for AnnData `.h5ad`: local
+format inspection produces bounded, scope-bound STRUCTURAL and AGGREGATE
+Artifacts linked to the RAW source Artifact ID. A fresh real MiMo/Pantheon run
+completed all nine stages using only those safe views. This remains
+source/runtime acceptance, not production deployment or production health.
+
 ## RESOLVED FOR C4
 
 | Historical gap | Current resolution |
@@ -40,10 +46,22 @@ biological workflow.
 | PER-STAGE STATE | exact stage spec, invocation ID, fresh Pantheon team, ToolSet, capability evidence, stage input/result | Continue using `PerInvocationPantheonStageInvoker`; do not cache teams or let Pantheon mutate WorkflowRun. |
 | TEST FIXTURE ONLY | synthetic CSV, grouped-mean truth, C4 prompts, inspecting Docker runner, boundary capture, expected A/B/C values | Keep in integration tests; never move into production application code. |
 
-The C5 composition root must remain configuration/orchestration only. It may
-admit a trusted local file as a scope-bound Artifact and accept caller-produced
-STRUCTURAL metadata, but it must not inspect bioformats or add a model-visible
-path reader.
+The C5 composition root remains configuration/orchestration only. C6 adds an
+explicit call into the trusted `H5ADInspector`; no file suffix or task content
+routes the runtime, and no model-visible path reader exists.
+
+## C6 H5AD INSPECTION BOUNDARY
+
+- The RAW h5ad file remains local and is absolutely denied to REMOTE_LLM.
+- `H5ADInspector` runs in the trusted data plane and emits no matrix values,
+  observation rows, axis index values, or complete gene list.
+- STRUCTURAL output contains bounded shapes, dtypes, field/key names, storage
+  representation, and raw/layer/key presence.
+- AGGREGATE output contains bounded categorical counts and numeric summaries;
+  near-unique fields are suppressed and category overflow is explicit.
+- Both safe Artifacts retain exact owner/project/lab scope and an opaque
+  `source_artifact_id` relationship to the RAW Artifact.
+- C6 does not choose QC thresholds or implement downstream single-cell methods.
 
 ## DEFERRED
 

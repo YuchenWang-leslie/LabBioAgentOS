@@ -24,6 +24,7 @@ from .artifacts import (
     ExposurePolicy,
     LocalArtifactStore,
 )
+from .bioformats import H5ADInspectionError, H5ADInspectionPolicy, H5ADInspector
 from .contracts import (
     GateUserDecision,
     RunStatus,
@@ -105,6 +106,16 @@ class ApplicationArtifactReference(BaseModel):
     artifact_id: UUID
     artifact_type: StrictStr = Field(min_length=1, max_length=256)
     exposure_class: ArtifactExposureClass
+
+
+class ApplicationH5ADInspectionArtifacts(BaseModel):
+    """Safe references created by trusted local h5ad inspection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source_artifact_id: UUID
+    structural_artifact: ApplicationArtifactReference
+    aggregate_artifact: ApplicationArtifactReference
 
 
 class ApplicationExecutionProfile(BaseModel):
@@ -231,6 +242,9 @@ class ApplicationRuntimeConfiguration:
     process_runner: DockerProcessRunner | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
+    h5ad_inspection_policy: H5ADInspectionPolicy = field(
+        default_factory=H5ADInspectionPolicy
+    )
     boundary_observer: BoundaryObserver | None = None
     retry_limit: int = 1
     max_stage_invocations: int = 64
@@ -371,6 +385,7 @@ class LabBioApplication:
         self._allowed_input_roots = self._resolve_input_roots(
             configuration.allowed_input_roots
         )
+        self.h5ad_inspector = H5ADInspector(configuration.h5ad_inspection_policy)
 
     def register_input_file(
         self,
@@ -422,6 +437,77 @@ class LabBioApplication:
             metadata=metadata,
         )
         return self._safe_artifact_reference(ref)
+
+    def inspect_h5ad(
+        self,
+        source_artifact_id: UUID,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationH5ADInspectionArtifacts:
+        """Inspect one authorized RAW Artifact and register safe bounded views."""
+
+        self._require_trusted_scope(principal, workspace)
+        source_ref = self.artifact_store.get_ref(source_artifact_id)
+        if (
+            source_ref.project_id != workspace.project_id
+            or source_ref.lab_id != workspace.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Inspection Artifact is outside the bound workspace"
+            )
+        self.access_service.require_artifact(
+            principal, source_ref, AccessAction.READ_ARTIFACT
+        )
+        if source_ref.exposure_class is not ArtifactExposureClass.RAW:
+            raise H5ADInspectionError("h5ad inspection source must be RAW")
+        source_path = self._trusted_artifact_path(source_ref.storage_locator)
+        inspection = self.h5ad_inspector.inspect(source_path)
+        lineage = {
+            "format": "h5ad",
+            "inspection_schema_version": "1",
+            "source_artifact_id": str(source_ref.artifact_id),
+        }
+        obs_fields = inspection.structural.obs.fields
+        structural_ref = self.artifact_store.register(
+            artifact_type="h5ad-structural",
+            exposure_class=ArtifactExposureClass.STRUCTURAL,
+            representation=ArtifactRepresentation(),
+            owner_user_id=source_ref.owner_user_id,
+            project_id=source_ref.project_id,
+            lab_id=source_ref.lab_id,
+            schema=ArtifactSchema(
+                shape=(inspection.structural.n_obs, inspection.structural.n_vars),
+                columns=tuple(field.name for field in obs_fields),
+                dtypes={field.name: field.dtype for field in obs_fields},
+                properties=inspection.structural.model_dump(mode="json"),
+            ),
+            metadata=lineage,
+        )
+        aggregate = inspection.aggregate
+        aggregate_fields = (*aggregate.categorical, *aggregate.numeric)
+        aggregate_ref = self.artifact_store.register(
+            artifact_type="h5ad-aggregate",
+            exposure_class=ArtifactExposureClass.AGGREGATE,
+            representation=ArtifactRepresentation(
+                summary=aggregate.model_dump(mode="json")
+            ),
+            owner_user_id=source_ref.owner_user_id,
+            project_id=source_ref.project_id,
+            lab_id=source_ref.lab_id,
+            schema=ArtifactSchema(
+                shape=(aggregate.returned_field_count,),
+                columns=tuple(field.field_name for field in aggregate_fields),
+                dtypes={field.field_name: field.dtype for field in aggregate_fields},
+                properties={"summary_kind": "bounded_obs_aggregates"},
+            ),
+            metadata=lineage,
+        )
+        return ApplicationH5ADInspectionArtifacts(
+            source_artifact_id=source_ref.artifact_id,
+            structural_artifact=self._safe_artifact_reference(structural_ref),
+            aggregate_artifact=self._safe_artifact_reference(aggregate_ref),
+        )
 
     def create_run(self, request: ApplicationRunRequest) -> ApplicationRunHandle:
         """Validate scope/references and create, but do not expose, a WorkflowRun."""
@@ -679,6 +765,18 @@ class LabBioApplication:
             raise ApplicationInputError("Application input is outside trusted roots")
         return resolved
 
+    def _trusted_artifact_path(self, locator: str) -> Path:
+        path = Path(locator)
+        if path.is_symlink():
+            raise H5ADInspectionError("Stored h5ad source cannot be a symlink")
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise H5ADInspectionError("Stored h5ad source does not exist") from exc
+        if not resolved.is_file() or self.artifact_store.root not in resolved.parents:
+            raise H5ADInspectionError("Stored h5ad source is outside the Artifact store")
+        return resolved
+
     @staticmethod
     def _resolve_input_roots(values: tuple[str | Path, ...]) -> tuple[Path, ...]:
         roots = []
@@ -726,6 +824,7 @@ __all__ = [
     "ApplicationArtifactReference",
     "ApplicationConfigurationError",
     "ApplicationExecutionProfile",
+    "ApplicationH5ADInspectionArtifacts",
     "ApplicationInputError",
     "ApplicationPendingUserGate",
     "ApplicationRunHandle",
