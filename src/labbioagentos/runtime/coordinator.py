@@ -19,6 +19,7 @@ from labbioagentos.governance import AccessService, Principal, WorkspaceContext
 from labbioagentos.workflow import InvalidRunStateError, WorkflowEngine
 
 from .contracts import (
+    RuntimeEvidenceReference,
     RuntimeGateDecisionView,
     RuntimeInputBody,
     RuntimePriorResultView,
@@ -74,7 +75,7 @@ class RuntimeCoordinatorService:
         *,
         instruction: str,
         goal_reference: RuntimeReference | None = None,
-        artifact_references: tuple[RuntimeReference, ...] = (),
+        artifact_references: tuple[RuntimeEvidenceReference, ...] = (),
         memory_candidate_references: tuple[RuntimeReference, ...] = (),
         gold_candidate_references: tuple[RuntimeReference, ...] = (),
         body: RuntimeInputBody | None = None,
@@ -132,7 +133,7 @@ class RuntimeCoordinatorService:
         *,
         instruction: str,
         goal_reference: RuntimeReference | None = None,
-        artifact_references: tuple[RuntimeReference, ...] = (),
+        artifact_references: tuple[RuntimeEvidenceReference, ...] = (),
         memory_candidate_references: tuple[RuntimeReference, ...] = (),
         gold_candidate_references: tuple[RuntimeReference, ...] = (),
         body: RuntimeInputBody | None = None,
@@ -164,6 +165,7 @@ class RuntimeCoordinatorService:
             summary=result.summary,
             payload={
                 "runtime_result_id": str(result.result_id),
+                "invocation_id": str(stage_input.invocation_id),
                 "body_kind": result.body.kind,
                 "reference_ids": [
                     reference.reference_id for reference in result.references

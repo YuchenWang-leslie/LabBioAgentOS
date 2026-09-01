@@ -42,6 +42,7 @@ from labbioagentos import (
     ExposurePolicy,
     InMemoryProjectStore,
     InMemoryTraceSink,
+    JsonlTraceSink,
     LabBioApplication,
     LocalArtifactStore,
     ModelProfile,
@@ -290,8 +291,10 @@ def _capability_protocol(stage: WorkflowStage) -> str:
             "returns any receipt, call no more tools."
         ),
         WorkflowStage.VALIDATE: (
-            "Query TOP_N on the DERIVED execution output identified by the current "
-            "authoritative_evidence_references. If the view is partial and the known "
+            "Identify CURRENT_ATTEMPT_EVIDENCE from the structured evidence_role. "
+            "Query TOP_N on its DERIVED execution output. HISTORICAL_EVIDENCE remains "
+            "governed and queryable but must not substitute for the current attempt. "
+            "If the view is partial and the known "
             "available count is within the policy maximum, explicitly request a large "
             "enough bounded limit. "
             "Independently assess whether the expected input was analyzed, the bounded "
@@ -783,7 +786,7 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
     source = _data_path()
     image_id = _image_id()
     _assert_local_image(image_id)
-    sink = InMemoryTraceSink()
+    sink = JsonlTraceSink(tmp_path / "run-trace.jsonl")
     principal = Principal(user_id="user-c7", lab_id="lab-c7")
     workspace = WorkspaceContext(
         user_id="user-c7", project_id="project-c7-live", lab_id="lab-c7"
@@ -791,7 +794,13 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
     visible_boundaries: list[tuple[str, str]] = []
 
     def observe(kind: str, value: object) -> None:
-        visible_boundaries.append((kind, _model_visible_json(value)))
+        payload = _model_visible_json(value)
+        visible_boundaries.append((kind, payload))
+        with (tmp_path / "runtime-boundaries.jsonl").open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps({"kind": kind, "payload": json.loads(payload)}))
+            handle.write("\n")
 
     runner = InspectingRunner(expected_image=image_id)
     contract = _contract()

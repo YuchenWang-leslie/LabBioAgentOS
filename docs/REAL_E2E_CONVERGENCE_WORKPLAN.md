@@ -167,6 +167,51 @@ only valid continuation is a separately scoped review of the Reviewer-visible
 governed evidence and the repeated retry decision; do not raise the retry limit,
 patch prompts, or rerun the same failed lineage without new persistent evidence.
 
+## C7.3 — Retry-aware evidence lineage
+
+**Status:** deterministic source acceptance is complete on the isolated C7
+branch. One fresh C7 run is pending. C7 is not accepted by this infrastructure
+result.
+
+- **Forensic gate:** CASE D. The failed run retained execution/Artifact
+  provenance but used an in-memory trace and observer, so the exact VALIDATE
+  invocation IDs, Artifact queries, capability bundles, typed Reviewer bodies,
+  and full retry reasons did not survive the terminal exception. It is not
+  possible to classify the old second review as stale/mixed evidence or a
+  technically correct rejection without guessing.
+- **Recovered lineage:** EXECUTE invocation
+  `8400ada8-a145-4f24-9cdc-c067a6253a1e` submitted executions
+  `c5f9ce0d-187e-44ec-8023-484447427008` and
+  `066ecd7c-3671-4271-aa5a-7252d741efdc`; the latter produced DERIVED Artifact
+  `249fa8aa-a461-40b9-92e1-6756d297c617`. The retry EXECUTE invocation
+  `43ed9186-0c5a-4bf1-9702-73e8bc389b67` submitted execution
+  `c59c2f9d-6016-4853-9883-6cd9cae88c73` and produced DERIVED Artifact
+  `db9ad8d1-1019-4bf0-9cb4-fdfbdb3e9130`.
+- **Root cause:** the application projected every non-RAW run Artifact as
+  undifferentiated authoritative evidence. Existing `producer_invocation_id`
+  and `execution_id` provenance could distinguish attempts, but the runtime
+  reference contract did not expose that mechanical role.
+- **Resolution:** authoritative references now carry one of
+  `INPUT_EVIDENCE`, `CURRENT_ATTEMPT_EVIDENCE`, or `HISTORICAL_EVIDENCE` plus
+  the existing producer invocation ID. Current execution evidence derives from
+  the latest accepted EXECUTE invocation recorded in WorkflowRun state; prior
+  evidence remains governed and queryable. No timestamp, UUID order, filename,
+  Artifact content, or model prose participates in role assignment.
+- **Audit persistence:** accepted runtime stage projections retain the trusted
+  invocation ID, execution-script Artifacts retain the existing execution ID,
+  the optional boundary observer now receives the typed stage result, and the
+  C7 live harness writes safe trace/boundary JSONL incrementally so a failed
+  proposal remains auditable. RAW content, scripts, process streams, paths,
+  credentials, provider bodies, and hidden reasoning remain excluded.
+- **Reviewer boundary:** the VALIDATE protocol only explains the structured
+  evidence roles. Reviewer scientific criteria, authority to accept or retry,
+  and `retry_limit=1` are unchanged.
+- **Deterministic evidence:** R1–R8 plus fail-closed missing-provenance coverage
+  pass. The full non-live regression is 229 passed and 6 skipped with the one
+  pre-existing Uvicorn warning. Pantheon is unchanged, and no PBMC/QC value,
+  provider branch, auto-acceptance, automatic retry, or hidden compatibility
+  behavior was added.
+
 ## C8 — Scientific specialist-agent layer
 
 **Status:** not started; requires separate authorization.

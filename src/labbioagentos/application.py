@@ -74,6 +74,8 @@ from .runtime import (
     PerInvocationPantheonStageInvoker,
     ReportSubmissionService,
     RuntimeCapabilityServices,
+    RuntimeEvidenceReference,
+    RuntimeEvidenceRole,
     RuntimeInputBody,
     RuntimeProfileCatalog,
     RuntimeReference,
@@ -308,7 +310,7 @@ class ApplicationRuntimeConfiguration:
 class _ApplicationRunSession:
     request: ApplicationRunRequest
     run: WorkflowRun
-    artifact_references: tuple[RuntimeReference, ...]
+    artifact_references: tuple[RuntimeEvidenceReference, ...]
     coordinator: RuntimeCoordinatorService
 
 
@@ -616,7 +618,10 @@ class LabBioApplication:
                     + f"\nOperate only within the current {stage.value} stage "
                     "and its typed contract."
                 ),
-                artifact_references=self._authoritative_evidence_references(session),
+                artifact_references=self._authoritative_evidence_references(
+                    session,
+                    stage=stage,
+                ),
                 body=body,
             )
             invocations += 1
@@ -730,22 +735,40 @@ class LabBioApplication:
         )
 
     def _authoritative_evidence_references(
-        self, session: _ApplicationRunSession
-    ) -> tuple[RuntimeReference, ...]:
+        self,
+        session: _ApplicationRunSession,
+        *,
+        stage: WorkflowStage,
+    ) -> tuple[RuntimeEvidenceReference, ...]:
         """Refresh governed run evidence without consulting model-authored prose."""
 
         references = list(session.artifact_references)
         seen = {(item.kind, item.reference_id) for item in references}
+        current_invocation_id = (
+            None
+            if stage is WorkflowStage.EXECUTE
+            else self._latest_execute_invocation_id(session.run)
+        )
         for ref in self.artifact_store.list_refs():
             if (
                 ref.run_id != session.run.run_id
                 or ref.exposure_class is ArtifactExposureClass.RAW
             ):
                 continue
+            role = (
+                RuntimeEvidenceRole.CURRENT_ATTEMPT_EVIDENCE
+                if (
+                    ref.stage_id is WorkflowStage.EXECUTE
+                    and ref.producer_invocation_id is not None
+                    and ref.producer_invocation_id == current_invocation_id
+                )
+                else RuntimeEvidenceRole.HISTORICAL_EVIDENCE
+            )
             artifact_reference = self._authorized_runtime_reference(
                 ref.artifact_id,
                 principal=session.request.principal,
                 workspace=session.request.workspace,
+                evidence_role=role,
             )
             key = (artifact_reference.kind, artifact_reference.reference_id)
             if key not in seen:
@@ -757,10 +780,12 @@ class LabBioApplication:
                     execution_reference_id = str(UUID(execution_id))
                 except ValueError:
                     continue
-                execution_reference = RuntimeReference(
+                execution_reference = RuntimeEvidenceReference(
                     reference_id=execution_reference_id,
                     kind=RuntimeReferenceKind.EXECUTION,
                     label="Governed execution reference from Artifact provenance",
+                    evidence_role=role,
+                    producer_invocation_id=ref.producer_invocation_id,
                 )
                 key = (
                     execution_reference.kind,
@@ -774,6 +799,26 @@ class LabBioApplication:
                 "Authoritative evidence references exceed the runtime bound"
             )
         return tuple(references)
+
+    @staticmethod
+    def _latest_execute_invocation_id(run: WorkflowRun) -> UUID | None:
+        """Resolve the most recent accepted EXECUTE invocation from workflow state."""
+
+        for result in reversed(run.stage_results):
+            if result.stage is not WorkflowStage.EXECUTE:
+                continue
+            value = result.payload.get("invocation_id")
+            if not isinstance(value, str):
+                raise ApplicationRunStateError(
+                    "Accepted EXECUTE result is missing its trusted invocation ID"
+                )
+            try:
+                return UUID(value)
+            except ValueError as exc:
+                raise ApplicationRunStateError(
+                    "Accepted EXECUTE result has an invalid trusted invocation ID"
+                ) from exc
+        return None
 
     def _build_coordinator(
         self,
@@ -813,18 +858,21 @@ class LabBioApplication:
         *,
         principal: Principal,
         workspace: WorkspaceContext,
-    ) -> RuntimeReference:
+        evidence_role: RuntimeEvidenceRole = RuntimeEvidenceRole.INPUT_EVIDENCE,
+    ) -> RuntimeEvidenceReference:
         ref = self.artifact_store.get_ref(artifact_id)
         if ref.project_id != workspace.project_id or ref.lab_id != workspace.lab_id:
             raise AuthorizationDenied("Run Artifact is outside the bound workspace")
         self.access_service.require_artifact(principal, ref, AccessAction.READ_ARTIFACT)
-        return RuntimeReference(
+        return RuntimeEvidenceReference(
             reference_id=str(ref.artifact_id),
             kind=RuntimeReferenceKind.ARTIFACT,
             label=(
                 f"{ref.exposure_class.value} Artifact available only through "
                 "governed capabilities"
             ),
+            evidence_role=evidence_role,
+            producer_invocation_id=ref.producer_invocation_id,
         )
 
     def _require_trusted_scope(

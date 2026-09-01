@@ -157,6 +157,7 @@ async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_m
     _, principal, workspace, store, exposure = boundary
     made_toolsets = []
     made_teams = []
+    observed_boundaries = []
     workflow_state = {"stage": "INTAKE"}
 
     def toolset_factory(binding, services):
@@ -201,6 +202,9 @@ async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_m
             artifact_exposure=exposure,
         ),
         toolset_factory=toolset_factory,
+        boundary_observer=lambda kind, value: observed_boundaries.append(
+            (kind, value)
+        ),
     )
     StageRuntimeRegistry(
         (
@@ -220,6 +224,14 @@ async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_m
     assert [item.binding.invocation_id for item in made_toolsets] == [
         first.invocation_id,
         second.invocation_id,
+    ]
+    assert [kind for kind, _ in observed_boundaries] == [
+        "stage_input",
+        "capability_evidence",
+        "stage_result",
+        "stage_input",
+        "capability_evidence",
+        "stage_result",
     ]
     capability_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.CAPABILITY]
     final_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.FINALIZE]

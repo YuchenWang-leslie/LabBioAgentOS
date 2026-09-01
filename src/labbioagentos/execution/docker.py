@@ -237,7 +237,10 @@ class DockerExecutor:
                 plan,
                 workspace.script_path,
                 artifact_type="execution-script",
-                metadata={"sha256": workspace.script_hash},
+                metadata={
+                    "execution_id": str(plan.execution_id),
+                    "sha256": workspace.script_hash,
+                },
             )
             argv = self.command_builder.build(
                 plan,

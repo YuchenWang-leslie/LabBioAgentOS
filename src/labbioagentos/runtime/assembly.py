@@ -148,7 +148,10 @@ class PerInvocationPantheonStageInvoker:
             trace_recorder=self.trace_recorder,
         )
         if not self.assembly.capability_phase_enabled:
-            return await finalizer.invoke(stage_input)
+            result = await finalizer.invoke(stage_input)
+            if self.boundary_observer is not None:
+                self.boundary_observer("stage_result", result)
+            return result
 
         binding = RuntimeCapabilityContext(
             principal=self.principal,
@@ -184,12 +187,15 @@ class PerInvocationPantheonStageInvoker:
             ),
             max_turns=self.assembly.max_capability_turns,
         )
-        return await PantheonTwoModeStageInvoker(
+        result = await PantheonTwoModeStageInvoker(
             capability,
             finalizer,
             boundary_observer=self.boundary_observer,
             evidence_validator=self._validate_required_capabilities,
         ).invoke(stage_input)
+        if self.boundary_observer is not None:
+            self.boundary_observer("stage_result", result)
+        return result
 
     def _validate_required_capabilities(
         self, evidence: CapabilityEvidenceBundle

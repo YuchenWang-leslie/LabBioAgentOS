@@ -20,6 +20,8 @@ from labbioagentos import (
     LocalArtifactStore,
     NextAction,
     NextActionProposal,
+    RuntimeEvidenceReference,
+    RuntimeEvidenceRole,
     RuntimeInputBody,
     RuntimePriorResultView,
     RuntimeReference,
@@ -53,7 +55,7 @@ def _prior_result(*, reference: RuntimeReference | None = None) -> RuntimeStageR
 def _stage_input(
     prior: RuntimePriorResultView,
     *,
-    authoritative_reference: RuntimeReference | None = None,
+    authoritative_reference: RuntimeEvidenceReference | None = None,
 ) -> RuntimeStageInput:
     return RuntimeStageInput(
         run_id=uuid4(),
@@ -105,10 +107,11 @@ def test_g1_prior_model_claim_is_explicit_model_context_not_evidence():
 
 
 def test_g2_authoritative_artifact_reference_survives_independently_of_prose():
-    artifact_reference = RuntimeReference(
+    artifact_reference = RuntimeEvidenceReference(
         reference_id=str(uuid4()),
         kind=RuntimeReferenceKind.ARTIFACT,
         label="DERIVED governed Artifact",
+        evidence_role=RuntimeEvidenceRole.INPUT_EVIDENCE,
     )
     prior = RuntimePriorResultView.from_result(
         _prior_result(reference=artifact_reference)

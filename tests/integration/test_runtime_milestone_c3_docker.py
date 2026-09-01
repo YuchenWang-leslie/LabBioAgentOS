@@ -317,6 +317,7 @@ print("C3 infrastructure execution completed")
         ref.exposure_class is ArtifactExposureClass.RAW
         for ref in (script_ref, stdout_ref, stderr_ref)
     )
+    assert script_ref.metadata["execution_id"] == str(receipt.execution_id)
     for ref in execution_refs:
         assert (
             ref.owner_user_id,

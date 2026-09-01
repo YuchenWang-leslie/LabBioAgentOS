@@ -170,6 +170,14 @@ class RuntimeReferenceKind(StrEnum):
     OTHER = "OTHER"
 
 
+class RuntimeEvidenceRole(StrEnum):
+    """Execution-lineage role without scientific relevance or ranking."""
+
+    INPUT_EVIDENCE = "INPUT_EVIDENCE"
+    CURRENT_ATTEMPT_EVIDENCE = "CURRENT_ATTEMPT_EVIDENCE"
+    HISTORICAL_EVIDENCE = "HISTORICAL_EVIDENCE"
+
+
 class RuntimeReference(BaseModel):
     """Opaque model-facing reference; it is never a host locator."""
 
@@ -178,6 +186,13 @@ class RuntimeReference(BaseModel):
     reference_id: SafeIdentifier
     kind: RuntimeReferenceKind
     label: ShortText | None = None
+
+
+class RuntimeEvidenceReference(RuntimeReference):
+    """Authoritative reference with a mechanically assigned evidence role."""
+
+    evidence_role: RuntimeEvidenceRole
+    producer_invocation_id: UUID | None = None
 
 
 class RuntimeWorkspaceIdentifiers(BaseModel):
@@ -265,6 +280,15 @@ class RuntimeEvidenceGroundingControl(BaseModel):
         "Authoritative references identify governed sources; query an allowed view "
         "when claim content is required."
     )
+    execution_lineage_rule: Literal[
+        "Validate CURRENT_ATTEMPT_EVIDENCE for the active execution result. "
+        "HISTORICAL_EVIDENCE remains governed and queryable but does not substitute "
+        "for the current attempt."
+    ] = (
+        "Validate CURRENT_ATTEMPT_EVIDENCE for the active execution result. "
+        "HISTORICAL_EVIDENCE remains governed and queryable but does not substitute "
+        "for the current attempt."
+    )
 
 
 class RuntimePriorResultView(BaseModel):
@@ -336,7 +360,7 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=9,
     )
-    authoritative_evidence_references: tuple[RuntimeReference, ...] = Field(
+    authoritative_evidence_references: tuple[RuntimeEvidenceReference, ...] = Field(
         default=(),
         max_length=128,
     )

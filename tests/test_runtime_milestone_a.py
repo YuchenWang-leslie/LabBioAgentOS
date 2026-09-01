@@ -29,6 +29,8 @@ from labbioagentos import (
     RunStatus,
     RunTraceRecorder,
     RuntimeCoordinatorService,
+    RuntimeEvidenceReference,
+    RuntimeEvidenceRole,
     RuntimeReference,
     RuntimeReferenceKind,
     RuntimeResultValidationError,
@@ -238,9 +240,10 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         run,
         instruction="Sanitized synthetic instruction.",
         artifact_references=(
-            RuntimeReference(
+            RuntimeEvidenceReference(
                 reference_id=str(uuid4()),
                 kind=RuntimeReferenceKind.ARTIFACT,
+                evidence_role=RuntimeEvidenceRole.INPUT_EVIDENCE,
             ),
         ),
     )
