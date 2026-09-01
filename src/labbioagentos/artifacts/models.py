@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from labbioagentos.contracts import WorkflowStage
+from labbioagentos.contracts import InformationAuthority, WorkflowStage
 
 
 class ArtifactExposureClass(StrEnum):
@@ -202,6 +202,9 @@ class ArtifactView(BaseModel):
     artifact_type: StrictStr = Field(min_length=1)
     view_type: ArtifactViewType
     exposure_class: ArtifactExposureClass
+    authority: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
+        InformationAuthority.AUTHORITATIVE_EVIDENCE
+    )
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_schema: ArtifactSchema | None = Field(
         default=None,
@@ -211,9 +214,29 @@ class ArtifactView(BaseModel):
     columns: tuple[StrictStr, ...] = ()
     summary: dict[str, JsonValue] = Field(default_factory=dict)
     records: tuple[dict[str, JsonValue], ...] = ()
-    record_count: int = Field(ge=0)
+    returned_count: int = Field(ge=0)
+    available_count: int = Field(ge=0)
+    effective_limit: int | None = Field(default=None, ge=1)
     truncated: bool = False
     provenance: ArtifactProvenance
+
+    @model_validator(mode="after")
+    def validate_collection_completeness(self) -> "ArtifactView":
+        if self.returned_count != len(self.records):
+            raise ValueError("returned_count must match the bounded records")
+        if self.available_count < self.returned_count:
+            raise ValueError("available_count cannot be smaller than returned_count")
+        expected_truncated = self.available_count > self.returned_count
+        if self.truncated is not expected_truncated:
+            raise ValueError("truncated must reflect returned and available counts")
+        if self.view_type is ArtifactViewType.TOP_N:
+            if self.effective_limit is None:
+                raise ValueError("TOP_N views require an effective_limit")
+            if self.returned_count > self.effective_limit:
+                raise ValueError("TOP_N view exceeds its effective_limit")
+        elif self.effective_limit is not None:
+            raise ValueError("effective_limit is only valid for TOP_N views")
+        return self
 
 
 class ArtifactApproval(BaseModel):

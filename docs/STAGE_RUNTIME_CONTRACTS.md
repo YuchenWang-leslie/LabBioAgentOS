@@ -34,6 +34,14 @@ fields. The coordinator binds them out of band. Each stage body must reject
 unknown fields and bound strings, collections, and nested JSON. This prevents a
 free-form payload from becoming an accidental raw-data or trace channel.
 
+The common input also carries a fixed evidence-grounding control. Model-authored
+prior results are `MODEL_CONTEXT`, never evidence merely because their schema
+validated. Governed `ArtifactView`, capability results, and execution receipts
+are `AUTHORITATIVE_EVIDENCE`; workflow/gate/capability facts are `CONTROL_STATE`;
+task text and caller assertions are `USER_ASSERTION`. Factual claims must be
+grounded in current governed evidence. Opaque Artifact and execution references
+survive mechanically, while claims do not acquire authority by copying.
+
 ## INTAKE
 
 - **Controller:** WorkflowEngine plus LabBio coordinator; hybrid stage.
@@ -181,6 +189,9 @@ free-form payload from becoming an accidental raw-data or trace channel.
   requested/started, or transition.
 - **Possible user gate:** acceptance of a material deviation or a policy-bearing
   rerun. Retry limits remain deterministic.
+- **Reviewer boundary:** this stage reviews evidence available after execution;
+  it does not validate the future REPORT prose and must not be described as a
+  final-report factual-correctness guarantee.
 
 ## INTERPRET
 
@@ -262,4 +273,3 @@ the corresponding governed service decision where applicable, and only then
 resumes through an allowed graph edge. The current default graph does not
 contain these auxiliary nodes or edges; a reviewed runtime workflow definition
 is required before approval-bearing integration.
-

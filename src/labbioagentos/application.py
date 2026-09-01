@@ -616,7 +616,7 @@ class LabBioApplication:
                     + f"\nOperate only within the current {stage.value} stage "
                     "and its typed contract."
                 ),
-                artifact_references=session.artifact_references,
+                artifact_references=self._authoritative_evidence_references(session),
                 body=body,
             )
             invocations += 1
@@ -696,10 +696,10 @@ class LabBioApplication:
     ) -> RuntimeInputBody | None:
         context = session.request.safe_domain_references
         if stage is not WorkflowStage.PREFLIGHT:
-            return RuntimeInputBody(context_references=context) if context else None
+            return RuntimeInputBody(user_assertion_references=context) if context else None
         profile = self.configuration.execution_profile
         if profile is None:
-            return RuntimeInputBody(context_references=context) if context else None
+            return RuntimeInputBody(user_assertion_references=context) if context else None
         requirements = tuple(
             PreflightInputRequirement(
                 artifact_id=artifact_id,
@@ -723,9 +723,57 @@ class LabBioApplication:
             run_id=session.run.run_id,
         )
         return RuntimeInputBody(
-            context_references=context,
-            notes=("Deterministic preflight receipt: " + receipt.model_dump_json(),),
+            user_assertion_references=context,
+            control_state_notes=(
+                "Deterministic preflight receipt: " + receipt.model_dump_json(),
+            ),
         )
+
+    def _authoritative_evidence_references(
+        self, session: _ApplicationRunSession
+    ) -> tuple[RuntimeReference, ...]:
+        """Refresh governed run evidence without consulting model-authored prose."""
+
+        references = list(session.artifact_references)
+        seen = {(item.kind, item.reference_id) for item in references}
+        for ref in self.artifact_store.list_refs():
+            if (
+                ref.run_id != session.run.run_id
+                or ref.exposure_class is ArtifactExposureClass.RAW
+            ):
+                continue
+            artifact_reference = self._authorized_runtime_reference(
+                ref.artifact_id,
+                principal=session.request.principal,
+                workspace=session.request.workspace,
+            )
+            key = (artifact_reference.kind, artifact_reference.reference_id)
+            if key not in seen:
+                references.append(artifact_reference)
+                seen.add(key)
+            execution_id = ref.metadata.get("execution_id")
+            if isinstance(execution_id, str):
+                try:
+                    execution_reference_id = str(UUID(execution_id))
+                except ValueError:
+                    continue
+                execution_reference = RuntimeReference(
+                    reference_id=execution_reference_id,
+                    kind=RuntimeReferenceKind.EXECUTION,
+                    label="Governed execution reference from Artifact provenance",
+                )
+                key = (
+                    execution_reference.kind,
+                    execution_reference.reference_id,
+                )
+                if key not in seen:
+                    references.append(execution_reference)
+                    seen.add(key)
+        if len(references) > 128:
+            raise ApplicationRunStateError(
+                "Authoritative evidence references exceed the runtime bound"
+            )
+        return tuple(references)
 
     def _build_coordinator(
         self,

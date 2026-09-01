@@ -287,16 +287,16 @@ def test_prior_result_view_is_validated_bounded_and_not_a_provider_conversation(
     result = _result()
     view = RuntimePriorResultView.from_result(result)
     assert view.result_id == result.result_id
-    assert view.structured_body == result.body.model_dump(mode="json")
+    assert view.model_body == result.body.model_dump(mode="json")
     dumped = json.dumps(view.model_dump(mode="json"))
     assert "provider" not in dumped.lower()
     with pytest.raises(ValidationError):
         RuntimePriorResultView(
             result_id=uuid4(),
             stage_id=WorkflowStage.INTAKE,
-            summary="bad",
+            model_summary="bad",
             body_kind="INTAKE",
-            structured_body={"provider_raw_body": "forbidden"},
+            model_body={"provider_raw_body": "forbidden"},
         )
     with pytest.raises(ValidationError):
         values = _input().model_dump()

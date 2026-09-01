@@ -157,7 +157,9 @@ def test_derived_top_n_is_bounded_and_marks_truncation(tmp_path):
     )
 
     assert view.records == records[:2]
-    assert view.record_count == 3
+    assert view.returned_count == 2
+    assert view.available_count == 3
+    assert view.effective_limit == 2
     assert view.truncated is True
 
 

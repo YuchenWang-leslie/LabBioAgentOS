@@ -391,7 +391,9 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
     assert result.status is ExecutionStatus.SUCCEEDED
     assert ref.exposure_class is ArtifactExposureClass.DERIVED
     assert view.records == ({"name": "alpha", "value": 2.0},)
-    assert view.record_count == 2
+    assert view.returned_count == 1
+    assert view.available_count == 2
+    assert view.effective_limit == 1
     assert view.truncated is True
 
 

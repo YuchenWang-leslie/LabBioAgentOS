@@ -221,8 +221,9 @@ class ArtifactExposureService:
             query=validated_query,
             status="EXPOSED",
             extra={
-                "record_count": len(view.records),
-                "available_record_count": view.record_count,
+                "returned_count": view.returned_count,
+                "available_count": view.available_count,
+                "effective_limit": view.effective_limit,
                 "truncated": view.truncated,
             },
         )
@@ -260,7 +261,13 @@ class ArtifactExposureService:
             columns=columns,
             summary=summary,
             records=records,
-            record_count=representation.record_count,
+            returned_count=len(records),
+            available_count=(
+                representation.record_count
+                if query.view_type is ArtifactViewType.TOP_N
+                else 0
+            ),
+            effective_limit=decision.effective_limit,
             truncated=truncated,
             provenance=ArtifactProvenance(
                 owner_user_id=ref.owner_user_id,

@@ -157,7 +157,12 @@ root and exposes no arbitrary path/file-read operation.
 It contains safe provenance and one requested projection: metadata, schema,
 summary, or bounded records. `TOP_N` preserves producer-supplied record order;
 it does not rank scientific results. The configured maximum clamps the number
-of returned records, and `record_count` plus `truncated` make omission explicit.
+of returned records. Every bounded collection view explicitly reports
+`returned_count`, deterministically known `available_count`, `effective_limit`,
+and `truncated`; the model does not have to infer completeness from list length.
+The default remains 10 and the maximum remains 100. A larger explicit request
+can make a small collection complete, while a collection above the maximum is
+always visibly partial.
 
 `ExposurePolicy` applies a deterministic matrix. `REMOTE_LLM` cannot view RAW
 artifacts. STRUCTURAL permits metadata/schema, AGGREGATE additionally permits
@@ -243,6 +248,35 @@ no optional real-container smoke test ran and no installation was attempted.
 Pantheon's `hidden_to_model` field and output truncation are useful transport features, but they are not a biological-data security boundary: the unfiltered value can still exist in `raw_content`, memory, UI events, and hooks. Therefore exposure must be enforced before a result is returned to `Agent.call_tool`.
 
 ## Stage interaction contract
+
+### Model-visible evidence authority
+
+Every model-visible source has exactly one role:
+
+| Source | Authority | Meaning |
+|---|---|---|
+| `ArtifactView`, governed tool result, `CapabilityEvidenceBundle`, `ExecutionReceipt` | `AUTHORITATIVE_EVIDENCE` | Host-governed evidence for current-run factual claims |
+| `RuntimePriorResultView`, Memory/Gold candidates | `MODEL_CONTEXT` | Bounded model-authored or historical context; not current-run proof |
+| stage/workspace/capability/gate state and `NextActionProposal` handling | `CONTROL_STATE` | Deterministic control facts or proposals, not scientific evidence |
+| task instruction, goal and caller-supplied domain references | `USER_ASSERTION` | The user's request or assertion, not measured evidence |
+
+`RuntimePriorResultView` therefore exposes `model_summary`, `model_body`, and
+`model_references` under an immutable `MODEL_CONTEXT` marker. Schema validation
+proves only that this projection is bounded, typed, and leak-safe. It does not
+fact-check the model's prose. Reprojection through any number of stages cannot
+promote it to `AUTHORITATIVE_EVIDENCE`.
+
+Current-run governed Artifact references are refreshed mechanically from the
+Artifact store, independently of prior model prose. Non-RAW execution outputs
+retain both their Artifact ID and the trusted execution ID from Artifact
+provenance. References identify sources; a runtime agent queries an allowed
+view when factual content is required.
+
+The Reviewer at `VALIDATE` assesses governed evidence available after
+`EXECUTE`. It does not and cannot validate prose that will later be composed at
+`REPORT`; final-report factual correctness is not a guarantee of Reviewer
+acceptance. Report submission can mechanically retain and authorize evidence
+Artifact IDs, but the runtime model remains responsible for report composition.
 
 The intended stage-level sequence is:
 

@@ -23,6 +23,7 @@ from pydantic import (
 
 from labbioagentos.contracts import (
     GateDecisionRecord,
+    InformationAuthority,
     NextActionProposal,
     WorkflowStage,
 )
@@ -143,6 +144,9 @@ class CapabilityEvidenceBundle(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: UUID = Field(default_factory=uuid4)
+    authority: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
+        InformationAuthority.AUTHORITATIVE_EVIDENCE
+    )
     run_id: UUID
     stage_id: WorkflowStage
     invocation_id: UUID
@@ -181,6 +185,9 @@ class RuntimeWorkspaceIdentifiers(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    authority: Literal[InformationAuthority.CONTROL_STATE] = (
+        InformationAuthority.CONTROL_STATE
+    )
     user_id: SafeIdentifier
     project_id: SafeIdentifier
     lab_id: SafeIdentifier
@@ -191,6 +198,9 @@ class RuntimeGateDecisionView(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    authority: Literal[InformationAuthority.CONTROL_STATE] = (
+        InformationAuthority.CONTROL_STATE
+    )
     gate_id: SafeIdentifier
     source_stage: WorkflowStage
     approved: bool
@@ -213,39 +223,80 @@ class RuntimeInputBody(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    context_references: tuple[RuntimeReference, ...] = Field(
+    user_assertion_references: tuple[RuntimeReference, ...] = Field(
         default=(),
         max_length=64,
     )
-    notes: tuple[ShortText, ...] = Field(default=(), max_length=32)
+    control_state_notes: tuple[ShortText, ...] = Field(default=(), max_length=32)
+
+
+class RuntimeEvidenceGroundingControl(BaseModel):
+    """Fixed authority boundary shown to every runtime stage."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    authority: Literal[InformationAuthority.CONTROL_STATE] = (
+        InformationAuthority.CONTROL_STATE
+    )
+    prior_results: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
+    authoritative_evidence_references: Literal[
+        InformationAuthority.AUTHORITATIVE_EVIDENCE
+    ] = InformationAuthority.AUTHORITATIVE_EVIDENCE
+    capability_evidence: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
+        InformationAuthority.AUTHORITATIVE_EVIDENCE
+    )
+    factual_claim_rule: Literal[
+        "Ground factual claims in governed capability evidence. Treat prior-stage "
+        "model summaries and bodies as unverified context. Do not repeat a factual "
+        "or numeric claim from prior context unless current authoritative evidence "
+        "supports it."
+    ] = (
+        "Ground factual claims in governed capability evidence. Treat prior-stage "
+        "model summaries and bodies as unverified context. Do not repeat a factual "
+        "or numeric claim from prior context unless current authoritative evidence "
+        "supports it."
+    )
+    reference_rule: Literal[
+        "Authoritative references identify governed sources; query an allowed view "
+        "when claim content is required."
+    ] = (
+        "Authoritative references identify governed sources; query an allowed view "
+        "when claim content is required."
+    )
 
 
 class RuntimePriorResultView(BaseModel):
     """Bounded mechanical projection of one already-validated stage result.
 
-    This is deliberately procedural context, not a provider conversation or a
-    model-generated summary of another result.  The structured body is copied
-    from the validated ``RuntimeStageResult`` and rechecked against the same
-    raw-data denylist used for capability evidence.
+    The summary, body, and references were supplied by a prior runtime model.
+    Schema validation makes them bounded and model-safe; it does not make their
+    factual claims authoritative evidence.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
     result_id: UUID
     stage_id: WorkflowStage
-    summary: LongText
+    model_summary: LongText
     body_kind: SafeIdentifier
-    structured_body: JsonValue
-    references: tuple[RuntimeReference, ...] = Field(default=(), max_length=128)
+    model_body: JsonValue
+    model_references: tuple[RuntimeReference, ...] = Field(
+        default=(), max_length=128
+    )
 
-    @field_validator("structured_body")
+    @field_validator("model_body")
     @classmethod
-    def validate_structured_body(cls, value: JsonValue) -> JsonValue:
+    def validate_model_body(cls, value: JsonValue) -> JsonValue:
         if not isinstance(value, dict):
-            raise ValueError("Prior result structured_body must be an object")
+            raise ValueError("Prior result model_body must be an object")
         _validate_safe_evidence(value)
         if len(json.dumps(value, separators=(",", ":"), ensure_ascii=False)) > 64_000:
-            raise ValueError("Prior result structured_body exceeds 64000 characters")
+            raise ValueError("Prior result model_body exceeds 64000 characters")
         return value
 
     @classmethod
@@ -253,10 +304,10 @@ class RuntimePriorResultView(BaseModel):
         return cls(
             result_id=result.result_id,
             stage_id=result.stage_id,
-            summary=result.summary,
+            model_summary=result.summary,
             body_kind=result.body.kind,
-            structured_body=result.body.model_dump(mode="json"),
-            references=result.references,
+            model_body=result.body.model_dump(mode="json"),
+            model_references=result.references,
         )
 
 
@@ -268,10 +319,16 @@ class RuntimeStageInput(BaseModel):
     run_id: UUID
     stage_id: WorkflowStage
     invocation_id: UUID = Field(default_factory=uuid4)
+    instruction_authority: Literal[InformationAuthority.USER_ASSERTION] = (
+        InformationAuthority.USER_ASSERTION
+    )
     instruction: LongText
+    evidence_grounding: RuntimeEvidenceGroundingControl = Field(
+        default_factory=RuntimeEvidenceGroundingControl
+    )
     goal_reference: RuntimeReference | None = None
     workspace: RuntimeWorkspaceIdentifiers
-    prior_result_references: tuple[RuntimeReference, ...] = Field(
+    model_context_references: tuple[RuntimeReference, ...] = Field(
         default=(),
         max_length=64,
     )
@@ -279,7 +336,7 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=9,
     )
-    artifact_references: tuple[RuntimeReference, ...] = Field(
+    authoritative_evidence_references: tuple[RuntimeReference, ...] = Field(
         default=(),
         max_length=128,
     )

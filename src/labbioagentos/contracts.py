@@ -36,6 +36,15 @@ class WorkflowStage(StrEnum):
     USER_GATE = "USER_GATE"
 
 
+class InformationAuthority(StrEnum):
+    """Meaning of a model-visible source, independent of its payload shape."""
+
+    AUTHORITATIVE_EVIDENCE = "AUTHORITATIVE_EVIDENCE"
+    MODEL_CONTEXT = "MODEL_CONTEXT"
+    CONTROL_STATE = "CONTROL_STATE"
+    USER_ASSERTION = "USER_ASSERTION"
+
+
 class RunStatus(StrEnum):
     """Lifecycle status, intentionally separate from workflow stage identity."""
 

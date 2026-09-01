@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +17,7 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureDenied,
     ArtifactQuery,
+    ArtifactRepresentation,
     ArtifactSchema,
     ArtifactViewType,
     AuthorizationDenied,
@@ -39,6 +41,7 @@ from labbioagentos import (
     ResponseSchemaRef,
     RunStatus,
     RuntimeProfileCatalog,
+    RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
     RuntimeStageResult,
     UnderstandStageBody,
@@ -201,6 +204,83 @@ async def test_application_drives_all_nine_stages_without_manual_runtime_wiring(
         "api_key",
     ):
         assert forbidden not in serialized.lower()
+
+
+@pytest.mark.asyncio
+async def test_later_stage_receives_new_governed_artifact_and_execution_references(
+    tmp_path, monkeypatch
+):
+    stage_inputs = {}
+    execution_id = uuid4()
+
+    async def invoke(_self, stage_input):
+        stage_inputs[stage_input.stage_id] = stage_input
+        if stage_input.stage_id is WorkflowStage.EXECUTE:
+            application.artifact_store.register(
+                artifact_type="generic-derived-measurements",
+                exposure_class=ArtifactExposureClass.DERIVED,
+                representation=ArtifactRepresentation(
+                    records=({"record_type": "measurement", "value": 7},),
+                    record_count=1,
+                ),
+                owner_user_id="user-c5",
+                project_id="project-c5",
+                lab_id="lab-c5",
+                run_id=stage_input.run_id,
+                stage_id=stage_input.stage_id,
+                producer_invocation_id=stage_input.invocation_id,
+                metadata={"execution_id": str(execution_id)},
+            )
+        index = MAIN_PATH.index(stage_input.stage_id)
+        action = (
+            NextActionProposal(action=NextAction.FINISH)
+            if stage_input.stage_id is WorkflowStage.LEARN
+            else NextActionProposal(
+                action=NextAction.TRANSITION,
+                target_stage=MAIN_PATH[index + 1],
+            )
+        )
+        return RuntimeStageResult(
+            stage_id=stage_input.stage_id,
+            summary="Model context with no evidence identifiers.",
+            body=_body(stage_input.stage_id),
+            references=(),
+            next_action=action,
+        )
+
+    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    application = LabBioApplication(_configuration(tmp_path))
+    handle = application.create_run(
+        ApplicationRunRequest(
+            task_text="A generic evidence propagation task.",
+            principal=Principal(user_id="user-c5", lab_id="lab-c5"),
+            workspace=WorkspaceContext(
+                user_id="user-c5", project_id="project-c5", lab_id="lab-c5"
+            ),
+        )
+    )
+
+    outcome = await application.run(handle)
+
+    assert outcome.status is RunStatus.COMPLETED
+    references = stage_inputs[
+        WorkflowStage.VALIDATE
+    ].authoritative_evidence_references
+    derived_ids = {
+        str(ref.artifact_id)
+        for ref in application.artifact_store.list_refs()
+        if ref.exposure_class is ArtifactExposureClass.DERIVED
+    }
+    assert any(
+        item.kind is RuntimeReferenceKind.ARTIFACT
+        and item.reference_id in derived_ids
+        for item in references
+    )
+    assert any(
+        item.kind is RuntimeReferenceKind.EXECUTION
+        and item.reference_id == str(execution_id)
+        for item in references
+    )
 
 
 def test_request_and_ingestion_keep_paths_and_raw_content_outside_model_contract(
