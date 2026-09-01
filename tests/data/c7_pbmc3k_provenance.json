@@ -1,0 +1,19 @@
+{
+  "dataset_name": "PBMC3k",
+  "source_organization": "10x Genomics",
+  "source_url": "https://cf.10xgenomics.com/samples/cell-exp/1.1.0/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz",
+  "documentation_url": "https://scanpy.readthedocs.io/en/stable/api/scanpy.datasets.pbmc3k.html",
+  "acquisition_mechanism": "Direct canonical 10x archive download documented by Scanpy",
+  "original_download_sha256": "847d6ebd9a1ec9a768f2be7e40ca42cbfe75ebeb6d76a4c24167041699dc28b5",
+  "generated_h5ad_sha256": "14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4",
+  "acquired_at_utc": "2026-09-01T03:41:10.435097+00:00",
+  "expected_dimensions": [
+    2700,
+    32738
+  ],
+  "actual_dimensions": [
+    2700,
+    32738
+  ],
+  "transformation": "Read 10x Matrix Market, genes.tsv, and barcodes.tsv; transpose to observations by variables; preserve sparse RAW count values; use gene symbols as unique var index and gene IDs as var metadata; write gzip H5AD"
+}

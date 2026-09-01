@@ -43,7 +43,8 @@ authorized.
 
 ## C7 — First runtime-selected real scRNA analysis
 
-**Status:** not started; requires separate authorization.
+**Status:** in progress and not accepted on the isolated
+`c7-real-scrna-analysis` source branch. C8 has not started.
 
 - **Objective:** let the runtime model select and execute one bounded analysis
   against admitted data through the existing governed execution boundary.
@@ -54,6 +55,67 @@ authorized.
   a user-visible report from a fresh lineage.
 - **Non-goals:** a universal pipeline, keyword routing, fixed method defaults,
   or production deployment.
+
+The current C7 source work has verified canonical PBMC3k acquisition and
+provenance, RAW isolation, the generic scalar-record QC contract, a distinct
+AnnData generalization fixture, and the immutable local scientific image
+`sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb`.
+The image contains Python 3.11, AnnData, NumPy, SciPy, pandas, and h5py, but no
+analysis script or Scanpy. Current non-live regression is 196 passed and 6
+skipped with the one pre-existing Uvicorn warning.
+
+A fresh MiMo/Pantheon run `b9b59d77-4f45-4470-86f0-012a009886e7` reached
+`COMPLETED` through all nine stages and produced real governed execution
+`30b4a291-a3cc-429e-950e-9cec203debd6`, DERIVED QC Artifact
+`46729ea7-5620-458b-a048-a26f40266126`, Reviewer acceptance, INTERPRET, Report
+Artifact `a9081e95-5723-48fd-aefd-dd4196f2dfe0`, and LEARN without Skill or
+Memory promotion. The execution script remained RAW and has SHA256
+`e9351d7fd6b570303a0f092a64d394a07a2c2d5a9297aeddb56c7840b002dafa`.
+
+C7 remains unaccepted because post-run audit found unsupported report claims:
+the DERIVED QC Artifact and execution stdout both record zero detected
+mitochondrial/ribosomal features and zero corresponding fractions, while the
+Report claims non-zero values came from EXECUTE. The report also relied on a
+default TOP_N view truncated to 10 of 14 records. Current runtime context copies
+bounded but model-authored prior-stage summaries and bodies into later stages;
+those are not an authoritative substitute for querying the cited Artifact.
+This is a new evidence-grounding root-cause cluster, not the resolved Pantheon
+reasoning-only idle bug. Do not add another prompt termination workaround or
+repeat the live run without a separately scoped fix and new persistent evidence.
+
+## C7.1 — Cross-stage evidence grounding
+
+**Status:** independently accepted in source after deterministic G1–G7 coverage
+and the full non-live regression completed with 204 passed, 6 skipped, and the
+one pre-existing Uvicorn warning. The fresh C7 provider rerun remains pending;
+this status does not accept C7.
+
+- **Invariant:** model-generated prior-stage output is `MODEL_CONTEXT`, not
+  `AUTHORITATIVE_EVIDENCE`. Structural validation proves bounded/type-safe
+  content only and cannot promote factual claims.
+- **Reference continuity:** non-RAW current-run Artifact references and trusted
+  execution IDs are refreshed from governed Artifact state independently of
+  prior prose. References survive mechanically; claims do not gain authority.
+- **Bounded-view completeness:** TOP_N retains `default_top_n=10` and
+  `max_top_n=100`, and now explicitly returns `returned_count`,
+  `available_count`, `effective_limit`, and `truncated`. An agent may request a
+  larger bounded view; evidence above the maximum remains visibly partial.
+- **Reviewer boundary:** VALIDATE reviews post-EXECUTE governed evidence, not
+  future REPORT prose. Report Artifact registration retains authorized evidence
+  IDs but performs no scientific semantic fact checking or report rewriting.
+- **Prohibitions preserved:** no report-value replacement, number parsing,
+  automatic re-query/retry, fixture-specific TOP_N increase, MiMo branch,
+  hidden fallback, or Pantheon change was introduced.
+
+Exactly one fresh post-C7.1 provider run was attempted:
+`31c68db1-bb59-491e-84ed-f2059ab637d8`. It stopped at PREFLIGHT before
+EXECUTE because the provider returned a structurally invalid
+`NextActionProposal`: `action=transition` included `user_prompt`, which is legal
+only for `request_user_input`. No scientific execution, new DERIVED QC Artifact,
+or Report Artifact was produced. This is outside the accepted C7.1
+authority/completeness root-cause cluster; do not rerun or add a compatibility
+patch without separately scoping the proposal-schema failure. C7 remains not
+accepted.
 
 ## C8 — Scientific specialist-agent layer
 

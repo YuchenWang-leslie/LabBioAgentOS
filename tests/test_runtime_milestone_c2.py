@@ -253,6 +253,34 @@ async def test_capability_mode_uses_structural_tool_loop_and_builds_bounded_evid
 
 
 @pytest.mark.asyncio
+async def test_capability_mode_preserves_evidence_after_contentless_completion(tmp_path):
+    stage_input = _stage_input()
+    toolset = _toolset(tmp_path, stage_input)
+    factory = PantheonRuntimeFactory(_catalog())
+    team, rendered = await factory.create_team(
+        ("coordinator",),
+        toolsets={"coordinator": toolset},
+        invocation_mode=RuntimeInvocationMode.CAPABILITY,
+    )
+
+    async def run(_self, _message):
+        await toolset.artifact_list()
+        return SimpleNamespace(content=None)
+
+    team.run = MethodType(run, team)
+    bundle = await PantheonCapabilityStageInvoker(
+        team,
+        profile=_profile(),
+        prompt=rendered["coordinator"],
+        evidence_sources=(toolset,),
+    ).invoke(stage_input)
+
+    assert [item.capability_name for item in bundle.items] == ["artifact_list"]
+    assert bundle.explicit_completion is None
+    assert bundle.technical_status == "COMPLETED"
+
+
+@pytest.mark.asyncio
 async def test_capability_mode_does_not_auto_invoke_or_use_prose_termination(tmp_path):
     stage_input = _stage_input()
     toolset = _toolset(tmp_path, stage_input)
@@ -420,4 +448,3 @@ async def test_chat_transport_uses_compatible_alias_for_pro_suffix(monkeypatch):
     assert agent.models[0].startswith("labbiochat-")
     assert agent.models[0].endswith("/mimo-v2.5-pro")
     assert agent.model_params == {"thinking": False, "max_tokens": 1200}
-
