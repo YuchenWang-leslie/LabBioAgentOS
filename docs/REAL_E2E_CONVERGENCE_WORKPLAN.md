@@ -241,6 +241,73 @@ compatibility workaround until the exact safe request shape can be durably
 recovered and tested. The failed-run JSONL, Artifact, and execution evidence is
 retained under its isolated test namespace.
 
+## C7.4 — Governed Artifact-query request audit and schema fidelity
+
+**Status:** the generic Pantheon schema fix and LabBio C7.4 infrastructure are
+accepted independently. The minimal MiMo tool smoke passed. Exactly one fresh
+full C7 was then run; it completed all nine runtime stages but failed the final
+numeric-claim acceptance oracle. C7 remains not accepted.
+
+- **Pantheon root cause and fix:** Pantheon reconstructed each parameter from
+  the Pydantic/OpenAI schema while retaining only a narrow keyword subset, which
+  discarded supported enum and primitive constraints. The generic Pantheon
+  change starts from the generated per-parameter schema, applies only the
+  existing compatibility transformations, and resolves only flat primitive
+  enum references. A second generic JSON-roundtrip defect was also fixed so
+  standard `typing` annotations such as `Literal` survive ToolSet description
+  serialization. The focused Pantheon commit is
+  `45ef598f8d79bd98e9befc7c549980b731476662`; its full regression added eleven
+  passing schema tests and retained the exact 47-test baseline failure set.
+- **Provider-visible contract:** `artifact_query.view_type` now exposes the
+  finite values `METADATA`, `SCHEMA`, `SUMMARY`, and `TOP_N`; `limit` remains a
+  nullable integer, required fields remain `artifact_id` and `view_type`, and
+  additional properties remain forbidden. Pantheon's current schema mechanism
+  does not express the conditional rule that `limit` is valid only for TOP_N,
+  so the existing local `ArtifactQuery` validator remains authoritative.
+- **Safe request audit:** only the explicit capability-specific projection
+  `artifact_id`, `view_type`, and `limit` is stored inside correlated STARTED
+  and COMPLETED/FAILED events and capability evidence. Valid UUIDs are
+  canonicalized; malformed identifiers and non-contract values use bounded
+  sentinels rather than retaining paths, credentials, provider bodies, or
+  arbitrary argument dictionaries. Surrounding typed trace/evidence retains
+  capability invocation, run, stage, invocation, status, and safe error code.
+- **Error taxonomy:** malformed Artifact identifiers, unknown Artifacts,
+  unsupported view values, and invalid view/limit shapes now have distinct safe
+  codes. An EXECUTION UUID is never converted to an Artifact UUID; without a
+  reference registry inside the tool boundary it remains mechanically
+  distinguishable from a known typed input reference but has the same
+  `ARTIFACT_NOT_FOUND` tool outcome as any other unknown valid UUID.
+- **Deterministic evidence:** A1-A8 and final provider-schema coverage pass. The
+  grouped regression is 153 passed; the full LabBio non-live regression is 239
+  passed and 6 skipped with the one pre-existing Uvicorn warning. No production
+  PBMC value, Reviewer/VALIDATE branch, provider special case, prompt change,
+  automatic correction, hidden retry, or scientific behavior was added.
+- **Minimal provider smoke:** run `1438e152-adb3-4baa-9cea-de8b6e58a073`
+  presented one DERIVED Artifact and one EXECUTION reference. MiMo selected the
+  Artifact, emitted `SUMMARY` with null limit, and completed one audited query;
+  no failed query or automatic repair occurred.
+
+The single fresh full run was `ebeda2c2-3b1b-467f-af34-ebda29e88eba` under the
+isolated `c7-fresh-c74-20260901` namespace. Admission/provenance and governed
+Docker image checks passed. One execution
+`dc5ba5db-3beb-4305-a162-583f11017cb5` produced DERIVED QC Artifact
+`b7ffebeb-230d-4340-8631-c243d67f00c9`; the workflow used no retry, traversed
+all nine stages, registered Report Artifact
+`169d2449-c285-4db0-8678-e08755321428`, and recorded `RUN_COMPLETED`.
+
+The new audit recorded 36 `artifact_query` attempts: 19 completed, 11 failed
+with `INVALID_QUERY_SHAPE` because MiMo supplied a non-integer/non-null limit,
+and 6 failed at governed exposure boundaries. All view values were within the
+provider enum. The provider later made valid calls itself; LabBio did not alter
+or retry any request. Final acceptance nevertheless failed because the report
+numeric oracle rejected 57 numeric tokens across 35 lines. The rejected set
+includes evidence values placed on table rows without their named metric and
+new calculated ratios, percentages, and suggested thresholds that were not
+directly closed against the governed record association. Do not weaken the
+oracle, patch the report prompt, or rerun C7 under C7.4; the next continuation
+must separately scope this report evidence-presentation/claim-grounding
+failure. C8 remains blocked.
+
 ## C8 — Scientific specialist-agent layer
 
 **Status:** not started; requires separate authorization.

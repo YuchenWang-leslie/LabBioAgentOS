@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+import re
+from typing import Any, Callable, Literal
 from uuid import UUID, uuid4
 
 from pantheon.toolset import ToolSet, tool
@@ -14,9 +15,12 @@ from labbioagentos.artifacts import (
     ArtifactExposureService,
     ArtifactQuery,
     ArtifactSchema,
+    ArtifactIdentifierError,
+    ArtifactNotFoundError,
     ArtifactStore,
     ArtifactViewType,
 )
+from labbioagentos.artifacts.store import coerce_artifact_id
 from labbioagentos.contracts import WorkflowStage
 from labbioagentos.execution import (
     ExecutionPlanDraft,
@@ -38,6 +42,7 @@ from labbioagentos.skills import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .contracts import (
+    ArtifactQueryRequestAudit,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
 )
@@ -67,6 +72,15 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
 ALL_CAPABILITIES = frozenset(
     capability for values in CAPABILITY_CEILINGS.values() for capability in values
 )
+_SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
+class _InvalidArtifactQueryView(ValueError):
+    """artifact_query received a value outside ArtifactViewType."""
+
+
+class _InvalidArtifactQueryShape(ValueError):
+    """artifact_query received an invalid view/limit combination."""
 
 
 class ToolError(BaseModel):
@@ -238,12 +252,18 @@ class LabBioRuntimeToolSet(ToolSet):
         operation: Callable[[], Any],
         *,
         request_ids: dict[str, JsonValue] | None = None,
+        artifact_query_request: ArtifactQueryRequestAudit | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
         trace_event_ids: list[UUID] = []
+        bounded_ids = self._bounded_identifiers(request_ids or {})
+        request_audit_payload: dict[str, JsonValue] = {}
+        if artifact_query_request is not None:
+            request_audit_payload["artifact_query_request"] = (
+                artifact_query_request.model_dump(mode="json")
+            )
         try:
             self._guard(capability)
-            bounded_ids = self._bounded_identifiers(request_ids or {})
             event = self._emit(
                 TraceEventType.CAPABILITY_INVOKED,
                 capability,
@@ -251,6 +271,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 {
                     "capability_invocation_id": str(capability_invocation_id),
                     **bounded_ids,
+                    **request_audit_payload,
                 },
             )
             if event is not None:
@@ -273,6 +294,8 @@ class LabBioRuntimeToolSet(ToolSet):
                     "capability_invocation_id": str(capability_invocation_id),
                     "error_code": error.error_code,
                     "correlation_id": str(error.correlation_id),
+                    **bounded_ids,
+                    **request_audit_payload,
                 },
             )
             if event is not None:
@@ -285,6 +308,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     trace_event_ids=tuple(trace_event_ids),
                     error_code=error.error_code,
                     correlation_id=error.correlation_id,
+                    artifact_query_request=artifact_query_request,
                 )
             )
             return ToolResult(success=False, error=error).model_dump(mode="json")
@@ -294,7 +318,8 @@ class LabBioRuntimeToolSet(ToolSet):
             "COMPLETED",
             {
                 "capability_invocation_id": str(capability_invocation_id),
-                **self._bounded_identifiers(request_ids or {}),
+                **bounded_ids,
+                **request_audit_payload,
             },
         )
         if event is not None:
@@ -307,6 +332,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 trace_event_ids=tuple(trace_event_ids),
                 reference_ids=self._reference_ids(value),
                 safe_result=value,
+                artifact_query_request=artifact_query_request,
             )
         )
         return result.model_dump(mode="json", by_alias=True)
@@ -323,13 +349,26 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @tool
     async def artifact_query(
-        self, artifact_id: str, view_type: str, limit: int | None = None
+        self,
+        artifact_id: str,
+        view_type: Literal["METADATA", "SCHEMA", "SUMMARY", "TOP_N"],
+        limit: int | None = None,
     ) -> dict:
-        """Request one policy-controlled artifact view by UUID."""
+        """Request one policy-controlled view of a governed Artifact.
+
+        Args:
+            artifact_id: UUID from a RuntimeReference whose kind is ARTIFACT;
+                an EXECUTION reference UUID is not an Artifact identifier.
+            view_type: One of METADATA, SCHEMA, SUMMARY, or TOP_N.
+            limit: Optional positive row limit, valid only with TOP_N.
+        """
         return await self._call(
             "artifact_query",
             lambda: self._artifact_query(artifact_id, view_type, limit),
             request_ids={"artifact_id": artifact_id},
+            artifact_query_request=self._artifact_query_request_audit(
+                artifact_id, view_type, limit
+            ),
         )
 
     @tool
@@ -481,7 +520,7 @@ class LabBioRuntimeToolSet(ToolSet):
         return visible[offset : offset + limit]
 
     def _artifact_query(self, artifact_id: str, view_type: str, limit: int | None):
-        identifier = UUID(artifact_id)
+        identifier = coerce_artifact_id(artifact_id)
         ref = self.services.artifact_exposure.artifact_ref(
             identifier, principal=self.binding.principal
         )
@@ -490,9 +529,17 @@ class LabBioRuntimeToolSet(ToolSet):
             or ref.lab_id != self.binding.workspace.lab_id
         ):
             raise AuthorizationDenied("Artifact is outside the bound workspace")
+        try:
+            typed_view = ArtifactViewType(view_type)
+        except ValueError as exc:
+            raise _InvalidArtifactQueryView from exc
+        try:
+            query = ArtifactQuery(view_type=typed_view, limit=limit)
+        except ValidationError as exc:
+            raise _InvalidArtifactQueryShape from exc
         return self.services.artifact_exposure.artifact_query(
             identifier,
-            ArtifactQuery(view_type=ArtifactViewType(view_type), limit=limit),
+            query,
             self.binding.consumer,
             principal=self.binding.principal,
         )
@@ -651,6 +698,26 @@ class LabBioRuntimeToolSet(ToolSet):
     def _safe_error(exc: Exception) -> ToolError:
         if isinstance(exc, AuthorizationDenied):
             return ToolError(error_code="AUTHORIZATION_DENIED", safe_message="Access denied by policy.")
+        if isinstance(exc, ArtifactIdentifierError):
+            return ToolError(
+                error_code="INVALID_IDENTIFIER",
+                safe_message="The Artifact identifier must be a UUID.",
+            )
+        if isinstance(exc, ArtifactNotFoundError):
+            return ToolError(
+                error_code="ARTIFACT_NOT_FOUND",
+                safe_message="The requested Artifact is not registered.",
+            )
+        if isinstance(exc, _InvalidArtifactQueryView):
+            return ToolError(
+                error_code="INVALID_ENUM_VALUE",
+                safe_message="The artifact view type is not supported.",
+            )
+        if isinstance(exc, _InvalidArtifactQueryShape):
+            return ToolError(
+                error_code="INVALID_QUERY_SHAPE",
+                safe_message="The artifact view and limit combination is invalid.",
+            )
         if isinstance(exc, ValidationError):
             summaries: list[str] = []
             for issue in exc.errors(include_url=False, include_input=False)[:8]:
@@ -689,6 +756,37 @@ class LabBioRuntimeToolSet(ToolSet):
         if isinstance(exc, ValueError):
             return ToolError(error_code="INVALID_REQUEST", safe_message="The capability request is invalid.")
         return ToolError(error_code="CAPABILITY_FAILED", safe_message="The capability could not complete.")
+
+    @staticmethod
+    def _artifact_query_request_audit(
+        artifact_id: Any,
+        view_type: Any,
+        limit: Any,
+    ) -> ArtifactQueryRequestAudit:
+        """Project only bounded artifact_query fields; never retain arbitrary input."""
+
+        try:
+            safe_artifact_id: UUID | Literal["INVALID_IDENTIFIER"] = (
+                coerce_artifact_id(artifact_id)
+            )
+        except ArtifactIdentifierError:
+            safe_artifact_id = "INVALID_IDENTIFIER"
+        safe_view_type = (
+            view_type
+            if isinstance(view_type, str)
+            and _SAFE_ARTIFACT_QUERY_TOKEN.fullmatch(view_type) is not None
+            else "INVALID_VALUE"
+        )
+        safe_limit: int | Literal["INVALID_VALUE"] | None
+        if limit is None or (isinstance(limit, int) and not isinstance(limit, bool)):
+            safe_limit = limit
+        else:
+            safe_limit = "INVALID_VALUE"
+        return ArtifactQueryRequestAudit(
+            artifact_id=safe_artifact_id,
+            view_type=safe_view_type,
+            limit=safe_limit,
+        )
 
     @staticmethod
     def _bounded_identifiers(values: dict[str, JsonValue]) -> dict[str, JsonValue]:

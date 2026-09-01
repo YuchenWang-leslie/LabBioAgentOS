@@ -1,6 +1,7 @@
 """LabBio-owned runtime integration contracts and deterministic control bridge."""
 
 from .contracts import (
+    ArtifactQueryRequestAudit,
     CapabilityEvidenceBundle,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
@@ -83,6 +84,7 @@ __all__ = [
     "ALL_CAPABILITIES",
     "AgentProfile",
     "ArtifactListItem",
+    "ArtifactQueryRequestAudit",
     "CAPABILITY_CEILINGS",
     "CapabilityProfile",
     "CapabilityEvidenceBundle",

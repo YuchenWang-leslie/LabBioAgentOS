@@ -198,6 +198,7 @@ from .workflow import (
     runtime_workflow_definition,
 )
 from .runtime import (
+    ArtifactQueryRequestAudit,
     CapabilityEvidenceBundle,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
@@ -321,6 +322,7 @@ __all__ = [
     "ArtifactNotFoundError",
     "ArtifactProvenance",
     "ArtifactQuery",
+    "ArtifactQueryRequestAudit",
     "ArtifactQueryError",
     "ArtifactRef",
     "ArtifactRepresentation",

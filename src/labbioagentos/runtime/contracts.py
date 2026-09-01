@@ -55,6 +55,26 @@ class CapabilityEvidenceStatus(StrEnum):
     FAILED = "FAILED"
 
 
+ArtifactQueryAuditToken = Annotated[
+    StrictStr,
+    StringConstraints(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z][A-Za-z0-9_]*$",
+    ),
+]
+
+
+class ArtifactQueryRequestAudit(BaseModel):
+    """Explicit safe projection of one artifact_query request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: UUID | Literal["INVALID_IDENTIFIER"]
+    view_type: ArtifactQueryAuditToken
+    limit: int | Literal["INVALID_VALUE"] | None = None
+
+
 _FORBIDDEN_EVIDENCE_KEYS = {
     "api_key",
     "authorization",
@@ -119,6 +139,7 @@ class CapabilityEvidenceItem(BaseModel):
     safe_result: JsonValue | None = None
     error_code: SafeIdentifier | None = None
     correlation_id: UUID | None = None
+    artifact_query_request: ArtifactQueryRequestAudit | None = None
 
     @field_validator("safe_result")
     @classmethod
@@ -135,6 +156,13 @@ class CapabilityEvidenceItem(BaseModel):
             raise ValueError("Completed capability evidence cannot contain an error")
         if self.status is CapabilityEvidenceStatus.FAILED and self.error_code is None:
             raise ValueError("Failed capability evidence requires an error code")
+        if (
+            self.artifact_query_request is not None
+            and self.capability_name != "artifact_query"
+        ):
+            raise ValueError(
+                "Artifact query request audit is valid only for artifact_query"
+            )
         return self
 
 

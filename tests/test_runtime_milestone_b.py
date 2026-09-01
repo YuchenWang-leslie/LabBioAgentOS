@@ -636,7 +636,7 @@ async def test_tool_errors_and_trace_are_bounded_sanitized(boundary):
     host_secret = "/Users/private/secret-file"
     result = await toolset.artifact_query(host_secret, "SUMMARY")
     encoded = json.dumps(result)
-    assert result["error"]["error_code"] == "INVALID_REQUEST"
+    assert result["error"]["error_code"] == "INVALID_IDENTIFIER"
     assert host_secret not in encoded
     trace = json.dumps([event.model_dump(mode="json") for event in sink.read()])
     assert host_secret not in trace
