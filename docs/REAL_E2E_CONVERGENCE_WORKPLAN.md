@@ -117,6 +117,33 @@ authority/completeness root-cause cluster; do not rerun or add a compatibility
 patch without separately scoping the proposal-schema failure. C7 remains not
 accepted.
 
+## C7.2 — Next-action structured-schema fidelity
+
+**Status:** deterministic source acceptance is complete on the isolated C7
+branch; the real provider schema smoke and any subsequent fresh C7 run remain
+pending. C7 is not accepted by this schema result.
+
+- **Root cause:** the former `NextActionProposal` exposed one object with only
+  `action` required and all action-specific fields optional. Its Pydantic
+  after-validator rejected illegal combinations that the provider-visible JSON
+  Schema accepted.
+- **Resolution:** the provider contract is now a five-way `action`
+  discriminated union behind the existing `NextActionProposal` construction and
+  consumer interface. Each variant forbids fields owned by another action;
+  invalid provider output remains invalid and is never cleaned or retried.
+- **Accepted semantics preserved:** retry may target another allowed stage or
+  omit `target_stage` to retry the current stage, and the optional bounded
+  `reason` remains common context while `fail` requires it. WorkflowEngine still
+  owns current-state, edge, retry-limit, gate, terminal-stage, and failure
+  legality.
+- **Deterministic evidence:** S1–S7 cover standalone and complete stage-specific
+  FINALIZE schemas, all valid/invalid action shapes, round trips, and unchanged
+  WorkflowEngine consumers. The full non-live regression is 220 passed and 6
+  skipped with the one pre-existing Uvicorn warning.
+- **Boundaries preserved:** no prompt change, malformed-output repair, automatic
+  FINALIZE retry, provider/stage special case, Pantheon change, or scientific C7
+  behavior change was introduced.
+
 ## C8 — Scientific specialist-agent layer
 
 **Status:** not started; requires separate authorization.

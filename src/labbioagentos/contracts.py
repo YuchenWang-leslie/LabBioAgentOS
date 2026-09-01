@@ -7,6 +7,7 @@ execution behavior, persistence, or biological interpretation.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Annotated, Literal, TypeAlias
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -14,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    RootModel,
     StrictStr,
     model_validator,
 )
@@ -190,45 +192,80 @@ class WorkflowDefinition(BaseModel):
         return WorkflowTransition(source=source, target=target) in self.allowed_transitions
 
 
-class NextActionProposal(BaseModel):
-    """A structural proposal; generation of proposals belongs to a future runtime."""
-
+class _ActionProposalBase(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    action: NextAction
-    target_stage: WorkflowStage | None = None
-    user_prompt: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
     reason: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class _TransitionActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.TRANSITION]
+    target_stage: WorkflowStage
+
+
+class _RetryActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.RETRY]
+    target_stage: WorkflowStage | None = None
+
+
+class _RequestUserInputActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.REQUEST_USER_INPUT]
+    user_prompt: StrictStr = Field(min_length=1, max_length=4000)
     domain_reference_id: StrictStr | None = Field(
         default=None,
         min_length=1,
         max_length=256,
     )
 
-    @model_validator(mode="after")
-    def validate_shape(self) -> "NextActionProposal":
-        if self.action is NextAction.TRANSITION:
-            if self.target_stage is None:
-                raise ValueError("transition proposals require target_stage")
-        elif self.action is not NextAction.RETRY and self.target_stage is not None:
-            raise ValueError(
-                "target_stage is only valid for transition or retry proposals"
-            )
 
-        if self.action is NextAction.REQUEST_USER_INPUT:
-            if self.user_prompt is None:
-                raise ValueError("request_user_input proposals require user_prompt")
-        elif self.user_prompt is not None:
-            raise ValueError("user_prompt is only valid for request_user_input proposals")
+class _FinishActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.FINISH]
 
-        if self.action is not NextAction.REQUEST_USER_INPUT:
-            if self.domain_reference_id is not None:
-                raise ValueError(
-                    "domain_reference_id is only valid for request_user_input proposals"
-                )
-        if self.action is NextAction.FAIL and self.reason is None:
-            raise ValueError("fail proposals require reason")
-        return self
+
+class _FailActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.FAIL]
+    reason: StrictStr = Field(min_length=1, max_length=4000)
+
+
+_NextActionVariant: TypeAlias = Annotated[
+    _TransitionActionProposal
+    | _RetryActionProposal
+    | _RequestUserInputActionProposal
+    | _FinishActionProposal
+    | _FailActionProposal,
+    Field(discriminator="action"),
+]
+
+
+class NextActionProposal(RootModel[_NextActionVariant]):
+    """JSON-Schema-visible action union with a stable consumer interface."""
+
+    model_config = ConfigDict(frozen=True)
+
+    def __init__(self, root=None, **data):
+        if root is not None and data:
+            raise TypeError("Provide either root or action fields, not both")
+        super().__init__(root if root is not None else data)
+
+    @property
+    def action(self) -> NextAction:
+        return self.root.action
+
+    @property
+    def target_stage(self) -> WorkflowStage | None:
+        return getattr(self.root, "target_stage", None)
+
+    @property
+    def user_prompt(self) -> str | None:
+        return getattr(self.root, "user_prompt", None)
+
+    @property
+    def reason(self) -> str | None:
+        return self.root.reason
+
+    @property
+    def domain_reference_id(self) -> str | None:
+        return getattr(self.root, "domain_reference_id", None)
 
 
 class PendingUserGate(BaseModel):
