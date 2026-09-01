@@ -170,8 +170,9 @@ patch prompts, or rerun the same failed lineage without new persistent evidence.
 ## C7.3 — Retry-aware evidence lineage
 
 **Status:** deterministic source acceptance is complete on the isolated C7
-branch. One fresh C7 run is pending. C7 is not accepted by this infrastructure
-result.
+branch. Exactly one fresh C7 run was attempted and exposed a separate
+Artifact-query request/audit blocker before VALIDATE finalization. C7 is not
+accepted.
 
 - **Forensic gate:** CASE D. The failed run retained execution/Artifact
   provenance but used an in-memory trace and observer, so the exact VALIDATE
@@ -211,6 +212,34 @@ result.
   pre-existing Uvicorn warning. Pantheon is unchanged, and no PBMC/QC value,
   provider branch, auto-acceptance, automatic retry, or hidden compatibility
   behavior was added.
+
+Exactly one fresh post-C7.3 C7 run was attempted:
+`7b46cc5b-c2ec-4a93-bac4-b70d29491b4f`. Admission/provenance and governed
+image-read tests passed. The runtime made one accepted EXECUTE invocation,
+`6c8af22f-c3a8-46a2-ab81-7e2122c47750`, whose successful execution
+`37165c9e-fbfb-41c2-8a57-970fc8efb69a` produced the contract-valid DERIVED
+Artifact `4102fe2c-acf6-486c-bc51-9e7b3376d4d2`. The VALIDATE stage input
+correctly classified that Artifact and execution as `CURRENT_ATTEMPT_EVIDENCE`
+with the same producer invocation and contained no historical evidence. This
+confirms the C7.3 lineage projection in the real provider path; no workflow
+retry occurred.
+
+The run then stopped before a typed VALIDATE result because the Reviewer made
+20 `artifact_query` attempts and none completed: 19 returned
+`INVALID_REQUEST`, including the first request, which correctly targeted the
+current DERIVED Artifact, and one returned `CAPABILITY_FAILED` after targeting
+the execution ID rather than an Artifact. The preserved safe trace records the
+requested IDs and error codes but intentionally does not retain the non-ID tool
+arguments such as `view_type` and `limit`; therefore the exact malformed field
+cannot be classified without guessing. There was no Reviewer decision, retry
+reason, REPORT, LEARN, final report export, or numeric claim-oracle result.
+
+This is a new Artifact-query request-contract/auditability root-cause cluster,
+not a failure of the C7.3 attempt-role assignment. Do not rerun C7, change
+Reviewer scientific criteria, raise the retry limit, or add a prompt/tool
+compatibility workaround until the exact safe request shape can be durably
+recovered and tested. The failed-run JSONL, Artifact, and execution evidence is
+retained under its isolated test namespace.
 
 ## C8 — Scientific specialist-agent layer
 
