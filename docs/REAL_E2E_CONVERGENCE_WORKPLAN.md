@@ -119,9 +119,9 @@ accepted.
 
 ## C7.2 — Next-action structured-schema fidelity
 
-**Status:** deterministic source acceptance is complete on the isolated C7
-branch; the real provider schema smoke and any subsequent fresh C7 run remain
-pending. C7 is not accepted by this schema result.
+**Status:** deterministic source acceptance and the real provider schema smoke
+are complete on the isolated C7 branch. Exactly one subsequent fresh C7 run was
+attempted and exposed a new repeated-VALIDATE-retry blocker. C7 is not accepted.
 
 - **Root cause:** the former `NextActionProposal` exposed one object with only
   `action` required and all action-specific fields optional. Its Pydantic
@@ -140,9 +140,32 @@ pending. C7 is not accepted by this schema result.
   FINALIZE schemas, all valid/invalid action shapes, round trips, and unchanged
   WorkflowEngine consumers. The full non-live regression is 220 passed and 6
   skipped with the one pre-existing Uvicorn warning.
+- **Real provider schema evidence:** one MiMo smoke through the real
+  `PantheonRuntimeFactory` and stage-specific PREFLIGHT response schema passed
+  without retry. The provider returned a valid `transition` to EXECUTE with no
+  illegal `user_prompt`, confirming transport acceptance of the strict
+  discriminated schema.
 - **Boundaries preserved:** no prompt change, malformed-output repair, automatic
   FINALIZE retry, provider/stage special case, Pantheon change, or scientific C7
   behavior change was introduced.
+
+Exactly one fresh post-C7.2 C7 run was attempted:
+`8239ca31-09aa-40e8-bda3-06fb2f2912c5`. Admission/provenance and governed image
+read tests passed, and the runtime test progressed through EXECUTE and VALIDATE.
+The failed-attempt evidence contains two contract-valid DERIVED QC summaries and
+one contract-invalid attempted summary that was correctly retained as RAW. The
+first VALIDATE decision made a legal retry to EXECUTE and obtained new execution
+evidence; the next VALIDATE decision again proposed retry to EXECUTE, which
+WorkflowEngine correctly rejected with `RetryLimitExceededError` because the
+VALIDATE retry limit of one had been reached. The run did not reach REPORT,
+LEARN, final report export, or the numeric claim oracle. Failed-attempt evidence
+was retained and no second fresh run was started.
+
+This repeated validation decision is a new root-cause cluster, not evidence of
+remaining C7.2 schema failure. It was not diagnosed or modified under C7.2. The
+only valid continuation is a separately scoped review of the Reviewer-visible
+governed evidence and the repeated retry decision; do not raise the retry limit,
+patch prompts, or rerun the same failed lineage without new persistent evidence.
 
 ## C8 — Scientific specialist-agent layer
 
