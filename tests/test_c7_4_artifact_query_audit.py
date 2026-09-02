@@ -117,6 +117,7 @@ async def test_a1_valid_top_n_preserves_completed_request_audit(
         "view_type": "TOP_N",
         "limit": 10,
         "limit_type": "INTEGER",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -141,6 +142,7 @@ async def test_a2_top_n_default_limit_preserves_explicit_null_audit(
         "view_type": "TOP_N",
         "limit": None,
         "limit_type": "NULL",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -163,6 +165,7 @@ async def test_a3_invalid_view_fails_with_safe_exact_audit(artifact_query_bounda
         "view_type": "UNSUPPORTED",
         "limit": None,
         "limit_type": "NULL",
+        "normalization_applied": False,
     }
     item = toolset.evidence_items()[-1]
     assert item.error_code == "INVALID_ENUM_VALUE"
@@ -185,6 +188,7 @@ async def test_a4_non_top_n_limit_fails_without_dropping_limit(
         "view_type": "SUMMARY",
         "limit": 10,
         "limit_type": "INTEGER",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -211,6 +215,7 @@ async def test_a5_non_positive_limit_fails_with_requested_value_audited(
         "view_type": "TOP_N",
         "limit": limit,
         "limit_type": "INTEGER",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -236,6 +241,7 @@ async def test_a6_execution_uuid_is_not_converted_to_artifact_reference(
         "view_type": "SUMMARY",
         "limit": None,
         "limit_type": "NULL",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -261,6 +267,7 @@ async def test_a7_unknown_artifact_uuid_fails_with_canonical_audit(
         "view_type": "METADATA",
         "limit": None,
         "limit_type": "NULL",
+        "normalization_applied": False,
     }
     _assert_correlated_audit(
         sink,
@@ -290,6 +297,7 @@ async def test_a8_request_audit_redacts_non_contract_values_and_does_not_leak(
         "view_type": "INVALID_VALUE",
         "limit": "INVALID_VALUE",
         "limit_type": "STRING",
+        "normalization_applied": False,
     }
     persisted = json.dumps(
         {

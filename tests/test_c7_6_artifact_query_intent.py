@@ -90,6 +90,7 @@ async def test_qi1_integer_limit_preserves_value_and_type(query_boundary):
         "view_type": "TOP_N",
         "limit": 12,
         "limit_type": "INTEGER",
+        "normalization_applied": False,
     }
 
 
@@ -105,6 +106,7 @@ async def test_qi2_null_limit_has_explicit_null_type(query_boundary):
         "view_type": "TOP_N",
         "limit": None,
         "limit_type": "NULL",
+        "normalization_applied": False,
     }
 
 
@@ -183,7 +185,9 @@ async def test_qi6_collection_limits_record_type_without_contents(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_limit", ["12", 12.5, True, [12], {"limit": 12}])
+@pytest.mark.parametrize(
+    "invalid_limit", ["12.0", 12.5, True, [12], {"limit": 12}]
+)
 async def test_qi7_invalid_limit_types_remain_validation_failures(
     query_boundary,
     invalid_limit,
@@ -199,7 +203,7 @@ async def test_qi7_invalid_limit_types_remain_validation_failures(
 
 
 @pytest.mark.asyncio
-async def test_qi8_pantheon_dispatch_does_not_normalize_or_retry_string_limit(
+async def test_qi8_pantheon_preserves_wire_type_before_labbio_normalization(
     query_boundary,
 ):
     sink, binding, ref, toolset = query_boundary
@@ -225,9 +229,10 @@ async def test_qi8_pantheon_dispatch_does_not_normalize_or_retry_string_limit(
 
     assert valid_result["success"] is True
     assert toolset.evidence_items()[0].artifact_query_request.limit_type == "INTEGER"
-    assert invalid_result["success"] is False
-    assert invalid_result["error"]["error_code"] == "INVALID_QUERY_SHAPE"
+    assert invalid_result["success"] is True
+    assert _request(toolset)["limit"] == 12
     assert _request(toolset)["limit_type"] == "STRING"
+    assert _request(toolset)["normalization_applied"] is True
     capability_events = [
         event
         for event in sink.read(binding.run_id)
@@ -242,7 +247,7 @@ async def test_qi8_pantheon_dispatch_does_not_normalize_or_retry_string_limit(
         TraceEventType.CAPABILITY_INVOKED,
         TraceEventType.CAPABILITY_COMPLETED,
         TraceEventType.CAPABILITY_INVOKED,
-        TraceEventType.CAPABILITY_FAILED,
+        TraceEventType.CAPABILITY_COMPLETED,
     ]
 
 
@@ -347,3 +352,192 @@ async def test_framework_does_not_auto_complete_a_partial_view(query_boundary):
     ]
     assert len(started) == 1
     assert started[0].payload["artifact_query_request"]["limit"] is None
+
+
+@pytest.mark.asyncio
+async def test_w1_native_integer_is_preserved_without_normalization(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", 18)
+
+    assert result["success"] is True
+    assert _request(toolset) == {
+        "artifact_id": str(ref.artifact_id),
+        "view_type": "TOP_N",
+        "limit": 18,
+        "limit_type": "INTEGER",
+        "normalization_applied": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_w2_canonical_integer_string_is_normalized_once(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "18")
+
+    assert result["success"] is True
+    assert result["data"]["returned_count"] == 18
+    assert _request(toolset) == {
+        "artifact_id": str(ref.artifact_id),
+        "view_type": "TOP_N",
+        "limit": 18,
+        "limit_type": "STRING",
+        "normalization_applied": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_w3_zero_string_normalizes_then_fails_semantic_validation(
+    query_boundary,
+):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "0")
+
+    assert result["success"] is False
+    assert result["error"]["error_code"] == "INVALID_QUERY_SHAPE"
+    assert _request(toolset)["limit"] == 0
+    assert _request(toolset)["normalization_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_w4_negative_string_normalizes_then_fails_semantic_validation(
+    query_boundary,
+):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "-1")
+
+    assert result["success"] is False
+    assert result["error"]["error_code"] == "INVALID_QUERY_SHAPE"
+    assert _request(toolset)["limit"] == -1
+    assert _request(toolset)["normalization_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_w5_leading_zero_string_is_not_normalized(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "018")
+
+    assert result["success"] is False
+    assert _request(toolset)["limit"] == "INVALID_VALUE"
+    assert _request(toolset)["normalization_applied"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [" 18", "18 "])
+async def test_w6_whitespace_strings_are_not_normalized(query_boundary, limit):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", limit)
+
+    assert result["success"] is False
+    assert _request(toolset)["limit"] == "INVALID_VALUE"
+    assert _request(toolset)["normalization_applied"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["18.0", "1e2", "+18"])
+async def test_w7_noncanonical_numeric_strings_are_not_normalized(
+    query_boundary,
+    limit,
+):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", limit)
+
+    assert result["success"] is False
+    assert _request(toolset)["limit"] == "INVALID_VALUE"
+    assert _request(toolset)["normalization_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_w8_word_is_not_normalized(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "all")
+
+    assert result["success"] is False
+    assert _request(toolset)["limit"] == "INVALID_VALUE"
+    assert _request(toolset)["normalization_applied"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "limit_type"),
+    [(18.0, "FLOAT"), (True, "BOOLEAN"), ([18], "ARRAY"), ({"value": 18}, "OBJECT")],
+)
+async def test_w9_non_string_types_are_not_normalized(
+    query_boundary,
+    limit,
+    limit_type,
+):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", limit)
+
+    assert result["success"] is False
+    assert _request(toolset)["limit_type"] == limit_type
+    assert _request(toolset)["normalization_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_w10_normalization_is_explicit_in_correlated_trace(query_boundary):
+    sink, binding, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "18")
+
+    assert result["success"] is True
+    requests = [
+        event.payload["artifact_query_request"]
+        for event in sink.read(binding.run_id)
+        if event.event_type
+        in {TraceEventType.CAPABILITY_INVOKED, TraceEventType.CAPABILITY_COMPLETED}
+    ]
+    assert requests == [_request(toolset), _request(toolset)]
+    assert requests[0]["limit_type"] == "STRING"
+    assert requests[0]["normalization_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_w11_one_wire_call_produces_one_capability_invocation(query_boundary):
+    sink, binding, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "18")
+
+    assert result["success"] is True
+    events = [
+        event.event_type
+        for event in sink.read(binding.run_id)
+        if event.event_type
+        in {
+            TraceEventType.CAPABILITY_INVOKED,
+            TraceEventType.CAPABILITY_COMPLETED,
+            TraceEventType.CAPABILITY_FAILED,
+        }
+    ]
+    assert events == [
+        TraceEventType.CAPABILITY_INVOKED,
+        TraceEventType.CAPABILITY_COMPLETED,
+    ]
+    assert len(toolset.evidence_items()) == 1
+
+
+@pytest.mark.asyncio
+async def test_w12_existing_query_shape_and_policy_remain_authoritative(
+    query_boundary,
+):
+    _, _, ref, toolset = query_boundary
+
+    invalid_shape = await toolset.artifact_query(
+        str(ref.artifact_id), "SUMMARY", "18"
+    )
+    bounded = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", "101")
+
+    assert invalid_shape["success"] is False
+    assert invalid_shape["error"]["error_code"] == "INVALID_QUERY_SHAPE"
+    assert bounded["success"] is True
+    assert bounded["data"]["effective_limit"] == 100
+    assert bounded["data"]["returned_count"] == 18

@@ -74,6 +74,18 @@ ALL_CAPABILITIES = frozenset(
     capability for values in CAPABILITY_CEILINGS.values() for capability in values
 )
 _SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_CANONICAL_INTEGER_WIRE_TOKEN = re.compile(r"(?:0|-?[1-9][0-9]{0,127})")
+
+
+def _normalize_canonical_integer_wire_value(value: Any) -> tuple[Any, bool]:
+    """Normalize one bounded canonical decimal string without semantic validation."""
+
+    if (
+        isinstance(value, str)
+        and _CANONICAL_INTEGER_WIRE_TOKEN.fullmatch(value) is not None
+    ):
+        return int(value), True
+    return value, False
 
 
 class _InvalidArtifactQueryView(ValueError):
@@ -364,12 +376,19 @@ class LabBioRuntimeToolSet(ToolSet):
             limit: Maximum number of records to return for TOP_N; use a positive
                 integer.
         """
+        canonical_limit, normalization_applied = (
+            _normalize_canonical_integer_wire_value(limit)
+        )
         return await self._call(
             "artifact_query",
-            lambda: self._artifact_query(artifact_id, view_type, limit),
+            lambda: self._artifact_query(artifact_id, view_type, canonical_limit),
             request_ids={"artifact_id": artifact_id},
             artifact_query_request=self._artifact_query_request_audit(
-                artifact_id, view_type, limit
+                artifact_id,
+                view_type,
+                limit,
+                canonical_limit=canonical_limit,
+                normalization_applied=normalization_applied,
             ),
         )
 
@@ -764,6 +783,9 @@ class LabBioRuntimeToolSet(ToolSet):
         artifact_id: Any,
         view_type: Any,
         limit: Any,
+        *,
+        canonical_limit: Any,
+        normalization_applied: bool,
     ) -> ArtifactQueryRequestAudit:
         """Project only bounded artifact_query fields; never retain arbitrary input."""
 
@@ -780,7 +802,10 @@ class LabBioRuntimeToolSet(ToolSet):
             else "INVALID_VALUE"
         )
         safe_limit: int | Literal["INVALID_VALUE"] | None
-        if limit is None:
+        if normalization_applied:
+            safe_limit = canonical_limit
+            limit_type = ArtifactQueryLimitType.STRING
+        elif limit is None:
             safe_limit = limit
             limit_type = ArtifactQueryLimitType.NULL
         elif isinstance(limit, bool):
@@ -809,6 +834,7 @@ class LabBioRuntimeToolSet(ToolSet):
             view_type=safe_view_type,
             limit=safe_limit,
             limit_type=limit_type,
+            normalization_applied=normalization_applied,
         )
 
     @staticmethod

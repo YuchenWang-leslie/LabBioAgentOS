@@ -87,6 +87,19 @@ class ArtifactQueryRequestAudit(BaseModel):
     view_type: ArtifactQueryAuditToken
     limit: int | Literal["INVALID_VALUE"] | None = None
     limit_type: ArtifactQueryLimitType
+    normalization_applied: bool = False
+
+    @model_validator(mode="after")
+    def normalization_matches_safe_projection(self) -> "ArtifactQueryRequestAudit":
+        if self.normalization_applied and (
+            self.limit_type is not ArtifactQueryLimitType.STRING
+            or isinstance(self.limit, bool)
+            or not isinstance(self.limit, int)
+        ):
+            raise ValueError(
+                "Artifact query normalization requires a string wire type and integer limit"
+            )
+        return self
 
 
 _FORBIDDEN_EVIDENCE_KEYS = {
