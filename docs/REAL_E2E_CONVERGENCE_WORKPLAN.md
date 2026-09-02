@@ -372,6 +372,69 @@ one genuinely unsupported numeric interpretation. C7 remains not accepted.
 C7.5 ends at this new failure packet. No production fix, provider rerun, or C8
 work is authorized by this checkpoint.
 
+## C7.6 — REPORT evidence completeness and query-intent fidelity
+
+**Status:** the generic request-type audit is accepted independently, but the
+single authorized synthetic provider smoke ended in Outcome C. No fresh full C7
+was run. C7 remains not accepted.
+
+- **Preserved REPORT timeline:** trace sequence, rather than the earlier summary
+  wording, establishes the order. `c19132af-a1ea-43a2-b907-b28c315b5b7b`
+  requested TOP_N with `limit=INVALID_VALUE` and failed
+  `INVALID_QUERY_SHAPE`; `95d5f413-db37-447a-8e0d-7a9bd47f92ba` completed
+  METADATA with null limit; `200ce8f6-ee02-499e-a6c0-6484a27bf1b8` made the
+  second failed TOP_N request; `abe5049f-b6e9-4e6e-b28f-8bd325076b73`
+  completed SUMMARY; `cb1952bb-6878-4fe0-98ec-655c111e7332` completed the
+  default TOP_N with 10 returned of 18 available, effective limit 10, and
+  `truncated=true`; `17fb94fa-88d3-41ec-8bed-0f704e476a51` completed SCHEMA.
+  The safe trace retains both failed calls even though the preserved capability
+  boundary bundle contains only the completed results.
+- **Old audit semantics:** `INVALID_VALUE` meant only that limit was neither
+  null nor a Python integer excluding booleans. It collapsed strings, floats,
+  booleans, arrays, objects, and all other types, so the exact historical type
+  cannot be reconstructed and was not inferred.
+- **Resolution:** `ArtifactQueryRequestAudit` now adds the content-free
+  `limit_type` values INTEGER, NULL, STRING, FLOAT, BOOLEAN, ARRAY, OBJECT, and
+  OTHER. Integer values retain the existing bounded value; every invalid type
+  retains only `INVALID_VALUE` plus its type. No string/list/object contents,
+  representations, provider bodies, paths, or credentials are recorded. The
+  authoritative strict `ArtifactQuery` validation and error behavior are
+  unchanged. The generic tool description now states that TOP_N limit is a
+  positive integer; no stage or scientific prompt changed.
+- **Provider contract and failure class:** frozen Pantheon
+  `45ef598f8d79bd98e9befc7c549980b731476662` exposes Artifact ID as string,
+  the four-value view enum, limit as integer-or-null, required Artifact ID and
+  view type, and `additionalProperties=false`; the function schema declares
+  `strict=false`. Deterministic LocalProvider dispatch preserved an integer as
+  INTEGER and a string as STRING without conversion or retry. Together with the
+  LabBio-boundary trace, this supports F-A and excludes F-B/F-C for native JSON
+  integers. It does not retroactively identify the exact historical non-integer
+  type.
+- **Completeness/no-fallback evidence:** synthetic tests prove that returned,
+  available, effective-limit, and truncation metadata survive unchanged into
+  capability evidence. A partial default view remains partial; LabBio does not
+  auto-query, expand, substitute the maximum, normalize malformed values, or
+  retry. QI1-QI8, C7.1-C7.5, ArtifactQuery, trace/runtime, and non-live C7
+  groups passed. Full non-live regression is 268 passed and 6 skipped with the
+  one existing Uvicorn warning. Infrastructure commit
+  `3214aaa7eb091b208f8eed111b4307da12dca556` is pushed on the isolated C7
+  branch.
+- **Single minimal provider smoke:** generic synthetic run
+  `12610557-f57c-4456-b745-10f0fb48c68d` exposed one DERIVED collection whose
+  size was within the bounded policy. MiMo completed METADATA, SCHEMA, and
+  SUMMARY, then made two TOP_N calls whose new audits both recorded
+  `limit_type=STRING`; both failed `INVALID_QUERY_SHAPE`. It obtained no
+  complete records view, and LabBio performed no repair. The safe trace scan
+  found no provider/reasoning body, credentials, authorization payload, path,
+  script, or process stream.
+
+C7.6 therefore stops at Outcome C. Numeric grounding and the deferred full C7
+leak assertions were not run, because the prerequisite completeness smoke did
+not pass. Pantheon, the numeric oracle, scientific QC behavior, workflow retry
+limits, runtime stages, and scientific prompts remain unchanged. The only
+valid continuation is a separately authorized investigation of provider/tool
+strict-schema behavior; C8 remains blocked.
+
 ## C8 — Scientific specialist-agent layer
 
 **Status:** not started; requires separate authorization.
