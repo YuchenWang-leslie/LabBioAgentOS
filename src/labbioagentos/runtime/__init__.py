@@ -71,6 +71,7 @@ from .reporting import ReportReceipt, ReportSubmissionService
 from .tooling import (
     ALL_CAPABILITIES,
     CAPABILITY_CEILINGS,
+    CAPABILITY_INFORMATION_AUTHORITY,
     ArtifactListItem,
     LabBioRuntimeToolSet,
     MemoryCandidateView,
@@ -90,6 +91,7 @@ __all__ = [
     "ArtifactQueryLimitType",
     "ArtifactQueryRequestAudit",
     "CAPABILITY_CEILINGS",
+    "CAPABILITY_INFORMATION_AUTHORITY",
     "CapabilityProfile",
     "CapabilityEvidenceBundle",
     "CapabilityEvidenceItem",

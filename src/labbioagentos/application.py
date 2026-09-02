@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +35,7 @@ from .bioformats import (
 )
 from .contracts import (
     GateUserDecision,
+    PendingUserGate,
     RunStatus,
     WorkflowDefinition,
     WorkflowRun,
@@ -86,7 +88,7 @@ from .runtime import (
 )
 from .runtime.assembly import BoundaryObserver, PluginFactory
 from .runtime.coordinator import RuntimeCoordinatorService
-from .skills import GoldSkillService
+from .skills import GoldSkillService, SkillUserDecision
 from .trace import InMemoryTraceSink, RunTraceRecorder, TraceEvent, TraceSink
 from .workflow import WorkflowEngine, runtime_workflow_definition
 
@@ -105,6 +107,132 @@ class ApplicationRunNotFoundError(LookupError):
 
 class ApplicationRunStateError(RuntimeError):
     """The requested application lifecycle operation is invalid for the run."""
+
+
+class ApplicationDomainDecisionHandler(ABC):
+    """Apply one domain authorization before WorkflowEngine resumes a gate."""
+
+    @abstractmethod
+    def supports(self, domain_reference_id: str) -> bool:
+        """Return whether this handler owns the exact structural reference kind."""
+
+    @abstractmethod
+    async def apply(
+        self,
+        *,
+        pending_gate: PendingUserGate,
+        decision: GateUserDecision,
+        principal: Principal,
+        workspace: WorkspaceContext,
+        run_id: UUID,
+    ) -> str:
+        """Persist the domain decision and return its opaque reference ID."""
+
+
+class SkillDomainDecisionHandler(ApplicationDomainDecisionHandler):
+    """Bridge Skill creation/use proposals into the generic application gate."""
+
+    _CREATION_PREFIX = "skill-proposal:"
+    _USE_PREFIX = "skill-use:"
+
+    def __init__(self, service: GoldSkillService):
+        self.service = service
+
+    def supports(self, domain_reference_id: str) -> bool:
+        try:
+            self._parse(domain_reference_id)
+        except ValueError:
+            return False
+        return True
+
+    async def apply(
+        self,
+        *,
+        pending_gate: PendingUserGate,
+        decision: GateUserDecision,
+        principal: Principal,
+        workspace: WorkspaceContext,
+        run_id: UUID,
+    ) -> str:
+        if (
+            decision.gate_id != pending_gate.gate_id
+            or decision.domain_reference_id != pending_gate.domain_reference_id
+        ):
+            raise ApplicationRunStateError(
+                "Skill domain decision does not match the pending workflow gate"
+            )
+        if decision.decided_by != principal.user_id:
+            raise AuthorizationDenied(
+                "Skill domain decision identity does not match the Principal"
+            )
+        if decision.decision_reference_id is not None:
+            raise ApplicationRunStateError(
+                "External Skill decisions cannot supply a decision reference"
+            )
+        kind, subject_id = self._parse(decision.domain_reference_id or "")
+        if kind == "creation":
+            proposal = self.service.pending_proposal(subject_id)
+            if proposal.source_run_id != run_id or proposal.lab_id != workspace.lab_id:
+                raise AuthorizationDenied(
+                    "Skill proposal does not match the application run scope"
+                )
+            if (
+                proposal.owner_user_id is not None
+                and proposal.owner_user_id != principal.user_id
+            ) or (
+                proposal.project_id is not None
+                and proposal.project_id != workspace.project_id
+            ):
+                raise AuthorizationDenied(
+                    "Skill proposal ownership does not match the application scope"
+                )
+            skill_decision = SkillUserDecision(
+                subject_id=proposal.proposal_id,
+                gate_id=proposal.approval_gate_id,
+                approved=decision.approved,
+                decided_by=decision.decided_by,
+            )
+            self.service.decide_proposal(
+                proposal.proposal_id,
+                skill_decision,
+                principal=principal,
+            )
+            return str(skill_decision.decision_id)
+
+        proposal = self.service.pending_use_proposal(subject_id)
+        if (
+            proposal.run_id != run_id
+            or proposal.requesting_user_id != principal.user_id
+            or proposal.project_id != workspace.project_id
+            or proposal.lab_id != workspace.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Skill use proposal does not match the application run scope"
+            )
+        authorization = self.service.decide_use(
+            proposal.proposal_id,
+            SkillUserDecision(
+                subject_id=proposal.proposal_id,
+                gate_id=proposal.approval_gate_id,
+                approved=decision.approved,
+                decided_by=decision.decided_by,
+            ),
+            principal=principal,
+        )
+        return str(authorization.authorization_id)
+
+    @classmethod
+    def _parse(cls, reference: str) -> tuple[str, UUID]:
+        for kind, prefix in (
+            ("creation", cls._CREATION_PREFIX),
+            ("use", cls._USE_PREFIX),
+        ):
+            if reference.startswith(prefix):
+                try:
+                    return kind, UUID(reference.removeprefix(prefix))
+                except ValueError as exc:
+                    raise ValueError("Invalid Skill domain reference") from exc
+        raise ValueError("Unsupported Skill domain reference")
 
 
 class ApplicationArtifactReference(BaseModel):
@@ -263,6 +391,7 @@ class ApplicationRuntimeConfiguration:
     process_runner: DockerProcessRunner | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
+    domain_decision_handlers: tuple[ApplicationDomainDecisionHandler, ...] = ()
     h5ad_inspection_policy: H5ADInspectionPolicy = field(
         default_factory=H5ADInspectionPolicy
     )
@@ -303,6 +432,13 @@ class ApplicationRuntimeConfiguration:
         if not set(plugin_stages).issubset(configured_main):
             raise ApplicationConfigurationError(
                 "Application stage plugin bindings require a configured stage"
+            )
+        if any(
+            not isinstance(handler, ApplicationDomainDecisionHandler)
+            for handler in self.domain_decision_handlers
+        ):
+            raise ApplicationConfigurationError(
+                "Domain decision handlers must implement the application contract"
             )
 
 
@@ -625,6 +761,11 @@ class LabBioApplication:
                 body=body,
             )
             invocations += 1
+        if self.configuration.skill_service is not None:
+            self.configuration.skill_service.finalize_run_usage(
+                run.run_id,
+                run.status,
+            )
         return self.result(handle)
 
     async def resume_run(
@@ -637,7 +778,32 @@ class LabBioApplication:
         session = self._session(handle)
         if session.run.status is not RunStatus.WAITING_FOR_USER:
             raise ApplicationRunStateError("Run is not waiting for a user decision")
-        session.coordinator.resume_gate(session.run, decision)
+        session.coordinator.validate_gate_resume(session.run, decision)
+        pending = session.run.pending_user_gate
+        if pending is None:
+            raise ApplicationRunStateError("Run has no pending user gate")
+        effective_decision = decision
+        if pending.domain_reference_id is not None:
+            handlers = tuple(
+                handler
+                for handler in self.configuration.domain_decision_handlers
+                if handler.supports(pending.domain_reference_id)
+            )
+            if len(handlers) != 1:
+                raise ApplicationRunStateError(
+                    "A domain user gate requires exactly one decision handler"
+                )
+            decision_reference_id = await handlers[0].apply(
+                pending_gate=pending,
+                decision=decision,
+                principal=session.request.principal,
+                workspace=session.request.workspace,
+                run_id=session.run.run_id,
+            )
+            effective_decision = decision.model_copy(
+                update={"decision_reference_id": decision_reference_id}
+            )
+        session.coordinator.resume_gate(session.run, effective_decision)
         return await self.run(handle)
 
     def result(
@@ -973,6 +1139,7 @@ __all__ = [
     "ApplicationArtifactReference",
     "ApplicationBioFormatInspectionArtifacts",
     "ApplicationConfigurationError",
+    "ApplicationDomainDecisionHandler",
     "ApplicationExecutionProfile",
     "ApplicationH5ADInspectionArtifacts",
     "ApplicationInputError",
@@ -985,4 +1152,5 @@ __all__ = [
     "ApplicationRuntimeConfiguration",
     "ApplicationStagePlugin",
     "LabBioApplication",
+    "SkillDomainDecisionHandler",
 ]

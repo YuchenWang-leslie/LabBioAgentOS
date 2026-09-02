@@ -21,7 +21,7 @@ from labbioagentos.artifacts import (
     ArtifactViewType,
 )
 from labbioagentos.artifacts.store import coerce_artifact_id
-from labbioagentos.contracts import WorkflowStage
+from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.execution import (
     ExecutionPlanDraft,
     ExecutionSubmissionService,
@@ -35,7 +35,11 @@ from labbioagentos.memory import (
 )
 from labbioagentos.skills import (
     GoldSkillService,
+    SkillApprovalRequiredError,
+    SkillDecisionError,
+    SkillNotFoundError,
     SkillSearchContext,
+    SkillStoreError,
     SkillUseMode,
     SkillUseProposal,
 )
@@ -73,6 +77,20 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
 ALL_CAPABILITIES = frozenset(
     capability for values in CAPABILITY_CEILINGS.values() for capability in values
 )
+CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
+    "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "skill_search": InformationAuthority.MODEL_CONTEXT,
+    "skill_view": InformationAuthority.MODEL_CONTEXT,
+    "memory_search": InformationAuthority.MODEL_CONTEXT,
+    "memory_view": InformationAuthority.MODEL_CONTEXT,
+    "skill_propose_use": InformationAuthority.CONTROL_STATE,
+    "memory_propose_update": InformationAuthority.CONTROL_STATE,
+}
+if frozenset(CAPABILITY_INFORMATION_AUTHORITY) != ALL_CAPABILITIES:
+    raise RuntimeError("Capability information-authority mapping is incomplete")
 _SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _CANONICAL_INTEGER_WIRE_TOKEN = re.compile(r"(?:0|-?[1-9][0-9]{0,127})")
 
@@ -107,6 +125,7 @@ class ToolError(BaseModel):
 class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     success: bool
+    information_authority: InformationAuthority
     data: JsonValue | None = None
     error: ToolError | None = None
 
@@ -148,6 +167,9 @@ class ArtifactSchemaView(BaseModel):
 
 class SkillCandidateView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
     skill_id: UUID
     version: int
     name: StrictStr
@@ -155,6 +177,8 @@ class SkillCandidateView(BaseModel):
     scope: StrictStr
     tags: tuple[StrictStr, ...] = ()
     artifact_types: tuple[StrictStr, ...] = ()
+    applicability_preview: StrictStr
+    limitation_preview: tuple[StrictStr, ...] = ()
 
 
 class SkillDetailView(SkillCandidateView):
@@ -171,6 +195,9 @@ class SkillDetailView(SkillCandidateView):
 
 class MemoryCandidateView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
     memory_id: UUID
     version: int
     scope: StrictStr
@@ -281,6 +308,7 @@ class LabBioRuntimeToolSet(ToolSet):
         artifact_query_request: ArtifactQueryRequestAudit | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
+        information_authority = CAPABILITY_INFORMATION_AUTHORITY[capability]
         trace_event_ids: list[UUID] = []
         bounded_ids = self._bounded_identifiers(request_ids or {})
         request_audit_payload: dict[str, JsonValue] = {}
@@ -309,7 +337,11 @@ class LabBioRuntimeToolSet(ToolSet):
                 value = value.model_dump(mode="json", by_alias=True)
             elif isinstance(value, (tuple, list)) and all(isinstance(item, BaseModel) for item in value):
                 value = [item.model_dump(mode="json", by_alias=True) for item in value]
-            result = ToolResult(success=True, data=value)
+            result = ToolResult(
+                success=True,
+                information_authority=information_authority,
+                data=value,
+            )
         except Exception as exc:
             error = self._safe_error(exc)
             event = self._emit(
@@ -332,6 +364,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     actor_profile_key=self.binding.actor_profile_key,
                     actor_agent_name=self.binding.actor_agent_name,
                     capability_name=capability,
+                    information_authority=information_authority,
                     status=CapabilityEvidenceStatus.FAILED,
                     trace_event_ids=tuple(trace_event_ids),
                     error_code=error.error_code,
@@ -339,7 +372,11 @@ class LabBioRuntimeToolSet(ToolSet):
                     artifact_query_request=artifact_query_request,
                 )
             )
-            return ToolResult(success=False, error=error).model_dump(mode="json")
+            return ToolResult(
+                success=False,
+                information_authority=information_authority,
+                error=error,
+            ).model_dump(mode="json")
         event = self._emit(
             TraceEventType.CAPABILITY_COMPLETED,
             capability,
@@ -358,6 +395,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 actor_profile_key=self.binding.actor_profile_key,
                 actor_agent_name=self.binding.actor_agent_name,
                 capability_name=capability,
+                information_authority=information_authority,
                 status=CapabilityEvidenceStatus.COMPLETED,
                 trace_event_ids=tuple(trace_event_ids),
                 reference_ids=self._reference_ids(value),
@@ -442,12 +480,12 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
-    async def skill_view(self, skill_id: str, version: int) -> dict:
-        """View one authorized immutable procedural-memory version."""
+    async def skill_view(self, authorization_id: str) -> dict:
+        """View the exact Skill version bound to an approved run authorization."""
         return await self._call(
             "skill_view",
-            lambda: self._skill_view(UUID(skill_id), version),
-            request_ids={"skill_id": skill_id, "skill_version": version},
+            lambda: self._skill_view(UUID(authorization_id)),
+            request_ids={"authorization_id": authorization_id},
         )
 
     @tool
@@ -455,7 +493,7 @@ class LabBioRuntimeToolSet(ToolSet):
         self,
         skill_id: str,
         version: int,
-        mode: str,
+        mode: Literal["REUSE", "ADAPT", "REFERENCE"],
         reason: str,
         proposed_deviations: list[str] | None = None,
     ) -> dict:
@@ -600,9 +638,14 @@ class LabBioRuntimeToolSet(ToolSet):
         )
         return [self._skill_candidate(item) for item in skills[:limit]]
 
-    def _skill_view(self, skill_id: UUID, version: int):
-        skill = self._required(self.services.skill_service, "skill").get_gold(
-            skill_id, version, principal=self.binding.principal
+    def _skill_view(self, authorization_id: UUID):
+        skill = self._required(
+            self.services.skill_service, "skill"
+        ).get_authorized_context(
+            authorization_id,
+            run_id=self.binding.run_id,
+            project_id=self.binding.workspace.project_id,
+            principal=self.binding.principal,
         )
         return SkillDetailView(
             **self._skill_candidate(skill).model_dump(),
@@ -622,6 +665,9 @@ class LabBioRuntimeToolSet(ToolSet):
             raise ValueError("Too many proposed deviations")
         proposal = SkillUseProposal(
             run_id=self.binding.run_id,
+            requesting_user_id=self.binding.principal.user_id,
+            project_id=self.binding.workspace.project_id,
+            lab_id=self.binding.workspace.lab_id,
             skill_id=skill_id,
             skill_version=version,
             proposed_mode=SkillUseMode(mode),
@@ -634,6 +680,7 @@ class LabBioRuntimeToolSet(ToolSet):
         return {
             "proposal_id": str(proposal.proposal_id),
             "approval_gate_id": proposal.approval_gate_id,
+            "domain_reference_id": f"skill-use:{proposal.proposal_id}",
             "status": "USER_APPROVAL_REQUIRED",
         }
 
@@ -724,6 +771,8 @@ class LabBioRuntimeToolSet(ToolSet):
             scope=skill.scope.value,
             tags=tuple(sorted(skill.procedure.tags))[:32],
             artifact_types=tuple(sorted(skill.procedure.artifact_types))[:32],
+            applicability_preview=skill.procedure.applicability[:500],
+            limitation_preview=tuple(skill.procedure.known_limitations[:4]),
         )
 
     @staticmethod
@@ -745,6 +794,26 @@ class LabBioRuntimeToolSet(ToolSet):
             return ToolError(
                 error_code="ARTIFACT_NOT_FOUND",
                 safe_message="The requested Artifact is not registered.",
+            )
+        if isinstance(exc, SkillApprovalRequiredError):
+            return ToolError(
+                error_code="SKILL_APPROVAL_REQUIRED",
+                safe_message="Exact user approval is required for Skill context access.",
+            )
+        if isinstance(exc, SkillNotFoundError):
+            return ToolError(
+                error_code="SKILL_NOT_FOUND",
+                safe_message="The requested Skill lifecycle record does not exist.",
+            )
+        if isinstance(exc, SkillDecisionError):
+            return ToolError(
+                error_code="INVALID_CONTROL_STATE",
+                safe_message="The Skill decision does not match pending control state.",
+            )
+        if isinstance(exc, SkillStoreError):
+            return ToolError(
+                error_code="SKILL_OPERATION_FAILED",
+                safe_message="The governed Skill operation could not complete.",
             )
         if isinstance(exc, _InvalidArtifactQueryView):
             return ToolError(

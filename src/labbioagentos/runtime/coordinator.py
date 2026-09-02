@@ -195,6 +195,15 @@ class RuntimeCoordinatorService:
 
         return self.engine.resume_to_source(run, decision)
 
+    def validate_gate_resume(
+        self,
+        run: WorkflowRun,
+        decision: GateUserDecision,
+    ) -> None:
+        """Validate the workflow side before an application domain decision."""
+
+        self.engine.validate_source_resume(run, decision)
+
     def results(self, run_id: UUID) -> tuple[RuntimeStageResult, ...]:
         return self._results.get(run_id, ())
 

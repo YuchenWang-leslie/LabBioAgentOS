@@ -328,6 +328,30 @@ class WorkflowEngine:
     ) -> WorkflowRun:
         """Resume a runtime gate to its recorded source without target input."""
 
+        gate = self.validate_source_resume(run, decision)
+        decision_record = GateDecisionRecord(
+            gate_id=gate.gate_id,
+            source_stage=gate.source_stage,
+            approved=decision.approved,
+            decided_by=decision.decided_by,
+            domain_reference_id=decision.domain_reference_id,
+            decision_reference_id=decision.decision_reference_id,
+        )
+        run.gate_decisions = (*run.gate_decisions, decision_record)
+        return self._resume_to(
+            run,
+            gate,
+            gate.source_stage,
+            decision_record=decision_record,
+        )
+
+    def validate_source_resume(
+        self,
+        run: WorkflowRun,
+        decision: GateUserDecision,
+    ) -> PendingUserGate:
+        """Validate a source-resuming gate without changing workflow state."""
+
         self._require_run(run)
         self._require_status(run, RunStatus.WAITING_FOR_USER)
         if not isinstance(decision, GateUserDecision):
@@ -344,21 +368,7 @@ class WorkflowEngine:
             raise InvalidTransitionError(
                 f"Transition 'USER_GATE' -> {gate.source_stage.value!r} is not allowed"
             )
-        decision_record = GateDecisionRecord(
-            gate_id=gate.gate_id,
-            source_stage=gate.source_stage,
-            approved=decision.approved,
-            decided_by=decision.decided_by,
-            domain_reference_id=decision.domain_reference_id,
-            decision_reference_id=decision.decision_reference_id,
-        )
-        run.gate_decisions = (*run.gate_decisions, decision_record)
-        return self._resume_to(
-            run,
-            gate,
-            gate.source_stage,
-            decision_record=decision_record,
-        )
+        return gate
 
     def _matching_gate(
         self,

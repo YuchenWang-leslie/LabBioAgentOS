@@ -164,6 +164,7 @@ class CapabilityEvidenceItem(BaseModel):
     actor_profile_key: SafeIdentifier
     actor_agent_name: SafeIdentifier
     capability_name: SafeIdentifier
+    information_authority: InformationAuthority
     status: CapabilityEvidenceStatus
     trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=4)
     reference_ids: tuple[SafeIdentifier, ...] = Field(default=(), max_length=128)
@@ -198,14 +199,12 @@ class CapabilityEvidenceItem(BaseModel):
 
 
 class CapabilityEvidenceBundle(BaseModel):
-    """Bounded projection passed from capability interaction to finalization."""
+    """Bounded mixed-authority projection passed into finalization."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: UUID = Field(default_factory=uuid4)
-    authority: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
-        InformationAuthority.AUTHORITATIVE_EVIDENCE
-    )
+    authority_mode: Literal["ITEM_LEVEL"] = "ITEM_LEVEL"
     run_id: UUID
     stage_id: WorkflowStage
     invocation_id: UUID
@@ -214,6 +213,9 @@ class CapabilityEvidenceBundle(BaseModel):
     )
     delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
     explicit_completion: LongText | None = None
+    explicit_completion_authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
     technical_status: Literal["COMPLETED"] = "COMPLETED"
 
 
@@ -320,16 +322,25 @@ class RuntimeEvidenceGroundingControl(BaseModel):
     authoritative_evidence_references: Literal[
         InformationAuthority.AUTHORITATIVE_EVIDENCE
     ] = InformationAuthority.AUTHORITATIVE_EVIDENCE
-    capability_evidence: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
-        InformationAuthority.AUTHORITATIVE_EVIDENCE
+    capability_evidence_authority: Literal["ITEM_LEVEL"] = "ITEM_LEVEL"
+    capability_authority_rule: Literal[
+        "Each capability evidence item carries trusted information_authority. "
+        "Artifact, execution, and report results may be authoritative evidence; "
+        "Skill and Memory context is MODEL_CONTEXT; proposal outputs are "
+        "CONTROL_STATE. A mixed container does not promote its items."
+    ] = (
+        "Each capability evidence item carries trusted information_authority. "
+        "Artifact, execution, and report results may be authoritative evidence; "
+        "Skill and Memory context is MODEL_CONTEXT; proposal outputs are "
+        "CONTROL_STATE. A mixed container does not promote its items."
     )
     factual_claim_rule: Literal[
-        "Ground factual claims in governed capability evidence. Treat prior-stage "
+        "Ground factual claims in capability items marked AUTHORITATIVE_EVIDENCE. Treat prior-stage "
         "model summaries and bodies as unverified context. Do not repeat a factual "
         "or numeric claim from prior context unless current authoritative evidence "
         "supports it."
     ] = (
-        "Ground factual claims in governed capability evidence. Treat prior-stage "
+        "Ground factual claims in capability items marked AUTHORITATIVE_EVIDENCE. Treat prior-stage "
         "model summaries and bodies as unverified context. Do not repeat a factual "
         "or numeric claim from prior context unless current authoritative evidence "
         "supports it."
