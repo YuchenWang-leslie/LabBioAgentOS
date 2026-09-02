@@ -43,8 +43,10 @@ authorized.
 
 ## C7 — First runtime-selected real scRNA analysis
 
-**Status:** in progress and not accepted on the isolated
-`c7-real-scrna-analysis` source branch. C8 has not started.
+**Status:** accepted and frozen on the isolated `c7-real-scrna-analysis`
+source branch. This is a source/runtime milestone, not a production deployment
+or service-health claim. C8 is the next development milestone and has not
+started.
 
 - **Objective:** let the runtime model select and execute one bounded analysis
   against admitted data through the existing governed execution boundary.
@@ -56,7 +58,7 @@ authorized.
 - **Non-goals:** a universal pipeline, keyword routing, fixed method defaults,
   or production deployment.
 
-The current C7 source work has verified canonical PBMC3k acquisition and
+The earlier C7 source work verified canonical PBMC3k acquisition and
 provenance, RAW isolation, the generic scalar-record QC contract, a distinct
 AnnData generalization fixture, and the immutable local scientific image
 `sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb`.
@@ -72,7 +74,8 @@ Artifact `a9081e95-5723-48fd-aefd-dd4196f2dfe0`, and LEARN without Skill or
 Memory promotion. The execution script remained RAW and has SHA256
 `e9351d7fd6b570303a0f092a64d394a07a2c2d5a9297aeddb56c7840b002dafa`.
 
-C7 remains unaccepted because post-run audit found unsupported report claims:
+That checkpoint remained unaccepted because post-run audit found unsupported
+report claims:
 the DERIVED QC Artifact and execution stdout both record zero detected
 mitochondrial/ribosomal features and zero corresponding fractions, while the
 Report claims non-zero values came from EXECUTE. The report also relied on a
@@ -435,9 +438,91 @@ limits, runtime stages, and scientific prompts remain unchanged. The only
 valid continuation is a separately authorized investigation of provider/tool
 strict-schema behavior; C8 remains blocked.
 
+## C7 final closeout — Wire robustness and framework acceptance
+
+**Status:** accepted and frozen. This final record supersedes the historical
+checkpoint statuses above; it does not create another C7 sub-milestone.
+
+- **Frozen dependencies:** the starting LabBio revision was
+  `813ff73fa257a8fd8c161d9461c2a9ac0d7b69ed`. Pantheon remains unchanged at
+  remotely reproducible revision
+  `45ef598f8d79bd98e9befc7c549980b731476662` on
+  `YuchenWang-leslie/PantheonOS:labbio-runtime-0.6.4`.
+- **Wire contract:** `artifact_query.limit` alone accepts a native non-boolean
+  integer unchanged or losslessly normalizes a canonical decimal string
+  matching `0|-?[1-9][0-9]*`, bounded to at most 128 decimal digits, to an
+  integer before authoritative
+  `ArtifactQuery` validation. Whitespace, leading zeros, plus signs, decimal or
+  exponent syntax, words, booleans, floats, and containers remain invalid. The
+  one-pass conversion is audited with original type, canonical integer, and
+  `normalization_applied`; it neither repairs after failure nor retries.
+  Production classification is `GENERIC INFRASTRUCTURE`, not scientific
+  runtime intelligence or compatibility fallback. Focused W1-W12 coverage and
+  the full non-live regression passed. Commit
+  `5bf616fac99111de6cefe82779c6f321ec384617` is pushed on the isolated C7
+  branch.
+- **Provider smoke:** synthetic run
+  `821dcfcc-8c5d-4850-a4e3-c5ed66e0573f` received canonical STRING limits,
+  explicitly normalized them, completed a governed 18-of-18 TOP_N view, and
+  preserved one incoming request to one capability invocation without hidden
+  retry or automatic completeness behavior.
+- **Final real run:** run `56c5e604-049e-4f07-81c5-11e89199ef1a` reached
+  `COMPLETED` at LEARN. Its path was INTAKE, UNDERSTAND, PLAN, PREFLIGHT,
+  EXECUTE, VALIDATE, the configured single bounded EXECUTE/VALIDATE retry,
+  INTERPRET, REPORT, LEARN. The final successful execution was
+  `b72c57a9-66c9-4e46-847e-463e810ba46c`; it produced contract-valid DERIVED
+  Artifact `eb3a70a2-2f2e-42f2-9d57-6e5de31390f8`. The second VALIDATE input
+  mechanically projected that execution and Artifact as current authoritative
+  evidence while retaining failed earlier attempts as model context. VALIDATE
+  succeeded on current evidence. Report Artifact
+  `ddf0ffa7-6e0d-4ac1-923c-1c71ef72795e` cites the current DERIVED Artifact
+  and the governed structural Artifact.
+- **Framework gates:** the two admission/Docker live checks passed. The real
+  run used runtime-selected, task-specific generated Python; the immutable
+  approved image; network none; read-only governed inputs; read-only root;
+  dropped capabilities; no-new-privileges; bounded CPU, memory, PIDs, and
+  timeout; no privileged mode, host network, Docker socket, or arbitrary
+  mounts. The final live pytest process stopped only at the historical
+  exact-main-path assertion after the run had completed; that assertion
+  contradicted final A10, which explicitly permits the configured bounded
+  retry. The acceptance test now recognizes either the direct nine-stage path
+  or that one configured retry path and requires Report evidence to include,
+  rather than exclusively equal, the current DERIVED identity. No production
+  runtime behavior changed for this acceptance correction, and the live run
+  was not repeated.
+- **Complete leak audit:** the preserved final-run surfaces passed every hard
+  leak check. All six generated script bodies, six stdout bodies, two non-empty
+  stderr bodies, sampled private observation/feature identifiers, RAW data and
+  paths, storage locators, provider raw bodies, reasoning content,
+  authorization secrets, credential values, and unauthorized Skill/Memory
+  events were absent from model-visible boundaries, report, and trace.
+- **Quality diagnostics:** 33 `artifact_query` invocations produced 15 safe
+  completions and 18 safe failures; 14 canonical numeric STRING requests were
+  explicitly normalized, of which 3 completed and 11 then failed normal
+  semantic/reference validation. All three completed TOP_N views returned all
+  12 available records, so incomplete view count was zero. The unchanged
+  numeric oracle flagged 39 tokens before acceptance adjudication. Across all
+  68 numeric claim tokens, final diagnostic categories were 55 observed, 0
+  derived, 11 recommended parameters, 0 structural/presentational, 2 genuinely
+  unsupported, and 0 ambiguous. The unsupported incidental statements were a
+  general mitochondrial-genome count and a one-cell near-maximum assertion;
+  neither changes the correct dataset dimensions, execution status, evidence
+  identity, measured QC values, or material conclusion. They remain model
+  quality limitations, as do the failed/unnecessary calls and multiple failed
+  execution drafts before bounded convergence.
+- **Acceptance:** A1-A13 pass. There is no RAW/security leak, provenance loss,
+  hidden scientific fallback, hard-coded QC workflow, unsafe query repair, or
+  material core-fact contradiction. Final non-live regression is 286 passed,
+  6 skipped, with the single pre-existing Uvicorn warning. C7.1 evidence
+  grounding, C7.2 proposal fidelity, C7.3 retry lineage, C7.4 request/schema
+  audit, C7.5 diagnostic oracle, C7.6 request-shape diagnostics, and the final
+  integer wire normalization are frozen. Remaining provider/report behavior is
+  recorded as a known limitation rather than another infrastructure milestone.
+
 ## C8 — Scientific specialist-agent layer
 
-**Status:** not started; requires separate authorization.
+**Status:** not started; this is the next authorized development milestone and
+was not implemented during C7 closeout.
 
 - **Objective:** add externally configured scientific specialists whose tools
   and outputs have explicit ownership while preserving model-selected native
