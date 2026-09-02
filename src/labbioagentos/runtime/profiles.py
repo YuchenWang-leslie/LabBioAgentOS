@@ -179,7 +179,7 @@ def default_agent_profiles() -> tuple[AgentProfile, ...]:
 
 
 def scientific_specialist_profiles() -> tuple[AgentProfile, ...]:
-    """Small C8 scientific peer catalog without task-routing behavior."""
+    """Small scientific peer catalog without task-routing behavior."""
 
     shared = {
         "version": "1",
