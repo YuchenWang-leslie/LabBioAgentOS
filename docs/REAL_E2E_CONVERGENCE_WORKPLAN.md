@@ -258,6 +258,17 @@ numeric-claim acceptance oracle. C7 remains not accepted.
   serialization. The focused Pantheon commit is
   `45ef598f8d79bd98e9befc7c549980b731476662`; its full regression added eleven
   passing schema tests and retained the exact 47-test baseline failure set.
+- **Pantheon reproducibility:** upstream baseline
+  `5d3d459ac5752ed9d39432232d76ad1581296012`, reasoning-only idle patch
+  `ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44`, and schema patch
+  `45ef598f8d79bd98e9befc7c549980b731476662` are preserved as one linear
+  history in `YuchenWang-leslie/PantheonOS`. Stable branch
+  `labbio-runtime-0.6.4` resolves exactly to the required revision while the
+  fork's `main` remains at the upstream baseline. A clean remote clone passed
+  the 16 focused idle/schema tests and generated the accepted Artifact-query
+  enum schema without a provider call. `constraints/pantheon-runtime.txt`
+  supplies the reproducible development pin; the public package range alone is
+  insufficient until an official compatible release exists.
 - **Provider-visible contract:** `artifact_query.view_type` now exposes the
   finite values `METADATA`, `SCHEMA`, `SUMMARY`, and `TOP_N`; `limit` remains a
   nullable integer, required fields remain `artifact_id` and `view_type`, and

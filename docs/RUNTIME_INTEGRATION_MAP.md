@@ -160,7 +160,22 @@ bounded visible candidates and submit typed update proposals. They may not call
 
 ## Pantheon compatibility finding
 
-No PantheonOS core patch is indicated by current evidence:
+The Phase 1-8 evidence originally indicated no PantheonOS core patch. C7 later
+proved two generic runtime gaps and now requires this exact linear revision:
+
+```text
+upstream baseline  5d3d459ac5752ed9d39432232d76ad1581296012
+idle convergence   ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44
+required revision  45ef598f8d79bd98e9befc7c549980b731476662
+```
+
+The user-controlled integration remote is
+`https://github.com/YuchenWang-leslie/PantheonOS`, with stable branch
+`labbio-runtime-0.6.4`; upstream remains
+`https://github.com/aristoteleo/PantheonOS`. This is a development/runtime pin,
+not an official Pantheon release.
+
+The following original integration findings remain valid with that revision:
 
 - `Agent.toolset()` wraps a LabBio `ToolSet` in `LocalProvider` and exposes its
   declared tools through the normal provider path.
@@ -171,7 +186,24 @@ No PantheonOS core patch is indicated by current evidence:
 - Agent profiles can use Pantheon's existing `Agent` constructor, model selector,
   response format, and provider configuration.
 
-The needed coordinator, profiles, schemas, and governed tool adapters belong in
-LabBioAgentOS. The conditional watchlist in `UPSTREAM_MODIFICATIONS.md` remains
-unchanged.
+The coordinator, profiles, schemas, and governed tool adapters remain in
+LabBioAgentOS. The Pantheon patches are limited to generic idle convergence and
+declared tool-schema fidelity; they do not move scientific behavior into
+Pantheon.
 
+## Clean-environment dependency mechanism
+
+`pyproject.toml` currently declares `pantheon-agents>=0.6.4,<0.7`. In the active
+development environment, `pantheon-agents 0.6.4` is an editable install from the
+local Pantheon checkout, which is why it contains the required commits. A clean
+environment resolving only the public version range can install vanilla 0.6.4
+at upstream baseline `5d3d459a`; that is insufficient for current C7 runtime
+acceptance even though the package version is identical.
+
+The smallest reproducible development pin is
+`constraints/pantheon-runtime.txt`, which binds the same distribution name to
+the fork commit `45ef598f8d79bd98e9befc7c549980b731476662`. Use it as a pip
+constraint when creating the LabBio development/acceptance environment. The
+public project dependency is intentionally not replaced by a permanent private
+fork dependency; removal of the constraint requires an official upstream
+release containing equivalent fixes plus the same schema/idle regressions.

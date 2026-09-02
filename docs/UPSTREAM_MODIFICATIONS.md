@@ -1,9 +1,65 @@
 # PantheonOS Upstream Modifications
 
+## Current C7 runtime revision
+
+The earlier Phase 1-8 conclusion below is historical. C7 produced two generic
+Pantheon runtime defects that could not be repaired faithfully in a LabBio
+adapter, prompt, or monkey patch. The required source identities are:
+
+| Identity | Commit |
+|---|---|
+| Pantheon upstream 0.6.4 baseline | `5d3d459ac5752ed9d39432232d76ad1581296012` |
+| Reasoning-only idle convergence patch | `ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44` |
+| Required LabBio Pantheon revision | `45ef598f8d79bd98e9befc7c549980b731476662` |
+
+The two required patch commits form one linear history:
+
+```text
+5d3d459ac5752ed9d39432232d76ad1581296012
+  -> ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44
+  -> 45ef598f8d79bd98e9befc7c549980b731476662
+```
+
+`ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
+loop. `45ef598f` preserves supported primitive constraints in provider-visible
+tool JSON Schema and restores standard `typing` annotations across funcdesc
+JSON serialization. Neither patch selects scientific methods, routes a LabBio
+stage, repairs model output, or contains a provider/PBMC special case.
+
+The integration source is the user-controlled fork
+`https://github.com/YuchenWang-leslie/PantheonOS`, branch
+`labbio-runtime-0.6.4`. It remains traceable to upstream
+`https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
+part of an official Pantheon release. Do not copy their source into LabBio or
+monkey-patch Pantheon at LabBio import time.
+
+LabBio's public package declaration remains `pantheon-agents>=0.6.4,<0.7` so a
+future official compatible release can replace the fork deliberately. That
+range alone currently resolves vanilla 0.6.4 and is insufficient for C7
+runtime acceptance. For a reproducible development or acceptance environment,
+install with the repository-owned constraint:
+
+```bash
+python -m pip install \
+  -c constraints/pantheon-runtime.txt \
+  -e '.[test]'
+```
+
+Then verify both source identity and import location; a `0.6.4` version string
+alone is not sufficient:
+
+```bash
+python - <<'PY'
+import pantheon
+print(pantheon.__version__)
+print(pantheon.__file__)
+PY
+```
+
 ## Result through Phase 8
 
-No PantheonOS core file was modified through Phase 8. No direct core
-modification is currently required or proposed.
+No PantheonOS core file was modified through Phase 8. At that historical
+boundary, no direct core modification was required or proposed.
 
 Phase 3 demonstrated that a `TeamPlugin` can decorate the already-registered
 `list_agents` and `call_agent` functions. Allowed calls still execute the
@@ -18,7 +74,10 @@ and Pantheon's existing step/chunk metadata. LabBio task-local invocation IDs
 and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
-The default implementation strategy remains LabBio extension -> adapter/plugin/provider/subclass -> PantheonOS. The following is a deliberately small conditional watchlist, not a request to edit these files now.
+The default implementation strategy remains LabBio extension ->
+adapter/plugin/provider/subclass -> PantheonOS. The two current generic patches
+above are the documented exceptions. The following is a deliberately small
+conditional watchlist, not a request to edit additional files now.
 
 Phase 5 adds a LabBio-owned local store, deterministic exposure service, and a
 narrow Pantheon-facing query adapter. Because controlled views are generated
