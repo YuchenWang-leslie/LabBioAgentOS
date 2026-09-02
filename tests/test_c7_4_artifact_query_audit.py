@@ -116,6 +116,7 @@ async def test_a1_valid_top_n_preserves_completed_request_audit(
         "artifact_id": str(ref.artifact_id),
         "view_type": "TOP_N",
         "limit": 10,
+        "limit_type": "INTEGER",
     }
     _assert_correlated_audit(
         sink,
@@ -139,6 +140,7 @@ async def test_a2_top_n_default_limit_preserves_explicit_null_audit(
         "artifact_id": str(ref.artifact_id),
         "view_type": "TOP_N",
         "limit": None,
+        "limit_type": "NULL",
     }
     _assert_correlated_audit(
         sink,
@@ -160,6 +162,7 @@ async def test_a3_invalid_view_fails_with_safe_exact_audit(artifact_query_bounda
         "artifact_id": str(ref.artifact_id),
         "view_type": "UNSUPPORTED",
         "limit": None,
+        "limit_type": "NULL",
     }
     item = toolset.evidence_items()[-1]
     assert item.error_code == "INVALID_ENUM_VALUE"
@@ -181,6 +184,7 @@ async def test_a4_non_top_n_limit_fails_without_dropping_limit(
         "artifact_id": str(ref.artifact_id),
         "view_type": "SUMMARY",
         "limit": 10,
+        "limit_type": "INTEGER",
     }
     _assert_correlated_audit(
         sink,
@@ -206,6 +210,7 @@ async def test_a5_non_positive_limit_fails_with_requested_value_audited(
         "artifact_id": str(ref.artifact_id),
         "view_type": "TOP_N",
         "limit": limit,
+        "limit_type": "INTEGER",
     }
     _assert_correlated_audit(
         sink,
@@ -230,6 +235,7 @@ async def test_a6_execution_uuid_is_not_converted_to_artifact_reference(
         "artifact_id": str(execution_id),
         "view_type": "SUMMARY",
         "limit": None,
+        "limit_type": "NULL",
     }
     _assert_correlated_audit(
         sink,
@@ -254,6 +260,7 @@ async def test_a7_unknown_artifact_uuid_fails_with_canonical_audit(
         "artifact_id": str(unknown_artifact_id),
         "view_type": "METADATA",
         "limit": None,
+        "limit_type": "NULL",
     }
     _assert_correlated_audit(
         sink,
@@ -282,6 +289,7 @@ async def test_a8_request_audit_redacts_non_contract_values_and_does_not_leak(
         "artifact_id": "INVALID_IDENTIFIER",
         "view_type": "INVALID_VALUE",
         "limit": "INVALID_VALUE",
+        "limit_type": "STRING",
     }
     persisted = json.dumps(
         {
@@ -332,4 +340,3 @@ async def test_provider_schema_exposes_existing_artifact_query_contract(
     assert parameters["required"] == ["artifact_id", "view_type"]
     assert parameters["additionalProperties"] is False
     assert "EXECUTION" in parameters["properties"]["artifact_id"]["description"]
-

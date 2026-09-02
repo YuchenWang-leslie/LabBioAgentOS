@@ -42,6 +42,7 @@ from labbioagentos.skills import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .contracts import (
+    ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
@@ -360,7 +361,8 @@ class LabBioRuntimeToolSet(ToolSet):
             artifact_id: UUID from a RuntimeReference whose kind is ARTIFACT;
                 an EXECUTION reference UUID is not an Artifact identifier.
             view_type: One of METADATA, SCHEMA, SUMMARY, or TOP_N.
-            limit: Optional positive row limit, valid only with TOP_N.
+            limit: Maximum number of records to return for TOP_N; use a positive
+                integer.
         """
         return await self._call(
             "artifact_query",
@@ -778,14 +780,35 @@ class LabBioRuntimeToolSet(ToolSet):
             else "INVALID_VALUE"
         )
         safe_limit: int | Literal["INVALID_VALUE"] | None
-        if limit is None or (isinstance(limit, int) and not isinstance(limit, bool)):
+        if limit is None:
             safe_limit = limit
+            limit_type = ArtifactQueryLimitType.NULL
+        elif isinstance(limit, bool):
+            safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.BOOLEAN
+        elif isinstance(limit, int):
+            safe_limit = limit
+            limit_type = ArtifactQueryLimitType.INTEGER
+        elif isinstance(limit, str):
+            safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.STRING
+        elif isinstance(limit, float):
+            safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.FLOAT
+        elif isinstance(limit, (list, tuple)):
+            safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.ARRAY
+        elif isinstance(limit, dict):
+            safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.OBJECT
         else:
             safe_limit = "INVALID_VALUE"
+            limit_type = ArtifactQueryLimitType.OTHER
         return ArtifactQueryRequestAudit(
             artifact_id=safe_artifact_id,
             view_type=safe_view_type,
             limit=safe_limit,
+            limit_type=limit_type,
         )
 
     @staticmethod

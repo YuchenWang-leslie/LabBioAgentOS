@@ -65,6 +65,19 @@ ArtifactQueryAuditToken = Annotated[
 ]
 
 
+class ArtifactQueryLimitType(StrEnum):
+    """Non-sensitive runtime type of an artifact_query limit value."""
+
+    INTEGER = "INTEGER"
+    NULL = "NULL"
+    STRING = "STRING"
+    FLOAT = "FLOAT"
+    BOOLEAN = "BOOLEAN"
+    ARRAY = "ARRAY"
+    OBJECT = "OBJECT"
+    OTHER = "OTHER"
+
+
 class ArtifactQueryRequestAudit(BaseModel):
     """Explicit safe projection of one artifact_query request."""
 
@@ -73,6 +86,7 @@ class ArtifactQueryRequestAudit(BaseModel):
     artifact_id: UUID | Literal["INVALID_IDENTIFIER"]
     view_type: ArtifactQueryAuditToken
     limit: int | Literal["INVALID_VALUE"] | None = None
+    limit_type: ArtifactQueryLimitType
 
 
 _FORBIDDEN_EVIDENCE_KEYS = {
