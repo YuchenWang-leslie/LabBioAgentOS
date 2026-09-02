@@ -15,6 +15,8 @@ import anndata as ad
 import pytest
 from pydantic import ValidationError
 
+from tests.numeric_claim_oracle import numeric_claim_failures
+
 from labbioagentos import (
     AccessService,
     ApplicationExecutionProfile,
@@ -487,120 +489,6 @@ def _model_visible_json(value) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-_UUID_TEXT = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
-    re.IGNORECASE,
-)
-_NUMBER_TEXT = re.compile(
-    r"(?<![A-Za-z0-9_])[-+]?\d[\d,]*(?:\.\d+)?(?:[eE][-+]?\d+)?"
-    r"(?![A-Za-z0-9_])"
-)
-
-
-def _numeric_claim_failures(
-    report_text: str,
-    records: tuple[dict, ...],
-    *,
-    completeness_values: tuple[int, ...],
-) -> list[dict]:
-    """Test oracle: match report numbers to their named governed record."""
-
-    numeric_by_metric = {}
-    aliases_by_metric = {}
-    for record in records:
-        metric = record.get("metric")
-        if not isinstance(metric, str):
-            continue
-        values = tuple(
-            float(value)
-            for key, value in record.items()
-            if key != "metric"
-            and isinstance(value, (int, float))
-            and not isinstance(value, bool)
-        )
-        embedded = tuple(float(value) for value in re.findall(r"\d+", metric))
-        numeric_by_metric[metric] = (*values, *embedded)
-        phrase = metric.replace("_", " ").lower()
-        aliases = {metric.lower(), phrase}
-        if metric == "n_observations":
-            aliases.update({"n observations", "observation count"})
-        elif metric == "n_variables":
-            aliases.update({"n variables", "variable count", "feature count"})
-        elif metric == "n_genes_by_counts":
-            aliases.update({"n_genes", "n genes", "detected genes"})
-        elif metric == "pct_integer_like_total_counts":
-            aliases.update({"integer-like", "integer like"})
-        top_match = re.fullmatch(r"pct_counts_in_top_(\d+)_genes", metric)
-        if top_match is not None:
-            aliases.update(
-                {
-                    f"top {top_match.group(1)}",
-                    f"top-{top_match.group(1)}",
-                }
-            )
-        aliases_by_metric[metric] = aliases
-
-    failures = []
-    for line_number, original in enumerate(report_text.splitlines(), start=1):
-        line = _UUID_TEXT.sub("", original)
-        line = re.sub(r"^\s*(?:#{1,6}\s*)?\d+[.)]\s*", "", line)
-        matches = tuple(_NUMBER_TEXT.finditer(line))
-        if not matches:
-            continue
-        lowered = line.lower()
-        candidates = []
-        matched_metrics = []
-        for metric, aliases in aliases_by_metric.items():
-            if any(alias in lowered for alias in aliases):
-                candidates.extend(numeric_by_metric[metric])
-                matched_metrics.append(metric)
-        if "cell" in lowered and (
-            "dataset shape" in lowered or "observation" in lowered or "n=" in lowered
-        ):
-            candidates.extend(numeric_by_metric.get("n_observations", ()))
-            matched_metrics.append("n_observations")
-        if "dataset shape" in lowered and any(
-            word in lowered for word in ("gene", "variable", "feature")
-        ):
-            candidates.extend(numeric_by_metric.get("n_variables", ()))
-            matched_metrics.append("n_variables")
-        if any(
-            marker in lowered
-            for marker in (
-                "returned",
-                "available",
-                "record",
-                "truncat",
-                "complete",
-                "top_n",
-            )
-        ):
-            candidates.extend(float(value) for value in completeness_values)
-            candidates.extend(
-                float(abs(left - right))
-                for left in completeness_values
-                for right in completeness_values
-            )
-
-        for match in matches:
-            token = match.group(0)
-            normalized = token.replace(",", "")
-            value = float(normalized)
-            mantissa = re.split(r"[eE]", normalized, maxsplit=1)[0]
-            decimals = len(mantissa.partition(".")[2])
-            tolerance = 0.5 * (10 ** -decimals) if decimals else 0.5
-            if not any(abs(value - candidate) <= tolerance + 1e-12 for candidate in candidates):
-                failures.append(
-                    {
-                        "line": line_number,
-                        "token": token,
-                        "matched_metrics": matched_metrics,
-                        "text": original[:500],
-                    }
-                )
-    return failures
-
-
 def test_c7_a_real_pbmc3k_admission_and_provenance(tmp_path):
     source = _data_path()
     assert source.is_file()
@@ -1016,6 +904,8 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
         assert heading in report_text.lower()
 
     report_query_views = []
+    report_schema_views = []
+    report_metadata_views = []
     for kind, payload in visible_boundaries:
         if kind != "capability_evidence":
             continue
@@ -1030,9 +920,13 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
                 and item.get("status") == "COMPLETED"
                 and isinstance(result, dict)
                 and result.get("artifact_id") == str(derived[-1].artifact_id)
-                and result.get("view_type") == ArtifactViewType.TOP_N.value
             ):
-                report_query_views.append(result)
+                if result.get("view_type") == ArtifactViewType.TOP_N.value:
+                    report_query_views.append(result)
+                elif result.get("view_type") == ArtifactViewType.SCHEMA.value:
+                    report_schema_views.append(result)
+                elif result.get("view_type") == ArtifactViewType.METADATA.value:
+                    report_metadata_views.append(result)
     assert report_query_views
     for view in report_query_views:
         assert view.get("authority") == "AUTHORITATIVE_EVIDENCE"
@@ -1047,7 +941,8 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
         and view["truncated"] is False
         for view in report_query_views
     )
-    unsupported_numeric_claims = _numeric_claim_failures(
+    assert report_schema_views and report_metadata_views
+    unsupported_numeric_claims = numeric_claim_failures(
         report_text,
         derived_view.records,
         completeness_values=tuple(
@@ -1059,6 +954,14 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
                 view["effective_limit"],
             )
         ),
+        governed_metadata={
+            "columns": tuple(len(view.get("columns", ())) for view in report_schema_views),
+            "bytes": tuple(
+                view.get("metadata", {}).get("size_bytes")
+                for view in report_metadata_views
+                if isinstance(view.get("metadata", {}).get("size_bytes"), (int, float))
+            ),
+        },
     )
     assert not unsupported_numeric_claims, json.dumps(
         unsupported_numeric_claims, sort_keys=True
