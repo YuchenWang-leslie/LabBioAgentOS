@@ -319,6 +319,59 @@ oracle, patch the report prompt, or rerun C7 under C7.4; the next continuation
 must separately scope this report evidence-presentation/claim-grounding
 failure. C8 remains blocked.
 
+## C7.5 — Report numeric claim semantics audit
+
+**Status:** the test-side numeric oracle correction is accepted independently,
+but the one authorized fresh C7 exposed an incomplete REPORT evidence view and
+one genuinely unsupported numeric interpretation. C7 remains not accepted.
+
+- **Forensic gate:** the previous Report produced 57 failures under the old
+  token-literal oracle. Exhaustive classification found 43 observed claims, 4
+  deterministic derived claims, 3 recommendation parameters, 7
+  structural/presentational values, 0 genuinely unsupported claims, and 0
+  ambiguous values. The old failure was therefore an oracle false positive,
+  not evidence that the previous Report invented a factual number.
+- **Test-only resolution:** numeric acceptance now associates Markdown table
+  cells with row/column metric context, checks observed fields rather than any
+  number anywhere in a record, recomputes only bounded sum/difference/ratio/
+  percentage operations, recognizes explicitly marked parameter proposals,
+  and grounds query/schema metadata separately. Ambiguous numeric prose remains
+  fail closed. Production report/runtime code and Pantheon are unchanged.
+- **Deterministic evidence:** N1-N12 pass, including wrong-field values that are
+  present elsewhere in the same evidence record. The preserved previous Report
+  has zero failures under the semantic oracle. Full non-live regression is 251
+  passed and 6 skipped with the one pre-existing Uvicorn warning. Commit
+  `38163f21dac3e6f52b89144ea98353b19034952b` is pushed on
+  `c7-real-scrna-analysis`.
+- **Single fresh run:** run `5de27b3c-5f6f-4a4a-882f-6a099d3b69d3` traversed
+  all nine stages exactly once with no workflow retry and recorded
+  `RUN_COMPLETED`. Execution `f4290a2c-1d30-4702-85b6-b60115f3180c`
+  produced the 18-record DERIVED QC Artifact
+  `ed1e64ca-6108-4729-be51-9c977f1d44da`; Report Artifact
+  `8cb95eed-cabe-4a27-a9b2-c1696afb2c60` cites that exact evidence identity.
+- **Fresh acceptance failure:** REPORT made two failed explicit TOP_N requests
+  whose safe audits retained `limit=INVALID_VALUE`, then used the default
+  TOP_N view with 10 of 18 records and `truncated=true`. It submitted a Report
+  without ever obtaining a complete bounded view, so the completeness gate
+  failed before the numeric oracle. This failure must not be solved by weakening
+  numeric grounding or treating `RUN_COMPLETED` as acceptance.
+- **Fresh numeric audit:** offline classification of the 48 semantic-oracle
+  candidates found 23 observed claims, 8 deterministic derived claims, 5
+  recommendation parameters, 11 structural/presentational values, 1 genuinely
+  unsupported factual bound, and 0 ambiguous values. The unsupported bound was
+  added during REPORT capability generation, was absent from the typed
+  INTERPRET result and REPORT input, and was neither present in REPORT-visible
+  evidence nor deterministically reconstructable. This satisfies the stop
+  condition; do not revise the oracle or rerun C7 under C7.5.
+- **Leak boundary:** the safe trace/boundary/Report surface scan passed for
+  paths, RAW markers, provider/reasoning fields, credentials, authorization
+  payload shape, and Skill/Memory absence. The live test stopped before its
+  generated-script/process-stream/private-RAW-value equivalence checks, so a
+  full leak audit is not claimed.
+
+C7.5 ends at this new failure packet. No production fix, provider rerun, or C8
+work is authorized by this checkpoint.
+
 ## C8 — Scientific specialist-agent layer
 
 **Status:** not started; requires separate authorization.
