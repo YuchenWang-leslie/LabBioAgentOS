@@ -11,12 +11,17 @@ from labbioagentos.governance import (
     AuthorizationDenied,
     Principal,
 )
+from labbioagentos.contracts import RunStatus
 from labbioagentos.trace import RunTraceRecorder, TraceEvent, TraceEventType
 
 from .curator import SkillCuratorPort
 from .models import (
     GoldSkill,
+    SkillCurationSourceView,
+    SkillCuratorDraft,
     SkillProposal,
+    SkillProposalContext,
+    SkillProcedure,
     SkillSearchContext,
     SkillSourceBundle,
     SkillUsageOutcome,
@@ -26,7 +31,7 @@ from .models import (
     SkillUserDecision,
 )
 from .source import SkillSourceProjector
-from .store import InMemorySkillStore, SkillStoreError
+from .store import SkillApprovalRequiredError, SkillStore, SkillStoreError
 
 
 class GoldSkillService:
@@ -34,7 +39,7 @@ class GoldSkillService:
 
     def __init__(
         self,
-        store: InMemorySkillStore,
+        store: SkillStore,
         source_projector: SkillSourceProjector,
         *,
         access_service: AccessService | None = None,
@@ -72,24 +77,68 @@ class GoldSkillService:
         )
         return bundle
 
-    def create_proposal(
+    def create_curation_view(
+        self,
+        bundle_id: UUID,
+    ) -> SkillCurationSourceView:
+        return self.source_projector.curation_view(
+            self.store.get_source_bundle(bundle_id)
+        )
+
+    async def curate_proposal(
         self,
         bundle_id: UUID,
         curator: SkillCuratorPort,
+        context: SkillProposalContext,
     ) -> SkillProposal:
         if not isinstance(curator, SkillCuratorPort):
             raise TypeError("curator must implement SkillCuratorPort")
+        view = self.create_curation_view(bundle_id)
+        draft = await curator.propose(view)
+        return self.create_proposal(bundle_id, draft, context)
+
+    def create_proposal(
+        self,
+        bundle_id: UUID,
+        draft: SkillCuratorDraft,
+        context: SkillProposalContext,
+    ) -> SkillProposal:
+        if not isinstance(draft, SkillCuratorDraft):
+            raise TypeError("draft must be a SkillCuratorDraft")
+        if not isinstance(context, SkillProposalContext):
+            raise TypeError("context must be a SkillProposalContext")
         bundle = self.store.get_source_bundle(bundle_id)
-        proposal = curator.propose(bundle)
-        if not isinstance(proposal, SkillProposal):
-            raise SkillStoreError("SkillCuratorPort must return a SkillProposal")
-        if (
-            proposal.source_bundle_id != bundle.bundle_id
-            or proposal.source_run_id != bundle.source_run_id
-        ):
+        if len(bundle.instruction_refs) > 128 or len(bundle.execution_refs) > 128:
             raise SkillStoreError(
-                "Curator proposal lineage does not match the supplied source bundle"
+                "Skill source evidence references exceed the proposal bound"
             )
+        if len(bundle.trace_event_ids) > 512:
+            raise SkillStoreError("Skill source trace references exceed the proposal bound")
+        proposal = SkillProposal(
+            source_bundle_id=bundle.bundle_id,
+            source_run_id=bundle.source_run_id,
+            proposed_name=draft.proposed_name,
+            description=draft.description,
+            scope=context.scope,
+            owner_user_id=context.owner_user_id,
+            project_id=context.project_id,
+            lab_id=context.lab_id,
+            parent_skill_id=context.parent_skill_id,
+            parent_version=context.parent_version,
+            source_usage_record_id=context.source_usage_record_id,
+            procedure=SkillProcedure(
+                **draft.procedure.model_dump(),
+                important_instruction_ids=tuple(
+                    item.instruction_id for item in bundle.instruction_refs
+                ),
+                script_artifact_ids=tuple(
+                    item.script_artifact_id
+                    for item in bundle.execution_refs
+                    if item.script_artifact_id is not None
+                ),
+                source_trace_event_ids=bundle.trace_event_ids,
+            ),
+        )
         self.store.save_proposal(proposal)
         self._emit(
             proposal.source_run_id,
@@ -166,12 +215,24 @@ class GoldSkillService:
         )
         return gold
 
+    def pending_proposal(self, proposal_id: UUID) -> SkillProposal:
+        """Return one trusted pending creation proposal for gate composition."""
+
+        return self.store.get_proposal(proposal_id)
+
     def submit_use_proposal(
         self,
         proposal: SkillUseProposal,
         *,
         principal: Principal | None = None,
     ) -> None:
+        if principal is not None and (
+            proposal.requesting_user_id != principal.user_id
+            or proposal.lab_id != principal.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Skill use proposal scope does not match the Principal"
+            )
         if self.access_service is not None:
             skill = self.store.get_gold(proposal.skill_id, proposal.skill_version)
             actor = self._require_principal(principal)
@@ -203,6 +264,13 @@ class GoldSkillService:
         principal: Principal | None = None,
     ) -> SkillUseAuthorization:
         proposal = self.store.get_use_proposal(proposal_id)
+        if principal is not None and (
+            proposal.requesting_user_id != principal.user_id
+            or proposal.lab_id != principal.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Skill use decision scope does not match the Principal"
+            )
         if self.access_service is not None:
             actor = self._require_principal(principal)
             if decision.decided_by != actor.user_id:
@@ -237,6 +305,94 @@ class GoldSkillService:
             },
         )
         return authorization
+
+    def pending_use_proposal(self, proposal_id: UUID) -> SkillUseProposal:
+        """Return one trusted pending use proposal for gate composition."""
+
+        return self.store.get_use_proposal(proposal_id)
+
+    def get_authorized_context(
+        self,
+        authorization_id: UUID,
+        *,
+        run_id: UUID,
+        project_id: str,
+        principal: Principal,
+    ) -> GoldSkill:
+        """Return full procedural context only for one exact approved use."""
+
+        authorization = self.store.get_authorization(authorization_id)
+        expected = (
+            authorization.run_id,
+            authorization.authorized_user_id,
+            authorization.project_id,
+            authorization.lab_id,
+        )
+        supplied = (
+            run_id,
+            principal.user_id,
+            project_id,
+            principal.lab_id,
+        )
+        if not authorization.approved or supplied != expected:
+            raise SkillApprovalRequiredError(
+                "Skill context access requires an exact approved authorization"
+            )
+        skill = self.store.get_gold(
+            authorization.skill_id,
+            authorization.skill_version,
+        )
+        if self.access_service is not None:
+            self.access_service.require_skill(
+                principal,
+                skill,
+                self._use_action(skill.scope.value),
+                run_id=run_id,
+            )
+        access = self.store.record_context_access(
+            authorization_id,
+            run_id=run_id,
+            skill_id=authorization.skill_id,
+            skill_version=authorization.skill_version,
+            accessed_by=principal.user_id,
+        )
+        self._emit(
+            run_id,
+            TraceEventType.SKILL_CONTEXT_ACCESSED,
+            "ACCESSED",
+            {
+                "access_id": str(access.access_id),
+                "authorization_id": str(authorization.authorization_id),
+                "skill_id": str(skill.skill_id),
+                "skill_version": skill.version,
+            },
+        )
+        return skill
+
+    def finalize_run_usage(
+        self,
+        run_id: UUID,
+        status: RunStatus,
+    ) -> tuple[SkillUsageRecord, ...]:
+        """Idempotently finalize only Skills whose full context was accessed."""
+
+        outcome = {
+            RunStatus.COMPLETED: SkillUsageOutcome.SUCCEEDED,
+            RunStatus.FAILED: SkillUsageOutcome.FAILED,
+            RunStatus.CANCELLED: SkillUsageOutcome.CANCELLED,
+        }.get(status)
+        if outcome is None:
+            return ()
+        finalized: list[SkillUsageRecord] = []
+        for access in self.store.accesses_for_run(run_id):
+            existing = self.store.get_usage_for_authorization(
+                access.authorization_id
+            )
+            if existing is not None:
+                finalized.append(existing)
+                continue
+            finalized.append(self.record_usage(access.authorization_id, outcome))
+        return tuple(finalized)
 
     def record_usage(
         self,

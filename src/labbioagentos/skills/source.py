@@ -17,8 +17,13 @@ from labbioagentos.trace import (
 )
 
 from .models import (
+    SkillArtifactDescriptor,
+    SkillCapabilityUsageRef,
+    SkillCurationSourceView,
+    SkillDelegationSummary,
     SkillExecutionRef,
     SkillInstructionRef,
+    SkillInvocationSummary,
     SkillSourceBundle,
     SkillTraceRef,
 )
@@ -36,6 +41,7 @@ _SKILL_EVENT_TYPES = {
     TraceEventType.SKILL_USE_PROPOSED,
     TraceEventType.SKILL_USE_APPROVED,
     TraceEventType.SKILL_USE_REJECTED,
+    TraceEventType.SKILL_CONTEXT_ACCESSED,
     TraceEventType.SKILL_USAGE_RECORDED,
 }
 
@@ -132,7 +138,73 @@ class SkillSourceProjector:
                     TraceEventType.RESULT_RECORDED,
                 }
             ),
+            capability_usage_refs=self._capability_usage_refs(source_events),
             trace_event_ids=tuple(event.event_id for event in source_events),
+        )
+
+    @staticmethod
+    def curation_view(bundle: SkillSourceBundle) -> SkillCurationSourceView:
+        """Build the remote-curator DTO field by field from safe source facts."""
+
+        return SkillCurationSourceView(
+            source_bundle_id=bundle.bundle_id,
+            source_run_id=bundle.source_run_id,
+            task_reference=bundle.task_reference,
+            final_status=bundle.final_status,
+            workflow_stage_path=bundle.workflow_stage_path,
+            invocations=tuple(
+                SkillInvocationSummary(
+                    invocation_id=item.invocation_id,
+                    parent_invocation_id=item.parent_invocation_id,
+                    agent_name=item.agent_name,
+                    stage_id=item.stage_id,
+                    status=item.status,
+                )
+                for item in bundle.invocations
+            ),
+            delegations=tuple(
+                SkillDelegationSummary(
+                    invocation_id=item.invocation_id,
+                    parent_invocation_id=item.parent_invocation_id,
+                    caller=item.caller,
+                    target=item.target,
+                    stage_id=item.stage_id,
+                    status=item.status,
+                )
+                for item in bundle.delegations
+            ),
+            instruction_refs=bundle.instruction_refs,
+            execution_refs=bundle.execution_refs,
+            artifact_descriptors=tuple(
+                SkillArtifactDescriptor(
+                    artifact_id=ref.artifact_id,
+                    artifact_type=ref.artifact_type,
+                    exposure_class=ref.exposure_class,
+                    run_id=ref.run_id,
+                    stage_id=ref.stage_id,
+                    producer_invocation_id=ref.producer_invocation_id,
+                    shape=(
+                        ref.artifact_schema.shape
+                        if ref.artifact_schema is not None
+                        else None
+                    ),
+                    column_count=(
+                        len(ref.artifact_schema.columns)
+                        if ref.artifact_schema is not None
+                        else 0
+                    ),
+                    dtype_field_count=(
+                        len(ref.artifact_schema.dtypes)
+                        if ref.artifact_schema is not None
+                        else 0
+                    ),
+                )
+                for ref in bundle.artifact_refs
+            ),
+            failure_refs=bundle.failure_refs,
+            retry_refs=bundle.retry_refs,
+            validation_refs=bundle.validation_refs,
+            capability_usage_refs=bundle.capability_usage_refs,
         )
 
     @staticmethod
@@ -237,6 +309,51 @@ class SkillSourceProjector:
             invocation_id=event.invocation_id,
             status=event.status,
         )
+
+    @staticmethod
+    def _capability_usage_refs(
+        events: tuple[TraceEvent, ...],
+    ) -> tuple[SkillCapabilityUsageRef, ...]:
+        references: list[SkillCapabilityUsageRef] = []
+        for event in events:
+            if event.event_type not in {
+                TraceEventType.CAPABILITY_COMPLETED,
+                TraceEventType.CAPABILITY_FAILED,
+            }:
+                continue
+            capability_invocation_id = _uuid(
+                event.payload.get("capability_invocation_id")
+            )
+            actor_profile_key = _string(event.payload.get("actor_profile_key"))
+            actor_agent_name = _string(event.payload.get("actor_agent_name"))
+            capability_name = _string(event.payload.get("capability"))
+            if (
+                capability_invocation_id is None
+                or actor_profile_key is None
+                or actor_agent_name is None
+                or capability_name is None
+            ):
+                continue
+            identifiers: OrderedDict[UUID, None] = OrderedDict()
+            for key, value in event.payload.items():
+                if key.endswith("_id"):
+                    identifier = _uuid(value)
+                    if identifier is not None and identifier != capability_invocation_id:
+                        identifiers.setdefault(identifier, None)
+                elif key.endswith("_ids"):
+                    for identifier in _uuid_tuple(value):
+                        identifiers.setdefault(identifier, None)
+            references.append(
+                SkillCapabilityUsageRef(
+                    capability_invocation_id=capability_invocation_id,
+                    actor_profile_key=actor_profile_key,
+                    actor_agent_name=actor_agent_name,
+                    capability_name=capability_name,
+                    status=event.status or "UNKNOWN",
+                    reference_ids=tuple(identifiers)[:128],
+                )
+            )
+        return tuple(references)
 
 
 def _uuid(value: Any) -> UUID | None:

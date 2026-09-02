@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+import re
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -17,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from labbioagentos.artifacts import ArtifactRef
+from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef
 from labbioagentos.contracts import RunStatus, WorkflowStage
 from labbioagentos.trace import DelegationProjection, InvocationProjection, InstructionKind
 
@@ -30,6 +31,37 @@ ShortText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
 ]
+
+
+def _text_values(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _text_values(item)
+    elif isinstance(value, (tuple, list, set, frozenset)):
+        for item in value:
+            yield from _text_values(item)
+
+
+_UNSAFE_REMOTE_TEXT_PATTERNS = (
+    r"(?:^|\s)/(?:home|media|mnt|tmp|var|run)/",
+    r"\bstorage[_ -]?locator\b",
+    r"\breasoning[_ -]?content\b",
+    r"\bprovider[_ -]?(?:request|response|raw)[_ -]?body\b",
+    r"\b(?:api[_ -]?key|authorization[_ -]?secret)\b",
+    r"\bbearer\s+[A-Za-z0-9._~-]{8,}",
+    r"-----BEGIN [A-Z ]+ PRIVATE KEY-----",
+)
+
+
+def _reject_unsafe_remote_text(value, *, label: str) -> None:
+    for text in _text_values(value):
+        if any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in _UNSAFE_REMOTE_TEXT_PATTERNS
+        ):
+            raise ValueError(f"{label} contains prohibited unsafe text")
 
 
 class SkillScope(StrEnum):
@@ -101,6 +133,92 @@ class SkillExecutionRef(BaseModel):
     exit_code: int | None = None
 
 
+class SkillInvocationSummary(BaseModel):
+    """Bounded model-facing invocation fact without transport payloads."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    invocation_id: UUID
+    parent_invocation_id: UUID | None = None
+    agent_name: ShortText | None = None
+    stage_id: WorkflowStage | None = None
+    status: ShortText
+
+
+class SkillDelegationSummary(BaseModel):
+    """Bounded model-facing delegation fact without conversation content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    invocation_id: UUID
+    parent_invocation_id: UUID | None = None
+    caller: ShortText
+    target: ShortText
+    stage_id: WorkflowStage | None = None
+    status: ShortText
+
+
+class SkillArtifactDescriptor(BaseModel):
+    """Whitelist-only Artifact identity and shape; no locator or metadata."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: UUID
+    artifact_type: ShortText
+    exposure_class: ArtifactExposureClass
+    run_id: UUID | None = None
+    stage_id: WorkflowStage | None = None
+    producer_invocation_id: UUID | None = None
+    shape: tuple[int, ...] | None = Field(default=None, max_length=16)
+    column_count: int = Field(default=0, ge=0)
+    dtype_field_count: int = Field(default=0, ge=0)
+
+
+class SkillCapabilityUsageRef(BaseModel):
+    """Safe actor-attributed capability fact with references only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    capability_invocation_id: UUID
+    actor_profile_key: ShortText
+    actor_agent_name: ShortText
+    capability_name: ShortText
+    status: ShortText
+    reference_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+
+
+class SkillCurationSourceView(BaseModel):
+    """The only Skill source representation permitted at a curator boundary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source_bundle_id: UUID
+    source_run_id: UUID
+    task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    final_status: RunStatus
+    workflow_stage_path: tuple[WorkflowStage, ...] = Field(max_length=64)
+    invocations: tuple[SkillInvocationSummary, ...] = Field(default=(), max_length=128)
+    delegations: tuple[SkillDelegationSummary, ...] = Field(default=(), max_length=128)
+    instruction_refs: tuple[SkillInstructionRef, ...] = Field(default=(), max_length=128)
+    execution_refs: tuple[SkillExecutionRef, ...] = Field(default=(), max_length=128)
+    artifact_descriptors: tuple[SkillArtifactDescriptor, ...] = Field(
+        default=(), max_length=256
+    )
+    failure_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
+    retry_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
+    validation_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
+    capability_usage_refs: tuple[SkillCapabilityUsageRef, ...] = Field(
+        default=(), max_length=256
+    )
+
+    @model_validator(mode="after")
+    def reject_explicit_unsafe_text(self) -> "SkillCurationSourceView":
+        _reject_unsafe_remote_text(
+            self.model_dump(mode="python"), label="Skill curation source view"
+        )
+        return self
+
+
 class SkillSourceBundle(BaseModel):
     """Deterministic evidence projection; it is not a curated or executable Skill."""
 
@@ -120,6 +238,7 @@ class SkillSourceBundle(BaseModel):
     failure_refs: tuple[SkillTraceRef, ...] = ()
     retry_refs: tuple[SkillTraceRef, ...] = ()
     validation_refs: tuple[SkillTraceRef, ...] = ()
+    capability_usage_refs: tuple[SkillCapabilityUsageRef, ...] = ()
     trace_event_ids: tuple[UUID, ...]
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -131,8 +250,8 @@ class SkillSourceBundle(BaseModel):
         return value.astimezone(timezone.utc)
 
 
-class SkillProcedure(BaseModel):
-    """Curator-provided procedural context; it grants no execution authority."""
+class SkillProcedureDraft(BaseModel):
+    """Untrusted curator-authored procedure content without evidence authority."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -142,7 +261,6 @@ class SkillProcedure(BaseModel):
         default_factory=tuple,
         max_length=100,
     )
-    important_instruction_ids: tuple[UUID, ...] = ()
     execution_guidance: tuple[BoundedText, ...] = Field(
         default_factory=tuple,
         max_length=100,
@@ -175,13 +293,62 @@ class SkillProcedure(BaseModel):
         default_factory=tuple,
         max_length=100,
     )
-    script_artifact_ids: tuple[UUID, ...] = ()
-    source_trace_event_ids: tuple[UUID, ...] = ()
     tags: frozenset[ShortText] = Field(default_factory=frozenset, max_length=100)
     artifact_types: frozenset[ShortText] = Field(
         default_factory=frozenset,
         max_length=100,
     )
+
+
+class SkillProcedure(SkillProcedureDraft):
+    """Approved procedure plus host-assembled source evidence references."""
+
+    important_instruction_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    script_artifact_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    source_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=512)
+
+
+class SkillCuratorDraft(BaseModel):
+    """Strict remote-curator output; it cannot set trusted proposal fields."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposed_name: ShortText
+    description: BoundedText
+    procedure: SkillProcedureDraft
+
+    @model_validator(mode="after")
+    def reject_explicit_unsafe_text(self) -> "SkillCuratorDraft":
+        _reject_unsafe_remote_text(
+            self.model_dump(mode="python"), label="Skill curator draft"
+        )
+        return self
+
+
+class SkillProposalContext(BaseModel):
+    """Trusted host facts used to assemble one immutable Skill proposal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    scope: SkillScope
+    owner_user_id: StrictStr | None = Field(default=None, min_length=1)
+    project_id: StrictStr | None = Field(default=None, min_length=1)
+    lab_id: StrictStr = Field(default="local-lab", min_length=1)
+    parent_skill_id: UUID | None = None
+    parent_version: int | None = Field(default=None, ge=1)
+    source_usage_record_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_scope_and_parent(self) -> "SkillProposalContext":
+        if self.scope is SkillScope.PERSONAL and self.owner_user_id is None:
+            raise ValueError("PERSONAL Skill proposals require owner_user_id")
+        if self.scope is SkillScope.PROJECT and self.project_id is None:
+            raise ValueError("PROJECT Skill proposals require project_id")
+        if (self.parent_skill_id is None) != (self.parent_version is None):
+            raise ValueError("parent_skill_id and parent_version must be set together")
+        if self.source_usage_record_id is not None and self.parent_skill_id is None:
+            raise ValueError("A source usage record requires parent Skill lineage")
+        return self
 
 
 class SkillProposal(BaseModel):
@@ -320,6 +487,9 @@ class SkillUseProposal(BaseModel):
         min_length=1,
     )
     run_id: UUID
+    requesting_user_id: StrictStr = Field(min_length=1)
+    project_id: StrictStr = Field(min_length=1)
+    lab_id: StrictStr = Field(min_length=1)
     skill_id: UUID
     skill_version: int = Field(ge=1)
     proposed_mode: SkillUseMode
@@ -345,7 +515,12 @@ class SkillUseAuthorization(BaseModel):
 
     authorization_id: UUID = Field(default_factory=uuid4)
     use_proposal_id: UUID
+    approval_gate_id: StrictStr = Field(min_length=1)
+    decision_id: UUID
     run_id: UUID
+    authorized_user_id: StrictStr = Field(min_length=1)
+    project_id: StrictStr = Field(min_length=1)
+    lab_id: StrictStr = Field(min_length=1)
     skill_id: UUID
     skill_version: int = Field(ge=1)
     approved: bool
@@ -357,6 +532,27 @@ class SkillUseAuthorization(BaseModel):
     def require_utc_decided_at(cls, value: datetime) -> datetime:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("SkillUseAuthorization decided_at must be timezone-aware")
+        return value.astimezone(timezone.utc)
+
+
+class SkillContextAccess(BaseModel):
+    """Proof that an approved full procedure reached its exact authorized run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    access_id: UUID = Field(default_factory=uuid4)
+    authorization_id: UUID
+    run_id: UUID
+    skill_id: UUID
+    skill_version: int = Field(ge=1)
+    accessed_by: StrictStr = Field(min_length=1)
+    accessed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("accessed_at")
+    @classmethod
+    def require_utc_accessed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("SkillContextAccess accessed_at must be timezone-aware")
         return value.astimezone(timezone.utc)
 
 
