@@ -521,19 +521,52 @@ checkpoint statuses above; it does not create another C7 sub-milestone.
 
 ## C8 — Scientific specialist-agent layer
 
-**Status:** not started; this is the next authorized development milestone and
-was not implemented during C7 closeout.
+**Status:** accepted and frozen on the isolated
+`c8-scientific-specialists` branch. C7 and Pantheon remained frozen.
 
-- **Objective:** add externally configured scientific specialists whose tools
-  and outputs have explicit ownership while preserving model-selected native
-  Pantheon collaboration.
-- **Boundary:** profiles and external skills contain domain behavior; the core
-  runtime contains no scientific router or fixed collaboration sequence.
-- **Acceptance evidence:** fresh real tasks demonstrate allowed native
-  delegation, child-context lineage, independent review, and no state or data
-  boundary regression.
-- **Non-goals:** automatic specialist selection, hidden fallback, or embedding
-  scientific presets in WorkflowEngine/runtime code.
+- **Architecture:** `RuntimeAgentCapabilitySpec` gives each configured peer an
+  explicit trusted allowlist. Root and peers receive separate ToolSets bound to
+  the same principal/workspace/run/stage/invocation and `REMOTE_LLM` consumer,
+  with distinct trusted actor profile/name. Each assignment must fit the
+  profile capability ceiling and the stage ceiling.
+- **Evidence:** all participating ToolSets contribute to one bounded
+  `CapabilityEvidenceBundle`. Actor fields are persisted in each item and on
+  capability trace events. More than 64 aggregate items fails explicitly.
+  Child prose remains `MODEL_CONTEXT`; only governed child tool results are
+  `AUTHORITATIVE_EVIDENCE`.
+- **Profiles:** only `SingleCellAnalysisSpecialist` and
+  `ScientificMethodsReviewer` were added. Their task-dependent role descriptions
+  contain no fixed single-cell pipeline. Team membership is configured, the
+  runtime model chooses a target through Pantheon native `list_agents` and
+  `call_agent`, and `DelegationPolicy` only permits or denies the edge.
+- **Deterministic acceptance:** context isolation and parent/child lineage,
+  denied and failed delegation, no WorkflowRun access, per-Agent least
+  privilege, actor non-overridability, fixed consumer, identical RAW denial,
+  cross-ToolSet evidence aggregation, explicit overflow, and a configured but
+  unused specialist path all pass. The full non-live regression is 291 passed,
+  7 skipped, with the one pre-existing Uvicorn warning.
+- **Bounded live acceptance:** provider run
+  `e22f59f7-828b-45f8-b5be-79e16e1ff133` reused the accepted PBMC3k DERIVED QC
+  representation in a fresh C8 namespace. The Coordinator discovered two peers
+  and selected `ScientificMethodsReviewer` without a named target. The child
+  completed two governed queries of current Artifact
+  `e645f239-3ca5-43dd-954d-83a1b97d8ad7`; the Coordinator registered Report
+  `3b03f4db-69df-4667-96f9-2dfbc88a0b5f`, and typed REPORT finalization
+  transitioned to LEARN. The preserved surfaces pass the credential/provider
+  body/reasoning/path/script leak audit.
+- **Harness note:** the live pytest process initially reported failure only
+  because its post-run assertion compared a Pydantic UUID to a string. The
+  stage, child query, report registration, and finalization had already
+  completed. The comparison was corrected, and the preserved evidence passed a
+  read-only replay; the provider was not called a second time.
+- **Diagnostics:** the selected Reviewer made one invalid METADATA-plus-limit
+  request that failed safely, then completed valid governed requests. It also
+  attempted to delegate to a tool-like name; policy denied the edge without
+  reaching a target. These are visible model-quality diagnostics, not framework
+  failures.
+- **Non-goals retained:** no deterministic task-to-specialist router, hidden
+  fallback, automatic mandatory delegation, Gold Skill activation, WorkflowRun
+  mutation, C7 behavior change, or Pantheon modification was introduced.
 
 ## C9 — Real Gold Skill lifecycle
 

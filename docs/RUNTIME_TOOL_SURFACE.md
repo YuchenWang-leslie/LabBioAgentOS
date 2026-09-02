@@ -19,12 +19,20 @@ The host-created adapter instance or Pantheon context binds:
 - `Principal` and `WorkspaceContext`;
 - `run_id`, current `stage_id`, and LabBio `invocation_id`;
 - fixed consumer type (`REMOTE_LLM` for model use);
-- per-stage capability allowlist;
+- trusted actor profile key and Agent name;
+- per-Agent capability assignment within the per-stage ceiling;
 - configured limits and policy/service handles.
 
 The model must not be able to supply or override these values. User-supplied
 artifact IDs, query shape, execution intent, proposal content, and search query
 remain untrusted and are validated against the bound context.
+
+`RuntimeStageAssemblySpec.capability_peer_specs` names the configured peers and
+their exact allowlists. The root and every peer receive distinct ToolSets;
+peers never inherit root or sibling tools. `CapabilityEvidenceItem` records
+`actor_profile_key` and `actor_agent_name` from that trusted binding, and stage
+evidence is aggregated from all ToolSets up to the existing 64-item bound. An
+overflow is a structural failure, not a truncation rule.
 
 ## Pantheon-native tools
 
@@ -153,4 +161,3 @@ or file content.
 Trace events record tool/action IDs, query/view types, hashes, statuses, and
 bounded issues—not unrestricted request or response bodies. Raw executor streams
 remain ArtifactRefs and require controlled views or explicit approval.
-

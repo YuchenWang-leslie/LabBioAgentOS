@@ -2,9 +2,9 @@
 
 ## Status and common contract
 
-These are proposed integration contracts for a future implementation. They do
-not change the accepted Phase 1–8 models. Names ending in `Result` below are
-contract names, not implemented classes unless already present in the code.
+These contracts describe the implemented LabBio runtime boundary. Names ending
+in `Result` below may be conceptual stage labels where the code uses the common
+typed `RuntimeStageResult` envelope.
 
 The current `StageContext` contains only `run_id`, `stage`, `instruction`, and
 free-form JSON metadata. The current `AgentStageResult` contains a summary and
@@ -41,6 +41,13 @@ are `AUTHORITATIVE_EVIDENCE`; workflow/gate/capability facts are `CONTROL_STATE`
 task text and caller assertions are `USER_ASSERTION`. Factual claims must be
 grounded in current governed evidence. Opaque Artifact and execution references
 survive mechanically, while claims do not acquire authority by copying.
+
+In capability mode, every configured team profile receives a separately bound
+ToolSet with its own trusted actor identity and allowlist. Governed root and
+child tool outcomes are aggregated into the stage
+`CapabilityEvidenceBundle`; child prose remains `MODEL_CONTEXT`. Team
+membership is configuration, while the runtime model chooses whether and which
+eligible peer to call through Pantheon's native delegation tools.
 
 ## INTAKE
 

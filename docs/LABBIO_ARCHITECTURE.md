@@ -272,6 +272,21 @@ retain both their Artifact ID and the trusted execution ID from Artifact
 provenance. References identify sources; a runtime agent queries an allowed
 view when factual content is required.
 
+Every capability-mode team member has a separately constructed LabBio ToolSet.
+Trusted assembly configuration assigns that profile's allowlist; effective
+access is bounded by the Agent's `CapabilityProfile`, the stage ceiling, and the
+assignment. All ToolSets share the exact principal, workspace, run, stage,
+invocation, and `REMOTE_LLM` consumer binding, while each carries its own
+trusted profile key and Agent name. Model tool input cannot supply either the
+authority binding or actor identity.
+
+Governed outcomes from every participating ToolSet enter the same bounded
+`CapabilityEvidenceBundle`. Each item records the trusted actor profile/name,
+and capability trace events carry the same attribution. Aggregate overflow
+fails explicitly rather than dropping authoritative child evidence. A child
+Agent's prose remains `MODEL_CONTEXT`; only the result of its own governed tool
+call becomes `AUTHORITATIVE_EVIDENCE`.
+
 The Reviewer at `VALIDATE` assesses governed evidence available after
 `EXECUTE`. It does not and cannot validate prose that will later be composed at
 `REPORT`; final-report factual correctness is not a guarantee of Reviewer
@@ -288,6 +303,13 @@ The intended stage-level sequence is:
 6. `WorkflowEngine` validates that result, records the transition in `RunTrace`, and alone updates `WorkflowRun`.
 
 No fixed Planner -> Specialist -> Reviewer chain is part of the architecture. Such a chain may be used in tests, while real collaboration remains an LLM decision within allowed boundaries.
+
+C8 adds only `SingleCellAnalysisSpecialist` and
+`ScientificMethodsReviewer` profile definitions to prove this contract. Their
+roles describe task-dependent scientific reasoning and do not encode a fixed
+pipeline. Team membership remains host configuration; Pantheon `list_agents`
+and `call_agent` remain the runtime selection mechanism, and delegation policy
+continues to permit or deny proposed edges without ranking scientific fit.
 
 ## Phase 4 RunTrace boundary
 
