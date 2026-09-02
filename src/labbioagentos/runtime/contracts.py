@@ -104,6 +104,18 @@ class ArtifactQueryRequestAudit(BaseModel):
         return self
 
 
+class SkillSearchRequestAudit(BaseModel):
+    """Non-content shape of one skill_search request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    query_text_supplied: bool
+    required_tag_count: int = Field(ge=0, le=100)
+    artifact_type_count: int = Field(ge=0, le=100)
+    include_lab: bool
+    limit: int
+
+
 _FORBIDDEN_EVIDENCE_KEYS = {
     "api_key",
     "authorization",
@@ -172,6 +184,7 @@ class CapabilityEvidenceItem(BaseModel):
     error_code: SafeIdentifier | None = None
     correlation_id: UUID | None = None
     artifact_query_request: ArtifactQueryRequestAudit | None = None
+    skill_search_request: SkillSearchRequestAudit | None = None
 
     @field_validator("safe_result")
     @classmethod
@@ -194,6 +207,13 @@ class CapabilityEvidenceItem(BaseModel):
         ):
             raise ValueError(
                 "Artifact query request audit is valid only for artifact_query"
+            )
+        if (
+            self.skill_search_request is not None
+            and self.capability_name != "skill_search"
+        ):
+            raise ValueError(
+                "Skill search request audit is valid only for skill_search"
             )
         return self
 

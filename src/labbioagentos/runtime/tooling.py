@@ -50,6 +50,7 @@ from .contracts import (
     ArtifactQueryRequestAudit,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
+    SkillSearchRequestAudit,
 )
 from .reporting import ReportSubmissionService
 
@@ -306,6 +307,7 @@ class LabBioRuntimeToolSet(ToolSet):
         *,
         request_ids: dict[str, JsonValue] | None = None,
         artifact_query_request: ArtifactQueryRequestAudit | None = None,
+        skill_search_request: SkillSearchRequestAudit | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
         information_authority = CAPABILITY_INFORMATION_AUTHORITY[capability]
@@ -315,6 +317,10 @@ class LabBioRuntimeToolSet(ToolSet):
         if artifact_query_request is not None:
             request_audit_payload["artifact_query_request"] = (
                 artifact_query_request.model_dump(mode="json")
+            )
+        if skill_search_request is not None:
+            request_audit_payload["skill_search_request"] = (
+                skill_search_request.model_dump(mode="json")
             )
         try:
             self._guard(capability)
@@ -370,6 +376,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     error_code=error.error_code,
                     correlation_id=error.correlation_id,
                     artifact_query_request=artifact_query_request,
+                    skill_search_request=skill_search_request,
                 )
             )
             return ToolResult(
@@ -401,6 +408,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 reference_ids=self._reference_ids(value),
                 safe_result=value,
                 artifact_query_request=artifact_query_request,
+                skill_search_request=skill_search_request,
             )
         )
         return result.model_dump(mode="json", by_alias=True)
@@ -471,11 +479,31 @@ class LabBioRuntimeToolSet(ToolSet):
         include_lab: bool = True,
         limit: int = 20,
     ) -> dict:
-        """Return governed Gold Skill candidates without a score or use decision."""
+        """Return governed Gold Skill candidates without a score or use decision.
+
+        Args:
+            query_text: Optional case-insensitive literal substring filter; omit
+                it to browse all bounded candidates visible in the current scope.
+            required_tags: Optional exact tags that every result must contain;
+                omit unknown tags instead of guessing them.
+            artifact_types: Optional exact Artifact types that every result must
+                contain; omit unknown types instead of guessing them.
+            include_lab: Whether LAB-scoped candidates may be returned.
+            limit: Maximum candidates to return, from 1 through 50.
+        """
+        tags = required_tags or []
+        types = artifact_types or []
         return await self._call(
             "skill_search",
             lambda: self._skill_search(
-                query_text, required_tags or [], artifact_types or [], include_lab, limit
+                query_text, tags, types, include_lab, limit
+            ),
+            skill_search_request=SkillSearchRequestAudit(
+                query_text_supplied=query_text is not None,
+                required_tag_count=len(tags),
+                artifact_type_count=len(types),
+                include_lab=include_lab,
+                limit=limit,
             ),
         )
 
@@ -497,7 +525,16 @@ class LabBioRuntimeToolSet(ToolSet):
         reason: str,
         proposed_deviations: list[str] | None = None,
     ) -> dict:
-        """Create a pending Skill-use proposal; this cannot approve or execute it."""
+        """Create a pending Skill-use proposal; this cannot approve or execute it.
+
+        Args:
+            skill_id: Exact UUID returned by skill_search.
+            version: Exact immutable version returned by skill_search.
+            mode: Model-selected REUSE, ADAPT, or REFERENCE use mode.
+            reason: Bounded reason this candidate may help the current task.
+            proposed_deviations: Current-task changes proposed by the runtime;
+                omit when none are needed.
+        """
         return await self._call(
             "skill_propose_use",
             lambda: self._skill_propose_use(

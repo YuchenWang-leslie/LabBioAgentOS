@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pantheon.agent import Agent
+from pantheon.providers import LocalProvider
 from pydantic import ValidationError
 
 from labbioagentos import (
@@ -439,6 +440,17 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     use_proposal = store.get_use_proposal(UUID(use["data"]["proposal_id"]))
     authorization = _decide_use(service, principal, use_proposal)
     view = await toolset.skill_view(str(authorization.authorization_id))
+    private_query = "C9_PRIVATE_SEARCH_QUERY_7142"
+    private_tag = "C9_PRIVATE_SEARCH_TAG_8124"
+    private_type = "C9_PRIVATE_SEARCH_TYPE_9317"
+    hidden = await toolset.skill_search(
+        query_text=private_query,
+        required_tags=[private_tag],
+        artifact_types=[private_type],
+        include_lab=False,
+        limit=7,
+    )
+    assert hidden["success"] and hidden["data"] == []
 
     assert artifact["information_authority"] == "AUTHORITATIVE_EVIDENCE"
     assert search["information_authority"] == "MODEL_CONTEXT"
@@ -450,6 +462,29 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     assert by_name["skill_search"].information_authority is InformationAuthority.MODEL_CONTEXT
     assert by_name["skill_view"].information_authority is InformationAuthority.MODEL_CONTEXT
     assert by_name["skill_propose_use"].information_authority is InformationAuthority.CONTROL_STATE
+    search_audit = tuple(
+        item.skill_search_request
+        for item in toolset.evidence_items()
+        if item.capability_name == "skill_search"
+    )[-1]
+    assert search_audit is not None
+    assert search_audit.model_dump() == {
+        "query_text_supplied": True,
+        "required_tag_count": 1,
+        "artifact_type_count": 1,
+        "include_lab": False,
+        "limit": 7,
+    }
+    persisted = json.dumps(
+        {
+            "trace": [event.model_dump(mode="json") for event in recorder.sink.read(run_id)],
+            "evidence": [
+                item.model_dump(mode="json") for item in toolset.evidence_items()
+            ],
+        }
+    )
+    for private_value in (private_query, private_tag, private_type):
+        assert private_value not in persisted
     bundle = CapabilityEvidenceBundle(
         run_id=run_id,
         stage_id=WorkflowStage.PLAN,
@@ -469,6 +504,27 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
         "skill_propose_use",
         "memory_propose_update",
     }
+
+    provider = LocalProvider(toolset)
+    await provider.initialize()
+    schemas = {item.name: item.inputSchema for item in await provider.list_tools()}
+    search_parameters = schemas["skill_search"]["parameters"]
+    assert "literal substring" in search_parameters["properties"]["query_text"][
+        "description"
+    ]
+    assert "exact tags" in search_parameters["properties"]["required_tags"][
+        "description"
+    ]
+    assert "exact Artifact types" in search_parameters["properties"][
+        "artifact_types"
+    ]["description"]
+    mode_schema = schemas["skill_propose_use"]["parameters"]["properties"]["mode"]
+    assert mode_schema["type"] == "string"
+    assert mode_schema["enum"] == ["REUSE", "ADAPT", "REFERENCE"]
+    assert "Model-selected" in mode_schema["description"]
+    assert schemas["skill_view"]["parameters"]["required"] == [
+        "authorization_id"
+    ]
 
 
 @pytest.mark.asyncio

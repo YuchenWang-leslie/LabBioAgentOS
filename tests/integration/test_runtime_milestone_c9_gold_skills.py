@@ -169,26 +169,40 @@ def _c9_assemblies(c7):
 
 
 def _write_generalization_fixture(path: Path) -> None:
-    n_obs, n_vars = 37, 53
+    n_obs, n_vars = 1200, 5000
+    rng = np.random.default_rng(90210)
     obs = pd.DataFrame(
         {
             "batch_label": pd.Categorical(
-                [f"batch-{index % 4}" for index in range(n_obs)]
+                [f"batch-{index % 6}" for index in range(n_obs)]
             ),
-            "arbitrary_quality_score": np.linspace(-3.0, 5.0, n_obs),
+            "library_protocol": pd.Categorical(
+                ["droplet-counts"] * n_obs
+            ),
         },
         index=[f"c9-private-observation-{index:03d}" for index in range(n_obs)],
     )
     var = pd.DataFrame(
         {
             "feature_annotation": pd.Categorical(
-                [f"family-{index % 7}" for index in range(n_vars)]
+                [f"family-{index % 11}" for index in range(n_vars)]
             )
         },
-        index=[f"c9-private-feature-{index:03d}" for index in range(n_vars)],
+        index=[
+            (
+                f"MT-C9-PRIVATE-{index:03d}"
+                if index < 20
+                else f"c9-private-feature-{index:05d}"
+            )
+            for index in range(n_vars)
+        ],
     )
-    values = np.arange(n_obs * n_vars, dtype=np.int16).reshape(n_obs, n_vars)
-    ad.AnnData(X=csc_matrix(values), obs=obs, var=var).write_h5ad(path)
+    nonzero = 120_000
+    rows = rng.integers(0, n_obs, size=nonzero)
+    columns = rng.integers(0, n_vars, size=nonzero)
+    values = rng.poisson(1.5, size=nonzero).astype(np.int16) + 1
+    matrix = csc_matrix((values, (rows, columns)), shape=(n_obs, n_vars))
+    ad.AnnData(X=matrix, obs=obs, var=var).write_h5ad(path)
 
 
 def _approval(label: str, *exact_values: object) -> None:
@@ -235,7 +249,12 @@ async def test_c9_real_gold_creation_restart_and_familiar_use(tmp_path):
         project_id="project-c9-live",
         lab_id="lab-c7",
     )
-    database = live_root / "gold-skills.sqlite3"
+    existing_database = os.environ.get("LABBIO_C9_EXISTING_STORE")
+    database = (
+        Path(existing_database).expanduser().resolve()
+        if existing_database
+        else live_root / "gold-skills.sqlite3"
+    )
     skill_store = SQLiteSkillStore(database)
     source_artifacts = LocalArtifactStore(SOURCE_ROOT / "artifacts")
     skill_service = GoldSkillService(
@@ -244,95 +263,128 @@ async def test_c9_real_gold_creation_restart_and_familiar_use(tmp_path):
         access_service=access,
         trace_recorder=recorder,
     )
-    source_events = tuple(
-        TraceEvent.model_validate_json(line)
-        for line in (SOURCE_ROOT / "run-trace.jsonl").read_text(
-            encoding="utf-8"
-        ).splitlines()
-        if line
-    )
-    bundle = skill_service.create_source_bundle(
-        source_events,
-        run_id=SOURCE_RUN_ID,
-        task_reference=c7.USER_REQUEST,
-    )
-    curator_boundaries: list[tuple[str, str]] = []
-
-    def observe_curator(kind: str, value: object) -> None:
-        payload = value.model_dump_json()
-        curator_boundaries.append((kind, payload))
-        with (live_root / "curator-boundaries.jsonl").open(
-            "a", encoding="utf-8"
-        ) as handle:
-            handle.write(json.dumps({"kind": kind, "payload": json.loads(payload)}))
-            handle.write("\n")
-
     catalog = _c9_catalog(c7)
-    model = catalog.models["runtime-default"]
-    model_identifier = PantheonRuntimeFactory._configure_transport(model)
-    curator_agent = Agent(
-        name="SkillCuratorAgent",
-        description="Abstract bounded reusable procedural context for user review.",
-        instructions=(
-            "Abstract reusable procedural guidance from the supplied safe successful-"
-            "run evidence. Identify applicability, workflow structure, collaboration "
-            "guidance, execution considerations, validation expectations, failure "
-            "lessons, and limitations. Do not summarize a transcript, reproduce "
-            "scripts, transfer old scientific facts to a new task, or invent IDs, "
-            "scope, ownership, approval, or lineage. Return only SkillCuratorDraft."
-        ),
-        model=model_identifier,
-        model_params={"thinking": False, "max_tokens": 8192},
-        response_format=SkillCuratorDraft,
-        use_memory=False,
-    )
-    print("C9_CURATOR_CALL_STARTED", flush=True)
-    proposal = await skill_service.curate_proposal(
-        bundle.bundle_id,
-        PantheonSkillCurator(
-            curator_agent,
-            boundary_observer=observe_curator,
-        ),
-        SkillProposalContext(
-            scope=SkillScope.PERSONAL,
-            owner_user_id=principal.user_id,
-            lab_id=principal.lab_id,
-        ),
-    )
-    print(
-        json.dumps(
-            {
-                "checkpoint": "CREATE_REVIEW",
-                "proposal_id": str(proposal.proposal_id),
-                "approval_gate_id": proposal.approval_gate_id,
-                "source_run_id": str(proposal.source_run_id),
-                "scope": proposal.scope.value,
-                "owner_user_id": proposal.owner_user_id,
-                "draft": {
-                    "name": proposal.proposed_name,
-                    "description": proposal.description,
-                    "procedure": proposal.procedure.model_dump(mode="json"),
+    curator_boundaries: list[tuple[str, str]] = []
+    existing_gold_id = os.environ.get("LABBIO_C9_EXISTING_GOLD_SKILL_ID")
+    if existing_database:
+        assert existing_gold_id, "Existing C9 store requires its exact Gold Skill ID"
+        gold = skill_store.get_gold(UUID(existing_gold_id), 1)
+        bundle = skill_store.get_source_bundle(gold.source_bundle_id)
+        proposal = skill_store.get_proposal(gold.source_proposal_id)
+        prior_boundary_path = database.parent / "curator-boundaries.jsonl"
+        assert prior_boundary_path.is_file()
+        curator_boundaries.extend(
+            (row["kind"], json.dumps(row["payload"], sort_keys=True))
+            for row in (
+                json.loads(line)
+                for line in prior_boundary_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line
+            )
+        )
+        print(
+            "C9_EXISTING_GOLD="
+            + json.dumps(
+                {
+                    "skill_id": str(gold.skill_id),
+                    "version": gold.version,
+                    "source_proposal_id": str(gold.source_proposal_id),
                 },
-            },
-            sort_keys=True,
-        ),
-        flush=True,
-    )
-    assert skill_store.search(
-        SkillSearchContext(user_id=principal.user_id, lab_id=principal.lab_id)
-    ) == ()
-    _approval("CREATE", proposal.proposal_id, proposal.approval_gate_id)
-    gold = skill_service.decide_proposal(
-        proposal.proposal_id,
-        SkillUserDecision(
-            subject_id=proposal.proposal_id,
-            gate_id=proposal.approval_gate_id,
-            approved=True,
-            decided_by=principal.user_id,
-        ),
-        principal=principal,
-    )
-    assert gold is not None
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    else:
+        source_events = tuple(
+            TraceEvent.model_validate_json(line)
+            for line in (SOURCE_ROOT / "run-trace.jsonl").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line
+        )
+        bundle = skill_service.create_source_bundle(
+            source_events,
+            run_id=SOURCE_RUN_ID,
+            task_reference=c7.USER_REQUEST,
+        )
+
+        def observe_curator(kind: str, value: object) -> None:
+            payload = value.model_dump_json()
+            curator_boundaries.append((kind, payload))
+            with (live_root / "curator-boundaries.jsonl").open(
+                "a", encoding="utf-8"
+            ) as handle:
+                handle.write(
+                    json.dumps({"kind": kind, "payload": json.loads(payload)})
+                )
+                handle.write("\n")
+
+        model = catalog.models["runtime-default"]
+        model_identifier = PantheonRuntimeFactory._configure_transport(model)
+        curator_agent = Agent(
+            name="SkillCuratorAgent",
+            description="Abstract bounded reusable procedural context for user review.",
+            instructions=(
+                "Abstract reusable procedural guidance from the supplied safe successful-"
+                "run evidence. Identify applicability, workflow structure, collaboration "
+                "guidance, execution considerations, validation expectations, failure "
+                "lessons, and limitations. Do not summarize a transcript, reproduce "
+                "scripts, transfer old scientific facts to a new task, or invent IDs, "
+                "scope, ownership, approval, or lineage. Return only SkillCuratorDraft."
+            ),
+            model=model_identifier,
+            model_params={"thinking": False, "max_tokens": 8192},
+            response_format=SkillCuratorDraft,
+            use_memory=False,
+        )
+        print("C9_CURATOR_CALL_STARTED", flush=True)
+        proposal = await skill_service.curate_proposal(
+            bundle.bundle_id,
+            PantheonSkillCurator(
+                curator_agent,
+                boundary_observer=observe_curator,
+            ),
+            SkillProposalContext(
+                scope=SkillScope.PERSONAL,
+                owner_user_id=principal.user_id,
+                lab_id=principal.lab_id,
+            ),
+        )
+        print(
+            json.dumps(
+                {
+                    "checkpoint": "CREATE_REVIEW",
+                    "proposal_id": str(proposal.proposal_id),
+                    "approval_gate_id": proposal.approval_gate_id,
+                    "source_run_id": str(proposal.source_run_id),
+                    "scope": proposal.scope.value,
+                    "owner_user_id": proposal.owner_user_id,
+                    "draft": {
+                        "name": proposal.proposed_name,
+                        "description": proposal.description,
+                        "procedure": proposal.procedure.model_dump(mode="json"),
+                    },
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+        assert skill_store.search(
+            SkillSearchContext(user_id=principal.user_id, lab_id=principal.lab_id)
+        ) == ()
+        _approval("CREATE", proposal.proposal_id, proposal.approval_gate_id)
+        gold = skill_service.decide_proposal(
+            proposal.proposal_id,
+            SkillUserDecision(
+                subject_id=proposal.proposal_id,
+                gate_id=proposal.approval_gate_id,
+                approved=True,
+                decided_by=principal.user_id,
+            ),
+            principal=principal,
+        )
+        assert gold is not None
     gold_snapshot = gold.model_dump_json()
     skill_store.close()
 
