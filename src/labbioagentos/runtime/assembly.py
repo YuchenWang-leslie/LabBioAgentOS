@@ -31,6 +31,20 @@ from .tooling import (
 
 
 @dataclass(frozen=True)
+class RuntimeAgentCapabilitySpec:
+    """Trusted capability assignment for one non-root team profile."""
+
+    profile_key: str
+    capability_allowlist: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.profile_key:
+            raise ValueError("Peer profile_key is required")
+        if len(set(self.capability_allowlist)) != len(self.capability_allowlist):
+            raise ValueError("Peer capability allowlist must not contain duplicates")
+
+
+@dataclass(frozen=True)
 class RuntimeStageAssemblySpec:
     """Trusted assembly facts selected by exact workflow stage identity."""
 
@@ -38,7 +52,7 @@ class RuntimeStageAssemblySpec:
     root_profile_key: str
     prompt_template_key: str
     capability_allowlist: tuple[str, ...]
-    capability_peer_profile_keys: tuple[str, ...] = ()
+    capability_peer_specs: tuple[RuntimeAgentCapabilitySpec, ...] = ()
     capability_prompt_values: Mapping[str, str] | None = None
     finalization_prompt_values: Mapping[str, str] | None = None
     max_delegate_depth: int = 5
@@ -62,7 +76,7 @@ class RuntimeStageAssemblySpec:
             raise ValueError("required_capabilities must be within the allowlist")
         if not self.capability_phase_enabled and (
             self.capability_allowlist
-            or self.capability_peer_profile_keys
+            or self.capability_peer_specs
             or self.preserve_capability_completion
             or self.required_capabilities
         ):
@@ -153,25 +167,34 @@ class PerInvocationPantheonStageInvoker:
                 self.boundary_observer("stage_result", result)
             return result
 
-        binding = RuntimeCapabilityContext(
-            principal=self.principal,
-            workspace=self.workspace,
-            run_id=stage_input.run_id,
-            stage_id=self.assembly.stage_id,
-            invocation_id=stage_input.invocation_id,
-            capability_allowlist=self.assembly.capability_allowlist,
+        capability_specs = (
+            RuntimeAgentCapabilitySpec(
+                profile_key=root_key,
+                capability_allowlist=self.assembly.capability_allowlist,
+            ),
+            *self.assembly.capability_peer_specs,
         )
-        toolset = self.toolset_factory(binding, self.services)
-        capability_keys = (
-            root_key,
-            *self.assembly.capability_peer_profile_keys,
-        )
+        capability_keys = tuple(spec.profile_key for spec in capability_specs)
+        toolsets: dict[str, LabBioRuntimeToolSet] = {}
+        for spec in capability_specs:
+            profile = self.factory.catalog.agents[spec.profile_key]
+            binding = RuntimeCapabilityContext(
+                principal=self.principal,
+                workspace=self.workspace,
+                run_id=stage_input.run_id,
+                stage_id=self.assembly.stage_id,
+                invocation_id=stage_input.invocation_id,
+                actor_profile_key=profile.profile_key,
+                actor_agent_name=profile.agent_name,
+                capability_allowlist=spec.capability_allowlist,
+            )
+            toolsets[spec.profile_key] = self.toolset_factory(binding, self.services)
         capability_team, capability_prompts = await self.factory.create_team(
             capability_keys,
             prompt_values=self._prompt_values_for_profiles(
                 capability_keys, self.assembly.capability_prompt_values
             ),
-            toolsets={root_key: toolset},
+            toolsets=toolsets,
             plugins=(self.plugin_factory() if self.plugin_factory else None),
             max_delegate_depth=self.assembly.max_delegate_depth,
             invocation_mode=RuntimeInvocationMode.CAPABILITY,
@@ -180,7 +203,7 @@ class PerInvocationPantheonStageInvoker:
             capability_team,
             profile=self.factory.catalog.agents[root_key],
             prompt=capability_prompts[root_key],
-            evidence_sources=(toolset,),
+            evidence_sources=tuple(toolsets.values()),
             trace_recorder=self.trace_recorder,
             preserve_explicit_completion=(
                 self.assembly.preserve_capability_completion
@@ -235,13 +258,24 @@ class PerInvocationPantheonStageInvoker:
             raise RuntimeProfileConfigurationError(
                 "Assembly allowlist exceeds the root capability profile"
             )
-        for key in self.assembly.capability_peer_profile_keys:
-            if key not in self.factory.catalog.agents:
+        for peer in self.assembly.capability_peer_specs:
+            if peer.profile_key not in self.factory.catalog.agents:
                 raise RuntimeProfileConfigurationError(
-                    f"Unknown capability peer profile {key!r}"
+                    f"Unknown capability peer profile {peer.profile_key!r}"
                 )
-        if len(set((self.assembly.root_profile_key, *self.assembly.capability_peer_profile_keys))) != (
-            1 + len(self.assembly.capability_peer_profile_keys)
+            peer_profile = self.factory.catalog.agents[peer.profile_key]
+            peer_capability_profile = self.factory.catalog.capabilities[
+                peer_profile.capability_profile_key
+            ]
+            if not set(peer.capability_allowlist).issubset(
+                peer_capability_profile.capability_allowlist
+            ):
+                raise RuntimeProfileConfigurationError(
+                    "Assembly allowlist exceeds a peer capability profile"
+                )
+        peer_keys = tuple(peer.profile_key for peer in self.assembly.capability_peer_specs)
+        if len(set((self.assembly.root_profile_key, *peer_keys))) != (
+            1 + len(peer_keys)
         ):
             raise RuntimeProfileConfigurationError(
                 "Capability team profile keys must be unique"

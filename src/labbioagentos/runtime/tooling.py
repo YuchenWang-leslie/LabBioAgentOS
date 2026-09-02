@@ -194,6 +194,8 @@ class RuntimeCapabilityContext:
     run_id: UUID
     stage_id: WorkflowStage
     invocation_id: UUID
+    actor_profile_key: str
+    actor_agent_name: str
     capability_allowlist: tuple[str, ...]
     consumer: ArtifactConsumer = ArtifactConsumer.REMOTE_LLM
 
@@ -206,6 +208,8 @@ class RuntimeCapabilityContext:
         workspace: WorkspaceContext,
         run_id: UUID,
         invocation_id: UUID,
+        actor_profile_key: str,
+        actor_agent_name: str,
     ) -> "RuntimeCapabilityContext":
         """Bind the exact StageRuntimeSpec allowlist outside model input."""
 
@@ -215,6 +219,8 @@ class RuntimeCapabilityContext:
             run_id=run_id,
             stage_id=spec.stage_id,
             invocation_id=invocation_id,
+            actor_profile_key=actor_profile_key,
+            actor_agent_name=actor_agent_name,
             capability_allowlist=tuple(spec.capability_allowlist),
         )
 
@@ -223,6 +229,8 @@ class RuntimeCapabilityContext:
         requested = frozenset(self.capability_allowlist)
         if not requested.issubset(ceiling):
             raise ValueError("Stage capability allowlist exceeds its approved ceiling")
+        if not self.actor_profile_key or not self.actor_agent_name:
+            raise ValueError("Runtime capability actor identity is required")
         if self.consumer is not ArtifactConsumer.REMOTE_LLM:
             raise ValueError("Runtime model tools must bind REMOTE_LLM")
 
@@ -245,7 +253,12 @@ class LabBioRuntimeToolSet(ToolSet):
         self.binding = binding
         self.services = services
         self._evidence_items: list[CapabilityEvidenceItem] = []
-        super().__init__(name=f"labbio-{binding.stage_id.value.lower()}")
+        super().__init__(
+            name=(
+                f"labbio-{binding.stage_id.value.lower()}-"
+                f"{binding.actor_profile_key}"
+            )
+        )
         allowed = frozenset(binding.capability_allowlist)
         self.functions = {
             name: value
@@ -316,6 +329,8 @@ class LabBioRuntimeToolSet(ToolSet):
             self._evidence_items.append(
                 CapabilityEvidenceItem(
                     capability_invocation_id=capability_invocation_id,
+                    actor_profile_key=self.binding.actor_profile_key,
+                    actor_agent_name=self.binding.actor_agent_name,
                     capability_name=capability,
                     status=CapabilityEvidenceStatus.FAILED,
                     trace_event_ids=tuple(trace_event_ids),
@@ -340,6 +355,8 @@ class LabBioRuntimeToolSet(ToolSet):
         self._evidence_items.append(
             CapabilityEvidenceItem(
                 capability_invocation_id=capability_invocation_id,
+                actor_profile_key=self.binding.actor_profile_key,
+                actor_agent_name=self.binding.actor_agent_name,
                 capability_name=capability,
                 status=CapabilityEvidenceStatus.COMPLETED,
                 trace_event_ids=tuple(trace_event_ids),
@@ -893,7 +910,13 @@ class LabBioRuntimeToolSet(ToolSet):
                 event_type,
                 stage_id=self.binding.stage_id,
                 invocation_id=self.binding.invocation_id,
+                agent_name=self.binding.actor_agent_name,
                 status=status,
-                payload={"capability": capability, **(payload or {})},
+                payload={
+                    "capability": capability,
+                    "actor_profile_key": self.binding.actor_profile_key,
+                    "actor_agent_name": self.binding.actor_agent_name,
+                    **(payload or {}),
+                },
             )
         return None

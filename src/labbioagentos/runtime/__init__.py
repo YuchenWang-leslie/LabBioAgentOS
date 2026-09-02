@@ -30,6 +30,7 @@ from .contracts import (
 )
 from .assembly import (
     PerInvocationPantheonStageInvoker,
+    RuntimeAgentCapabilitySpec,
     RuntimeStageAssemblySpec,
 )
 from .coordinator import (
@@ -64,6 +65,7 @@ from .profiles import (
     ResponseSchemaRef,
     RuntimeInvocationMode,
     default_agent_profiles,
+    scientific_specialist_profiles,
 )
 from .reporting import ReportReceipt, ReportSubmissionService
 from .tooling import (
@@ -133,6 +135,7 @@ __all__ = [
     "ProviderConfigRef",
     "ProviderTransport",
     "RuntimeInvocationMode",
+    "RuntimeAgentCapabilitySpec",
     "RenderedPrompt",
     "ReportReceipt",
     "ReportSubmissionService",
@@ -149,4 +152,5 @@ __all__ = [
     "ToolError",
     "ToolResult",
     "default_agent_profiles",
+    "scientific_specialist_profiles",
 ]

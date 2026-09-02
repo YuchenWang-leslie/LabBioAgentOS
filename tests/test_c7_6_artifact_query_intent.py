@@ -46,6 +46,8 @@ def query_boundary(tmp_path):
         run_id=uuid4(),
         stage_id=WorkflowStage.REPORT,
         invocation_id=uuid4(),
+        actor_profile_key="coordinator",
+        actor_agent_name="CoordinatorAgent",
         capability_allowlist=("artifact_query",),
     )
     ref = store.register(

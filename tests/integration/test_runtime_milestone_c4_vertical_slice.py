@@ -39,6 +39,7 @@ from labbioagentos import (
     RequestedResources,
     ResponseSchemaRef,
     RunStatus,
+    RuntimeAgentCapabilitySpec,
     RuntimeProfileCatalog,
     RuntimeStageAssemblySpec,
     StructuredOutputContract,
@@ -363,14 +364,14 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
     for stage in MAIN_PATH:
         peers = ()
         if stage is WorkflowStage.PLAN:
-            peers = ("reviewer",)
+            peers = (RuntimeAgentCapabilitySpec(profile_key="reviewer"),)
         assemblies.append(
             RuntimeStageAssemblySpec(
                 stage_id=stage,
                 root_profile_key=ROOTS[stage],
                 prompt_template_key="runtime-generic",
                 capability_allowlist=CAPABILITIES[stage],
-                capability_peer_profile_keys=peers,
+                capability_peer_specs=peers,
                 capability_prompt_values={"protocol": _capability_protocol(stage)},
                 finalization_prompt_values={
                     "protocol": _finalization_protocol(stage)

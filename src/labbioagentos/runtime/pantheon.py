@@ -28,6 +28,7 @@ from labbioagentos.teams.delegation import (
 from .contracts import (
     CapabilityEvidenceBundle,
     CapabilityEvidenceItem,
+    MAX_CAPABILITY_EVIDENCE_ITEMS,
     RuntimeStageInput,
     RuntimeStageResult,
 )
@@ -357,6 +358,11 @@ class PantheonCapabilityStageInvoker:
         items: list[CapabilityEvidenceItem] = []
         for source, offset in zip(self.evidence_sources, offsets, strict=True):
             items.extend(source.evidence_items()[offset:])
+        if len(items) > MAX_CAPABILITY_EVIDENCE_ITEMS:
+            raise RuntimeProfileConfigurationError(
+                "Aggregated capability evidence exceeds "
+                f"{MAX_CAPABILITY_EVIDENCE_ITEMS} items"
+            )
         delegation_event_ids: tuple[UUID, ...] = ()
         if self.trace_recorder is not None:
             new_events = self.trace_recorder.events(stage_input.run_id)[trace_offset:]

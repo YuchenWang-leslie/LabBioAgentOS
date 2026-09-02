@@ -176,3 +176,39 @@ def default_agent_profiles() -> tuple[AgentProfile, ...]:
             **shared,
         ),
     )
+
+
+def scientific_specialist_profiles() -> tuple[AgentProfile, ...]:
+    """Small C8 scientific peer catalog without task-routing behavior."""
+
+    shared = {
+        "version": "1",
+        "prompt_profile_key": "runtime-generic",
+        "response_schema_key": "runtime-stage-result",
+        "model_profile_key": "runtime-default",
+    }
+    return (
+        AgentProfile(
+            profile_key="single-cell-analysis-specialist",
+            agent_name="SingleCellAnalysisSpecialist",
+            role_description=(
+                "Provide task-dependent single-cell analysis advice, including "
+                "quality, strategy, and technical limitations, using governed "
+                "evidence when available; do not impose a fixed analysis pipeline."
+            ),
+            capability_profile_key=(
+                "single-cell-analysis-specialist-capabilities"
+            ),
+            **shared,
+        ),
+        AgentProfile(
+            profile_key="scientific-methods-reviewer",
+            agent_name="ScientificMethodsReviewer",
+            role_description=(
+                "Independently review scientific methods, evidence support, and "
+                "limitations using governed evidence when available."
+            ),
+            capability_profile_key="scientific-methods-reviewer-capabilities",
+            **shared,
+        ),
+    )

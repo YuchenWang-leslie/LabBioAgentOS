@@ -149,6 +149,8 @@ def _toolset(tmp_path, stage_input, recorder=None):
         run_id=stage_input.run_id,
         stage_id=stage_input.stage_id,
         invocation_id=stage_input.invocation_id,
+        actor_profile_key="coordinator",
+        actor_agent_name="CoordinatorAgent",
         capability_allowlist=("artifact_list",),
     )
     return LabBioRuntimeToolSet(
@@ -319,6 +321,8 @@ async def test_capability_mode_does_not_auto_invoke_or_use_prose_termination(tmp
 def test_capability_evidence_rejects_leak_fields(field):
     with pytest.raises(ValidationError):
         CapabilityEvidenceItem(
+            actor_profile_key="coordinator",
+            actor_agent_name="CoordinatorAgent",
             capability_name="artifact_query",
             status=CapabilityEvidenceStatus.COMPLETED,
             safe_result={"nested": {field: "prohibited"}},
@@ -340,6 +344,8 @@ async def test_finalization_receives_safe_evidence_and_returns_explicit_proposal
         invocation_id=stage_input.invocation_id,
         items=(
             CapabilityEvidenceItem(
+                actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent",
                 capability_name="artifact_list",
                 status=CapabilityEvidenceStatus.COMPLETED,
                 safe_result={"artifact_id": str(uuid4()), "artifact_type": "synthetic"},

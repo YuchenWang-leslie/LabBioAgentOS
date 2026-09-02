@@ -444,6 +444,8 @@ async def test_execution_draft_validation_returns_safe_actionable_field_feedback
             run_id=uuid4(),
             stage_id=WorkflowStage.EXECUTE,
             invocation_id=uuid4(),
+            actor_profile_key="execution",
+            actor_agent_name="ExecutionAgent",
             capability_allowlist=("execution_submit",),
         ),
         RuntimeCapabilityServices(

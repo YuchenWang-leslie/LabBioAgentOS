@@ -47,6 +47,8 @@ SafeIdentifier = Annotated[
     ),
 ]
 
+MAX_CAPABILITY_EVIDENCE_ITEMS = 64
+
 
 class CapabilityEvidenceStatus(StrEnum):
     """Technical capability outcome only; it has no scientific meaning."""
@@ -159,6 +161,8 @@ class CapabilityEvidenceItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     capability_invocation_id: UUID = Field(default_factory=uuid4)
+    actor_profile_key: SafeIdentifier
+    actor_agent_name: SafeIdentifier
     capability_name: SafeIdentifier
     status: CapabilityEvidenceStatus
     trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=4)
@@ -205,7 +209,9 @@ class CapabilityEvidenceBundle(BaseModel):
     run_id: UUID
     stage_id: WorkflowStage
     invocation_id: UUID
-    items: tuple[CapabilityEvidenceItem, ...] = Field(default=(), max_length=64)
+    items: tuple[CapabilityEvidenceItem, ...] = Field(
+        default=(), max_length=MAX_CAPABILITY_EVIDENCE_ITEMS
+    )
     delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
     explicit_completion: LongText | None = None
     technical_status: Literal["COMPLETED"] = "COMPLETED"

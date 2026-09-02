@@ -282,6 +282,8 @@ def _toolset(boundary, stage, capabilities, **service_overrides):
         run_id=uuid4(),
         stage_id=stage,
         invocation_id=uuid4(),
+        actor_profile_key="coordinator",
+        actor_agent_name="CoordinatorAgent",
         capability_allowlist=capabilities,
     )
     return LabBioRuntimeToolSet(binding, services)
@@ -308,6 +310,8 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
         workspace=workspace,
         run_id=uuid4(),
         invocation_id=uuid4(),
+        actor_profile_key="coordinator",
+        actor_agent_name="CoordinatorAgent",
     )
     toolset = _toolset(boundary, WorkflowStage.INTAKE, binding.capability_allowlist)
     assert set(toolset.tool_functions) == {"artifact_list"}

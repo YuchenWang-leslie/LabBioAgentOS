@@ -46,6 +46,8 @@ def artifact_query_boundary(tmp_path):
         run_id=uuid4(),
         stage_id=WorkflowStage.VALIDATE,
         invocation_id=uuid4(),
+        actor_profile_key="reviewer",
+        actor_agent_name="ReviewerAgent",
         capability_allowlist=("artifact_query",),
     )
     ref = store.register(

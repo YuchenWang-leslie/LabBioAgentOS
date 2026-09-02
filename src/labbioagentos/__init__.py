@@ -264,6 +264,7 @@ from .runtime import (
     ResponseSchemaRef,
     RuntimeCapabilityContext,
     RuntimeCapabilityServices,
+    RuntimeAgentCapabilitySpec,
     RuntimeInvocationMode,
     RuntimeStageAssemblySpec,
     RuntimeProfileCatalog,
@@ -273,6 +274,7 @@ from .runtime import (
     ToolError,
     ToolResult,
     default_agent_profiles,
+    scientific_specialist_profiles,
 )
 from .application import (
     ApplicationArtifactReference,
@@ -549,6 +551,7 @@ __all__ = [
     "ResponseSchemaRef",
     "RuntimeCapabilityContext",
     "RuntimeCapabilityServices",
+    "RuntimeAgentCapabilitySpec",
     "RuntimeProfileCatalog",
     "RuntimeProfileConfigurationError",
     "SkillCandidateView",
@@ -556,6 +559,7 @@ __all__ = [
     "ToolError",
     "ToolResult",
     "default_agent_profiles",
+    "scientific_specialist_profiles",
 ]
 
 __version__ = "0.1.0"
