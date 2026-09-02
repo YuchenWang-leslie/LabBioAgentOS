@@ -923,8 +923,10 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
         bundle = json.loads(payload)
         if bundle.get("stage_id") != WorkflowStage.REPORT.value:
             continue
-        assert bundle.get("authority") == "AUTHORITATIVE_EVIDENCE"
+        assert bundle.get("authority_mode") == "ITEM_LEVEL"
         for item in bundle.get("items", []):
+            if item.get("capability_name") == "artifact_query":
+                assert item.get("information_authority") == "AUTHORITATIVE_EVIDENCE"
             result = item.get("safe_result")
             if (
                 item.get("capability_name") == "artifact_query"

@@ -22,6 +22,7 @@ from labbioagentos import (
     CapabilityProfile,
     InMemoryProjectStore,
     InMemoryTraceSink,
+    InformationAuthority,
     IntakeStageBody,
     LabBioRuntimeToolSet,
     LocalArtifactStore,
@@ -324,6 +325,7 @@ def test_capability_evidence_rejects_leak_fields(field):
             actor_profile_key="coordinator",
             actor_agent_name="CoordinatorAgent",
             capability_name="artifact_query",
+            information_authority=InformationAuthority.AUTHORITATIVE_EVIDENCE,
             status=CapabilityEvidenceStatus.COMPLETED,
             safe_result={"nested": {field: "prohibited"}},
         )
@@ -347,6 +349,7 @@ async def test_finalization_receives_safe_evidence_and_returns_explicit_proposal
                 actor_profile_key="coordinator",
                 actor_agent_name="CoordinatorAgent",
                 capability_name="artifact_list",
+                information_authority=InformationAuthority.AUTHORITATIVE_EVIDENCE,
                 status=CapabilityEvidenceStatus.COMPLETED,
                 safe_result={"artifact_id": str(uuid4()), "artifact_type": "synthetic"},
             ),

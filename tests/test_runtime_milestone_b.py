@@ -553,14 +553,28 @@ async def test_skill_tools_return_candidates_no_score_and_pending_use(boundary):
     encoded = json.dumps(search)
     assert search["success"] and str(gold.skill_id) in encoded
     assert not any(word in encoded for word in ("similarity_score", '"ranking"', '"mode"'))
-    view = await toolset.skill_view(str(gold.skill_id), 1)
-    assert view["data"]["applicability"] == "Runtime model decides relevance."
-    assert not any(key in view["data"] for key in ("execute", "run", "apply"))
+    assert "workflow_outline" not in encoded
     proposed = await toolset.skill_propose_use(
         str(gold.skill_id), 1, "REFERENCE", "Runtime-provided reason."
     )
     assert proposed["data"]["status"] == "USER_APPROVAL_REQUIRED"
-    assert store.get_use_proposal(uuid_from(proposed["data"]["proposal_id"])).skill_id == gold.skill_id
+    use_proposal = store.get_use_proposal(
+        uuid_from(proposed["data"]["proposal_id"])
+    )
+    assert use_proposal.skill_id == gold.skill_id
+    authorization = service.decide_use(
+        use_proposal.proposal_id,
+        SkillUserDecision(
+            subject_id=use_proposal.proposal_id,
+            gate_id=use_proposal.approval_gate_id,
+            approved=True,
+            decided_by="user-a",
+        ),
+        principal=toolset.binding.principal,
+    )
+    view = await toolset.skill_view(str(authorization.authorization_id))
+    assert view["data"]["applicability"] == "Runtime model decides relevance."
+    assert not any(key in view["data"] for key in ("execute", "run", "apply"))
 
 
 def uuid_from(value):

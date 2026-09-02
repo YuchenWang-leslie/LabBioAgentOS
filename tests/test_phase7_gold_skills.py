@@ -17,12 +17,16 @@ from labbioagentos import (
     InstructionKind,
     InstructionRecord,
     LocalArtifactStore,
+    Principal,
     RunTraceRecorder,
     SkillApprovalRequiredError,
     SkillCuratorPort,
+    SkillCuratorDraft,
     SkillDecisionError,
     SkillProcedure,
+    SkillProcedureDraft,
     SkillProposal,
+    SkillProposalContext,
     SkillScope,
     SkillSearchContext,
     SkillSourceProjectionError,
@@ -62,19 +66,11 @@ class MockSkillCurator(SkillCuratorPort):
         self.parent_version = parent_version
         self.source_usage_record_id = source_usage_record_id
 
-    def propose(self, source):
-        return SkillProposal(
-            source_bundle_id=source.bundle_id,
-            source_run_id=source.source_run_id,
+    def draft(self, source):
+        return SkillCuratorDraft(
             proposed_name=self.name,
             description="Mock curator-provided description.",
-            scope=self.scope,
-            owner_user_id=self.owner_user_id,
-            project_id=self.project_id,
-            parent_skill_id=self.parent_skill_id,
-            parent_version=self.parent_version,
-            source_usage_record_id=self.source_usage_record_id,
-            procedure=SkillProcedure(
+            procedure=SkillProcedureDraft(
                 applicability="Runtime model evaluates applicability for the current task.",
                 workflow_outline=(
                     "Review the referenced successful workflow evidence.",
@@ -83,9 +79,6 @@ class MockSkillCurator(SkillCuratorPort):
                 agent_collaboration_guidance=(
                     "Treat prior delegation as guidance, not a fixed sequence.",
                 ),
-                important_instruction_ids=tuple(
-                    item.instruction_id for item in source.instruction_refs
-                ),
                 execution_guidance=(
                     "Use referenced script hashes as evidence only.",
                 ),
@@ -93,16 +86,32 @@ class MockSkillCurator(SkillCuratorPort):
                 validation_expectations=("Apply current-task technical validation.",),
                 known_failure_modes=("Prior technical failure references may be reviewed.",),
                 known_limitations=("No scientific applicability is asserted.",),
-                script_artifact_ids=tuple(
-                    item.script_artifact_id
-                    for item in source.execution_refs
-                    if item.script_artifact_id is not None
-                ),
-                source_trace_event_ids=source.trace_event_ids,
                 tags=self.tags,
                 artifact_types=self.artifact_types,
             ),
         )
+
+    async def propose(self, source):
+        return self.draft(source)
+
+    def context(self):
+        return SkillProposalContext(
+            scope=self.scope,
+            owner_user_id=self.owner_user_id,
+            project_id=self.project_id,
+            parent_skill_id=self.parent_skill_id,
+            parent_version=self.parent_version,
+            source_usage_record_id=self.source_usage_record_id,
+        )
+
+
+def _create_mock_proposal(service, bundle, curator=None):
+    curator = curator or MockSkillCurator()
+    return service.create_proposal(
+        bundle.bundle_id,
+        curator.draft(service.create_curation_view(bundle.bundle_id)),
+        curator.context(),
+    )
 
 
 def _trace_environment(tmp_path):
@@ -281,10 +290,7 @@ def _gold_fixture(tmp_path, *, curator=None):
     sink, recorder, artifacts, skill_store, service = _trace_environment(tmp_path)
     run_id, _, _ = _successful_trace(recorder, artifacts)
     bundle = service.create_source_bundle(sink.read(run_id), run_id=run_id)
-    proposal = service.create_proposal(
-        bundle.bundle_id,
-        curator or MockSkillCurator(),
-    )
+    proposal = _create_mock_proposal(service, bundle, curator)
     gold = _approve_proposal(service, proposal)
     return sink, recorder, artifacts, skill_store, service, bundle, proposal, gold
 
@@ -344,7 +350,7 @@ def test_source_bundle_and_gold_store_do_not_copy_raw_artifact_payload(tmp_path)
         raw_token=raw_token,
     )
     bundle = service.create_source_bundle(sink.read(run_id), run_id=run_id)
-    proposal = service.create_proposal(bundle.bundle_id, MockSkillCurator())
+    proposal = _create_mock_proposal(service, bundle)
     gold = _approve_proposal(service, proposal)
 
     assert raw_token not in bundle.model_dump_json()
@@ -358,7 +364,7 @@ def test_mock_curator_returns_typed_proposal_but_cannot_auto_promote(tmp_path):
     sink, recorder, artifacts, skill_store, service = _trace_environment(tmp_path)
     run_id, _, _ = _successful_trace(recorder, artifacts)
     bundle = service.create_source_bundle(sink.read(run_id), run_id=run_id)
-    proposal = service.create_proposal(bundle.bundle_id, MockSkillCurator())
+    proposal = _create_mock_proposal(service, bundle)
 
     assert isinstance(proposal, SkillProposal)
     assert skill_store.search(SkillSearchContext(user_id="user-a")) == ()
@@ -381,9 +387,8 @@ def test_user_approval_creates_v1_and_rejection_creates_no_gold(tmp_path):
     assert gold.source_proposal_id == proposal.proposal_id
     assert skill_store.get_gold(gold.skill_id, 1) == gold
 
-    rejected = service.create_proposal(
-        bundle.bundle_id,
-        MockSkillCurator(name="Rejected synthetic proposal"),
+    rejected = _create_mock_proposal(
+        service, bundle, MockSkillCurator(name="Rejected synthetic proposal")
     )
     result = service.decide_proposal(
         rejected.proposal_id,
@@ -411,8 +416,9 @@ def test_gold_versions_are_immutable(tmp_path):
 
 def test_search_filters_scope_tags_and_metadata_without_reuse_decision(tmp_path):
     _, _, _, _, service, bundle, _, personal = _gold_fixture(tmp_path)
-    project_proposal = service.create_proposal(
-        bundle.bundle_id,
+    project_proposal = _create_mock_proposal(
+        service,
+        bundle,
         MockSkillCurator(
             name="Project candidate",
             scope=SkillScope.PROJECT,
@@ -422,8 +428,9 @@ def test_search_filters_scope_tags_and_metadata_without_reuse_decision(tmp_path)
         ),
     )
     project = _approve_proposal(service, project_proposal, user="project-owner")
-    lab_proposal = service.create_proposal(
-        bundle.bundle_id,
+    lab_proposal = _create_mock_proposal(
+        service,
+        bundle,
         MockSkillCurator(
             name="Lab candidate",
             scope=SkillScope.LAB,
@@ -466,6 +473,9 @@ def test_each_runtime_selected_use_mode_requires_user_approval(tmp_path, mode):
     *_, service, _, _, gold = _gold_fixture(tmp_path)
     use = SkillUseProposal(
         run_id=uuid4(),
+        requesting_user_id="user-a",
+        project_id="local-project",
+        lab_id="local-lab",
         skill_id=gold.skill_id,
         skill_version=gold.version,
         proposed_mode=mode,
@@ -492,6 +502,9 @@ def test_approved_reference_usage_records_exact_version_without_mutating_gold(tm
     run_id = uuid4()
     use = SkillUseProposal(
         run_id=run_id,
+        requesting_user_id="user-a",
+        project_id="local-project",
+        lab_id="local-lab",
         skill_id=gold.skill_id,
         skill_version=gold.version,
         proposed_mode=SkillUseMode.REFERENCE,
@@ -506,6 +519,12 @@ def test_approved_reference_usage_records_exact_version_without_mutating_gold(tm
             approved=True,
             decided_by="user-a",
         ),
+    )
+    service.get_authorized_context(
+        authorization.authorization_id,
+        run_id=run_id,
+        project_id="local-project",
+        principal=Principal(user_id="user-a", lab_id="local-lab"),
     )
     usage = service.record_usage(
         authorization.authorization_id,
@@ -534,6 +553,9 @@ def test_successful_adapted_run_can_create_v2_without_overwriting_v1(tmp_path):
     )
     use = SkillUseProposal(
         run_id=adapted_run_id,
+        requesting_user_id="user-a",
+        project_id="local-project",
+        lab_id="local-lab",
         skill_id=v1.skill_id,
         skill_version=v1.version,
         proposed_mode=SkillUseMode.ADAPT,
@@ -550,12 +572,19 @@ def test_successful_adapted_run_can_create_v2_without_overwriting_v1(tmp_path):
             decided_by="user-a",
         ),
     )
+    service.get_authorized_context(
+        authorization.authorization_id,
+        run_id=adapted_run_id,
+        project_id="local-project",
+        principal=Principal(user_id="user-a", lab_id="local-lab"),
+    )
     usage = service.record_usage(
         authorization.authorization_id,
         SkillUsageOutcome.SUCCEEDED,
     )
-    v2_proposal = service.create_proposal(
-        adapted_bundle.bundle_id,
+    v2_proposal = _create_mock_proposal(
+        service,
+        adapted_bundle,
         MockSkillCurator(
             name="Synthetic procedural memory v2",
             parent_skill_id=v1.skill_id,
@@ -578,6 +607,9 @@ def test_skill_lifecycle_trace_contains_ids_not_skill_content(tmp_path):
     sink, _, _, _, service, bundle, proposal, gold = _gold_fixture(tmp_path)
     use = SkillUseProposal(
         run_id=bundle.source_run_id,
+        requesting_user_id="user-a",
+        project_id="local-project",
+        lab_id="local-lab",
         skill_id=gold.skill_id,
         skill_version=gold.version,
         proposed_mode=SkillUseMode.REUSE,
@@ -592,6 +624,12 @@ def test_skill_lifecycle_trace_contains_ids_not_skill_content(tmp_path):
             approved=True,
             decided_by="user-a",
         ),
+    )
+    service.get_authorized_context(
+        authorization.authorization_id,
+        run_id=bundle.source_run_id,
+        project_id="local-project",
+        principal=Principal(user_id="user-a", lab_id="local-lab"),
     )
     usage = service.record_usage(
         authorization.authorization_id,
