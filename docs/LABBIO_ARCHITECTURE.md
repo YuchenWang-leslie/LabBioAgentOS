@@ -3,7 +3,8 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 8. Phase 1 adds typed stage contracts and a composition
+preserved through Phase 8, with a C9 development checkpoint that is not yet
+accepted. Phase 1 adds typed stage contracts and a composition
 adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
@@ -255,8 +256,9 @@ Every model-visible source has exactly one role:
 
 | Source | Authority | Meaning |
 |---|---|---|
-| `ArtifactView`, governed tool result, `CapabilityEvidenceBundle`, `ExecutionReceipt` | `AUTHORITATIVE_EVIDENCE` | Host-governed evidence for current-run factual claims |
-| `RuntimePriorResultView`, Memory/Gold candidates | `MODEL_CONTEXT` | Bounded model-authored or historical context; not current-run proof |
+| `ArtifactView`, governed Artifact/Execution/Report capability item, `ExecutionReceipt` | `AUTHORITATIVE_EVIDENCE` | Host-governed evidence for current-run factual claims |
+| `RuntimePriorResultView`, Memory/Gold capability item | `MODEL_CONTEXT` | Bounded model-authored, procedural, or historical context; not current-run proof |
+| mixed `CapabilityEvidenceBundle` | item-level | A container does not promote its items; each item carries trusted authority |
 | stage/workspace/capability/gate state and `NextActionProposal` handling | `CONTROL_STATE` | Deterministic control facts or proposals, not scientific evidence |
 | task instruction, goal and caller-supplied domain references | `USER_ASSERTION` | The user's request or assertion, not measured evidence |
 
@@ -357,19 +359,32 @@ Memory store or authorization-service handle.
 
 ## Gold Skill boundary
 
-Phase 7 implements Gold Skills as LabBio-owned, immutable procedural memory.
-They are neither Pantheon skills nor executable workflows. `GoldSkill` exposes no
-`run`, `apply`, or `execute` operation and cannot transition `WorkflowRun`.
+C9 extends the Phase 7 Gold contracts into a LabBio-owned, immutable procedural
+memory lifecycle. The checkpoint is implemented and covered deterministically,
+but C9 is not accepted until a later real run completes an approved use. Gold
+Skills remain neither Pantheon skills nor executable workflows. `GoldSkill`
+exposes no `run`, `apply`, or `execute` operation and cannot transition
+`WorkflowRun`.
 
 The deterministic path is:
 
 ```text
 successful RunTrace
-  -> SkillSourceBundle evidence projection
-  -> SkillCuratorPort (future runtime intelligence)
-  -> SkillProposal
+  -> internal SkillSourceBundle evidence projection
+  -> whitelist-only SkillCurationSourceView
+  -> Pantheon-backed SkillCuratorDraft (untrusted prose)
+  + trusted SkillProposalContext (scope, ownership, lineage)
+  -> pending SkillProposal
   -> explicit SkillUserDecision
   -> immutable GoldSkill version
+
+later run
+  -> bounded candidate metadata
+  -> runtime-selected use proposal
+  -> exact application USER_GATE decision
+  -> run/user/project/lab/Skill/version authorization
+  -> full MODEL_CONTEXT access
+  -> terminal usage receipt
 ```
 
 `SkillSourceProjector` accepts a single run only when its latest terminal event
@@ -379,22 +394,42 @@ ArtifactRefs/IDs, and trace references for validation, retries, and failures. It
 does not rank evidence, infer scientific importance, copy artifact
 representations, or reconstruct provider conversations or chain-of-thought.
 
-`SkillCuratorPort` is deliberately an interface only. A future Pantheon/runtime
-LLM may populate the typed `SkillProposal`; production code contains no fallback
-heuristic curator. A proposal is stored as a candidate and cannot become Gold
-without a matching user-owned decision for its approval gate. Skill-use
-proposals use the same explicit gate pattern. A workflow caller may pair these
-gate IDs with the existing deterministic `USER_GATE`; the Skill service never
-mutates workflow state itself.
+The remote curator receives only the explicit safe source view and may populate
+only a strict `SkillCuratorDraft`. It cannot choose IDs, gates, scope, ownership,
+source lineage, or parent/usage lineage. `GoldSkillService` assembles those
+trusted fields and contains no heuristic curator fallback. A proposal cannot
+become Gold without the matching user-owned decision for its exact gate.
 
-`InMemorySkillStore` is a development store. It preserves every `(skill_id,
-version)` record, requires a successful approved ADAPT usage as the source of a
-later version, and leaves the prior version unchanged. PERSONAL and PROJECT
-visibility use exact owner/project filters; LAB visibility is explicit.
-Metadata, tags, artifact types, and bounded text may narrow candidates, but the
-store returns no similarity score, scientific ranking, or REUSE/ADAPT/REFERENCE
-decision. Those modes arrive only in a runtime-provided `SkillUseProposal` and
-require user confirmation by default.
+`LabBioApplication` composes workflow and domain decisions without teaching
+`WorkflowEngine` about Skills. It validates the pending workflow gate and
+domain reference, applies the Skill decision first, and resumes the source stage
+only after domain authorization succeeds. The application also binds nested
+Skill effects to its `AccessService` and single `RunTraceRecorder`, so one run
+has one sequence authority.
+
+`InMemorySkillStore` remains available for fast tests. `SQLiteSkillStore` is the
+durable local implementation: it persists Pydantic JSON transactionally, never
+pickle, and reconstructs bundles, proposals, decisions, immutable Gold
+versions, use authorizations, context accesses, and usage receipts after
+restart. Both stores preserve every `(skill_id, version)` record, require a
+successful approved ADAPT usage as the source of a later version, and leave the
+prior version unchanged.
+
+PERSONAL and PROJECT visibility use exact owner/project filters; LAB visibility
+is explicit. Pre-approval search returns bounded metadata and previews only.
+Full procedure materialization requires an exact approved authorization for the
+current run, user, project, lab, Skill, and version; this creates
+`SkillContextAccess`. Only accessed authorizations receive an idempotent
+terminal `SkillUsageRecord`. Search, proposal, approval, or rejection alone is
+not usage. Skill and Memory capability items remain `MODEL_CONTEXT`; proposal
+items are `CONTROL_STATE`.
+
+Search remains an eligibility operation with stable ordering and no score,
+scientific ranking, automatic selection, or use-mode decision. The current C9
+checkpoint retains a literal-substring free-text filter. Two real familiar-run
+attempts returned no candidate for model-provided query text despite correct
+scope and empty tag/type filters. This provider-facing retrieval ergonomics gap
+blocks C9 acceptance and is not repaired by automatic fallback or routing.
 
 Skill lifecycle trace events carry identifiers, versions, modes, outcomes, and
 approval references only. Full Skill content and raw artifact payloads are not
@@ -488,10 +523,10 @@ observational and fail-loud.
 - no automatic image pull/build or Docker installation/configuration;
 - no arbitrary agent file reader or raw biological data parser;
 - no production approval UI;
-- no real SkillCuratorAgent or scientific Skill extraction;
+- no accepted production SkillCurator deployment or automatic extraction;
 - no embedding similarity, scientific ranking, or automatic use mode;
 - no automatic Gold or lab-wide promotion;
-- no production Skill persistence, authentication, or ACL enforcement;
+- no production Skill database/deployment, authentication, or ACL service;
 - no production Project/Memory database or cross-process transactions;
 - no login, OAuth, SSO, password, token, or identity-provider implementation;
 - no semantic Memory retrieval, embedding, ranking, or automatic writes;

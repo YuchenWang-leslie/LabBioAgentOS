@@ -230,3 +230,50 @@ C1-C8 non-live regression, leak and anti-routing scans, one bounded real
 curator call from preserved accepted real-run evidence, explicit approval and
 SQLite reconstruction, one later familiar-task approved use, and one
 novel/no-match continuation. Pantheon and production deployment remain frozen.
+
+## Implementation and live checkpoint
+
+**Status: infrastructure complete; C9 not accepted.**
+
+The Q1-Q7 changes above are implemented on
+`c9-real-gold-skill-lifecycle`. Deterministic S1-S24 coverage passes, including
+safe projection, mixed information authority, exact gates and authorizations,
+SQLite restart reconstruction, access-before-usage, terminal finalization,
+ADAPT v2 lineage, no-match continuation, C8 capability compatibility, and leak
+checks. The full non-live regression after the shared trace-authority fix is
+300 passed and 8 skipped with the existing Uvicorn warning.
+
+One real curator call projected preserved accepted C7 run
+`56c5e604-049e-4f07-81c5-11e89199ef1a` into source bundle
+`e4a00f52-73f1-4083-bf82-1700b64cf8bf`. After exact external review and
+approval, proposal `485549ae-b38e-40c4-b9fa-f157b51a51e4` became durable
+PERSONAL Gold Skill `fd621ee9-fc08-4ded-96d1-96f3c15638c5` version 1. Reopening
+the SQLite store reconstructs the identical source, proposal, decision, Gold,
+and lineage. No second curator call was made.
+
+The familiar-run acceptance remains blocked by deterministic text-filter
+ergonomics:
+
+1. The first live run completed two searches with no candidate.
+2. An intervening run did discover the exact Gold and persisted runtime-selected
+   REFERENCE proposal `0ab82306-4ecc-4b8d-8d3f-517ad4b329fd`, but exposed an
+   independent shared-trace sequence-owner defect before the workflow gate.
+3. The trace defect was fixed generically. A deterministic composition test and
+   fresh completed run `f6abe187-e7f7-439e-bef8-9ef825143005` prove one shared
+   trace authority: 300 events, sequences 0 through 299, no gap or collision.
+4. That fresh run made two schema-valid searches with correct scope,
+   `required_tag_count=0`, `artifact_type_count=0`, and `include_lab=true`; both
+   returned empty. The only active eligibility filter was model-provided query
+   text. The store currently treats the entire text as one case-insensitive
+   literal substring. Offline reproduction returns the Gold for no query and
+   short literal terms, while a representative multiword natural-language
+   query does not. The exact provider query is intentionally not persisted and
+   is not inferred here.
+
+The two empty-candidate familiar runs are the same recurring blocker, so the
+two-strike stop rule applies. No fourth provider run, automatic browse fallback,
+scientific similarity scorer, prompt-forced query syntax, deterministic Skill
+selection, auto-use, or auto-approval is added. The later run therefore has no
+use gate, context access, or usage receipt. C9 remains unaccepted pending a
+separately authorized generic retrieval-contract decision and subsequent one
+bounded live use validation.

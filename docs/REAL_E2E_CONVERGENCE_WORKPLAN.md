@@ -570,16 +570,46 @@ checkpoint statuses above; it does not create another C7 sub-milestone.
 
 ## C9 — Real Gold Skill lifecycle
 
-**Status:** not started; requires separate authorization.
+**Status:** blocked; not accepted. Generic infrastructure is implemented on
+`c9-real-gold-skill-lifecycle`; C7, C8, Pantheon, and production remain frozen.
 
-- **Objective:** derive a candidate from a successful real run and complete the
-  explicit review, approval, immutable promotion, retrieval, and governed-use
-  lifecycle.
-- **Boundary:** eligibility and lineage are deterministic; scientific
-  similarity and adaptation remain runtime-model judgments, and promotion
-  remains user-controlled.
-- **Acceptance evidence:** one trace-backed versioned candidate, explicit user
-  decision, scoped promoted record, and a fresh later run that uses or rejects
-  it without mutating the source run.
-- **Non-goals:** automatic promotion, silent reuse, vector infrastructure for
-  its own sake, or speculative milestones beyond C9.
+- **Implemented checkpoint:** safe whitelist-only curation, untrusted curator
+  draft/trusted proposal assembly, item-level information authority, durable
+  transactional SQLite lifecycle state, bounded pre-approval candidate views,
+  exact run/user/project/lab/Skill/version use authorization, application-first
+  domain decisions, post-approval context access evidence, and idempotent
+  terminal usage receipts. Gold remains non-executable and optional.
+- **Real creation evidence:** one and only one curator call used preserved
+  accepted C7 run `56c5e604-049e-4f07-81c5-11e89199ef1a`. Source bundle
+  `e4a00f52-73f1-4083-bf82-1700b64cf8bf` produced proposal
+  `485549ae-b38e-40c4-b9fa-f157b51a51e4`; exact external approval promoted
+  PERSONAL Gold `fd621ee9-fc08-4ded-96d1-96f3c15638c5` v1. SQLite restart
+  reconstructs the same immutable lineage.
+- **Accepted generic correction:** an intervening familiar run found the Gold
+  and persisted runtime-selected REFERENCE use proposal
+  `0ab82306-4ecc-4b8d-8d3f-517ad4b329fd`, then exposed separate trace writers
+  assigning the same sequence. `LabBioApplication` now binds the Skill service
+  to its AccessService and RunTraceRecorder. Fresh run
+  `f6abe187-e7f7-439e-bef8-9ef825143005` completed with 300 contiguous events
+  numbered 0-299, proving the collision fixed.
+- **Current blocker / two-strike stop:** both the first and latest familiar live
+  runs produced only empty Skill searches. The latest request-shape audit proves
+  correct scope, two query-text requests, zero tag filters, zero artifact-type
+  filters, LAB inclusion, and successful capability calls. The literal whole-
+  string search contract can exclude the visible Gold for natural multiword
+  queries. No provider query content is persisted or inferred. After the same
+  blocker recurred, no fourth provider run was made.
+- **Verification:** deterministic S1-S24 and full non-live regression pass at
+  300 passed, 8 skipped, plus the existing Uvicorn warning. Deterministic
+  no-match/novel continuation, ADAPT v2 lineage, leak controls, and C8 ownership
+  compatibility pass. The latest real run completed its scientific workflow
+  without Skill use, which proves optionality but not the required approved-use
+  path.
+- **Missing acceptance evidence:** no later live USER_GATE approval, approved
+  full Skill context access, or terminal usage receipt exists. C9 is not frozen
+  or accepted. The unique continuation is a separately authorized generic
+  retrieval-contract decision followed by one bounded familiar-use validation.
+- **Unchanged boundaries:** no scientific router/scorer, prompt-forced query
+  syntax, automatic browse fallback, automatic selection/mode/approval,
+  executable Skill, C7/C8 behavior change, Pantheon change, production
+  deployment, or C10 work.

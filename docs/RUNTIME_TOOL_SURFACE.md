@@ -79,13 +79,15 @@ values reveal host paths.
 
 | Tool | Untrusted model input | Safe result |
 |---|---|---|
-| `skill_search` | explicit text/tags/type filters and bounded limit | eligible candidate IDs/versions and bounded procedural metadata; no score or mode |
-| `skill_view` | skill ID and exact version | authorized immutable procedural view and lineage references |
+| `skill_search` | optional literal text filter, exact tag/type filters, LAB inclusion, and bounded limit | eligible candidate IDs/versions plus bounded applicability/limitation previews; no full procedure, score, or mode |
+| `skill_view` | exact approved authorization ID for the current run | immutable full procedural MODEL_CONTEXT and lineage references; access is durably recorded |
 | `skill_propose_use` | exact ID/version, runtime-chosen `REUSE`/`ADAPT`/`REFERENCE`, reason, deviations | proposal ID and `USER_APPROVAL_REQUIRED` state |
-| `skill_propose_creation` | source bundle ID and typed curator proposal | proposal ID only; optional LEARN capability |
 
 No tool executes a Skill or approves/publishes it. User decisions enter through
-the trusted application/gate boundary, not through a model tool.
+the trusted application/domain-gate boundary before workflow resumption, not
+through a model tool. Search alone, a pending proposal, or approval without a
+full `skill_view` access never creates a usage receipt. Skill capability results
+are `MODEL_CONTEXT`; `skill_propose_use` is `CONTROL_STATE`.
 
 ### Persistent Memory capabilities
 
