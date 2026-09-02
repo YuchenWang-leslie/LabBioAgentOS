@@ -717,6 +717,37 @@ def _application_configuration(tmp_path, service, handlers=()):
     )
 
 
+def test_application_owns_nested_skill_authority_and_trace_sequence(tmp_path):
+    principal, workspace, artifacts, _, store, service, _, _ = _governed(tmp_path)
+    _, _, gold = _create_gold(service, store, principal, artifacts)
+    application = LabBioApplication(_application_configuration(tmp_path, service))
+    assert service.access_service is application.access_service
+    assert service.trace_recorder is application.trace_recorder
+
+    run_id = uuid4()
+    application.trace_recorder.emit(
+        run_id,
+        TraceEventType.CAPABILITY_INVOKED,
+        stage_id=WorkflowStage.PLAN,
+        status="STARTED",
+        payload={"capability": "skill_propose_use"},
+    )
+    proposal = _submit_use(service, principal, workspace, gold, run_id)
+    application.trace_recorder.emit(
+        run_id,
+        TraceEventType.CAPABILITY_COMPLETED,
+        stage_id=WorkflowStage.PLAN,
+        status="COMPLETED",
+        payload={"capability": "skill_propose_use"},
+    )
+    events = application.trace_sink.read(run_id)
+    assert tuple(event.sequence for event in events) == tuple(range(len(events)))
+    assert TraceEventType.SKILL_USE_PROPOSED in {
+        event.event_type for event in events
+    }
+    assert store.get_use_proposal(proposal.proposal_id) == proposal
+
+
 @pytest.mark.asyncio
 async def test_s16_s17_domain_decision_must_succeed_before_source_resume(tmp_path, monkeypatch):
     principal, workspace, artifacts, _, store, service, _, _ = _governed(tmp_path)

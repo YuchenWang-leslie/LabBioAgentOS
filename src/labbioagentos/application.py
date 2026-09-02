@@ -466,6 +466,11 @@ class LabBioApplication:
             configuration.authorization_policy,
             trace_recorder=self.trace_recorder,
         )
+        if configuration.skill_service is not None:
+            configuration.skill_service.bind_runtime_context(
+                access_service=self.access_service,
+                trace_recorder=self.trace_recorder,
+            )
         self.artifact_store = LocalArtifactStore(
             configuration.artifact_root,
             trace_recorder=self.trace_recorder,

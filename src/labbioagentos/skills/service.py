@@ -50,6 +50,21 @@ class GoldSkillService:
         self.access_service = access_service
         self.trace_recorder = trace_recorder
 
+    def bind_runtime_context(
+        self,
+        *,
+        access_service: AccessService,
+        trace_recorder: RunTraceRecorder,
+    ) -> None:
+        """Bind nested Skill effects to one application authority and trace writer."""
+
+        if not isinstance(access_service, AccessService):
+            raise TypeError("access_service must be an AccessService")
+        if not isinstance(trace_recorder, RunTraceRecorder):
+            raise TypeError("trace_recorder must be a RunTraceRecorder")
+        self.access_service = access_service
+        self.trace_recorder = trace_recorder
+
     def create_source_bundle(
         self,
         events: tuple[TraceEvent, ...] | list[TraceEvent],
