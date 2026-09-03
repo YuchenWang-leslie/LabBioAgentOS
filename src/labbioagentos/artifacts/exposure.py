@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from threading import Lock
 from typing import Any
 from uuid import UUID
 
@@ -14,14 +13,17 @@ from labbioagentos.governance import (
     AuthorizationDenied,
     Principal,
 )
+from labbioagentos.model_safety import validate_model_visible_json
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
+from .approvals import ArtifactApprovalStore, InMemoryArtifactApprovalStore
 from .models import (
-    ArtifactApproval,
     ArtifactConsumer,
     ArtifactExposureClass,
     ArtifactProvenance,
     ArtifactQuery,
+    ArtifactReleaseBasis,
+    ArtifactSchema,
     ArtifactView,
     ArtifactViewType,
     ExposureDecision,
@@ -36,24 +38,6 @@ class ArtifactQueryError(ValueError):
 
 class ArtifactExposureDenied(PermissionError):
     """ExposurePolicy denied the requested consumer/view combination."""
-
-
-class InMemoryArtifactApprovalStore:
-    """Minimal LabBio-owned approval registry; it is not an agent capability."""
-
-    def __init__(self):
-        self._records: dict[tuple[UUID, ArtifactConsumer], ArtifactApproval] = {}
-        self._lock = Lock()
-
-    def record(self, approval: ArtifactApproval) -> None:
-        with self._lock:
-            self._records[(approval.artifact_id, approval.consumer)] = approval
-
-    def get(
-        self, artifact_id: UUID, consumer: ArtifactConsumer
-    ) -> ArtifactApproval | None:
-        with self._lock:
-            return self._records.get((artifact_id, consumer))
 
 
 class ExposurePolicy:
@@ -73,11 +57,29 @@ class ExposurePolicy:
         ArtifactExposureClass.DERIVED: frozenset(ArtifactViewType),
         ArtifactExposureClass.USER_APPROVED: frozenset(ArtifactViewType),
     }
+    _REMOTE_RELEASE_BASES = {
+        ArtifactExposureClass.STRUCTURAL: frozenset(
+            {ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR}
+        ),
+        ArtifactExposureClass.AGGREGATE: frozenset(
+            {ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR}
+        ),
+        ArtifactExposureClass.DERIVED: frozenset(
+            {
+                ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
+                ArtifactReleaseBasis.MODEL_AUTHORED_REPORT,
+            }
+        ),
+        ArtifactExposureClass.USER_APPROVED: frozenset(
+            {ArtifactReleaseBasis.USER_APPROVED_RELEASE}
+        ),
+    }
 
     def __init__(
         self,
         *,
-        approval_store: InMemoryArtifactApprovalStore | None = None,
+        approval_store: ArtifactApprovalStore | None = None,
+        user_approved_enabled: bool = False,
         max_top_n: int = 100,
         default_top_n: int = 10,
     ):
@@ -86,6 +88,7 @@ class ExposurePolicy:
         if default_top_n < 1 or default_top_n > max_top_n:
             raise ValueError("default_top_n must be between 1 and max_top_n")
         self.approval_store = approval_store or InMemoryArtifactApprovalStore()
+        self.user_approved_enabled = user_approved_enabled
         self.max_top_n = max_top_n
         self.default_top_n = default_top_n
 
@@ -107,6 +110,13 @@ class ExposurePolicy:
             )
 
         if ref.exposure_class is ArtifactExposureClass.USER_APPROVED:
+            if not self.user_approved_enabled:
+                return self._deny(
+                    ref,
+                    query,
+                    consumer,
+                    "USER_APPROVED model exposure is disabled in this configuration.",
+                )
             approval = self.approval_store.get(ref.artifact_id, consumer)
             if approval is None:
                 return self._deny(
@@ -117,6 +127,16 @@ class ExposurePolicy:
                 )
 
         if consumer is ArtifactConsumer.REMOTE_LLM:
+            release_bases = self._REMOTE_RELEASE_BASES.get(
+                ref.exposure_class, frozenset()
+            )
+            if ref.release_basis not in release_bases:
+                return self._deny(
+                    ref,
+                    query,
+                    consumer,
+                    "Artifact classification has no compatible trusted remote-release basis.",
+                )
             allowed_views = self._REMOTE_VIEWS.get(ref.exposure_class, frozenset())
         elif ref.exposure_class is ArtifactExposureClass.RAW:
             allowed_views = frozenset(
@@ -158,6 +178,101 @@ class ExposurePolicy:
         )
 
 
+class ArtifactModelViewProjector:
+    """Build explicit bounded model views from store-private Artifact state."""
+
+    _MODEL_METADATA_KEYS = frozenset(
+        {
+            "actual_exposure",
+            "contract_valid",
+            "execution_id",
+            "format",
+            "inspection_schema_version",
+            "output_contract_id",
+            "release_authorized",
+            "requested_exposure",
+            "schema_id",
+            "sha256",
+            "size_bytes",
+        }
+    )
+
+    def build(self, ref, representation, query, decision) -> ArtifactView:
+        metadata = {}
+        if query.view_type is ArtifactViewType.METADATA:
+            metadata = {
+                key: value
+                for key, value in ref.metadata.items()
+                if key in self._MODEL_METADATA_KEYS
+            }
+            validate_model_visible_json(metadata, reject_absolute_paths=True)
+
+        schema = None
+        if query.view_type is ArtifactViewType.SCHEMA and ref.artifact_schema is not None:
+            properties = {}
+            if ref.release_basis in {
+                ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR,
+                ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR,
+            }:
+                properties = ref.artifact_schema.properties
+                validate_model_visible_json(properties, reject_absolute_paths=True)
+            keys = sorted(ref.artifact_schema.dtypes)[:128]
+            schema = ArtifactSchema(
+                shape=(
+                    tuple(ref.artifact_schema.shape[:16])
+                    if ref.artifact_schema.shape is not None
+                    else None
+                ),
+                columns=tuple(ref.artifact_schema.columns[:128]),
+                dtypes={key: ref.artifact_schema.dtypes[key][:128] for key in keys},
+                properties=properties,
+            )
+
+        summary = {}
+        if query.view_type is ArtifactViewType.SUMMARY:
+            summary = representation.summary
+            validate_model_visible_json(summary, reject_absolute_paths=True)
+
+        records = ()
+        truncated = False
+        if query.view_type is ArtifactViewType.TOP_N:
+            limit = decision.effective_limit
+            if limit is None:
+                raise ArtifactQueryError("TOP_N policy decision omitted an effective limit")
+            records = representation.records[:limit]
+            validate_model_visible_json(records, reject_absolute_paths=True)
+            truncated = representation.record_count > len(records)
+
+        return ArtifactView(
+            artifact_id=ref.artifact_id,
+            artifact_type=ref.artifact_type,
+            view_type=query.view_type,
+            exposure_class=ref.exposure_class,
+            release_basis=ref.release_basis,
+            metadata=metadata,
+            artifact_schema=schema,
+            columns=schema.columns if schema is not None else (),
+            summary=summary,
+            records=records,
+            returned_count=len(records),
+            available_count=(
+                representation.record_count
+                if query.view_type is ArtifactViewType.TOP_N
+                else 0
+            ),
+            effective_limit=decision.effective_limit,
+            truncated=truncated,
+            provenance=ArtifactProvenance(
+                owner_user_id=ref.owner_user_id,
+                project_id=ref.project_id,
+                lab_id=ref.lab_id,
+                run_id=ref.run_id,
+                stage_id=ref.stage_id,
+                producer_invocation_id=ref.producer_invocation_id,
+            ),
+        )
+
+
 class ArtifactExposureService:
     """The sole agent-facing route from ArtifactRef to ArtifactView."""
 
@@ -168,6 +283,7 @@ class ArtifactExposureService:
         *,
         access_service: AccessService | None = None,
         trace_recorder: RunTraceRecorder | None = None,
+        projector: ArtifactModelViewProjector | None = None,
     ):
         if not isinstance(store, ArtifactStore):
             raise TypeError("store must implement ArtifactStore")
@@ -175,6 +291,7 @@ class ArtifactExposureService:
         self.policy = policy
         self.access_service = access_service
         self.trace_recorder = trace_recorder
+        self.projector = projector or ArtifactModelViewProjector()
 
     def artifact_query(
         self,
@@ -213,7 +330,9 @@ class ArtifactExposureService:
             raise ArtifactExposureDenied(decision.reason)
 
         stored = self.store.load_for_view(identifier)
-        view = self._build_view(stored.ref, stored.representation, validated_query, decision)
+        view = self.projector.build(
+            stored.ref, stored.representation, validated_query, decision
+        )
         self._emit(
             ref,
             TraceEventType.ARTIFACT_EXPOSED,
@@ -228,56 +347,6 @@ class ArtifactExposureService:
             },
         )
         return view
-
-    @staticmethod
-    def _build_view(ref, representation, query, decision) -> ArtifactView:
-        metadata = ref.metadata if query.view_type is ArtifactViewType.METADATA else {}
-        schema = (
-            ref.artifact_schema
-            if query.view_type is ArtifactViewType.SCHEMA
-            else None
-        )
-        columns = schema.columns if schema is not None else ()
-        summary = (
-            representation.summary
-            if query.view_type is ArtifactViewType.SUMMARY
-            else {}
-        )
-        records = ()
-        truncated = False
-        if query.view_type is ArtifactViewType.TOP_N:
-            limit = decision.effective_limit
-            if limit is None:
-                raise ArtifactQueryError("TOP_N policy decision omitted an effective limit")
-            records = representation.records[:limit]
-            truncated = representation.record_count > len(records)
-        return ArtifactView(
-            artifact_id=ref.artifact_id,
-            artifact_type=ref.artifact_type,
-            view_type=query.view_type,
-            exposure_class=ref.exposure_class,
-            metadata=metadata,
-            artifact_schema=schema,
-            columns=columns,
-            summary=summary,
-            records=records,
-            returned_count=len(records),
-            available_count=(
-                representation.record_count
-                if query.view_type is ArtifactViewType.TOP_N
-                else 0
-            ),
-            effective_limit=decision.effective_limit,
-            truncated=truncated,
-            provenance=ArtifactProvenance(
-                owner_user_id=ref.owner_user_id,
-                project_id=ref.project_id,
-                lab_id=ref.lab_id,
-                run_id=ref.run_id,
-                stage_id=ref.stage_id,
-                producer_invocation_id=ref.producer_invocation_id,
-            ),
-        )
 
     def artifact_ref(
         self,

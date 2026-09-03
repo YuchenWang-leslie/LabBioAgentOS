@@ -22,6 +22,7 @@ from pydantic import (
 
 from .artifacts import (
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactRepresentation,
     ArtifactSchema,
 )
@@ -50,6 +51,7 @@ class BioFormatArtifactSpec(BaseModel):
     exposure_class: ArtifactExposureClass
     representation: ArtifactRepresentation
     artifact_schema: ArtifactSchema
+    release_basis: ArtifactReleaseBasis
 
     @model_validator(mode="after")
     def require_safe_inspection_class(self) -> "BioFormatArtifactSpec":
@@ -59,6 +61,18 @@ class BioFormatArtifactSpec(BaseModel):
         }:
             raise ValueError(
                 "Bioformat inspection Artifacts must be STRUCTURAL or AGGREGATE"
+            )
+        expected_basis = {
+            ArtifactExposureClass.STRUCTURAL: (
+                ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR
+            ),
+            ArtifactExposureClass.AGGREGATE: (
+                ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR
+            ),
+        }[self.exposure_class]
+        if self.release_basis is not expected_basis:
+            raise ValueError(
+                "Bioformat Artifact release basis must match its inspection class"
             )
         return self
 
@@ -136,6 +150,7 @@ class H5ADCategoryEnumeration(StrEnum):
     ENUMERATED = "ENUMERATED"
     ENUMERATED_WITH_OVERFLOW = "ENUMERATED_WITH_OVERFLOW"
     HIGH_CARDINALITY_SUPPRESSED = "HIGH_CARDINALITY_SUPPRESSED"
+    POLICY_SUPPRESSED = "POLICY_SUPPRESSED"
 
 
 class H5ADInspectionPolicy(BaseModel):
@@ -155,6 +170,10 @@ class H5ADInspectionPolicy(BaseModel):
     max_source_axis_fields: int = Field(default=256, ge=1)
     max_axis_metadata_cells: int = Field(default=25_000_000, ge=1)
     max_eager_array_bytes: int = Field(default=1_073_741_824, ge=1)
+    enumerated_categorical_fields: frozenset[BoundedName] = Field(
+        default_factory=frozenset,
+        max_length=64,
+    )
 
 
 class H5ADFieldStructure(BaseModel):
@@ -322,6 +341,7 @@ class H5ADInspector:
                 BioFormatArtifactSpec(
                     artifact_type="h5ad-structural",
                     exposure_class=ArtifactExposureClass.STRUCTURAL,
+                    release_basis=ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR,
                     representation=ArtifactRepresentation(),
                     artifact_schema=ArtifactSchema(
                         shape=(
@@ -336,6 +356,7 @@ class H5ADInspector:
                 BioFormatArtifactSpec(
                     artifact_type="h5ad-aggregate",
                     exposure_class=ArtifactExposureClass.AGGREGATE,
+                    release_basis=ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR,
                     representation=ArtifactRepresentation(
                         summary=aggregate.model_dump(mode="json")
                     ),
@@ -549,6 +570,16 @@ class H5ADInspector:
                 missing_count=missing,
                 unique_count=unique,
                 enumeration=H5ADCategoryEnumeration.HIGH_CARDINALITY_SUPPRESSED,
+                overflow_category_count=unique,
+            )
+        if str(column) not in self.policy.enumerated_categorical_fields:
+            return H5ADCategoricalSummary(
+                field_name=self._name(column),
+                dtype=self._dtype(series.dtype),
+                count=count,
+                missing_count=missing,
+                unique_count=unique,
+                enumeration=H5ADCategoryEnumeration.POLICY_SUPPRESSED,
                 overflow_category_count=unique,
             )
 

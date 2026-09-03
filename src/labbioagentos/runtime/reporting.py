@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from labbioagentos.artifacts import (
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactRepresentation,
     ArtifactStore,
 )
@@ -77,6 +78,7 @@ class ReportSubmissionService:
         ref = self.store.register(
             artifact_type="report",
             exposure_class=ArtifactExposureClass.DERIVED,
+            release_basis=ArtifactReleaseBasis.MODEL_AUTHORED_REPORT,
             representation=ArtifactRepresentation(
                 summary={
                     "title": title,

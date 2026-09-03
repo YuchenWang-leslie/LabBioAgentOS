@@ -15,6 +15,7 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import (
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactRef,
     ArtifactRepresentation,
     ArtifactSchema,
@@ -64,6 +65,7 @@ class ArtifactStore(ABC):
         *,
         artifact_type: str,
         exposure_class: ArtifactExposureClass,
+        release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY,
         representation: ArtifactRepresentation,
         owner_user_id: str = "local-user",
         project_id: str = "local-project",
@@ -88,6 +90,7 @@ class ArtifactStore(ABC):
         *,
         artifact_type: str,
         exposure_class: ArtifactExposureClass,
+        release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY,
         representation: ArtifactRepresentation,
         owner_user_id: str = "local-user",
         project_id: str = "local-project",
@@ -136,6 +139,7 @@ class LocalArtifactStore(ArtifactStore):
         *,
         artifact_type: str,
         exposure_class: ArtifactExposureClass,
+        release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY,
         representation: ArtifactRepresentation,
         owner_user_id: str = "local-user",
         project_id: str = "local-project",
@@ -161,6 +165,7 @@ class LocalArtifactStore(ArtifactStore):
             storage_locator=str(path),
             artifact_schema=schema,
             exposure_class=exposure_class,
+            release_basis=release_basis,
             metadata=metadata or {},
         )
         stored = StoredArtifact(ref=ref, representation=representation)
@@ -190,6 +195,7 @@ class LocalArtifactStore(ArtifactStore):
         *,
         artifact_type: str,
         exposure_class: ArtifactExposureClass,
+        release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY,
         representation: ArtifactRepresentation,
         owner_user_id: str = "local-user",
         project_id: str = "local-project",
@@ -227,6 +233,7 @@ class LocalArtifactStore(ArtifactStore):
             storage_locator=str(blob_path),
             artifact_schema=schema,
             exposure_class=exposure_class,
+            release_basis=release_basis,
             metadata=metadata or {},
         )
         stored = StoredArtifact(ref=ref, representation=representation)
@@ -295,6 +302,7 @@ class LocalArtifactStore(ArtifactStore):
                 "artifact_id": str(ref.artifact_id),
                 "artifact_type": ref.artifact_type,
                 "exposure_class": ref.exposure_class.value,
+                "release_basis": ref.release_basis.value,
                 "owner_user_id": ref.owner_user_id,
                 "project_id": ref.project_id,
                 "lab_id": ref.lab_id,

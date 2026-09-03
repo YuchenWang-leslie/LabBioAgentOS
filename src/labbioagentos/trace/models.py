@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
@@ -17,6 +16,7 @@ from pydantic import (
 )
 
 from labbioagentos.contracts import WorkflowStage
+from labbioagentos.model_safety import validate_model_visible_json
 
 
 class TraceEventType(StrEnum):
@@ -101,38 +101,18 @@ class TracePayloadError(ValueError):
     """A trace payload contains a field reserved for raw biological content."""
 
 
-_FORBIDDEN_PAYLOAD_KEYS = {
-    "raw_data",
-    "raw_matrix",
-    "biological_matrix",
-    "expression_matrix",
-    "count_matrix",
-    "dataframe_rows",
-    "file_contents",
-    "h5ad_contents",
-    "fastq_contents",
-    "fastq_data",
-    "bam_contents",
-    "bam_data",
-}
-
-
-def _normalized_key(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-
-
 def _reject_raw_payload_fields(value: JsonValue, path: str = "payload") -> None:
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized = _normalized_key(key)
-            if normalized in _FORBIDDEN_PAYLOAD_KEYS:
-                raise TracePayloadError(
-                    f"Trace payload field {path + '.' + key!r} is reserved for raw data"
-                )
-            _reject_raw_payload_fields(item, f"{path}.{key}")
-    elif isinstance(value, list):
-        for index, item in enumerate(value):
-            _reject_raw_payload_fields(item, f"{path}[{index}]")
+    try:
+        validate_model_visible_json(
+            value,
+            max_string_length=32_000,
+            max_serialized_bytes=256_000,
+            reject_absolute_paths=True,
+        )
+    except ValueError as exc:
+        raise TracePayloadError(
+            "Trace payload field is reserved for raw data or unsafe model content"
+        ) from exc
 
 
 class InstructionRecord(BaseModel):

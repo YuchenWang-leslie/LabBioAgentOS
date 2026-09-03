@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
+from labbioagentos.model_safety import validate_model_visible_json
 
 
 class ArtifactExposureClass(StrEnum):
@@ -29,6 +30,18 @@ class ArtifactExposureClass(StrEnum):
     AGGREGATE = "AGGREGATE"
     DERIVED = "DERIVED"
     USER_APPROVED = "USER_APPROVED"
+
+
+class ArtifactReleaseBasis(StrEnum):
+    """Trusted producer basis for any model-visible non-RAW projection."""
+
+    RAW_INGESTION = "RAW_INGESTION"
+    TRUSTED_STRUCTURAL_INSPECTOR = "TRUSTED_STRUCTURAL_INSPECTOR"
+    TRUSTED_AGGREGATE_INSPECTOR = "TRUSTED_AGGREGATE_INSPECTOR"
+    TRUSTED_EXECUTION_DECLASSIFICATION = "TRUSTED_EXECUTION_DECLASSIFICATION"
+    MODEL_AUTHORED_REPORT = "MODEL_AUTHORED_REPORT"
+    USER_APPROVED_RELEASE = "USER_APPROVED_RELEASE"
+    INTERNAL_ONLY = "INTERNAL_ONLY"
 
 
 class ArtifactConsumer(StrEnum):
@@ -123,6 +136,7 @@ class ArtifactRef(BaseModel):
         serialization_alias="schema",
     )
     exposure_class: ArtifactExposureClass
+    release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -202,6 +216,7 @@ class ArtifactView(BaseModel):
     artifact_type: StrictStr = Field(min_length=1)
     view_type: ArtifactViewType
     exposure_class: ArtifactExposureClass
+    release_basis: ArtifactReleaseBasis
     authority: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
         InformationAuthority.AUTHORITATIVE_EVIDENCE
     )
@@ -220,6 +235,33 @@ class ArtifactView(BaseModel):
     truncated: bool = False
     provenance: ArtifactProvenance
 
+    @field_validator("metadata", "summary")
+    @classmethod
+    def require_safe_mapping_projection(
+        cls, value: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]:
+        validate_model_visible_json(value, reject_absolute_paths=True)
+        return value
+
+    @field_validator("records")
+    @classmethod
+    def require_safe_record_projection(
+        cls, value: tuple[dict[str, JsonValue], ...]
+    ) -> tuple[dict[str, JsonValue], ...]:
+        validate_model_visible_json(value, reject_absolute_paths=True)
+        return value
+
+    @field_validator("artifact_schema")
+    @classmethod
+    def require_safe_schema_projection(
+        cls, value: ArtifactSchema | None
+    ) -> ArtifactSchema | None:
+        if value is not None:
+            validate_model_visible_json(
+                value.model_dump(mode="json"), reject_absolute_paths=True
+            )
+        return value
+
     @model_validator(mode="after")
     def validate_collection_completeness(self) -> "ArtifactView":
         if self.returned_count != len(self.records):
@@ -236,6 +278,11 @@ class ArtifactView(BaseModel):
                 raise ValueError("TOP_N view exceeds its effective_limit")
         elif self.effective_limit is not None:
             raise ValueError("effective_limit is only valid for TOP_N views")
+        validate_model_visible_json(
+            self.model_dump(mode="json"),
+            max_serialized_bytes=128_000,
+            reject_absolute_paths=True,
+        )
         return self
 
 

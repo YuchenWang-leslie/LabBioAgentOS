@@ -152,6 +152,7 @@ class ArtifactListItem(BaseModel):
     artifact_id: UUID
     artifact_type: StrictStr
     exposure_class: StrictStr
+    release_basis: StrictStr
     schema_: "ArtifactSchemaView | None" = Field(default=None, serialization_alias="schema")
     available_views: tuple[StrictStr, ...] = ()
     owner_user_id: StrictStr
@@ -762,6 +763,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     artifact_id=ref.artifact_id,
                     artifact_type=ref.artifact_type,
                     exposure_class=ref.exposure_class.value,
+                    release_basis=ref.release_basis.value,
                     schema_=ArtifactSchemaView.from_schema(ref.artifact_schema),
                     available_views=tuple(views),
                     owner_user_id=ref.owner_user_id,

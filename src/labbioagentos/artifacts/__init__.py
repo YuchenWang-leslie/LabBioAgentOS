@@ -1,17 +1,25 @@
 """Artifact storage and controlled exposure public surface."""
 
+from .approvals import (
+    ArtifactApprovalStore,
+    ArtifactApprovalStoreError,
+    InMemoryArtifactApprovalStore,
+    SQLiteArtifactApprovalStore,
+)
+
 from .exposure import (
+    ArtifactModelViewProjector,
     ArtifactExposureDenied,
     ArtifactExposureService,
     ArtifactQueryError,
     ExposurePolicy,
-    InMemoryArtifactApprovalStore,
     PantheonArtifactQueryAdapter,
 )
 from .models import (
     ArtifactApproval,
     ArtifactConsumer,
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactProvenance,
     ArtifactQuery,
     ArtifactRef,
@@ -31,10 +39,14 @@ from .store import (
 
 __all__ = [
     "ArtifactApproval",
+    "ArtifactApprovalStore",
+    "ArtifactApprovalStoreError",
     "ArtifactConsumer",
     "ArtifactExposureClass",
     "ArtifactExposureDenied",
     "ArtifactExposureService",
+    "ArtifactModelViewProjector",
+    "ArtifactReleaseBasis",
     "ArtifactIdentifierError",
     "ArtifactNotFoundError",
     "ArtifactProvenance",
@@ -50,6 +62,7 @@ __all__ = [
     "ExposureDecision",
     "ExposurePolicy",
     "InMemoryArtifactApprovalStore",
+    "SQLiteArtifactApprovalStore",
     "LocalArtifactStore",
     "PantheonArtifactQueryAdapter",
 ]
