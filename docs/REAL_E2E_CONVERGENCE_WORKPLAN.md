@@ -635,3 +635,41 @@ Pantheon, and production remain frozen; C10 has not started.
   syntax, automatic browse fallback, automatic selection/mode/approval,
   executable Skill, C7/C8 behavior change, Pantheon change, production
   deployment, or C10 work.
+
+## C10 — Durable control plane and restart-safe recovery
+
+**Status:** accepted on the isolated `c10-durable-control-plane` branch. C9 and
+Pantheon remain frozen; C11 and C12 have not started.
+
+- **Authority split:** `RunStateStore` is now authoritative durable control
+  state; RunTrace remains append-only observation and cannot change workflow
+  state. `ApplicationRunRecord` persists bounded request scope/Artifact IDs,
+  safe references, the WorkflowRun snapshot, prior typed runtime results,
+  host-owned runtime revision, in-flight markers, timestamps, and optimistic
+  record version. No runtime object, path, storage locator, credential, or
+  pickle is persisted.
+- **Persistence and reconstruction:** both locked in-memory and transactional
+  stdlib SQLite stores implement create/get/versioned update/list. A new
+  application explicitly reauthorizes the current Principal/Workspace/Project,
+  reconstructs Artifact references by UUID, creates a new coordinator, and
+  attaches a validated snapshot to a new WorkflowEngine. Runtime revision drift
+  and missing required Artifacts block explicitly.
+- **Replay barrier:** the application persists `STAGE_IN_FLIGHT` before one
+  runtime invocation and `GATE_DECISION_IN_FLIGHT` before one domain decision.
+  It clears the marker only after the existing LabBio-owned mutation reaches a
+  durable stable boundary. An uncertain marker is never automatically replayed
+  and never becomes a workflow retry; operator reconciliation is required.
+- **Recovery coverage:** D1-D24 pass, including exact WAITING gate recovery, a
+  real C9 SQLite Skill-use approval after application reconstruction, stable
+  RUNNING prior-result/retry continuity, synthetic EXECUTE counter remaining
+  exactly one, non-reapplied gate decisions, three terminal states, JSONL N+1
+  continuity, and proof that recovery alone makes no model call.
+- **Verification:** implementation commits
+  `abb83ca96cf6b443be907c5b764b70265e815706` and
+  `3fb2f3a7022f2b266d7b2f2228c87f229a4c2093` pass the full non-live regression:
+  `330 passed, 9 skipped`, plus the one pre-existing Uvicorn warning. No live
+  provider call was needed or made.
+- **Bounded limitations:** there is no distributed transaction across SQLite,
+  JSONL, Artifact files, Docker, and the provider; no multi-process claim/lock,
+  HA failover, automatic uncertain-effect reconciliation, or runtime migration.
+  These are explicit future concerns, not hidden fallbacks.

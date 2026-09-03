@@ -99,15 +99,30 @@ The in-memory stores, local resolver, synthetic Principal inputs, and
 local-development WorkflowRun identity defaults do not decide production
 authentication, persistence, transactions, or ACL administration.
 
-## Deferred beyond Phase 8
+## RESOLVED-007 — C10 durable application control state
+
+C10 establishes `RunStateStore`, rather than RunTrace, as authoritative durable
+application control state. SQLite stores strict data-only `ApplicationRunRecord`
+JSON with optimistic version conflicts. `WorkflowEngine` remains the sole owner
+of lifecycle semantics and explicitly validates/owns a recovered snapshot.
+
+Recovery is explicit and reauthorizes the current Principal/Workspace/Project
+scope, reconstructs required Artifact references by UUID, and requires the
+host-owned runtime revision to match. Stable boundaries may resume. A runtime
+stage or domain gate decision recorded in flight is never automatically
+replayed; it reports operator reconciliation required. This intentionally does
+not promise a transaction across SQLite, trace, Artifact files, Docker, and the
+provider.
+
+## Deferred beyond C10
 
 The following are intentionally deferred to their roadmap phases and must not
-be invented now: EventBus, durable/cross-process trace delivery, workflow and
-artifact production persistence, production image registry and scheduler,
+be invented now: EventBus, multi-process trace writers, production-grade
+workflow and artifact persistence, production image registry and scheduler,
 deployment-specific Docker identities/limits, trusted producer authorization,
 exposure approval UX, production Project/Artifact/Memory/Gold persistence,
-cross-process transactions, identity provider/authentication, ACL administration,
-real curator implementation, semantic Memory retrieval, candidate-retrieval
+multi-process claims, distributed transactions, identity provider/authentication,
+ACL administration, real curator implementation, semantic Memory retrieval, candidate-retrieval
 backend, and bioinformatics agent roster. Scientific Skill
 similarity and adaptation remain runtime-LLM/user decisions rather than an
-unresolved deterministic policy. None is needed to complete Phase 8.
+unresolved deterministic policy. None is needed to complete C10.

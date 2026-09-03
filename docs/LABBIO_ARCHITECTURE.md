@@ -3,7 +3,7 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through accepted, frozen C9. Phase 1 adds typed stage contracts and a
+preserved through accepted, frozen C10. Phase 1 adds typed stage contracts and a
 composition adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
@@ -56,6 +56,69 @@ Execution / artifact plane
 
 Cross-cutting: RunTrace/EventBus and user/project/lab scope
 ```
+
+## C10 durable control-plane boundary
+
+`RunStateStore` is the authority for restart-safe application control state.
+`RunTrace` remains append-only observational evidence and is never interpreted
+to choose or reconstruct a `WorkflowRun` state. The local durable implementation
+uses stdlib SQLite, transactional Pydantic JSON, and optimistic record versions;
+the in-memory implementation exists for deterministic tests. Neither claims
+distributed writer coordination.
+
+`ApplicationRunRecord` contains only bounded data needed to reconstruct a run:
+the trusted request scope and Artifact IDs, safe domain references, the
+`WorkflowRun` snapshot, prior typed runtime results, host-owned runtime revision,
+recovery marker, timestamps, and record version. Pantheon agents/teams, provider
+clients, tool sets, coordinators, executors, access services, callbacks,
+plugins, open handles, credentials, filesystem paths, and Artifact storage
+locators are not serialized. Pickle is not used.
+
+The durable recovery states are:
+
+- `STABLE`: explicit reconstruction is permitted after current authorization,
+  Artifact, workflow, and runtime-revision validation;
+- `STAGE_IN_FLIGHT`: a provider/tool/execution effect may have escaped, so the
+  stage is not automatically replayed;
+- `GATE_DECISION_IN_FLIGHT`: a domain authorization may have persisted, so the
+  decision is not automatically reapplied.
+
+`LabBioApplication.recover_run()` requires the current trusted `Principal` and
+`WorkspaceContext`. Their user/project/lab identity must exactly match the
+record, current project access is rechecked, and every required input/context
+Artifact is reloaded and reauthorized by UUID. Safe runtime references are then
+reconstructed without a storage locator. A run UUID alone grants no access.
+
+The host must supply `ApplicationRuntimeConfiguration.runtime_revision`. The
+same value is stored at run creation; mismatch on recovery produces an explicit
+`RUNTIME_REVISION_MISMATCH` and prevents continuation. The value is a stable
+host-owned contract identifier, not a hash of secrets, paths, callbacks, or
+object representations. Hosts must change it when the effective workflow,
+profile, capability, or runtime contract changes incompatibly.
+
+`WorkflowEngine.attach_recovered_run()` validates workflow identity, uniqueness,
+stage membership, status/current-stage/pending-gate consistency, retry/result
+stages, and contiguous history before taking ownership. It emits no transition
+and performs no runtime call. `RuntimeCoordinatorService` reconstructs its prior
+typed-result context as data; the coordinator itself is always new.
+
+Checkpoint order is deliberately explicit:
+
+1. Create and persist a stable run.
+2. Persist the exact stage/invocation as `STAGE_IN_FLIGHT`.
+3. Invoke the runtime and apply the existing LabBio-owned workflow mutation.
+4. Persist the new workflow/result snapshot and clear the marker to `STABLE`.
+5. Before a gate decision, persist `GATE_DECISION_IN_FLIGHT`.
+6. Apply the existing domain handler and normal WorkflowEngine resume.
+7. Persist the resumed snapshot and clear the marker to `STABLE`.
+
+SQLite state, JSONL trace, Artifact files, Docker, and provider calls have no
+shared transaction. A failure after an in-flight marker therefore returns a
+bounded operator-recovery condition. Recovery does not replay an operation,
+increment/reset workflow retry counts, infer a scientific action, or claim
+exactly-once external effects. Stable CREATED, RUNNING, WAITING_FOR_USER, and
+terminal snapshots can be reconstructed explicitly; terminal `run()` calls do
+not rerun stages, and existing Skill usage finalization remains idempotent.
 
 ## Ownership boundaries
 
@@ -528,7 +591,7 @@ version, and status only. They exclude Memory content, proposal reason,
 collaborator lists, artifact representations, and secrets. Tracing remains
 observational and fail-loud.
 
-## Out of scope after Phase 8
+## Out of scope after C10
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
