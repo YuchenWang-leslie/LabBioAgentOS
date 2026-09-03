@@ -166,7 +166,7 @@ proved two generic runtime gaps and now requires this exact linear revision:
 ```text
 upstream baseline  5d3d459ac5752ed9d39432232d76ad1581296012
 idle convergence   ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44
-required revision  45ef598f8d79bd98e9befc7c549980b731476662
+required revision  02ba577abd41d8b180a0dbb79fd057d2ca15ae42
 ```
 
 The user-controlled integration remote is
@@ -197,12 +197,12 @@ Pantheon.
 development environment, `pantheon-agents 0.6.4` is an editable install from the
 local Pantheon checkout, which is why it contains the required commits. A clean
 environment resolving only the public version range can install vanilla 0.6.4
-at upstream baseline `5d3d459a`; that is insufficient for current C7 runtime
+at upstream baseline `5d3d459a`; that is insufficient for current runtime
 acceptance even though the package version is identical.
 
 The smallest reproducible development pin is
 `constraints/pantheon-runtime.txt`, which binds the same distribution name to
-the fork commit `45ef598f8d79bd98e9befc7c549980b731476662`. Use it as a pip
+the fork commit `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. Use it as a pip
 constraint when creating the LabBio development/acceptance environment. The
 public project dependency is intentionally not replaced by a permanent private
 fork dependency; removal of the constraint requires an official upstream

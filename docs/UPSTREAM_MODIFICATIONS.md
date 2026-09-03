@@ -1,6 +1,6 @@
 # PantheonOS Upstream Modifications
 
-## Current C7 runtime revision
+## Current LabBio runtime revision
 
 The earlier Phase 1-8 conclusion below is historical. C7 produced two generic
 Pantheon runtime defects that could not be repaired faithfully in a LabBio
@@ -10,32 +10,39 @@ adapter, prompt, or monkey patch. The required source identities are:
 |---|---|
 | Pantheon upstream 0.6.4 baseline | `5d3d459ac5752ed9d39432232d76ad1581296012` |
 | Reasoning-only idle convergence patch | `ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44` |
-| Required LabBio Pantheon revision | `45ef598f8d79bd98e9befc7c549980b731476662` |
+| Primitive schema-constraint patch | `45ef598f8d79bd98e9befc7c549980b731476662` |
+| Nested provider-schema fidelity patch | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42` |
+| Required LabBio Pantheon revision | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42` |
 
-The two required patch commits form one linear history:
+The three required patch commits form one linear history:
 
 ```text
 5d3d459ac5752ed9d39432232d76ad1581296012
   -> ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44
   -> 45ef598f8d79bd98e9befc7c549980b731476662
+  -> 02ba577abd41d8b180a0dbb79fd057d2ca15ae42
 ```
 
 `ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
 loop. `45ef598f` preserves supported primitive constraints in provider-visible
 tool JSON Schema and restores standard `typing` annotations across funcdesc
-JSON serialization. Neither patch selects scientific methods, routes a LabBio
+JSON serialization. `02ba577a` resolves postponed annotations before schema
+generation, carries nested Pydantic schemas across the descriptor transport,
+and inlines local references with bounded cycle handling. None of the patches
+selects scientific methods, routes a LabBio
 stage, repairs model output, or contains a provider/PBMC special case.
 
 The integration source is the user-controlled fork
 `https://github.com/YuchenWang-leslie/PantheonOS`, branch
-`labbio-runtime-0.6.4`. It remains traceable to upstream
+`labbio-runtime-c12-schema`. The earlier focused branches remain available. The
+fork remains traceable to upstream
 `https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
 part of an official Pantheon release. Do not copy their source into LabBio or
 monkey-patch Pantheon at LabBio import time.
 
 LabBio's public package declaration remains `pantheon-agents>=0.6.4,<0.7` so a
 future official compatible release can replace the fork deliberately. That
-range alone currently resolves vanilla 0.6.4 and is insufficient for C7
+range alone currently resolves vanilla 0.6.4 and is insufficient for current
 runtime acceptance. For a reproducible development or acceptance environment,
 install with the repository-owned constraint:
 
@@ -75,7 +82,7 @@ and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension ->
-adapter/plugin/provider/subclass -> PantheonOS. The two current generic patches
+adapter/plugin/provider/subclass -> PantheonOS. The three current generic patches
 above are the documented exceptions. The following is a deliberately small
 conditional watchlist, not a request to edit additional files now.
 
