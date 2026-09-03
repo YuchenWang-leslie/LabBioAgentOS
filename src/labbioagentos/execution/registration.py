@@ -29,13 +29,21 @@ from .models import (
     ExecutionIssue,
     ExecutionPlan,
     OutputArtifactSpec,
+    OutputContractFailureCode,
     OutputDeclassificationMode,
     StructuredOutputContract,
 )
 
 
+class _OutputContractValidationError(ValueError):
+    def __init__(self, code: OutputContractFailureCode):
+        super().__init__(code.value)
+        self.code = code
+
+
 def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"Non-finite JSON number {value!r} is not allowed")
+    del value
+    raise _OutputContractValidationError(OutputContractFailureCode.INVALID_DOCUMENT)
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,7 @@ class ArtifactRegistrationDecision:
     release_authorized: bool
     reason: str
     representation: ArtifactRepresentation
+    failure_code: OutputContractFailureCode | None = None
     artifact_schema: ArtifactSchema | None = None
     schema_id: str | None = None
     release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
@@ -93,12 +102,16 @@ class ArtifactRegistrationPolicy:
         spec: OutputArtifactSpec,
         path: Path,
     ) -> ArtifactRegistrationDecision:
-        raw = self._raw_decision(
-            spec,
-            "Unstructured execution outputs default to RAW.",
-        )
         if spec.requested_exposure is not ArtifactExposureClass.DERIVED:
-            return raw
+            return self._raw_decision(
+                spec,
+                "Only DERIVED exposure can be evaluated by an approved output contract.",
+                failure_code=(
+                    OutputContractFailureCode.REQUESTED_EXPOSURE_UNSUPPORTED
+                    if spec.output_contract_id is not None
+                    else None
+                ),
+            )
         if spec.output_contract_id is None:
             return self._raw_decision(
                 spec,
@@ -110,14 +123,32 @@ class ArtifactRegistrationPolicy:
             return self._raw_decision(
                 spec,
                 "Requested output contract is not approved.",
+                failure_code=OutputContractFailureCode.CONTRACT_NOT_APPROVED,
             )
         try:
             document = self._load_and_validate(path, contract)
-        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        except _OutputContractValidationError as exc:
             return self._raw_decision(
                 spec,
-                f"Structured output contract validation failed: {type(exc).__name__}.",
+                f"Structured output contract validation failed: {exc.code.value}.",
                 contract_valid=False,
+                failure_code=exc.code,
+                schema_id=contract.schema_id,
+            )
+        except OSError:
+            return self._raw_decision(
+                spec,
+                "Structured output contract validation failed: INVALID_DOCUMENT.",
+                contract_valid=False,
+                failure_code=OutputContractFailureCode.INVALID_DOCUMENT,
+                schema_id=contract.schema_id,
+            )
+        except UnicodeError:
+            return self._raw_decision(
+                spec,
+                "Structured output contract validation failed: INVALID_DOCUMENT.",
+                contract_valid=False,
+                failure_code=OutputContractFailureCode.INVALID_DOCUMENT,
                 schema_id=contract.schema_id,
             )
 
@@ -181,35 +212,62 @@ class ArtifactRegistrationPolicy:
         contract: StructuredOutputContract,
     ) -> dict[str, Any]:
         if path.stat().st_size > contract.max_file_bytes:
-            raise ValueError("Structured output exceeds contract byte limit")
-        document = json.loads(
-            path.read_text(encoding="utf-8"),
-            parse_constant=_reject_json_constant,
-        )
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.FILE_TOO_LARGE
+            )
+        try:
+            document = json.loads(
+                path.read_text(encoding="utf-8"),
+                parse_constant=_reject_json_constant,
+            )
+        except json.JSONDecodeError as exc:
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.INVALID_DOCUMENT
+            ) from exc
         if not isinstance(document, dict) or set(document) != {"schema_id", "records"}:
-            raise ValueError(
-                "Structured output must contain exactly schema_id and records"
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.INVALID_DOCUMENT
             )
         if document["schema_id"] != contract.schema_id:
-            raise ValueError("Structured output schema_id does not match contract")
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.INVALID_DOCUMENT
+            )
         records = document["records"]
-        if not isinstance(records, list) or len(records) > contract.max_records:
-            raise ValueError("Structured output record count exceeds contract")
+        if not isinstance(records, list):
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.INVALID_DOCUMENT
+            )
+        if len(records) > contract.max_records:
+            raise _OutputContractValidationError(
+                OutputContractFailureCode.RECORD_LIMIT_EXCEEDED
+            )
         for record in records:
             if not isinstance(record, dict):
-                raise ValueError("Structured output records must be objects")
+                raise _OutputContractValidationError(
+                    OutputContractFailureCode.INVALID_DOCUMENT
+                )
             fields = set(record)
             if not contract.required_fields.issubset(fields):
-                raise ValueError("Structured output record is missing required fields")
+                raise _OutputContractValidationError(
+                    OutputContractFailureCode.INVALID_DOCUMENT
+                )
             if not fields.issubset(contract.allowed_fields):
-                raise ValueError("Structured output record has undeclared fields")
+                raise _OutputContractValidationError(
+                    OutputContractFailureCode.INVALID_DOCUMENT
+                )
             for value in record.values():
                 if isinstance(value, (dict, list)):
-                    raise ValueError("Nested structured output values are not allowed")
+                    raise _OutputContractValidationError(
+                        OutputContractFailureCode.INVALID_DOCUMENT
+                    )
                 if not isinstance(value, (str, int, float, bool, type(None))):
-                    raise ValueError("Structured output values must be JSON scalars")
+                    raise _OutputContractValidationError(
+                        OutputContractFailureCode.INVALID_DOCUMENT
+                    )
                 if isinstance(value, str) and len(value) > contract.max_scalar_string_length:
-                    raise ValueError("Structured output string exceeds contract limit")
+                    raise _OutputContractValidationError(
+                        OutputContractFailureCode.INVALID_DOCUMENT
+                    )
         return document
 
     @staticmethod
@@ -218,6 +276,7 @@ class ArtifactRegistrationPolicy:
         reason: str,
         *,
         contract_valid: bool = False,
+        failure_code: OutputContractFailureCode | None = None,
         schema_id: str | None = None,
     ) -> ArtifactRegistrationDecision:
         return ArtifactRegistrationDecision(
@@ -227,6 +286,7 @@ class ArtifactRegistrationPolicy:
             release_authorized=False,
             reason=reason,
             representation=ArtifactRepresentation(),
+            failure_code=failure_code,
             schema_id=schema_id,
         )
 
@@ -297,6 +357,8 @@ class OutputCollector:
             }
             if spec.output_contract_id is not None:
                 metadata["output_contract_id"] = spec.output_contract_id
+            if decision.failure_code is not None:
+                metadata["output_contract_failure_code"] = decision.failure_code.value
             if decision.schema_id is not None:
                 metadata["schema_id"] = decision.schema_id
             try:
@@ -324,6 +386,7 @@ class OutputCollector:
             if spec.output_contract_id is not None and not decision.contract_valid:
                 issue = ExecutionIssue(
                     error_class=ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                    detail_code=decision.failure_code,
                     output_path=spec.relative_path,
                     message=decision.reason,
                 )
@@ -340,6 +403,11 @@ class OutputCollector:
                     "actual_exposure": ref.exposure_class.value,
                     "contract_valid": decision.contract_valid,
                     "release_authorized": decision.release_authorized,
+                    "output_contract_failure_code": (
+                        decision.failure_code.value
+                        if decision.failure_code is not None
+                        else None
+                    ),
                 },
             )
         return tuple(collected)

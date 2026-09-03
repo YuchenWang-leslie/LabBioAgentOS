@@ -50,6 +50,16 @@ class ExecutionFailureClass(StrEnum):
     ARTIFACT_REGISTRATION_FAILURE = "ARTIFACT_REGISTRATION_FAILURE"
 
 
+class OutputContractFailureCode(StrEnum):
+    """Safe structural reason why a declared output contract was not satisfied."""
+
+    CONTRACT_NOT_APPROVED = "CONTRACT_NOT_APPROVED"
+    REQUESTED_EXPOSURE_UNSUPPORTED = "REQUESTED_EXPOSURE_UNSUPPORTED"
+    FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    RECORD_LIMIT_EXCEEDED = "RECORD_LIMIT_EXCEEDED"
+    INVALID_DOCUMENT = "INVALID_DOCUMENT"
+
+
 class OutputDeclassificationMode(StrEnum):
     """Trusted release behavior associated with one approved shape contract."""
 
@@ -75,11 +85,22 @@ class OutputArtifactSpec(BaseModel):
 
     relative_path: StrictStr = Field(min_length=1, max_length=240)
     artifact_type: StrictStr = Field(min_length=1, max_length=128)
-    requested_exposure: ArtifactExposureClass = ArtifactExposureClass.RAW
+    requested_exposure: ArtifactExposureClass = Field(
+        default=ArtifactExposureClass.RAW,
+        description=(
+            "Requested classification only; use DERIVED when asking an approved "
+            "output_contract_id to validate and release bounded records. Other "
+            "classifications are never rewritten to DERIVED."
+        ),
+    )
     output_contract_id: StrictStr | None = Field(
         default=None,
         min_length=1,
         max_length=128,
+        description=(
+            "Approved contract ID from execution_capability; it is evaluated only "
+            "when requested_exposure is DERIVED."
+        ),
     )
 
     @field_validator("relative_path")
@@ -192,6 +213,7 @@ class ExecutionIssue(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     error_class: ExecutionFailureClass
+    detail_code: OutputContractFailureCode | None = None
     message: StrictStr = Field(min_length=1, max_length=2000)
     output_path: StrictStr | None = Field(default=None, min_length=1)
 
@@ -243,6 +265,7 @@ class ExecutionReceipt(BaseModel):
     stdout_artifact_id: UUID | None = None
     stderr_artifact_id: UUID | None = None
     issue_codes: tuple[ExecutionFailureClass, ...] = ()
+    issue_detail_codes: tuple[OutputContractFailureCode, ...] = ()
     issue_messages: tuple[StrictStr, ...] = Field(default=(), max_length=32)
     retryable: bool = False
 
@@ -254,6 +277,11 @@ class ExecutionReceipt(BaseModel):
             ExecutionFailureClass.NON_ZERO_EXIT,
         }
         codes = tuple(issue.error_class for issue in result.issues)
+        detail_codes = tuple(
+            issue.detail_code
+            for issue in result.issues
+            if issue.detail_code is not None
+        )
         if result.error_class is not None and result.error_class not in codes:
             codes = (*codes, result.error_class)
         # Internal messages can contain host paths or process details. The model
@@ -280,6 +308,7 @@ class ExecutionReceipt(BaseModel):
                 result.stderr_ref.artifact_id if result.stderr_ref else None
             ),
             issue_codes=codes,
+            issue_detail_codes=detail_codes,
             issue_messages=messages,
             retryable=any(code in retryable_classes for code in codes),
         )

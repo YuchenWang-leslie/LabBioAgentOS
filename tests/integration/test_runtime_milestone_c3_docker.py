@@ -350,6 +350,7 @@ print("C3 infrastructure execution completed")
         "stdout_artifact_id",
         "stderr_artifact_id",
         "issue_codes",
+        "issue_detail_codes",
         "issue_messages",
         "retryable",
     }

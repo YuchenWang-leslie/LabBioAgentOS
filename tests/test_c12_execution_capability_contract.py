@@ -188,6 +188,9 @@ async def test_le5_requested_outputs_nested_contract_is_visible(execution_bounda
         "requested_exposure",
         "output_contract_id",
     }
+    properties = field["items"]["properties"]
+    assert "use DERIVED" in properties["requested_exposure"]["description"]
+    assert "evaluated only" in properties["output_contract_id"]["description"]
 
 
 @pytest.mark.asyncio

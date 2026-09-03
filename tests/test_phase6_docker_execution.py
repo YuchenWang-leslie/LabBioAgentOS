@@ -30,6 +30,7 @@ from labbioagentos import (
     ExecutionPlan,
     ExecutionPlanRejected,
     ExecutionPolicy,
+    ExecutionReceipt,
     ExecutionRuntime,
     ExecutionStatus,
     ExecutionWorkspaceManager,
@@ -40,6 +41,7 @@ from labbioagentos import (
     MountResolutionError,
     MountResolver,
     OutputArtifactSpec,
+    OutputContractFailureCode,
     OutputDeclassificationMode,
     OutputCollector,
     ProcessOutcome,
@@ -517,6 +519,145 @@ def test_invalid_declared_contract_registers_raw_and_fails_structurally(tmp_path
     assert result.error_class is ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
     assert result.output_artifact_refs[0].exposure_class is ArtifactExposureClass.RAW
     assert result.issues[0].error_class is ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
+    assert result.issues[0].detail_code is OutputContractFailureCode.INVALID_DOCUMENT
+
+
+def test_output_contract_failure_projects_a_safe_specific_detail_code(tmp_path):
+    contract = StructuredOutputContract(
+        contract_id="bounded-v1",
+        schema_id="bounded.v1",
+        allowed_fields=frozenset({"name"}),
+        required_fields=frozenset({"name"}),
+        max_file_bytes=128,
+    )
+
+    def write_oversized_output(root):
+        (root / "oversized.json").write_text(
+            json.dumps(
+                {
+                    "schema_id": "bounded.v1",
+                    "records": [{"name": "x" * 256}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(output_writer=write_oversized_output),
+        contracts=(contract,),
+    )
+    result = executor.execute(
+        _plan(
+            requested_outputs=(
+                OutputArtifactSpec(
+                    relative_path="oversized.json",
+                    artifact_type="oversized-output",
+                    requested_exposure=ArtifactExposureClass.DERIVED,
+                    output_contract_id=contract.contract_id,
+                ),
+            )
+        )
+    )
+    receipt = ExecutionReceipt.from_result(result)
+
+    assert result.issues[0].detail_code is OutputContractFailureCode.FILE_TOO_LARGE
+    assert receipt.issue_detail_codes == (OutputContractFailureCode.FILE_TOO_LARGE,)
+    encoded = receipt.model_dump_json()
+    assert "x" * 64 not in encoded
+    assert "oversized.json" not in encoded
+
+
+def test_output_contract_does_not_rewrite_an_unsupported_exposure_request(tmp_path):
+    contract = StructuredOutputContract(
+        contract_id="derived-only-v1",
+        schema_id="derived-only.v1",
+        allowed_fields=frozenset({"name"}),
+        required_fields=frozenset({"name"}),
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
+    )
+
+    def write_valid_shape(root):
+        (root / "aggregate.json").write_text(
+            json.dumps(
+                {
+                    "schema_id": "derived-only.v1",
+                    "records": [{"name": "bounded"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(output_writer=write_valid_shape),
+        contracts=(contract,),
+    )
+    result = executor.execute(
+        _plan(
+            requested_outputs=(
+                OutputArtifactSpec(
+                    relative_path="aggregate.json",
+                    artifact_type="aggregate-output",
+                    requested_exposure=ArtifactExposureClass.AGGREGATE,
+                    output_contract_id=contract.contract_id,
+                ),
+            )
+        )
+    )
+    receipt = ExecutionReceipt.from_result(result)
+
+    assert result.status is ExecutionStatus.FAILED
+    assert result.output_artifact_refs[0].exposure_class is ArtifactExposureClass.RAW
+    assert receipt.issue_detail_codes == (
+        OutputContractFailureCode.REQUESTED_EXPOSURE_UNSUPPORTED,
+    )
+
+
+def test_output_contract_reports_record_limit_without_exposing_records(tmp_path):
+    contract = StructuredOutputContract(
+        contract_id="one-record-v1",
+        schema_id="one-record.v1",
+        allowed_fields=frozenset({"name"}),
+        required_fields=frozenset({"name"}),
+        max_records=1,
+    )
+
+    def write_two_records(root):
+        (root / "two.json").write_text(
+            json.dumps(
+                {
+                    "schema_id": "one-record.v1",
+                    "records": [{"name": "first"}, {"name": "second"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(output_writer=write_two_records),
+        contracts=(contract,),
+    )
+    result = executor.execute(
+        _plan(
+            requested_outputs=(
+                OutputArtifactSpec(
+                    relative_path="two.json",
+                    artifact_type="two-record-output",
+                    requested_exposure=ArtifactExposureClass.DERIVED,
+                    output_contract_id=contract.contract_id,
+                ),
+            )
+        )
+    )
+    receipt = ExecutionReceipt.from_result(result)
+
+    assert receipt.issue_detail_codes == (
+        OutputContractFailureCode.RECORD_LIMIT_EXCEEDED,
+    )
+    assert "first" not in receipt.model_dump_json()
+    assert "second" not in receipt.model_dump_json()
 
 
 def test_output_symlink_escape_is_rejected(tmp_path):

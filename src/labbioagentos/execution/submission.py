@@ -107,6 +107,9 @@ class ExecutionSubmissionService:
                 "execution_id": str(receipt.execution_id),
                 "output_artifact_ids": [str(item) for item in receipt.output_artifact_ids],
                 "issue_codes": [item.value for item in receipt.issue_codes],
+                "issue_detail_codes": [
+                    item.value for item in receipt.issue_detail_codes
+                ],
             },
         )
         return receipt
