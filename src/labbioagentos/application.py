@@ -38,6 +38,8 @@ from .bioformats import (
 )
 from .contracts import (
     GateUserDecision,
+    NextAction,
+    NextActionProposal,
     PendingUserGate,
     RunStatus,
     WorkflowDefinition,
@@ -52,6 +54,7 @@ from .execution import (
     DockerExecutor,
     DockerProcessRunner,
     ExecutionPolicy,
+    ExecutionPreflightError,
     ExecutionPreflightRequest,
     ExecutionPreflightService,
     ExecutionRuntime,
@@ -85,6 +88,7 @@ from .run_state import (
 from .runtime import (
     PantheonRuntimeFactory,
     PerInvocationPantheonStageInvoker,
+    PreflightStageBody,
     ReportSubmissionService,
     RuntimeCapabilityServices,
     RuntimeEvidenceReference,
@@ -95,6 +99,7 @@ from .runtime import (
     RuntimeReference,
     RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
+    RuntimeStageResult,
     StageRuntimeRegistry,
     StageRuntimeSpec,
 )
@@ -119,6 +124,9 @@ class ApplicationRunNotFoundError(LookupError):
 
 class ApplicationRunStateError(RuntimeError):
     """The requested application lifecycle operation is invalid for the run."""
+
+
+_EXECUTION_PREFLIGHT_FAILURE_CODE = "EXECUTION_PREFLIGHT_FAILED"
 
 
 class ApplicationRecoveryIssueCode(StrEnum):
@@ -1042,7 +1050,7 @@ class LabBioApplication:
                 raise ApplicationRunStateError(
                     "A running application run has no current stage"
                 )
-            body = self._stage_body(session, stage)
+            body = self._stage_body(session)
             invocation_id = uuid4()
             self._checkpoint(
                 session,
@@ -1051,20 +1059,30 @@ class LabBioApplication:
                 inflight_invocation_id=invocation_id,
                 inflight_operation=RunInflightOperation.RUNTIME_STAGE,
             )
-            await session.coordinator.run_current_stage(
-                run,
-                instruction=(
-                    session.request.task_text
-                    + f"\nOperate only within the current {stage.value} stage "
-                    "and its typed contract."
-                ),
-                artifact_references=self._authoritative_evidence_references(
-                    session,
-                    stage=stage,
-                ),
-                body=body,
-                invocation_id=invocation_id,
-            )
+            if (
+                stage is WorkflowStage.PREFLIGHT
+                and self.configuration.execution_profile is not None
+            ):
+                session.coordinator.accept_trusted_stage_result(
+                    run,
+                    self._configured_preflight_result(session),
+                    invocation_id,
+                )
+            else:
+                await session.coordinator.run_current_stage(
+                    run,
+                    instruction=(
+                        session.request.task_text
+                        + f"\nOperate only within the current {stage.value} stage "
+                        "and its typed contract."
+                    ),
+                    artifact_references=self._authoritative_evidence_references(
+                        session,
+                        stage=stage,
+                    ),
+                    body=body,
+                    invocation_id=invocation_id,
+                )
             self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
             invocations += 1
         if self.configuration.skill_service is not None:
@@ -1166,7 +1184,11 @@ class LabBioApplication:
             and ref.artifact_type != "report"
         )
         issue_codes = {
-            RunStatus.FAILED: ("RUN_FAILED",),
+            RunStatus.FAILED: (
+                (_EXECUTION_PREFLIGHT_FAILURE_CODE,)
+                if run.failure_reason == _EXECUTION_PREFLIGHT_FAILURE_CODE
+                else ("RUN_FAILED",)
+            ),
             RunStatus.WAITING_FOR_USER: ("USER_INPUT_REQUIRED",),
             RunStatus.CANCELLED: ("RUN_CANCELLED",),
         }.get(run.status, ())
@@ -1203,14 +1225,23 @@ class LabBioApplication:
     def _stage_body(
         self,
         session: _ApplicationRunSession,
-        stage: WorkflowStage,
     ) -> RuntimeInputBody | None:
+        """Build bounded presentation input without performing side effects."""
+
         context = session.request.safe_domain_references
-        if stage is not WorkflowStage.PREFLIGHT:
-            return RuntimeInputBody(user_assertion_references=context) if context else None
+        return RuntimeInputBody(user_assertion_references=context) if context else None
+
+    def _configured_preflight_result(
+        self,
+        session: _ApplicationRunSession,
+    ) -> RuntimeStageResult:
+        """Return one host-owned structural PREFLIGHT result."""
+
         profile = self.configuration.execution_profile
-        if profile is None:
-            return RuntimeInputBody(user_assertion_references=context) if context else None
+        if profile is None:  # pragma: no cover - caller binds the trusted branch
+            raise ApplicationRunStateError(
+                "Configured preflight requires an execution profile"
+            )
         requirements = tuple(
             PreflightInputRequirement(
                 artifact_id=artifact_id,
@@ -1220,23 +1251,40 @@ class LabBioApplication:
             )
             for artifact_id in session.request.input_artifact_ids
         )
-        receipt = self.execution_preflight.require_ready(
-            ExecutionPreflightRequest(
-                runtime=profile.runtime,
-                image_key=profile.image_key,
-                input_requirements=requirements,
-                resources=profile.resources,
-                network_required=profile.network_required,
-                output_contract_ids=profile.output_contract_ids,
-            ),
-            principal=session.request.principal,
-            workspace=session.request.workspace,
-            run_id=session.run.run_id,
-        )
-        return RuntimeInputBody(
-            user_assertion_references=context,
-            control_state_notes=(
-                "Deterministic preflight receipt: " + receipt.model_dump_json(),
+        try:
+            self.execution_preflight.require_ready(
+                ExecutionPreflightRequest(
+                    runtime=profile.runtime,
+                    image_key=profile.image_key,
+                    input_requirements=requirements,
+                    resources=profile.resources,
+                    network_required=profile.network_required,
+                    output_contract_ids=profile.output_contract_ids,
+                ),
+                principal=session.request.principal,
+                workspace=session.request.workspace,
+                run_id=session.run.run_id,
+            )
+        except ExecutionPreflightError:
+            return RuntimeStageResult(
+                stage_id=WorkflowStage.PREFLIGHT,
+                summary="Deterministic execution preflight failed.",
+                body=PreflightStageBody(
+                    structurally_valid=False,
+                    issues=(_EXECUTION_PREFLIGHT_FAILURE_CODE,),
+                ),
+                next_action=NextActionProposal(
+                    action=NextAction.FAIL,
+                    reason=_EXECUTION_PREFLIGHT_FAILURE_CODE,
+                ),
+            )
+        return RuntimeStageResult(
+            stage_id=WorkflowStage.PREFLIGHT,
+            summary="Deterministic execution preflight completed.",
+            body=PreflightStageBody(structurally_valid=True),
+            next_action=NextActionProposal(
+                action=NextAction.TRANSITION,
+                target_stage=WorkflowStage.EXECUTE,
             ),
         )
 

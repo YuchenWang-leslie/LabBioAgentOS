@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from labbioagentos import (
     AgentProfile,
+    ApplicationExecutionProfile,
     ApplicationInputError,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
@@ -21,8 +22,12 @@ from labbioagentos import (
     ArtifactSchema,
     ArtifactViewType,
     AuthorizationDenied,
+    ApprovedImage,
     CapabilityProfile,
     ExecuteStageBody,
+    ExecutionPolicy,
+    ExecutionRuntime,
+    InMemoryRunStateStore,
     IntakeStageBody,
     InterpretStageBody,
     LabBioApplication,
@@ -39,7 +44,9 @@ from labbioagentos import (
     ProviderConfigRef,
     ReportStageBody,
     ResponseSchemaRef,
+    RunRecoveryState,
     RunStatus,
+    RuntimeCoordinatorService,
     RuntimeProfileCatalog,
     RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
@@ -47,6 +54,7 @@ from labbioagentos import (
     UnderstandStageBody,
     ValidateStageBody,
     WorkflowStage,
+    WorkflowEngine,
     WorkspaceContext,
     project_run_trace,
 )
@@ -107,9 +115,17 @@ def _catalog() -> RuntimeProfileCatalog:
     )
 
 
-def _configuration(tmp_path) -> ApplicationRuntimeConfiguration:
+def _configuration(
+    tmp_path,
+    *,
+    execution_profile=None,
+    approved_images=(),
+    execution_policy=None,
+    run_state_store=None,
+    process_runner=None,
+) -> ApplicationRuntimeConfiguration:
     input_root = tmp_path / "inputs"
-    input_root.mkdir()
+    input_root.mkdir(exist_ok=True)
     return ApplicationRuntimeConfiguration(
         artifact_root=tmp_path / "artifacts",
         execution_workspace_root=tmp_path / "executions",
@@ -122,6 +138,11 @@ def _configuration(tmp_path) -> ApplicationRuntimeConfiguration:
                 owner_user_id="user-c5",
             ),
         ),
+        approved_images=approved_images,
+        execution_policy=execution_policy or ExecutionPolicy(),
+        execution_profile=execution_profile,
+        run_state_store=run_state_store,
+        process_runner=process_runner,
         profile_catalog=_catalog(),
         stage_assemblies=tuple(
             RuntimeStageAssemblySpec(
@@ -357,3 +378,291 @@ def test_request_and_ingestion_keep_paths_and_raw_content_outside_model_contract
                 ),
             )
         )
+
+
+_PREFLIGHT_IMAGE_KEY = "python-c12-preflight"
+_PREFLIGHT_IMAGE_ID = "sha256:" + "1" * 64
+_PREFLIGHT_FAILURE_CODE = "EXECUTION_PREFLIGHT_FAILED"
+
+
+def _configured_preflight(tmp_path, **overrides):
+    network_required = overrides.pop("network_required", False)
+    return _configuration(
+        tmp_path,
+        execution_profile=ApplicationExecutionProfile(
+            runtime=ExecutionRuntime.PYTHON,
+            image_key=_PREFLIGHT_IMAGE_KEY,
+            network_required=network_required,
+        ),
+        approved_images=(
+            ApprovedImage(
+                key=_PREFLIGHT_IMAGE_KEY,
+                reference=_PREFLIGHT_IMAGE_ID,
+                runtime=ExecutionRuntime.PYTHON,
+                network_allowed=network_required,
+            ),
+        ),
+        execution_policy=ExecutionPolicy(allow_network=network_required),
+        **overrides,
+    )
+
+
+def _next_result(stage):
+    index = MAIN_PATH.index(stage)
+    action = (
+        NextActionProposal(action=NextAction.FINISH)
+        if stage is WorkflowStage.LEARN
+        else NextActionProposal(
+            action=NextAction.TRANSITION,
+            target_stage=MAIN_PATH[index + 1],
+        )
+    )
+    return RuntimeStageResult(
+        stage_id=stage,
+        summary=f"Model completed {stage.value}.",
+        body=_body(stage),
+        next_action=action,
+    )
+
+
+class _SimulatedProcessLoss(BaseException):
+    pass
+
+
+class _StopAfterCheckpointStore:
+    def __init__(self, delegate, predicate):
+        self.delegate = delegate
+        self.predicate = predicate
+        self.stopped = False
+
+    def create(self, record):
+        return self.delegate.create(record)
+
+    def get(self, run_id):
+        return self.delegate.get(run_id)
+
+    def update(self, record, *, expected_version):
+        saved = self.delegate.update(record, expected_version=expected_version)
+        if not self.stopped and self.predicate(saved):
+            self.stopped = True
+            raise _SimulatedProcessLoss
+        return saved
+
+    def list(self):
+        return self.delegate.list()
+
+
+class _NoDockerRunner:
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, _argv, *, timeout_seconds):
+        self.calls += 1
+        raise AssertionError(f"Docker must not run (timeout={timeout_seconds})")
+
+
+@pytest.mark.asyncio
+async def test_pf1_pf2_pf3_pf4_pf5_pf9_pf11_host_preflight_and_recovery(
+    tmp_path, monkeypatch
+):
+    provider_calls = []
+
+    async def invoke(_self, stage_input):
+        provider_calls.append(stage_input.stage_id)
+        return _next_result(stage_input.stage_id)
+
+    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    accepted = []
+    original_accept = RuntimeCoordinatorService.accept_trusted_stage_result
+
+    def accept(self, run, result, invocation_id):
+        accepted.append(result.stage_id)
+        return original_accept(self, run, result, invocation_id)
+
+    monkeypatch.setattr(
+        RuntimeCoordinatorService,
+        "accept_trusted_stage_result",
+        accept,
+    )
+    applied = []
+    original_apply = WorkflowEngine.apply_proposal
+
+    def apply(self, run, proposal):
+        applied.append((run.current_stage, proposal))
+        return original_apply(self, run, proposal)
+
+    monkeypatch.setattr(WorkflowEngine, "apply_proposal", apply)
+    durable = InMemoryRunStateStore()
+    stopping = _StopAfterCheckpointStore(
+        durable,
+        lambda record: (
+            record.recovery_state is RunRecoveryState.STABLE
+            and record.workflow_run.status is RunStatus.RUNNING
+            and record.workflow_run.current_stage is WorkflowStage.EXECUTE
+        ),
+    )
+    first = LabBioApplication(
+        _configured_preflight(tmp_path, run_state_store=stopping)
+    )
+    request = ApplicationRunRequest(
+        task_text="Exercise one host-owned configured preflight decision.",
+        principal=Principal(user_id="user-c5", lab_id="lab-c5"),
+        workspace=WorkspaceContext(
+            user_id="user-c5", project_id="project-c5", lab_id="lab-c5"
+        ),
+    )
+    handle = first.create_run(request)
+
+    with pytest.raises(_SimulatedProcessLoss):
+        await first.run(handle)
+    before = durable.get(handle.run_id)
+    trusted = next(
+        item
+        for item in before.runtime_results
+        if item.stage_id is WorkflowStage.PREFLIGHT
+    )
+    assert trusted.summary == "Deterministic execution preflight completed."
+    assert trusted.body == PreflightStageBody(structurally_valid=True)
+    assert trusted.references == ()
+    assert trusted.next_action == NextActionProposal(
+        action=NextAction.TRANSITION,
+        target_stage=WorkflowStage.EXECUTE,
+    )
+    workflow_preflight = [
+        item
+        for item in before.workflow_run.stage_results
+        if item.stage is WorkflowStage.PREFLIGHT
+    ]
+    assert len(workflow_preflight) == 1
+    assert workflow_preflight[0].payload["runtime_result_id"] == str(
+        trusted.result_id
+    )
+
+    second = LabBioApplication(
+        _configured_preflight(tmp_path, run_state_store=durable)
+    )
+    second.recover_run(
+        handle.run_id,
+        principal=request.principal,
+        workspace=request.workspace,
+    )
+    outcome = await second.run(handle)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert provider_calls == [
+        stage for stage in MAIN_PATH if stage is not WorkflowStage.PREFLIGHT
+    ]
+    assert accepted == list(MAIN_PATH)
+    assert [stage for stage, _proposal in applied].count(
+        WorkflowStage.PREFLIGHT
+    ) == 1
+    after = durable.get(handle.run_id)
+    recovered = [
+        item
+        for item in after.runtime_results
+        if item.stage_id is WorkflowStage.PREFLIGHT
+    ]
+    assert len(recovered) == 1
+    assert recovered[0].result_id == trusted.result_id
+
+
+@pytest.mark.asyncio
+async def test_pf6_pf7_pf8_host_preflight_failure_is_bounded_and_stable(
+    tmp_path, monkeypatch
+):
+    provider_calls = []
+
+    async def invoke(_self, stage_input):
+        provider_calls.append(stage_input.stage_id)
+        return _next_result(stage_input.stage_id)
+
+    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    runner = _NoDockerRunner()
+    store = InMemoryRunStateStore()
+    application = LabBioApplication(
+        _configured_preflight(
+            tmp_path,
+            network_required=True,
+            run_state_store=store,
+            process_runner=runner,
+        )
+    )
+    source = tmp_path / "inputs" / "input.txt"
+    source.write_text("bounded input", encoding="utf-8")
+    principal = Principal(user_id="user-c5", lab_id="lab-c5")
+    workspace = WorkspaceContext(
+        user_id="user-c5", project_id="project-c5", lab_id="lab-c5"
+    )
+    raw = application.register_input_file(
+        source,
+        principal=principal,
+        workspace=workspace,
+        artifact_type="generic-input",
+    )
+    handle = application.create_run(
+        ApplicationRunRequest(
+            task_text="Reject network access for one governed local input.",
+            principal=principal,
+            workspace=workspace,
+            input_artifact_ids=(raw.artifact_id,),
+        )
+    )
+
+    outcome = await application.run(handle)
+
+    assert outcome.status is RunStatus.FAILED
+    assert outcome.issue_codes == (_PREFLIGHT_FAILURE_CODE,)
+    assert provider_calls == list(MAIN_PATH[:3])
+    assert runner.calls == 0
+    durable = store.get(handle.run_id)
+    assert durable.recovery_state is RunRecoveryState.STABLE
+    assert durable.workflow_run.failure_reason == _PREFLIGHT_FAILURE_CODE
+    failed = durable.runtime_results[-1]
+    assert failed.body == PreflightStageBody(
+        structurally_valid=False,
+        issues=(_PREFLIGHT_FAILURE_CODE,),
+    )
+    assert failed.next_action == NextActionProposal(
+        action=NextAction.FAIL,
+        reason=_PREFLIGHT_FAILURE_CODE,
+    )
+    trace = json.dumps(
+        [item.model_dump(mode="json") for item in application.trace_events(handle)]
+    )
+    assert "Network is prohibited when local input Artifacts are mounted" not in trace
+
+
+@pytest.mark.asyncio
+async def test_pf10_no_execution_profile_preserves_runtime_preflight(
+    tmp_path, monkeypatch
+):
+    provider_calls = []
+
+    async def invoke(_self, stage_input):
+        provider_calls.append(stage_input.stage_id)
+        return _next_result(stage_input.stage_id)
+
+    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    application = LabBioApplication(_configuration(tmp_path))
+    handle = application.create_run(
+        ApplicationRunRequest(
+            task_text="Preserve the generic runtime preflight path.",
+            principal=Principal(user_id="user-c5", lab_id="lab-c5"),
+            workspace=WorkspaceContext(
+                user_id="user-c5", project_id="project-c5", lab_id="lab-c5"
+            ),
+        )
+    )
+
+    outcome = await application.run(handle)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert provider_calls == list(MAIN_PATH)
+    preflight = next(
+        item
+        for item in application._sessions[handle.run_id].coordinator.results(
+            handle.run_id
+        )
+        if item.stage_id is WorkflowStage.PREFLIGHT
+    )
+    assert preflight.summary == "Model completed PREFLIGHT."

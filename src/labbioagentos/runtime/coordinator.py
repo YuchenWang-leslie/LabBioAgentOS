@@ -168,7 +168,27 @@ class RuntimeCoordinatorService:
             raw_result = await invoke_method(stage_input)
         else:
             raw_result = await spec.invoker(stage_input)  # type: ignore[operator]
-        result = self._validate_result(raw_result, stage_input.stage_id)
+        return self.accept_trusted_stage_result(
+            run,
+            raw_result,
+            stage_input.invocation_id,
+        )
+
+    def accept_trusted_stage_result(
+        self,
+        run: WorkflowRun,
+        raw_result: RuntimeStageResult | Mapping[str, Any],
+        invocation_id: UUID,
+    ) -> RuntimeStageResult:
+        """Validate, safely record, and apply one trusted stage result."""
+
+        if run.status is not RunStatus.RUNNING or run.current_stage is None:
+            raise InvalidRunStateError(
+                "Trusted stage result requires a running run with a current stage"
+            )
+        stage = run.current_stage
+        self.registry.get(stage)
+        result = self._validate_result(raw_result, stage)
         # Validate before recording so an illegal proposal cannot partially
         # update workflow results or trace. No action is inferred or applied.
         self.engine.validate_proposal(run, result.next_action)
@@ -178,7 +198,7 @@ class RuntimeCoordinatorService:
             summary=result.summary,
             payload={
                 "runtime_result_id": str(result.result_id),
-                "invocation_id": str(stage_input.invocation_id),
+                "invocation_id": str(invocation_id),
                 "body_kind": result.body.kind,
                 "reference_ids": [
                     reference.reference_id for reference in result.references

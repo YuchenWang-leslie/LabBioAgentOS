@@ -503,6 +503,14 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
     assert outcome.final_stage is WorkflowStage.LEARN
     assert stage_path in {MAIN_PATH, retry_path}
     assert tuple(item.stage_id for item in results) == stage_path
+    provider_stage_path = tuple(
+        WorkflowStage(json.loads(payload)["stage_id"])
+        for kind, payload in boundaries
+        if kind == "stage_input"
+    )
+    assert provider_stage_path == tuple(
+        stage for stage in stage_path if stage is not WorkflowStage.PREFLIGHT
+    )
 
     execution_items = []
     for kind, payload in boundaries:
@@ -613,6 +621,9 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
             {
                 "run_id": str(handle.run_id),
                 "stage_path": [stage.value for stage in stage_path],
+                "provider_stage_path": [
+                    stage.value for stage in provider_stage_path
+                ],
                 "execution_submit_invocation_count": len(execution_items),
                 "successful_execution_submit_count": len(successful_executions),
                 "execution_ids": execution_ids,
