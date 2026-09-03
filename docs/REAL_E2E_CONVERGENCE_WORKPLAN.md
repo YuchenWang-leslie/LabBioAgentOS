@@ -801,3 +801,46 @@ self-acceptance gates. No production deployment was performed.
   AND FROZEN`. This does not turn the unsuccessful PBMC evaluation into a
   success claim. No further numbered architecture milestone, API, CLI, UI, or
   deployment is authorized by this closeout.
+
+## Post-C12 generic execution-contract follow-up
+
+This is corrective follow-up on branch `fix/generic-execution-tool-contract`,
+not a new milestone and not a reopening of C12 scientific self-evaluation.
+
+- Generic provider/runtime gaps were reproduced and corrected without PBMC
+  routing, method, parameter, program, or conclusion logic: flattened bounded
+  execution tool inputs are assembled into one canonical
+  `ExecutionPlanDraft`; canonical numeric strings use normal bounded model
+  conversion while arbitrary strings still fail; execution input IDs and
+  control state are projected; Docker timeout cleanup removes only the exact
+  governed container; scientific library thread variables follow requested
+  CPU; output-contract failures expose only bounded detail codes; and an
+  explicit current-stage retry target has the same public meaning as an omitted
+  retry target. Accepted commits are `6650f6f`, `a782297`, `e9b9bd7`,
+  `90161f4`, and `9b62e1f`.
+- Pantheon remains external and is required at
+  `e2db6289a3daa0b42814c2ab02ad12c038e4428f`; its focused additions preserve
+  canonical parsed tool-call arguments and omit empty reasoning-only replay.
+- Fresh PBMC run `795906c2-bf04-4955-bad4-debd5c81654f`, retained under
+  `.local/c12-pbmc-external-evaluation/83bb359f-1536-4266-af2b-53af35fca7b7`,
+  completed one real offline Docker invocation. Execution
+  `0f7e5aeb-2719-45c7-b3e6-f8e7970a0d2b` succeeded in about 37 seconds and
+  released DERIVED Artifact `ccb09a65-3d8f-43ac-8178-6a52581a9dc1` with 122
+  bounded records. Model-visible and stage-result graph validation passed, and
+  no host path, credential, script, stdout/stderr path, or private-key marker
+  appeared. The Agent's EXECUTE finalizer nevertheless proposed `finish` even
+  though current control allowed transition only to VALIDATE, so no REPORT was
+  produced.
+- Commit `89e7b46` closes that control/schema mismatch by deriving the
+  provider-visible action union and transition/retry target enums from current
+  `RuntimeWorkflowControlView`. It does not rewrite an invalid action, infer a
+  transition, change retry limits, or alter the independent WorkflowEngine
+  validator. Full regression is `435 passed, 12 skipped` with the existing
+  Uvicorn warning; the opt-in real-Docker hostile suite also passes.
+- The next fresh run under
+  `.local/c12-pbmc-external-evaluation/b59aef51-7370-436b-96b1-6f46c2fbfb04`
+  accepted the constrained finalization schemas through PREFLIGHT, then
+  produced repeated EXECUTE provider turns without a tool call or new
+  persistent evidence. It was interrupted under the two-strike rule before any
+  Docker invocation. This leaves a complete fresh PBMC report lifecycle
+  unproven, while preserving the successful real sandbox result above.
