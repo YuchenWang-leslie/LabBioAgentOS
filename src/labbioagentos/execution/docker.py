@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
+import re
 import subprocess
 import time
 from abc import ABC, abstractmethod
@@ -65,6 +67,9 @@ class DockerProcessRunner(ABC):
 class SubprocessDockerRunner(DockerProcessRunner):
     """Production-shaped local runner with a host-enforced timeout."""
 
+    _CONTAINER_NAME = re.compile(r"labbio-[0-9a-f]{32}")
+    _CLEANUP_TIMEOUT_SECONDS = 30.0
+
     def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
         started = time.monotonic()
         try:
@@ -77,6 +82,7 @@ class SubprocessDockerRunner(DockerProcessRunner):
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
+            self._remove_timed_out_container(argv)
             return ProcessOutcome(
                 exit_code=None,
                 stdout=self._as_bytes(exc.stdout),
@@ -92,6 +98,39 @@ class SubprocessDockerRunner(DockerProcessRunner):
             stderr=completed.stderr,
             duration_seconds=time.monotonic() - started,
         )
+
+    @classmethod
+    def _remove_timed_out_container(cls, argv: tuple[str, ...]) -> None:
+        try:
+            name_index = argv.index("--name")
+            container_name = argv[name_index + 1]
+        except (ValueError, IndexError) as exc:
+            raise ContainerStartError(
+                "Timed-out Docker invocation has no governed container name"
+            ) from exc
+        if len(argv) < 2 or argv[1] != "run" or cls._CONTAINER_NAME.fullmatch(
+            container_name
+        ) is None:
+            raise ContainerStartError(
+                "Timed-out Docker invocation has an invalid governed container name"
+            )
+        try:
+            cleanup = subprocess.run(
+                [argv[0], "rm", "--force", container_name],
+                shell=False,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=cls._CLEANUP_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ContainerStartError(
+                "Timed-out Docker container could not be removed"
+            ) from exc
+        if cleanup.returncode != 0:
+            raise ContainerStartError(
+                "Timed-out Docker container could not be removed"
+            )
 
     @staticmethod
     def _as_bytes(value: bytes | str | None) -> bytes:
@@ -129,6 +168,7 @@ class DockerCommandBuilder:
         input_mounts: tuple[ResolvedMount, ...],
     ) -> tuple[str, ...]:
         network = "bridge" if plan.network_required else "none"
+        numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
         argv = [
             self.docker_binary,
             "run",
@@ -166,6 +206,14 @@ class DockerCommandBuilder:
             f"LABBIO_OUTPUT_DIR={self.OUTPUT_TARGET}",
             "--env",
             "LABBIO_INPUT_DIR=/labbio/inputs",
+            "--env",
+            f"OMP_NUM_THREADS={numeric_thread_limit}",
+            "--env",
+            f"OPENBLAS_NUM_THREADS={numeric_thread_limit}",
+            "--env",
+            f"MKL_NUM_THREADS={numeric_thread_limit}",
+            "--env",
+            f"NUMEXPR_NUM_THREADS={numeric_thread_limit}",
             "--mount",
             self._mount(workspace.script_path, self.SCRIPT_TARGET, read_only=True),
             "--mount",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
 from uuid import uuid4
 
 import pytest
@@ -45,6 +46,7 @@ from labbioagentos import (
     RequestedResources,
     RunTraceRecorder,
     StructuredOutputContract,
+    SubprocessDockerRunner,
     TraceEventType,
     WorkflowStage,
 )
@@ -285,6 +287,10 @@ def test_docker_command_is_deterministic_argument_list_with_security_defaults(tm
     assert command[command.index("--cpus") + 1] == "1.5"
     assert command[command.index("--memory") + 1] == "256m"
     assert command[command.index("--pids-limit") + 1] == "64"
+    assert "OMP_NUM_THREADS=2" in command
+    assert "OPENBLAS_NUM_THREADS=2" in command
+    assert "MKL_NUM_THREADS=2" in command
+    assert "NUMEXPR_NUM_THREADS=2" in command
     input_mount = next(
         item for item in command if f"{input_ref.artifact_id}" in item
     )
@@ -311,6 +317,54 @@ def test_docker_command_is_deterministic_argument_list_with_security_defaults(tm
     assert json.loads(manifest_source.read_text(encoding="utf-8")) == {
         str(input_ref.artifact_id): input_target,
     }
+
+
+def test_subprocess_timeout_forces_removal_of_the_exact_named_container(monkeypatch):
+    execution_id = uuid4()
+    container_name = f"labbio-{execution_id.hex}"
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        if argv[1] == "run":
+            raise subprocess.TimeoutExpired(
+                cmd=argv,
+                timeout=kwargs["timeout"],
+                output=b"bounded stdout",
+                stderr=b"bounded stderr",
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    outcome = SubprocessDockerRunner().run(
+        ("docker", "run", "--rm", "--name", container_name, "image"),
+        timeout_seconds=0.25,
+    )
+
+    assert outcome.timed_out is True
+    assert outcome.stdout == b"bounded stdout"
+    assert outcome.stderr == b"bounded stderr"
+    assert calls[1][0] == ("docker", "rm", "--force", container_name)
+    assert calls[1][1]["shell"] is False
+
+
+def test_subprocess_timeout_never_cleans_an_untrusted_container_name(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(tuple(argv))
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ContainerStartError, match="invalid governed container name"):
+        SubprocessDockerRunner().run(
+            ("docker", "run", "--name", "not-labbio", "image"),
+            timeout_seconds=0.25,
+        )
+
+    assert calls == [("docker", "run", "--name", "not-labbio", "image")]
 
 
 def test_script_and_streams_are_hashed_internal_refs_not_result_content(tmp_path):
