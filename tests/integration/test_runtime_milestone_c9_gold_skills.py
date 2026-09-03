@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import anndata as ad
 import numpy as np
@@ -22,6 +22,7 @@ from labbioagentos import (
     ApplicationExecutionProfile,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    ArtifactExposureService,
     AuthorizationPolicy,
     CapabilityProfile,
     GateUserDecision,
@@ -29,6 +30,7 @@ from labbioagentos import (
     InMemoryProjectStore,
     JsonlTraceSink,
     LabBioApplication,
+    LabBioRuntimeToolSet,
     LocalArtifactStore,
     PantheonRuntimeFactory,
     PantheonSkillCurator,
@@ -36,13 +38,18 @@ from labbioagentos import (
     Project,
     RunStatus,
     RunTraceRecorder,
+    RuntimeCapabilityContext,
+    RuntimeCapabilityServices,
     RuntimeProfileCatalog,
     SQLiteSkillStore,
     SkillCuratorDraft,
     SkillDomainDecisionHandler,
+    SkillProcedure,
+    SkillProposal,
     SkillProposalContext,
     SkillScope,
     SkillSearchContext,
+    SkillSourceBundle,
     SkillSourceProjector,
     SkillUserDecision,
     TraceEvent,
@@ -50,6 +57,7 @@ from labbioagentos import (
     WorkflowStage,
     WorkspaceContext,
 )
+from labbioagentos.artifacts import ExposurePolicy
 
 
 pytestmark = pytest.mark.skipif(
@@ -220,6 +228,359 @@ def _approval(label: str, *exact_values: object) -> None:
     supplied = input(f"C9_{label}_DECISION> ").strip()
     if supplied != expected:
         pytest.fail(f"{label} was not approved with the exact displayed identities")
+
+
+def _seed_retrieval_smoke_gold(
+    store: SQLiteSkillStore,
+    *,
+    principal: Principal,
+    name: str,
+    description: str,
+    applicability: str,
+    limitations: tuple[str, ...],
+    tags: frozenset[str],
+    artifact_types: frozenset[str],
+    input_contract_ids: tuple[str, ...],
+    output_contract_ids: tuple[str, ...],
+):
+    source_run_id = uuid4()
+    bundle = SkillSourceBundle(
+        source_run_id=source_run_id,
+        final_status=RunStatus.COMPLETED,
+        workflow_stage_path=(WorkflowStage.PLAN,),
+        trace_event_ids=(uuid4(),),
+    )
+    store.save_source_bundle(bundle)
+    proposal = SkillProposal(
+        source_bundle_id=bundle.bundle_id,
+        source_run_id=source_run_id,
+        proposed_name=name,
+        description=description,
+        scope=SkillScope.PERSONAL,
+        owner_user_id=principal.user_id,
+        lab_id=principal.lab_id,
+        procedure=SkillProcedure(
+            applicability=applicability,
+            workflow_outline=(
+                "Inspect current governed inputs before choosing current-task actions.",
+                "Perform fresh task-specific work and validate current outputs.",
+            ),
+            input_contract_ids=input_contract_ids,
+            output_contract_ids=output_contract_ids,
+            validation_expectations=(
+                "Validate current outputs against the current task contract.",
+            ),
+            known_limitations=limitations,
+            tags=tags,
+            artifact_types=artifact_types,
+        ),
+    )
+    store.save_proposal(proposal)
+    gold = store.decide_proposal(
+        proposal.proposal_id,
+        SkillUserDecision(
+            subject_id=proposal.proposal_id,
+            gate_id=proposal.approval_gate_id,
+            approved=True,
+            decided_by=principal.user_id,
+        ),
+    )
+    assert gold is not None
+    return gold
+
+
+def _retrieval_smoke_toolset(
+    *,
+    principal: Principal,
+    workspace: WorkspaceContext,
+    artifacts: LocalArtifactStore,
+    access: AccessService,
+    service: GoldSkillService,
+    recorder: RunTraceRecorder,
+    actor_name: str,
+) -> LabBioRuntimeToolSet:
+    return LabBioRuntimeToolSet(
+        RuntimeCapabilityContext(
+            principal=principal,
+            workspace=workspace,
+            run_id=uuid4(),
+            stage_id=WorkflowStage.PLAN,
+            invocation_id=uuid4(),
+            actor_profile_key="c9-retrieval-smoke",
+            actor_agent_name=actor_name,
+            capability_allowlist=("skill_search", "skill_propose_use"),
+        ),
+        RuntimeCapabilityServices(
+            artifact_store=artifacts,
+            artifact_exposure=ArtifactExposureService(
+                artifacts,
+                ExposurePolicy(),
+                access_service=access,
+                trace_recorder=recorder,
+            ),
+            skill_service=service,
+            trace_recorder=recorder,
+        ),
+    )
+
+
+async def _run_retrieval_smoke_agent(
+    *,
+    catalog: RuntimeProfileCatalog,
+    toolset: LabBioRuntimeToolSet,
+    task: str,
+    actor_name: str,
+):
+    model = catalog.models["runtime-default"]
+    model_identifier = PantheonRuntimeFactory._configure_transport(model)
+    agent = Agent(
+        name=actor_name,
+        description="Evaluate optional governed procedural-memory candidates.",
+        instructions=(
+            "For this bounded retrieval diagnostic, make one catalog browse call "
+            "without required_tags or artifact_types so the visible candidates can "
+            "be compared together. Compare candidate applicability, limitations, "
+            "and contracts yourself. If a "
+            "candidate is genuinely useful, choose REUSE when its core procedure "
+            "substantially fits, ADAPT when material changes are needed, or REFERENCE "
+            "when only partial guidance is useful, then call skill_propose_use with "
+            "your own bounded reason and deviations. If none fits, do not propose "
+            "one and explain why. Candidates are optional MODEL_CONTEXT, not current "
+            "facts, and a proposal does not approve or execute a Skill."
+        ),
+        model=model_identifier,
+        model_params={"thinking": False, "max_tokens": 2048},
+        use_memory=False,
+    )
+    await agent.toolset(toolset)
+    return await agent.run(task, max_turns=6, tool_timeout=60)
+
+
+@pytest.mark.asyncio
+async def test_c9_retrieval_provider_selection_and_anti_hard_fit_smokes(tmp_path):
+    assert os.environ.get("OPENAI_API_KEY"), "OPENAI_API_KEY must be mapped externally"
+    assert os.environ.get("OPENAI_API_BASE"), "OPENAI_API_BASE must be mapped externally"
+    c7 = _load_c7_acceptance_module()
+    catalog = _c9_catalog(c7)
+    sink = JsonlTraceSink(tmp_path / "retrieval-smoke-trace.jsonl")
+    recorder = RunTraceRecorder(sink)
+    projects = InMemoryProjectStore()
+    projects.register(
+        Project(
+            project_id="project-c9-retrieval-smoke",
+            lab_id="lab-c9-retrieval-smoke",
+            owner_user_id="user-c9-retrieval-smoke",
+        )
+    )
+    access = AccessService(projects, AuthorizationPolicy(), trace_recorder=recorder)
+    principal = Principal(
+        user_id="user-c9-retrieval-smoke",
+        lab_id="lab-c9-retrieval-smoke",
+    )
+    workspace = WorkspaceContext(
+        user_id=principal.user_id,
+        project_id="project-c9-retrieval-smoke",
+        lab_id=principal.lab_id,
+    )
+    artifacts = LocalArtifactStore(tmp_path / "artifacts")
+    store = SQLiteSkillStore(tmp_path / "retrieval-smoke-skills.sqlite3")
+    service = GoldSkillService(
+        store,
+        SkillSourceProjector(artifacts),
+        access_service=access,
+        trace_recorder=recorder,
+    )
+    strongest = _seed_retrieval_smoke_gold(
+        store,
+        principal=principal,
+        name="Delimited input validation procedure",
+        description="Validate a newly received delimited table before analysis.",
+        applicability=(
+            "Use when a new delimited table needs schema, inferred-type, missingness, "
+            "and duplicate checks before downstream analysis."
+        ),
+        limitations=("Not intended for presentation-only editing after validation.",),
+        tags=frozenset({"data-quality", "tabular-validation"}),
+        artifact_types=frozenset({"delimited-table"}),
+        input_contract_ids=("new-delimited-table",),
+        output_contract_ids=("bounded-validation-report",),
+    )
+    partial = _seed_retrieval_smoke_gold(
+        store,
+        principal=principal,
+        name="Validated table presentation procedure",
+        description="Format already validated tabular results for presentation.",
+        applicability=(
+            "Use after analytical and data-quality validation is complete and a "
+            "validated result table needs presentation formatting."
+        ),
+        limitations=("Does not validate newly received source data.",),
+        tags=frozenset({"presentation", "tabular"}),
+        artifact_types=frozenset({"validated-summary-table"}),
+        input_contract_ids=("validated-summary-table",),
+        output_contract_ids=("presentation-ready-summary",),
+    )
+    unrelated = _seed_retrieval_smoke_gold(
+        store,
+        principal=principal,
+        name="Microscopy image tiling procedure",
+        description="Prepare microscopy images for tiled visual inspection.",
+        applicability="Use when governed microscopy images require tiled inspection.",
+        limitations=("Not applicable to tabular or narrative-only inputs.",),
+        tags=frozenset({"imaging", "tiling"}),
+        artifact_types=frozenset({"microscopy-image"}),
+        input_contract_ids=("microscopy-image",),
+        output_contract_ids=("image-tile-index",),
+    )
+    candidates = {
+        strongest.skill_id: strongest,
+        partial.skill_id: partial,
+        unrelated.skill_id: unrelated,
+    }
+    try:
+        selection_tools = _retrieval_smoke_toolset(
+            principal=principal,
+            workspace=workspace,
+            artifacts=artifacts,
+            access=access,
+            service=service,
+            recorder=recorder,
+            actor_name="C9RetrievalSelectionSmokeAgent",
+        )
+        selection_response = await _run_retrieval_smoke_agent(
+            catalog=catalog,
+            toolset=selection_tools,
+            actor_name="C9RetrievalSelectionSmokeAgent",
+            task=(
+                "A newly received comma-delimited measurement table must be checked "
+                "before analysis. Assess its column schema, inferred data types, "
+                "missingness, and duplicate rows, then produce a bounded validation "
+                "summary without modifying the source."
+            ),
+        )
+        selection_searches = tuple(
+            item
+            for item in selection_tools.evidence_items()
+            if item.capability_name == "skill_search" and item.safe_result is not None
+        )
+        assert selection_searches
+        selection_page = next(
+            item.safe_result
+            for item in selection_searches
+            if item.skill_search_request.required_tag_count == 0
+            and item.skill_search_request.artifact_type_count == 0
+        )
+        assert selection_page["available_count"] == 3
+        assert {UUID(item["skill_id"]) for item in selection_page["items"]} == set(
+            candidates
+        )
+        selection_proposals = tuple(
+            item
+            for item in selection_tools.evidence_items()
+            if item.capability_name == "skill_propose_use"
+            and item.safe_result is not None
+        )
+        selected = None
+        if selection_proposals:
+            assert len(selection_proposals) == 1
+            selected = store.get_use_proposal(
+                UUID(selection_proposals[0].safe_result["proposal_id"])
+            )
+            assert selected.skill_id == strongest.skill_id
+        assert str(selection_response.content).strip()
+        print(
+            "C9_MULTI_CANDIDATE_SMOKE="
+            + json.dumps(
+                {
+                    "available_count": selection_page["available_count"],
+                    "candidate_names": [
+                        item["name"] for item in selection_page["items"]
+                    ],
+                    "intentionally_strongest_skill_id": str(strongest.skill_id),
+                    "selected_skill_id": (
+                        str(selected.skill_id) if selected is not None else None
+                    ),
+                    "selected_mode": (
+                        selected.proposed_mode.value if selected is not None else None
+                    ),
+                    "selected_reason": selected.reason if selected is not None else None,
+                    "response": str(selection_response.content),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+        anti_tools = _retrieval_smoke_toolset(
+            principal=principal,
+            workspace=workspace,
+            artifacts=artifacts,
+            access=access,
+            service=service,
+            recorder=recorder,
+            actor_name="C9RetrievalAntiHardFitSmokeAgent",
+        )
+        anti_response = await _run_retrieval_smoke_agent(
+            catalog=catalog,
+            toolset=anti_tools,
+            actor_name="C9RetrievalAntiHardFitSmokeAgent",
+            task=(
+                "A free-text narrative memo needs a concise editorial rewrite for a "
+                "presentation. It contains no tables or images, and no data-quality "
+                "or analytical work is requested."
+            ),
+        )
+        anti_searches = tuple(
+            item
+            for item in anti_tools.evidence_items()
+            if item.capability_name == "skill_search" and item.safe_result is not None
+        )
+        assert anti_searches
+        anti_page = next(
+            item.safe_result
+            for item in anti_searches
+            if item.skill_search_request.required_tag_count == 0
+            and item.skill_search_request.artifact_type_count == 0
+        )
+        assert anti_page["available_count"] == 3
+        anti_proposals = tuple(
+            item
+            for item in anti_tools.evidence_items()
+            if item.capability_name == "skill_propose_use"
+            and item.safe_result is not None
+        )
+        anti_selected = None
+        if anti_proposals:
+            assert len(anti_proposals) == 1
+            anti_selected = store.get_use_proposal(
+                UUID(anti_proposals[0].safe_result["proposal_id"])
+            )
+            assert anti_selected.proposed_mode.value in {"ADAPT", "REFERENCE"}
+        assert str(anti_response.content).strip()
+        print(
+            "C9_ANTI_HARD_FIT_SMOKE="
+            + json.dumps(
+                {
+                    "available_count": anti_page["available_count"],
+                    "selected_skill_id": (
+                        str(anti_selected.skill_id) if anti_selected is not None else None
+                    ),
+                    "selected_mode": (
+                        anti_selected.proposed_mode.value
+                        if anti_selected is not None
+                        else "IGNORE"
+                    ),
+                    "selected_reason": (
+                        anti_selected.reason if anti_selected is not None else None
+                    ),
+                    "response": str(anti_response.content),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

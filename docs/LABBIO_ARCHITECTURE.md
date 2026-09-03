@@ -3,9 +3,8 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through Phase 8, with a C9 development checkpoint that is not yet
-accepted. Phase 1 adds typed stage contracts and a composition
-adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
+preserved through accepted, frozen C9. Phase 1 adds typed stage contracts and a
+composition adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
 adds metadata-only artifact references, local development storage, and bounded
@@ -360,9 +359,9 @@ Memory store or authorization-service handle.
 ## Gold Skill boundary
 
 C9 extends the Phase 7 Gold contracts into a LabBio-owned, immutable procedural
-memory lifecycle. The checkpoint is implemented and covered deterministically,
-but C9 is not accepted until a later real run completes an approved use. Gold
-Skills remain neither Pantheon skills nor executable workflows. `GoldSkill`
+memory lifecycle. Deterministic coverage, provider selection diagnostics, and a
+later real approved-use lifecycle are accepted. Gold Skills remain neither
+Pantheon skills nor executable workflows. `GoldSkill`
 exposes no `run`, `apply`, or `execute` operation and cannot transition
 `WorkflowRun`.
 
@@ -444,6 +443,15 @@ runtime intelligence must continue to determine relevance and use mode.
 Skill lifecycle trace events carry identifiers, versions, modes, outcomes, and
 approval references only. Full Skill content and raw artifact payloads are not
 duplicated into RunTrace.
+
+C9 acceptance is anchored by retrieval commit
+`bd592c0d667a013367e9e10fab11bbfffa9240de` and familiar-use run
+`10ba43fd-a8f6-416d-88a8-8447b3226d24`. That run passed exact USER_GATE
+approval, authorized MODEL_CONTEXT access, independent current-data execution,
+terminal report registration, one successful usage receipt, and the complete
+later-use leak audit. Multi-candidate and anti-hard-fit provider diagnostics,
+novel/no-match coverage, and the 303-passed/9-skipped non-live regression also
+pass. Pantheon and production remain frozen.
 
 Pantheon's automatic learning/extraction path remains disabled for this
 lifecycle because it lacks the successful-trace and explicit-approval gates.

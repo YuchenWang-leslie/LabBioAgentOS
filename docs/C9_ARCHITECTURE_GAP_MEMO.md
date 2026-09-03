@@ -233,15 +233,15 @@ novel/no-match continuation. Pantheon and production deployment remain frozen.
 
 ## Implementation and live checkpoint
 
-**Status: infrastructure complete; C9 not accepted.**
+**Status: C9 accepted and frozen.**
 
 The Q1-Q7 changes above are implemented on
 `c9-real-gold-skill-lifecycle`. Deterministic S1-S24 coverage passes, including
 safe projection, mixed information authority, exact gates and authorizations,
 SQLite restart reconstruction, access-before-usage, terminal finalization,
 ADAPT v2 lineage, no-match continuation, C8 capability compatibility, and leak
-checks. The full non-live regression after the shared trace-authority fix is
-300 passed and 8 skipped with the existing Uvicorn warning.
+checks. The final non-live regression is 303 passed and 9 skipped with the
+existing Uvicorn warning.
 
 One real curator call projected preserved accepted C7 run
 `56c5e604-049e-4f07-81c5-11e89199ef1a` into source bundle
@@ -251,8 +251,8 @@ PERSONAL Gold Skill `fd621ee9-fc08-4ded-96d1-96f3c15638c5` version 1. Reopening
 the SQLite store reconstructs the identical source, proposal, decision, Gold,
 and lineage. No second curator call was made.
 
-The familiar-run acceptance remains blocked by deterministic text-filter
-ergonomics:
+Before the authorized retrieval closure, familiar-run acceptance was blocked by
+deterministic text-filter ergonomics:
 
 1. The first live run completed two searches with no candidate.
 2. An intervening run did discover the exact Gold and persisted runtime-selected
@@ -270,13 +270,11 @@ ergonomics:
    query does not. The exact provider query is intentionally not persisted and
    is not inferred here.
 
-The two empty-candidate familiar runs are the same recurring blocker, so the
-two-strike stop rule applies. No fourth provider run, automatic browse fallback,
-scientific similarity scorer, prompt-forced query syntax, deterministic Skill
-selection, auto-use, or auto-approval is added. The later run therefore has no
-use gate, context access, or usage receipt. C9 remains unaccepted pending a
-separately authorized generic retrieval-contract decision and subsequent one
-bounded live use validation.
+Those two empty-candidate familiar runs were the same recurring blocker, so the
+two-strike stop rule stopped further provider calls until the separately
+authorized generic retrieval-contract change below. No automatic browse
+fallback, scientific similarity scorer, deterministic Skill selection,
+auto-use, or auto-approval was added.
 
 ## Authorized retrieval-contract closure
 
@@ -313,10 +311,38 @@ not rank-to-use, choose a mode, auto-approve, or remove the browse/no-match path
 
 Request audit now contains only offset, limit, exact-filter counts, and LAB
 inclusion. Completed audits add returned/available counts, next offset, and
-truncation. No query or tag/type values are persisted. R1-R15 and U1-U8 pass;
-the full non-live regression is 303 passed and 8 skipped with the existing
-Uvicorn warning. Frozen Pantheon could not describe an `Annotated` constrained
+truncation. No query or tag/type values are persisted. R1-R15 and U1-U8 pass.
+Frozen Pantheon could not describe an `Annotated` constrained
 integer signature, so the accepted provider schema uses ordinary integer fields
-with explicit descriptions and authoritative LabBio range validation. C9
-remains unaccepted until provider selection diagnostics and the one real
-approved-use continuation pass.
+with explicit descriptions and authoritative LabBio range validation.
+
+## Final live acceptance
+
+Commit `bd592c0d667a013367e9e10fab11bbfffa9240de` is the pushed retrieval
+closure. A disposable SQLite catalog with three synthetic candidates then
+proved model-owned comparison: the provider selected the intentionally strongest
+candidate with `REUSE`. For a narrative-only task with superficial presentation
+similarity but incompatible input contracts, it selected no Skill and explained
+the mismatch. Neither smoke approved or accessed a full procedure.
+
+Exactly one later familiar-use validation reused the existing durable Gold; it
+did not call the Curator or create a Gold. Run
+`10ba43fd-a8f6-416d-88a8-8447b3226d24` recovered from an explicit empty exact-
+filter page by browsing the unfiltered catalog, found Gold
+`fd621ee9-fc08-4ded-96d1-96f3c15638c5` v1, chose `REUSE`, and persisted use
+proposal `d3e34173-96c6-4e65-a073-0f13fde20e65`. After exact external review,
+authorization `7d1270dd-2ccc-46be-bed5-ee837f033d7f` resumed PLAN. One governed
+`skill_view` recorded context access
+`25b0ea3c-9a24-4906-84f5-7652c1a62269` before the normal execution path.
+
+The run independently generated a new script disjoint from the six historical
+Skill script references, executed current data, validated and interpreted only
+current DERIVED Artifacts, registered a report, and completed with no workflow
+retry. Exactly one terminal `SUCCEEDED` usage record,
+`4c769669-710a-4e2b-834f-e16fc5b2da66`, binds the same run, authorization,
+Skill, version, and `REUSE` mode. The full later-use leak audit and container
+cleanup checks pass. One over-large Reviewer `TOP_N` request failed visibly and
+safely before valid requests completed; this is a non-blocking model diagnostic,
+not a Gold lifecycle failure. The final non-live regression is 303 passed and 9
+skipped with the existing Uvicorn warning. Pantheon, production, C7, and C8 were
+not modified, and C10 has not started.

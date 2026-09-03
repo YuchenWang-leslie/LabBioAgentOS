@@ -570,8 +570,8 @@ checkpoint statuses above; it does not create another C7 sub-milestone.
 
 ## C9 — Real Gold Skill lifecycle
 
-**Status:** blocked; not accepted. Generic infrastructure is implemented on
-`c9-real-gold-skill-lifecycle`; C7, C8, Pantheon, and production remain frozen.
+**Status:** accepted and frozen on `c9-real-gold-skill-lifecycle`. C7, C8,
+Pantheon, and production remain frozen; C10 has not started.
 
 - **Implemented checkpoint:** safe whitelist-only curation, untrusted curator
   draft/trusted proposal assembly, item-level information authority, durable
@@ -592,24 +592,45 @@ checkpoint statuses above; it does not create another C7 sub-milestone.
   to its AccessService and RunTraceRecorder. Fresh run
   `f6abe187-e7f7-439e-bef8-9ef825143005` completed with 300 contiguous events
   numbered 0-299, proving the collision fixed.
-- **Authorized retrieval closure:** the confirmed literal whole-string blocker
-  is being removed only from model-facing retrieval. Runtime `skill_search` is
-  now a high-recall visible catalog with explicit bounded pagination, optional
-  exact structural filters, stable non-scientific ordering, safe fit previews,
-  and latest-approved-version selection. Internal exact metadata lookup remains
-  separate. Provider selection diagnostics and the single real approved-use
-  continuation are still required before acceptance.
-- **Verification:** deterministic S1-S24, R1-R15, U1-U8, and full non-live
-  regression pass at 303 passed, 8 skipped, plus the existing Uvicorn warning.
-  Deterministic
-  no-match/novel continuation, ADAPT v2 lineage, leak controls, and C8 ownership
-  compatibility pass. The latest real run completed its scientific workflow
-  without Skill use, which proves optionality but not the required approved-use
-  path.
-- **Missing acceptance evidence:** no later live USER_GATE approval, approved
-  full Skill context access, or terminal usage receipt exists. C9 is not frozen
-  or accepted. The authorized continuation is the bounded provider-selection
-  diagnostics followed by one familiar-use validation.
+- **Accepted retrieval closure:** commit `bd592c0d667a013367e9e10fab11bbfffa9240de`
+  removes the literal whole-string blocker only from model-facing retrieval.
+  Runtime `skill_search` is a high-recall visible catalog with explicit bounded
+  pagination, optional exact structural filters, stable non-scientific
+  ordering, safe fit previews, and latest-approved-version selection. Internal
+  exact metadata lookup remains separate.
+- **Provider selection diagnostics:** the bounded three-candidate smoke exposed
+  one clearly strongest candidate, one partial candidate, and one unrelated
+  candidate on the same page. The model compared all three and selected the
+  strongest with `REUSE`. In the anti-hard-fit smoke it compared the same three,
+  explained the input-contract mismatches, and selected no Skill. No approval,
+  full context access, or execution occurred in either smoke.
+- **Real familiar-use acceptance:** fresh run
+  `10ba43fd-a8f6-416d-88a8-8447b3226d24` first received an explicit empty page
+  for guessed exact filters, then browsed without filters and received the one
+  visible candidate, Gold `fd621ee9-fc08-4ded-96d1-96f3c15638c5` v1. It chose
+  `REUSE` with no proposed deviations and created use proposal
+  `d3e34173-96c6-4e65-a073-0f13fde20e65`. Exact external review approved the
+  matching Workflow USER_GATE; authorization
+  `7d1270dd-2ccc-46be-bed5-ee837f033d7f` returned the run to PLAN, where one
+  authorized `skill_view` recorded context access
+  `25b0ea3c-9a24-4906-84f5-7652c1a62269`.
+- **Terminal evidence:** the resumed run independently generated a new script,
+  executed the structurally different current input, validated and interpreted
+  current DERIVED Artifacts, registered a report, and reached `COMPLETED`
+  without a workflow retry. The new script Artifact is disjoint from all six
+  source-Skill script references. Exactly one terminal `SUCCEEDED` usage receipt
+  was recorded: `4c769669-710a-4e2b-834f-e16fc5b2da66`. The complete later-use
+  leak audit and container cleanup checks pass. No new Curator call, Gold, or
+  Gold version was created.
+- **Verification:** deterministic S1-S24, R1-R15, U1-U8, novel/no-match,
+  ADAPT-v2 lineage, leak controls, C8 ownership compatibility, both provider
+  diagnostics, and the approved familiar-use lifecycle pass. The final non-live
+  regression is 303 passed and 9 skipped, plus the existing Uvicorn warning.
+- **Diagnostics:** MiMo may initially guess exact tag/type filters; empty results
+  remain explicit and the real run recovered by browsing without filters. One
+  Reviewer `TOP_N` request with limit 100 failed safely before later governed
+  queries completed validation. Neither observation is a framework routing or
+  lifecycle failure.
 - **Unchanged boundaries:** no scientific router/scorer, prompt-forced query
   syntax, automatic browse fallback, automatic selection/mode/approval,
   executable Skill, C7/C8 behavior change, Pantheon change, production
