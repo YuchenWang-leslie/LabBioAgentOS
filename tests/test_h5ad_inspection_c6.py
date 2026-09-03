@@ -246,9 +246,6 @@ def test_h5ad_inspector_emits_bounded_structure_and_aggregates(tmp_path):
         H5ADInspectionPolicy(
             max_categories_per_field=3,
             high_cardinality_fraction=0.8,
-            enumerated_categorical_fields=frozenset(
-                {"sample", "overlarge_group"}
-            ),
         )
     ).inspect(source)
 
@@ -316,7 +313,10 @@ def test_alternative_h5ad_schema_is_inspected_without_fixture_assumptions(tmp_pa
         categorical["record_key"].enumeration
         is H5ADCategoryEnumeration.HIGH_CARDINALITY_SUPPRESSED
     )
-    assert categorical["low_cardinality_sensitive_example"].categories == ()
+    assert {
+        item.label
+        for item in categorical["low_cardinality_sensitive_example"].categories
+    } == {"restricted", "ordinary"}
     structural_spec, aggregate_spec = bundle.artifacts
     assert structural_spec.artifact_schema.shape == (37, 5)
     assert len(structural_spec.artifact_schema.columns) == len(

@@ -145,12 +145,11 @@ class H5ADMatrixStorage(StrEnum):
 
 
 class H5ADCategoryEnumeration(StrEnum):
-    """Whether bounded categorical labels were safe to enumerate."""
+    """Whether bounded categorical labels fit the inspection context limits."""
 
     ENUMERATED = "ENUMERATED"
     ENUMERATED_WITH_OVERFLOW = "ENUMERATED_WITH_OVERFLOW"
     HIGH_CARDINALITY_SUPPRESSED = "HIGH_CARDINALITY_SUPPRESSED"
-    POLICY_SUPPRESSED = "POLICY_SUPPRESSED"
 
 
 class H5ADInspectionPolicy(BaseModel):
@@ -170,10 +169,6 @@ class H5ADInspectionPolicy(BaseModel):
     max_source_axis_fields: int = Field(default=256, ge=1)
     max_axis_metadata_cells: int = Field(default=25_000_000, ge=1)
     max_eager_array_bytes: int = Field(default=1_073_741_824, ge=1)
-    enumerated_categorical_fields: frozenset[BoundedName] = Field(
-        default_factory=frozenset,
-        max_length=64,
-    )
 
 
 class H5ADFieldStructure(BaseModel):
@@ -572,17 +567,6 @@ class H5ADInspector:
                 enumeration=H5ADCategoryEnumeration.HIGH_CARDINALITY_SUPPRESSED,
                 overflow_category_count=unique,
             )
-        if str(column) not in self.policy.enumerated_categorical_fields:
-            return H5ADCategoricalSummary(
-                field_name=self._name(column),
-                dtype=self._dtype(series.dtype),
-                count=count,
-                missing_count=missing,
-                unique_count=unique,
-                enumeration=H5ADCategoryEnumeration.POLICY_SUPPRESSED,
-                overflow_category_count=unique,
-            )
-
         counts = [
             (value, int(value_count))
             for value, value_count in series.value_counts(dropna=True).items()
