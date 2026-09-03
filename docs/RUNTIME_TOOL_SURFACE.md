@@ -79,7 +79,7 @@ values reveal host paths.
 
 | Tool | Untrusted model input | Safe result |
 |---|---|---|
-| `skill_search` | optional literal text filter, exact tag/type filters, LAB inclusion, and bounded limit | eligible candidate IDs/versions plus bounded applicability/limitation previews; no full procedure, score, or mode |
+| `skill_search` | page offset/limit, optional exact tag/type filters, and LAB inclusion | stable page of visible latest-version candidate IDs/versions, bounded fit metadata, and completeness counts; no full procedure, score, rank, or mode |
 | `skill_view` | exact approved authorization ID for the current run | immutable full procedural MODEL_CONTEXT and lineage references; access is durably recorded |
 | `skill_propose_use` | exact ID/version, runtime-chosen `REUSE`/`ADAPT`/`REFERENCE`, reason, deviations | proposal ID and `USER_APPROVAL_REQUIRED` state |
 
@@ -88,6 +88,13 @@ the trusted application/domain-gate boundary before workflow resumption, not
 through a model tool. Search alone, a pending proposal, or approval without a
 full `skill_view` access never creates a usage receipt. Skill capability results
 are `MODEL_CONTEXT`; `skill_propose_use` is `CONTROL_STATE`.
+
+The runtime tool is catalog-oriented and has no free-form task-text filter.
+With unknown exact tags/types it browses without filters, compares the returned
+metadata itself, and may explicitly request another page. Internal
+`SkillSearchContext.query_text` remains a separate exact metadata-lookup
+contract for trusted callers; it is not runtime scientific retrieval. The
+framework never paginates automatically or chooses a candidate.
 
 ### Persistent Memory capabilities
 

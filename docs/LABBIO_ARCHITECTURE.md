@@ -425,11 +425,21 @@ not usage. Skill and Memory capability items remain `MODEL_CONTEXT`; proposal
 items are `CONTROL_STATE`.
 
 Search remains an eligibility operation with stable ordering and no score,
-scientific ranking, automatic selection, or use-mode decision. The current C9
-checkpoint retains a literal-substring free-text filter. Two real familiar-run
-attempts returned no candidate for model-provided query text despite correct
-scope and empty tag/type filters. This provider-facing retrieval ergonomics gap
-blocks C9 acceptance and is not repaired by automatic fallback or routing.
+scientific ranking, automatic selection, or use-mode decision. Internal
+`SkillSearchContext.query_text` remains an exact metadata-lookup option for
+trusted host/API callers. The model-facing `skill_search` is instead a bounded
+catalog: it enumerates legally visible latest approved versions, optionally
+applies exact model-supplied tag/type filters, and returns explicit pagination
+completeness. A version lineage contributes only its latest approved version to
+the active catalog; older versions remain immutable and directly addressable.
+
+This separation prevents arbitrary natural-language task wording from deleting
+a relevant candidate before the runtime can judge it. It does not add a closest-
+Skill fallback: unknown explicit structural filters return an empty page, and
+the runtime decides whether to request another page, propose REUSE/ADAPT/
+REFERENCE, or ignore every candidate. A future high-recall candidate generator
+may replace catalog enumeration, but it must only propose visible candidates;
+runtime intelligence must continue to determine relevance and use mode.
 
 Skill lifecycle trace events carry identifiers, versions, modes, outcomes, and
 approval references only. Full Skill content and raw artifact payloads are not

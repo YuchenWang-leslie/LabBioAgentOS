@@ -592,23 +592,24 @@ checkpoint statuses above; it does not create another C7 sub-milestone.
   to its AccessService and RunTraceRecorder. Fresh run
   `f6abe187-e7f7-439e-bef8-9ef825143005` completed with 300 contiguous events
   numbered 0-299, proving the collision fixed.
-- **Current blocker / two-strike stop:** both the first and latest familiar live
-  runs produced only empty Skill searches. The latest request-shape audit proves
-  correct scope, two query-text requests, zero tag filters, zero artifact-type
-  filters, LAB inclusion, and successful capability calls. The literal whole-
-  string search contract can exclude the visible Gold for natural multiword
-  queries. No provider query content is persisted or inferred. After the same
-  blocker recurred, no fourth provider run was made.
-- **Verification:** deterministic S1-S24 and full non-live regression pass at
-  300 passed, 8 skipped, plus the existing Uvicorn warning. Deterministic
+- **Authorized retrieval closure:** the confirmed literal whole-string blocker
+  is being removed only from model-facing retrieval. Runtime `skill_search` is
+  now a high-recall visible catalog with explicit bounded pagination, optional
+  exact structural filters, stable non-scientific ordering, safe fit previews,
+  and latest-approved-version selection. Internal exact metadata lookup remains
+  separate. Provider selection diagnostics and the single real approved-use
+  continuation are still required before acceptance.
+- **Verification:** deterministic S1-S24, R1-R15, U1-U8, and full non-live
+  regression pass at 303 passed, 8 skipped, plus the existing Uvicorn warning.
+  Deterministic
   no-match/novel continuation, ADAPT v2 lineage, leak controls, and C8 ownership
   compatibility pass. The latest real run completed its scientific workflow
   without Skill use, which proves optionality but not the required approved-use
   path.
 - **Missing acceptance evidence:** no later live USER_GATE approval, approved
   full Skill context access, or terminal usage receipt exists. C9 is not frozen
-  or accepted. The unique continuation is a separately authorized generic
-  retrieval-contract decision followed by one bounded familiar-use validation.
+  or accepted. The authorized continuation is the bounded provider-selection
+  diagnostics followed by one familiar-use validation.
 - **Unchanged boundaries:** no scientific router/scorer, prompt-forced query
   syntax, automatic browse fallback, automatic selection/mode/approval,
   executable Skill, C7/C8 behavior change, Pantheon change, production

@@ -105,15 +105,35 @@ class ArtifactQueryRequestAudit(BaseModel):
 
 
 class SkillSearchRequestAudit(BaseModel):
-    """Non-content shape of one skill_search request."""
+    """Non-content request and completeness audit for catalog browsing."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    query_text_supplied: bool
+    offset: int
+    limit: int
     required_tag_count: int = Field(ge=0, le=100)
     artifact_type_count: int = Field(ge=0, le=100)
     include_lab: bool
-    limit: int
+    returned_count: int | None = Field(default=None, ge=0, le=50)
+    available_count: int | None = Field(default=None, ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    truncated: bool | None = None
+
+    @model_validator(mode="after")
+    def result_completeness_is_all_or_none(self) -> "SkillSearchRequestAudit":
+        if self.returned_count is None:
+            if any(
+                value is not None
+                for value in (
+                    self.available_count,
+                    self.next_offset,
+                    self.truncated,
+                )
+            ):
+                raise ValueError("Incomplete Skill search result audit")
+        elif self.available_count is None or self.truncated is None:
+            raise ValueError("Completed Skill search audit requires result counts")
+        return self
 
 
 _FORBIDDEN_EVIDENCE_KEYS = {

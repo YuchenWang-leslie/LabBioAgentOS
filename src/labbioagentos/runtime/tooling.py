@@ -8,7 +8,15 @@ from typing import Any, Callable, Literal
 from uuid import UUID, uuid4
 
 from pantheon.toolset import ToolSet, tool
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
 
 from labbioagentos.artifacts import (
     ArtifactConsumer,
@@ -178,8 +186,40 @@ class SkillCandidateView(BaseModel):
     scope: StrictStr
     tags: tuple[StrictStr, ...] = ()
     artifact_types: tuple[StrictStr, ...] = ()
+    input_contract_ids: tuple[StrictStr, ...] = ()
+    output_contract_ids: tuple[StrictStr, ...] = ()
     applicability_preview: StrictStr
     limitation_preview: tuple[StrictStr, ...] = ()
+
+
+class SkillCandidatePage(BaseModel):
+    """Stable bounded page of visible active candidates without relevance ranking."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
+    items: tuple[SkillCandidateView, ...] = Field(default=(), max_length=50)
+    returned_count: int = Field(ge=0, le=50)
+    available_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    effective_limit: int = Field(ge=1, le=50)
+    next_offset: int | None = Field(default=None, ge=0)
+    truncated: bool
+
+    @model_validator(mode="after")
+    def validate_page_completeness(self) -> "SkillCandidatePage":
+        if self.returned_count != len(self.items):
+            raise ValueError("Skill candidate returned_count does not match items")
+        if self.returned_count > self.available_count:
+            raise ValueError("Skill candidate page exceeds available_count")
+        has_next = self.offset + self.returned_count < self.available_count
+        if self.truncated != has_next:
+            raise ValueError("Skill candidate truncated flag is inconsistent")
+        expected_next = self.offset + self.returned_count if has_next else None
+        if self.next_offset != expected_next:
+            raise ValueError("Skill candidate next_offset is inconsistent")
+        return self
 
 
 class SkillDetailView(SkillCandidateView):
@@ -339,6 +379,20 @@ class LabBioRuntimeToolSet(ToolSet):
             value = operation()
             if hasattr(value, "__await__"):
                 value = await value
+            if skill_search_request is not None and isinstance(
+                value, SkillCandidatePage
+            ):
+                skill_search_request = skill_search_request.model_copy(
+                    update={
+                        "returned_count": value.returned_count,
+                        "available_count": value.available_count,
+                        "next_offset": value.next_offset,
+                        "truncated": value.truncated,
+                    }
+                )
+                request_audit_payload["skill_search_request"] = (
+                    skill_search_request.model_dump(mode="json")
+                )
             if isinstance(value, BaseModel):
                 value = value.model_dump(mode="json", by_alias=True)
             elif isinstance(value, (tuple, list)) and all(isinstance(item, BaseModel) for item in value):
@@ -473,37 +527,39 @@ class LabBioRuntimeToolSet(ToolSet):
     @tool
     async def skill_search(
         self,
-        query_text: str | None = None,
+        offset: int = 0,
+        limit: int = 20,
         required_tags: list[str] | None = None,
         artifact_types: list[str] | None = None,
         include_lab: bool = True,
-        limit: int = 20,
     ) -> dict:
-        """Return governed Gold Skill candidates without a score or use decision.
+        """Browse visible active Gold candidates without ranking or selecting them.
 
         Args:
-            query_text: Optional case-insensitive literal substring filter; omit
-                it to browse all bounded candidates visible in the current scope.
-            required_tags: Optional exact tags that every result must contain;
-                omit unknown tags instead of guessing them.
-            artifact_types: Optional exact Artifact types that every result must
-                contain; omit unknown types instead of guessing them.
-            include_lab: Whether LAB-scoped candidates may be returned.
+            offset: Zero-based position in the stable visible candidate catalog.
             limit: Maximum candidates to return, from 1 through 50.
+            required_tags: Optional exact tags that every result must contain;
+                use no filter when exact tags are unknown.
+            artifact_types: Optional exact Artifact types that every result must
+                contain; use no filter when exact types are unknown.
+            include_lab: Whether LAB-scoped candidates may be returned.
+
+        Returned candidates are not ranked by scientific relevance. Compare
+        their bounded metadata yourself and fetch another page only if useful.
         """
         tags = required_tags or []
         types = artifact_types or []
         return await self._call(
             "skill_search",
             lambda: self._skill_search(
-                query_text, tags, types, include_lab, limit
+                offset, limit, tags, types, include_lab
             ),
             skill_search_request=SkillSearchRequestAudit(
-                query_text_supplied=query_text is not None,
+                offset=offset,
+                limit=limit,
                 required_tag_count=len(tags),
                 artifact_type_count=len(types),
                 include_lab=include_lab,
-                limit=limit,
             ),
         )
 
@@ -657,8 +713,15 @@ class LabBioRuntimeToolSet(ToolSet):
             principal=self.binding.principal,
         )
 
-    def _skill_search(self, query_text, tags, artifact_types, include_lab, limit):
-        if limit < 1 or limit > 50:
+    def _skill_search(self, offset, limit, tags, artifact_types, include_lab):
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("Skill result offset must be a non-negative integer")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or limit < 1
+            or limit > 50
+        ):
             raise ValueError("Skill result limit must be between 1 and 50")
         service = self._required(self.services.skill_service, "skill")
         skills = service.search(
@@ -667,13 +730,40 @@ class LabBioRuntimeToolSet(ToolSet):
                 project_id=self.binding.workspace.project_id,
                 lab_id=self.binding.workspace.lab_id,
                 include_lab=include_lab,
-                query_text=query_text,
                 required_tags=frozenset(tags),
                 artifact_types=frozenset(artifact_types),
             ),
             principal=self.binding.principal,
         )
-        return [self._skill_candidate(item) for item in skills[:limit]]
+        latest_by_skill = {}
+        for skill in skills:
+            current = latest_by_skill.get(skill.skill_id)
+            if current is None or skill.version > current.version:
+                latest_by_skill[skill.skill_id] = skill
+        active = tuple(
+            sorted(
+                latest_by_skill.values(),
+                key=lambda skill: (
+                    skill.name.casefold(),
+                    str(skill.skill_id),
+                    skill.version,
+                ),
+            )
+        )
+        items = tuple(
+            self._skill_candidate(item) for item in active[offset : offset + limit]
+        )
+        next_offset = offset + len(items)
+        truncated = next_offset < len(active)
+        return SkillCandidatePage(
+            items=items,
+            returned_count=len(items),
+            available_count=len(active),
+            offset=offset,
+            effective_limit=limit,
+            next_offset=next_offset if truncated else None,
+            truncated=truncated,
+        )
 
     def _skill_view(self, authorization_id: UUID):
         skill = self._required(
@@ -808,6 +898,8 @@ class LabBioRuntimeToolSet(ToolSet):
             scope=skill.scope.value,
             tags=tuple(sorted(skill.procedure.tags))[:32],
             artifact_types=tuple(sorted(skill.procedure.artifact_types))[:32],
+            input_contract_ids=tuple(skill.procedure.input_contract_ids[:16]),
+            output_contract_ids=tuple(skill.procedure.output_contract_ids[:16]),
             applicability_preview=skill.procedure.applicability[:500],
             limitation_preview=tuple(skill.procedure.known_limitations[:4]),
         )

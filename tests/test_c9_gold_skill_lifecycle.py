@@ -247,6 +247,8 @@ def _draft(name="Generic validated analysis procedure"):
             ),
             execution_guidance=("Generate fresh task-specific code.",),
             validation_expectations=("Validate the current execution evidence.",),
+            input_contract_ids=("generic-input-contract",),
+            output_contract_ids=("generic-output-contract",),
             known_failure_modes=("A prior execution required a bounded retry.",),
             known_limitations=("Prior scientific facts do not prove current facts.",),
             tags=frozenset({"validated-analysis"}),
@@ -433,7 +435,7 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     )
 
     artifact = await toolset.artifact_query(str(derived.artifact_id), "SUMMARY")
-    search = await toolset.skill_search(query_text="Generic")
+    search = await toolset.skill_search()
     use = await toolset.skill_propose_use(
         str(gold.skill_id), gold.version, "REFERENCE", "Useful context."
     )
@@ -444,13 +446,13 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     private_tag = "C9_PRIVATE_SEARCH_TAG_8124"
     private_type = "C9_PRIVATE_SEARCH_TYPE_9317"
     hidden = await toolset.skill_search(
-        query_text=private_query,
+        offset=3,
         required_tags=[private_tag],
         artifact_types=[private_type],
         include_lab=False,
         limit=7,
     )
-    assert hidden["success"] and hidden["data"] == []
+    assert hidden["success"] and hidden["data"]["items"] == []
 
     assert artifact["information_authority"] == "AUTHORITATIVE_EVIDENCE"
     assert search["information_authority"] == "MODEL_CONTEXT"
@@ -469,11 +471,15 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     )[-1]
     assert search_audit is not None
     assert search_audit.model_dump() == {
-        "query_text_supplied": True,
+        "offset": 3,
+        "limit": 7,
         "required_tag_count": 1,
         "artifact_type_count": 1,
         "include_lab": False,
-        "limit": 7,
+        "returned_count": 0,
+        "available_count": 0,
+        "next_offset": None,
+        "truncated": False,
     }
     persisted = json.dumps(
         {
@@ -509,9 +515,11 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     await provider.initialize()
     schemas = {item.name: item.inputSchema for item in await provider.list_tools()}
     search_parameters = schemas["skill_search"]["parameters"]
-    assert "literal substring" in search_parameters["properties"]["query_text"][
-        "description"
-    ]
+    assert "query_text" not in search_parameters["properties"]
+    assert search_parameters["properties"]["offset"]["type"] == "integer"
+    assert search_parameters["properties"]["limit"]["type"] == "integer"
+    assert "Zero-based" in search_parameters["properties"]["offset"]["description"]
+    assert "1 through 50" in search_parameters["properties"]["limit"]["description"]
     assert "exact tags" in search_parameters["properties"]["required_tags"][
         "description"
     ]
@@ -542,7 +550,7 @@ async def test_s9_s11_full_context_requires_exact_run_version_user_and_scope(tmp
         ("skill_search", "skill_view"),
         recorder,
     )
-    search = await toolset.skill_search(query_text="Generic")
+    search = await toolset.skill_search()
     assert search["success"]
     assert "workflow_outline" not in json.dumps(search)
 
@@ -852,7 +860,7 @@ async def test_s18_s20_usage_requires_access_and_terminal_finalization_is_idempo
         ("skill_search", "skill_view"),
         recorder,
     )
-    assert (await toolset.skill_search(query_text="Generic"))["success"]
+    assert (await toolset.skill_search())["success"]
     assert service.finalize_run_usage(run_id, RunStatus.COMPLETED) == ()
 
     proposal = _submit_use(service, principal, workspace, gold, run_id)
@@ -875,7 +883,7 @@ async def test_s18_s20_usage_requires_access_and_terminal_finalization_is_idempo
     assert gold.procedure.applicability not in trace_json
 
 
-def test_s21_s22_successful_adapt_creates_v2_and_v1_is_immutable(tmp_path):
+def test_s21_s22_u6_u7_successful_adapt_creates_v2_and_v1_is_immutable(tmp_path):
     principal, workspace, artifacts, _, store, service, _, _ = _governed(tmp_path)
     _, _, v1 = _create_gold(service, store, principal, artifacts)
     v1_json = v1.model_dump_json()
@@ -941,6 +949,302 @@ def test_s21_s22_successful_adapt_creates_v2_and_v1_is_immutable(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_r1_r7_catalog_schema_visibility_and_exact_structural_filters(tmp_path):
+    principal, workspace, artifacts, exposure, store, service, _, recorder = _governed(
+        tmp_path
+    )
+    _, _, gold = _create_gold(service, store, principal, artifacts)
+    ungoverned = GoldSkillService(store, SkillSourceProjector(artifacts))
+    foreign = (
+        (
+            "Foreign personal procedure",
+            Principal(user_id="user-b", lab_id="lab-a"),
+            SkillProposalContext(
+                scope=SkillScope.PERSONAL,
+                owner_user_id="user-b",
+                lab_id="lab-a",
+            ),
+        ),
+        (
+            "Foreign project procedure",
+            Principal(user_id="user-b", lab_id="lab-a"),
+            SkillProposalContext(
+                scope=SkillScope.PROJECT,
+                project_id="project-b",
+                lab_id="lab-a",
+            ),
+        ),
+        (
+            "Foreign lab procedure",
+            Principal(user_id="user-b", lab_id="lab-b"),
+            SkillProposalContext(scope=SkillScope.LAB, lab_id="lab-b"),
+        ),
+    )
+    for name, owner, context in foreign:
+        _create_gold(
+            ungoverned,
+            store,
+            owner,
+            artifacts,
+            draft=_draft(name),
+            context=context,
+        )
+
+    run_id = uuid4()
+    toolset = _toolset(
+        principal,
+        workspace,
+        artifacts,
+        exposure,
+        service,
+        run_id,
+        ("skill_search",),
+        recorder,
+    )
+    provider = LocalProvider(toolset)
+    await provider.initialize()
+    schema = {
+        item.name: item.inputSchema for item in await provider.list_tools()
+    }["skill_search"]["parameters"]
+    assert "query_text" not in schema["properties"]
+    assert schema["properties"]["offset"]["type"] == "integer"
+    assert schema["properties"]["limit"]["type"] == "integer"
+    assert schema["additionalProperties"] is False
+
+    page = (await toolset.skill_search())["data"]
+    assert page["returned_count"] == page["available_count"] == 1
+    assert page["items"][0]["skill_id"] == str(gold.skill_id)
+    assert page["items"][0]["input_contract_ids"] == [
+        "generic-input-contract"
+    ]
+    assert page["items"][0]["output_contract_ids"] == [
+        "generic-output-contract"
+    ]
+    encoded = json.dumps(page)
+    for forbidden in (
+        "workflow_outline",
+        "execution_guidance",
+        "parameter_guidance",
+        "collaboration_guidance",
+        "script_artifact_ids",
+        "source_trace_event_ids",
+        "similarity_score",
+        '"rank"',
+    ):
+        assert forbidden not in encoded
+
+    tagged = await toolset.skill_search(required_tags=["validated-analysis"])
+    typed = await toolset.skill_search(
+        artifact_types=["generic-analysis-result"]
+    )
+    unknown = await toolset.skill_search(required_tags=["unknown-exact-tag"])
+    assert tagged["data"]["returned_count"] == 1
+    assert typed["data"]["returned_count"] == 1
+    assert unknown["data"] == {
+        "authority": "MODEL_CONTEXT",
+        "items": [],
+        "returned_count": 0,
+        "available_count": 0,
+        "offset": 0,
+        "effective_limit": 20,
+        "next_offset": None,
+        "truncated": False,
+    }
+    assert service.finalize_run_usage(run_id, RunStatus.COMPLETED) == ()
+    assert not store.accesses_for_run(run_id)
+
+    last_audit = toolset.evidence_items()[-1].skill_search_request
+    assert last_audit is not None
+    assert last_audit.model_dump() == {
+        "offset": 0,
+        "limit": 20,
+        "required_tag_count": 1,
+        "artifact_type_count": 0,
+        "include_lab": True,
+        "returned_count": 0,
+        "available_count": 0,
+        "next_offset": None,
+        "truncated": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_r8_r15_pagination_latest_version_history_and_stable_safe_preview(
+    tmp_path,
+):
+    principal, workspace, artifacts, exposure, store, service, _, recorder = _governed(
+        tmp_path
+    )
+    _, _, v1 = _create_gold(
+        service, store, principal, artifacts, draft=_draft("Beta procedure v1")
+    )
+    adapted_run_id = uuid4()
+    use = _submit_use(
+        service,
+        principal,
+        workspace,
+        v1,
+        adapted_run_id,
+        mode=SkillUseMode.ADAPT,
+    )
+    authorization = _decide_use(service, principal, use)
+    service.get_authorized_context(
+        authorization.authorization_id,
+        run_id=adapted_run_id,
+        project_id=workspace.project_id,
+        principal=principal,
+    )
+    usage = service.finalize_run_usage(adapted_run_id, RunStatus.COMPLETED)[0]
+    adapted_bundle = _source_bundle(artifacts, run_id=adapted_run_id)
+    store.save_source_bundle(adapted_bundle)
+    v2_proposal = service.create_proposal(
+        adapted_bundle.bundle_id,
+        _draft("Beta procedure v2"),
+        _context(parent=v1, source_usage_record_id=usage.usage_id),
+    )
+    v2 = service.decide_proposal(
+        v2_proposal.proposal_id,
+        SkillUserDecision(
+            subject_id=v2_proposal.proposal_id,
+            gate_id=v2_proposal.approval_gate_id,
+            approved=True,
+            decided_by=principal.user_id,
+        ),
+        principal=principal,
+    )
+    assert v2 is not None
+    for name in ("Alpha procedure", "Gamma procedure", "Delta procedure"):
+        _create_gold(
+            service,
+            store,
+            principal,
+            artifacts,
+            draft=_draft(name),
+        )
+
+    run_id = uuid4()
+    toolset = _toolset(
+        principal,
+        workspace,
+        artifacts,
+        exposure,
+        service,
+        run_id,
+        ("skill_search",),
+        recorder,
+    )
+    first = (await toolset.skill_search(offset=0, limit=2))["data"]
+    second = (await toolset.skill_search(offset=2, limit=2))["data"]
+    repeated = (await toolset.skill_search(offset=0, limit=2))["data"]
+    assert first["returned_count"] == 2
+    assert first["available_count"] == 4
+    assert first["next_offset"] == 2
+    assert first["truncated"] is True
+    assert second["returned_count"] == 2
+    assert second["available_count"] == 4
+    assert second["next_offset"] is None
+    assert second["truncated"] is False
+    for invalid_page in (
+        await toolset.skill_search(offset=-1),
+        await toolset.skill_search(limit=0),
+        await toolset.skill_search(limit=51),
+    ):
+        assert invalid_page["success"] is False
+        assert invalid_page["error"]["error_code"] == "INVALID_REQUEST"
+    identities = [
+        (item["skill_id"], item["version"])
+        for page in (first, second)
+        for item in page["items"]
+    ]
+    assert len(identities) == len(set(identities)) == 4
+    assert (str(v2.skill_id), 2) in identities
+    assert (str(v1.skill_id), 1) not in identities
+    assert repeated == first
+    assert store.get_gold(v1.skill_id, 1) == v1
+    assert store.lineage(v1.skill_id) == (v1, v2)
+    assert len(
+        store.search(
+            SkillSearchContext(
+                user_id=principal.user_id,
+                project_id=workspace.project_id,
+                lab_id=workspace.lab_id,
+            )
+        )
+    ) == 5
+    assert service.finalize_run_usage(run_id, RunStatus.COMPLETED) == ()
+
+
+@pytest.mark.asyncio
+async def test_u1_u5_u8_modes_are_model_input_and_gold_does_not_narrow_runtime(
+    tmp_path,
+):
+    principal, workspace, artifacts, exposure, store, service, _, recorder = _governed(
+        tmp_path
+    )
+    _, _, gold = _create_gold(service, store, principal, artifacts)
+    current = artifacts.register(
+        artifact_type="current-derived-result",
+        exposure_class=ArtifactExposureClass.DERIVED,
+        representation=ArtifactRepresentation(summary={"current": True}),
+        owner_user_id=principal.user_id,
+        project_id=workspace.project_id,
+        lab_id=workspace.lab_id,
+    )
+    run_id = uuid4()
+    capabilities = (
+        "artifact_query",
+        "skill_search",
+        "skill_view",
+        "skill_propose_use",
+    )
+    toolset = _toolset(
+        principal,
+        workspace,
+        artifacts,
+        exposure,
+        service,
+        run_id,
+        capabilities,
+        recorder,
+    )
+    page = await toolset.skill_search()
+    assert "mode" not in page["data"]["items"][0]
+    proposals = {}
+    for mode, deviations in (
+        ("REUSE", []),
+        ("ADAPT", ["Use current-task validation and parameters."]),
+        ("REFERENCE", []),
+    ):
+        result = await toolset.skill_propose_use(
+            str(gold.skill_id),
+            gold.version,
+            mode,
+            f"The runtime selected {mode} for this generic task.",
+            deviations,
+        )
+        proposals[mode] = store.get_use_proposal(
+            UUID(result["data"]["proposal_id"])
+        )
+    assert proposals["REUSE"].proposed_mode is SkillUseMode.REUSE
+    assert proposals["ADAPT"].proposed_mode is SkillUseMode.ADAPT
+    assert proposals["ADAPT"].proposed_deviations == (
+        "Use current-task validation and parameters.",
+    )
+    assert proposals["REFERENCE"].proposed_mode is SkillUseMode.REFERENCE
+
+    approved = _decide_use(service, principal, proposals["REUSE"])
+    viewed = await toolset.skill_view(str(approved.authorization_id))
+    assert viewed["success"]
+    assert set(toolset.tool_functions) == set(capabilities)
+
+    artifact = await toolset.artifact_query(str(current.artifact_id), "SUMMARY")
+    assert artifact["information_authority"] == "AUTHORITATIVE_EVIDENCE"
+    assert page["information_authority"] == "MODEL_CONTEXT"
+    ignored_run = uuid4()
+    assert service.finalize_run_usage(ignored_run, RunStatus.COMPLETED) == ()
+
+
+@pytest.mark.asyncio
 async def test_s23_s24_no_match_continues_and_skill_does_not_widen_capabilities(
     tmp_path, monkeypatch
 ):
@@ -965,8 +1269,8 @@ async def test_s23_s24_no_match_continues_and_skill_does_not_widen_capabilities(
         run_id,
         ("artifact_query",),
     )
-    no_match = await root.skill_search(query_text="unrelated-proteomics-procedure")
-    assert no_match["success"] and no_match["data"] == []
+    candidates = await root.skill_search()
+    assert candidates["success"] and len(candidates["data"]["items"]) == 1
     assert set(root.tool_functions) == {"skill_search", "skill_view", "skill_propose_use"}
     assert set(peer.tool_functions) == {"artifact_query"}
 

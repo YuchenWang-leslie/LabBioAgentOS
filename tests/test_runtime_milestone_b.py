@@ -549,7 +549,7 @@ async def test_skill_tools_return_candidates_no_score_and_pending_use(boundary):
         boundary, WorkflowStage.PLAN,
         ("skill_search", "skill_view", "skill_propose_use"), skill_service=service,
     )
-    search = await toolset.skill_search(query_text="Synthetic")
+    search = await toolset.skill_search()
     encoded = json.dumps(search)
     assert search["success"] and str(gold.skill_id) in encoded
     assert not any(word in encoded for word in ("similarity_score", '"ranking"', '"mode"'))

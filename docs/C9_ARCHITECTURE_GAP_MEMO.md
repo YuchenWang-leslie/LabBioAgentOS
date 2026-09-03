@@ -277,3 +277,46 @@ selection, auto-use, or auto-approval is added. The later run therefore has no
 use gate, context access, or usage receipt. C9 remains unaccepted pending a
 separately authorized generic retrieval-contract decision and subsequent one
 bounded live use validation.
+
+## Authorized retrieval-contract closure
+
+The separately authorized closure replaces only the model-facing retrieval
+adapter. `SkillSearchContext.query_text` and store-level exact metadata search
+remain available for trusted internal/API callers, but runtime
+`skill_search` no longer accepts or forwards task text. Its unfiltered default
+enumerates the legally visible active catalog and returns a typed bounded page:
+
+```text
+items
+returned_count
+available_count
+offset
+effective_limit
+next_offset
+truncated
+```
+
+Pages use deterministic `(name, skill_id, version)` ordering and expose only the
+latest approved version for each `skill_id`. Historical versions remain durable,
+immutable, and exactly retrievable through store/history APIs. Optional tag and
+Artifact-type filters remain exact; an unknown supplied filter produces an
+explicit empty page with no fallback. The framework never retrieves another
+page automatically.
+
+Candidate previews retain ID, version, name, description, scope, tags,
+Artifact types, applicability and limitation previews, and add bounded input/
+output contract IDs. They still omit workflow, execution, parameter, and
+collaboration guidance, script/trace references, and full procedure text. The
+runtime compares these previews and alone selects REUSE, ADAPT, REFERENCE, or no
+proposal. A future high-recall index may supply candidates at this seam but may
+not rank-to-use, choose a mode, auto-approve, or remove the browse/no-match path.
+
+Request audit now contains only offset, limit, exact-filter counts, and LAB
+inclusion. Completed audits add returned/available counts, next offset, and
+truncation. No query or tag/type values are persisted. R1-R15 and U1-U8 pass;
+the full non-live regression is 303 passed and 8 skipped with the existing
+Uvicorn warning. Frozen Pantheon could not describe an `Annotated` constrained
+integer signature, so the accepted provider schema uses ordinary integer fields
+with explicit descriptions and authoritative LabBio range validation. C9
+remains unaccepted until provider selection diagnostics and the one real
+approved-use continuation pass.
