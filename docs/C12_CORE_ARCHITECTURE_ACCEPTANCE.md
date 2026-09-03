@@ -51,8 +51,8 @@ failed acceptance gate.
 | 31 | Full regression | `LABBIO_RUN_C12_DOCKER=1`, live-provider flag explicitly unset: `376 passed, 11 skipped, 1 warning in 6.99s`; the warning is the pre-existing Uvicorn websocket deprecation. Docker/containerd/socket remained active. |
 | 32 | P2 limitations | Nested execution draft is an unconstrained provider object; exact failed args were not persisted; total undeclared-output disk use lacks quota; no covert-channel, kernel-zero-day, distributed transaction, multi-writer, or HA claim. |
 | 33 | Production files changed | Shared model-safety validator; Artifact approvals/exposure/models/store; H5AD adapter; execution image/policy/models/preflight/Docker/registration; application composition; runtime evidence/report/tooling; trace validation; public exports. No scientific runtime intelligence was added. |
-| 34 | Commit SHAs | Audit `c027909b339e0163ab9fd3b6aede3f3d6d366be4`; Artifact boundary `215e533eb9f0b57ea7c777e05641cf88960f11d7`; execution/declassification `cea9fe63e0b2a75753af6f349e0402dba206f040`; adversarial tests `8f0f6d77575d9b271069c6c0ceb50a05c4a4c4b9`; closeout documentation is the commit containing this file. |
-| 35 | Push status | To be verified on `origin/c12-core-architecture-hardening`; `main` is not a push target. |
+| 34 | Commit SHAs | Audit `c027909b339e0163ab9fd3b6aede3f3d6d366be4`; Artifact boundary `215e533eb9f0b57ea7c777e05641cf88960f11d7`; execution/declassification `cea9fe63e0b2a75753af6f349e0402dba206f040`; adversarial tests `8f0f6d77575d9b271069c6c0ceb50a05c4a4c4b9`; closeout documentation `95089851285daafbae074f39510aa69e4214d5a5`. |
+| 35 | Push status | Verified on `origin/c12-core-architecture-hardening`; the final remote SHA is recorded in the handoff. `main` was not a push target. |
 | 36 | Final C12 status | **C12 NOT ACCEPTED.** Exact unmet criterion: the one performed provider-backed integrated architecture run was not green. No later architecture/evaluation/API/UI work is authorized by this closeout. |
 
 ## Provider schema evidence
