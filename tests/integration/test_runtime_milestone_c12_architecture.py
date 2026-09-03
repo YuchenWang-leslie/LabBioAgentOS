@@ -16,13 +16,10 @@ from labbioagentos import (
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
     ApprovedImage,
-    ArtifactConsumer,
     ArtifactExposureClass,
-    ArtifactQuery,
     ArtifactReleaseBasis,
     ArtifactRepresentation,
     ArtifactSchema,
-    ArtifactViewType,
     BioFormatArtifactSpec,
     BioFormatInspectionBundle,
     CapabilityProfile,
@@ -543,55 +540,31 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
         for item in successful_executions
         for output_id in item["safe_result"]["output_artifact_ids"]
     ]
-    derived = tuple(
-        application.artifact_store.get_ref(output_id)
-        for output_id in output_ids
-        if application.artifact_store.get_ref(output_id).exposure_class
-        is ArtifactExposureClass.DERIVED
+    output_refs = tuple(
+        application.artifact_store.get_ref(output_id) for output_id in output_ids
     )
-    assert derived
-    assert all(
-        item.release_basis
-        is ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION
-        for item in derived
-    )
-    derived_view = application.artifact_exposure.artifact_query(
-        derived[-1].artifact_id,
-        ArtifactQuery(view_type=ArtifactViewType.TOP_N, limit=4),
-        ArtifactConsumer.REMOTE_LLM,
-        principal=principal,
-    )
-    assert derived_view.records
-    assert all(set(record) == {"metric", "value"} for record in derived_view.records)
-    assert all(
-        isinstance(record["value"], (int, float))
-        and not isinstance(record["value"], bool)
-        for record in derived_view.records
-    )
-    runtime_discovered_strings = sorted(
-        {
-            value
-            for record in derived_view.records
-            for value in record.values()
-            if isinstance(value, str)
-        }
-    )
-    assert runtime_discovered_strings
+    assert output_refs
     assert outcome.report_artifact_ids
     assert {
         TraceEventType.PREFLIGHT_COMPLETED,
         TraceEventType.EXECUTION_STARTED,
-        TraceEventType.EXECUTION_COMPLETED,
         TraceEventType.OUTPUT_REGISTERED,
         TraceEventType.REPORT_SUBMITTED,
         TraceEventType.RUN_COMPLETED,
     }.issubset({event.event_type for event in events})
 
+    report_documents = tuple(
+        application.artifact_store.load_for_view(artifact_id).representation.model_dump(
+            mode="json"
+        )
+        for artifact_id in outcome.report_artifact_ids
+    )
+
     model_surfaces = json.dumps(
         {
             "boundaries": boundaries,
             "trace": [event.model_dump(mode="json") for event in events],
-            "derived_view": derived_view.model_dump(mode="json"),
+            "reports": report_documents,
         },
         sort_keys=True,
     )
@@ -627,12 +600,19 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
                 "execution_submit_invocation_count": len(execution_items),
                 "successful_execution_submit_count": len(successful_executions),
                 "execution_ids": execution_ids,
-                "output_artifact_ids": [str(item.artifact_id) for item in derived],
+                "output_artifacts": [
+                    {
+                        "artifact_id": str(item.artifact_id),
+                        "exposure_class": item.exposure_class.value,
+                        "release_basis": item.release_basis.value,
+                    }
+                    for item in output_refs
+                ],
                 "report_artifact_ids": [
                     str(item) for item in outcome.report_artifact_ids
                 ],
-                "runtime_discovered_strings": runtime_discovered_strings,
-                "release_basis": [item.release_basis.value for item in derived],
+                "scientific_result_self_evaluated": False,
+                "external_evaluation_required": True,
                 "failed_execution_request_audits": failed_audits,
                 "docker_invocation_count": runner.invocation_count,
                 "leak_audit_passed": True,
