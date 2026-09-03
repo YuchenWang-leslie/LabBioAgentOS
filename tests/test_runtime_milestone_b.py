@@ -586,10 +586,12 @@ def _memory_service(boundary):
     _, _, access, principal, _, _, _ = boundary
     store = InMemoryMemoryStore()
     service = MemoryGovernanceService(store, access)
+    source_run_id = uuid4()
     proposal = __import__("labbioagentos").MemoryUpdateProposal(
         target_scope=MemoryScope.PERSONAL, owner_user_id="user-a", lab_id="lab-a",
         proposed_kind=MemoryKind.OPERATING_NOTE,
         proposed_content="Synthetic persistent note.", reason="Synthetic reason.",
+        source_run_id=source_run_id,
     )
     service.submit_proposal(principal, proposal)
     entry = service.decide(
@@ -610,19 +612,20 @@ async def test_memory_tools_obey_scope_and_only_create_pending_proposal(boundary
         ("memory_search", "memory_view", "memory_propose_update"),
         memory_service=service,
     )
-    search = await toolset.memory_search(query_text="persistent")
-    assert search["success"] and search["data"][0]["memory_id"] == str(entry.memory_id)
+    search = await toolset.memory_search()
+    assert search["success"]
+    assert search["data"]["items"][0]["memory_id"] == str(entry.memory_id)
     view = await toolset.memory_view(str(entry.memory_id), 1)
     assert view["data"]["content"] == "Synthetic persistent note."
     before = store.entries()
     receipt = await toolset.memory_propose_update(
-        {
-            "target_scope": "PERSONAL", "proposed_kind": "PREFERENCE",
-            "proposed_content": "Runtime supplied content.",
-            "reason": "Runtime supplied reason.",
-        }
+        target_scope="PERSONAL",
+        proposed_kind="PREFERENCE",
+        proposed_content="Runtime supplied content.",
+        reason="Runtime supplied reason.",
     )
     assert receipt["data"]["status"] == "USER_APPROVAL_REQUIRED"
+    assert receipt["data"]["domain_reference_id"].startswith("memory-proposal:")
     assert store.entries() == before
     assert store.get_proposal(uuid_from(receipt["data"]["proposal_id"]))
 

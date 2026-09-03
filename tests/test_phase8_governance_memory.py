@@ -102,16 +102,18 @@ def _memory_proposal(
     run_id=None,
     target_memory_id=None,
     target_version=None,
+    evidence_artifact_ids=(),
 ):
+    source_run_id = run_id or uuid4()
     kwargs = {
         "target_scope": scope,
         "lab_id": "lab-a",
         "proposed_kind": MemoryKind.OPERATING_NOTE,
         "proposed_content": "Synthetic bounded persistent note.",
         "reason": "Runtime supplied a synthetic update reason.",
-        "evidence_run_ids": (run_id or uuid4(),),
-        "evidence_artifact_ids": (uuid4(),),
-        "source_run_id": run_id,
+        "evidence_run_ids": (source_run_id,),
+        "evidence_artifact_ids": evidence_artifact_ids,
+        "source_run_id": source_run_id,
         "target_memory_id": target_memory_id,
         "target_version": target_version,
     }
@@ -451,13 +453,9 @@ def test_personal_memory_requires_owner_approval_and_rejection_creates_nothing(
 def test_project_memory_requires_owner_or_admin_approval(governance):
     _, _, service, principals = _memory_service(governance)
     proposal = _memory_proposal(MemoryScope.PROJECT)
-    service.submit_proposal(principals["collaborator"], proposal)
     with pytest.raises(AuthorizationDenied):
-        service.decide(
-            principals["collaborator"],
-            proposal.proposal_id,
-            _decision(proposal, "user-c"),
-        )
+        service.submit_proposal(principals["collaborator"], proposal)
+    service.submit_proposal(principals["owner"], proposal)
     entry = service.decide(
         principals["owner"], proposal.proposal_id, _decision(proposal, "user-a")
     )
@@ -468,13 +466,9 @@ def test_project_memory_requires_owner_or_admin_approval(governance):
 def test_lab_memory_requires_lab_admin_approval(governance):
     _, _, service, principals = _memory_service(governance)
     proposal = _memory_proposal(MemoryScope.LAB)
-    service.submit_proposal(principals["owner"], proposal)
     with pytest.raises(AuthorizationDenied):
-        service.decide(
-            principals["owner"],
-            proposal.proposal_id,
-            _decision(proposal, "user-a"),
-        )
+        service.submit_proposal(principals["owner"], proposal)
+    service.submit_proposal(principals["admin"], proposal)
     entry = service.decide(
         principals["admin"],
         proposal.proposal_id,
@@ -511,15 +505,44 @@ def test_memory_update_creates_v2_preserves_v1_and_reconstructs_lineage(governan
     assert service.lineage(principals["owner"], v1.memory_id) == (v1, v2)
 
 
-def test_memory_evidence_is_reference_only_and_trace_omits_content(governance):
-    sink, _, service, principals = _memory_service(governance)
+def test_memory_evidence_is_reference_only_and_trace_omits_content(
+    tmp_path, governance
+):
+    sink, recorder, _, access, principals = governance
+    artifact_store = LocalArtifactStore(tmp_path / "artifacts", trace_recorder=recorder)
+    memory_store = InMemoryMemoryStore()
+    service = MemoryGovernanceService(
+        memory_store,
+        access,
+        trace_recorder=recorder,
+        artifact_store=artifact_store,
+    )
     run_id = uuid4()
-    proposal = _memory_proposal(MemoryScope.PERSONAL, run_id=run_id)
+    evidence = artifact_store.register(
+        artifact_type="synthetic-derived",
+        exposure_class=ArtifactExposureClass.DERIVED,
+        representation=ArtifactRepresentation(summary={"count": 1}),
+        owner_user_id="user-a",
+        project_id="project-a",
+        lab_id="lab-a",
+        run_id=run_id,
+    )
+    proposal = _memory_proposal(
+        MemoryScope.PERSONAL,
+        run_id=run_id,
+        evidence_artifact_ids=(evidence.artifact_id,),
+    )
     raw_token = "RAW_ARTIFACT_CONTENT_MUST_NOT_APPEAR"
     raw_representation = ArtifactRepresentation(stored_content=raw_token)
     assert raw_token in raw_representation.model_dump_json()
     assert raw_token not in proposal.model_dump_json()
-    service.submit_proposal(principals["owner"], proposal)
+    service.submit_proposal(
+        principals["owner"],
+        proposal,
+        workspace=WorkspaceContext(
+            user_id="user-a", project_id="project-a", lab_id="lab-a"
+        ),
+    )
     entry = service.decide(
         principals["owner"], proposal.proposal_id, _decision(proposal, "user-a")
     )

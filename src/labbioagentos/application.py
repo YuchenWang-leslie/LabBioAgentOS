@@ -72,7 +72,7 @@ from .governance import (
     Project,
     WorkspaceContext,
 )
-from .memory import MemoryGovernanceService
+from .memory import MemoryDecision, MemoryGovernanceService
 from .run_state import (
     ApplicationRunRecord,
     InMemoryRunStateStore,
@@ -261,6 +261,88 @@ class SkillDomainDecisionHandler(ApplicationDomainDecisionHandler):
                 except ValueError as exc:
                     raise ValueError("Invalid Skill domain reference") from exc
         raise ValueError("Unsupported Skill domain reference")
+
+
+class MemoryDomainDecisionHandler(ApplicationDomainDecisionHandler):
+    """Bridge one exact Memory proposal into the generic application gate."""
+
+    _PREFIX = "memory-proposal:"
+
+    def __init__(self, service: MemoryGovernanceService):
+        self.service = service
+
+    def supports(self, domain_reference_id: str) -> bool:
+        try:
+            self._parse(domain_reference_id)
+        except ValueError:
+            return False
+        return True
+
+    async def apply(
+        self,
+        *,
+        pending_gate: PendingUserGate,
+        decision: GateUserDecision,
+        principal: Principal,
+        workspace: WorkspaceContext,
+        run_id: UUID,
+    ) -> str:
+        if (
+            decision.gate_id != pending_gate.gate_id
+            or decision.domain_reference_id != pending_gate.domain_reference_id
+        ):
+            raise ApplicationRunStateError(
+                "Memory domain decision does not match the pending workflow gate"
+            )
+        if decision.decided_by != principal.user_id:
+            raise AuthorizationDenied(
+                "Memory domain decision identity does not match the Principal"
+            )
+        if decision.decision_reference_id is not None:
+            raise ApplicationRunStateError(
+                "External Memory decisions cannot supply a decision reference"
+            )
+        proposal_id = self._parse(decision.domain_reference_id or "")
+        proposal = self.service.pending_proposal(proposal_id)
+        if (
+            proposal.source_run_id != run_id
+            or proposal.lab_id != workspace.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Memory proposal does not match the application run scope"
+            )
+        if proposal.project_id is not None and proposal.project_id != workspace.project_id:
+            raise AuthorizationDenied(
+                "Memory proposal project does not match the application workspace"
+            )
+        if (
+            proposal.owner_user_id is not None
+            and proposal.owner_user_id != principal.user_id
+        ):
+            raise AuthorizationDenied(
+                "Memory proposal owner does not match the application Principal"
+            )
+        memory_decision = MemoryDecision(
+            proposal_id=proposal.proposal_id,
+            gate_id=proposal.approval_gate_id,
+            approved=decision.approved,
+            decided_by=decision.decided_by,
+        )
+        self.service.decide(
+            principal,
+            proposal.proposal_id,
+            memory_decision,
+        )
+        return str(memory_decision.decision_id)
+
+    @classmethod
+    def _parse(cls, reference: str) -> UUID:
+        if not reference.startswith(cls._PREFIX):
+            raise ValueError("Unsupported Memory domain reference")
+        try:
+            return UUID(reference.removeprefix(cls._PREFIX))
+        except ValueError as exc:
+            raise ValueError("Invalid Memory domain reference") from exc
 
 
 class ApplicationArtifactReference(BaseModel):
@@ -535,6 +617,20 @@ class LabBioApplication:
             configuration.artifact_root,
             trace_recorder=self.trace_recorder,
         )
+        if configuration.memory_service is not None:
+            configuration.memory_service.bind_runtime_context(
+                access_service=self.access_service,
+                trace_recorder=self.trace_recorder,
+                artifact_store=self.artifact_store,
+            )
+            if any(
+                isinstance(handler, MemoryDomainDecisionHandler)
+                and handler.service is not configuration.memory_service
+                for handler in configuration.domain_decision_handlers
+            ):
+                raise ApplicationConfigurationError(
+                    "Memory decision handlers must use the configured Memory service"
+                )
         self.artifact_exposure = ArtifactExposureService(
             self.artifact_store,
             configuration.exposure_policy,
@@ -1483,4 +1579,5 @@ __all__ = [
     "ApplicationStagePlugin",
     "LabBioApplication",
     "SkillDomainDecisionHandler",
+    "MemoryDomainDecisionHandler",
 ]

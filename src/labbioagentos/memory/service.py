@@ -1,13 +1,16 @@
-"""Proposal-only persistent Memory governance and immutable version creation."""
+"""Governed proposal-only Memory lifecycle and provenance validation."""
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import UUID
 
+from labbioagentos.artifacts import ArtifactExposureClass, ArtifactStore
 from labbioagentos.governance import (
     AccessAction,
     AccessService,
+    AuthorizationDenied,
     Principal,
+    WorkspaceContext,
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
@@ -17,11 +20,15 @@ from .models import (
     MemoryScope,
     MemoryUpdateProposal,
 )
-from .store import InMemoryMemoryStore, MemoryConflictError
+from .store import MemoryStore
 
 
 class MemoryDecisionError(PermissionError):
     pass
+
+
+class MemoryEvidenceError(MemoryDecisionError):
+    """A proposed provenance reference is not safe to persist."""
 
 
 class MemoryGovernanceService:
@@ -29,21 +36,44 @@ class MemoryGovernanceService:
 
     def __init__(
         self,
-        store: InMemoryMemoryStore,
-        access: AccessService,
+        store: MemoryStore,
+        access: AccessService | None = None,
         *,
         trace_recorder: RunTraceRecorder | None = None,
+        artifact_store: ArtifactStore | None = None,
     ):
         self.store = store
         self.access = access
         self.trace_recorder = trace_recorder
+        self.artifact_store = artifact_store
+
+    def bind_runtime_context(
+        self,
+        *,
+        access_service: AccessService,
+        trace_recorder: RunTraceRecorder,
+        artifact_store: ArtifactStore,
+    ) -> None:
+        """Bind all nested effects to the application's current authorities."""
+
+        if not isinstance(access_service, AccessService):
+            raise TypeError("access_service must be an AccessService")
+        if not isinstance(trace_recorder, RunTraceRecorder):
+            raise TypeError("trace_recorder must be a RunTraceRecorder")
+        self.access = access_service
+        self.trace_recorder = trace_recorder
+        self.artifact_store = artifact_store
 
     def submit_proposal(
         self,
         principal: Principal,
         proposal: MemoryUpdateProposal,
+        *,
+        workspace: WorkspaceContext | None = None,
     ) -> None:
-        self._require_proposal_visibility(principal, proposal)
+        self._require_approval(principal, proposal)
+        self._validate_source_lineage(proposal)
+        self._validate_artifact_lineage(principal, proposal, workspace)
         self.store.save_proposal(proposal)
         self._emit(
             proposal,
@@ -67,11 +97,9 @@ class MemoryGovernanceService:
             raise MemoryDecisionError(
                 "Memory decision does not match the proposal gate and principal"
             )
-        if self.store.has_decision(proposal_id):
-            raise MemoryConflictError("Memory proposal already has a decision")
         self._require_approval(principal, proposal)
-        if not decision.approved:
-            self.store._record_decision(decision)
+        entry = self.store.decide_proposal(proposal_id, decision)
+        if entry is None:
             self._emit(
                 proposal,
                 TraceEventType.MEMORY_PROPOSAL_REJECTED,
@@ -82,39 +110,10 @@ class MemoryGovernanceService:
                 },
             )
             return None
-
-        parent = None
-        if proposal.target_memory_id is None:
-            memory_id, version = uuid4(), 1
-        else:
-            parent = self.store.get(
-                proposal.target_memory_id,
-                proposal.target_version,
-            )
-            self._validate_update_scope(proposal, parent)
-            memory_id, version = parent.memory_id, parent.version + 1
-        entry = MemoryEntry(
-            memory_id=memory_id,
-            version=version,
-            scope=proposal.target_scope,
-            owner_user_id=proposal.owner_user_id,
-            project_id=proposal.project_id,
-            lab_id=proposal.lab_id,
-            kind=proposal.proposed_kind,
-            content=proposal.proposed_content,
-            evidence_run_ids=proposal.evidence_run_ids,
-            evidence_artifact_ids=proposal.evidence_artifact_ids,
-            source_proposal_id=proposal.proposal_id,
-            previous_version=parent.version if parent is not None else None,
-            approved_by=decision.decided_by,
-            approved_at=decision.decided_at,
-        )
-        self.store._commit_entry(entry)
-        self.store._record_decision(decision)
         self._emit(
             proposal,
             TraceEventType.MEMORY_PROPOSAL_APPROVED,
-            "APPROVED",
+            entry.status.value,
             {
                 "proposal_id": str(proposal.proposal_id),
                 "decision_id": str(decision.decision_id),
@@ -160,22 +159,25 @@ class MemoryGovernanceService:
         for entry in self.store.entries():
             try:
                 self._require_read(principal, entry)
-            except PermissionError:
+            except AuthorizationDenied:
                 continue
             visible.append(entry)
         return tuple(visible)
 
-    def _require_proposal_visibility(
-        self,
-        principal: Principal,
-        proposal: MemoryUpdateProposal,
-    ) -> None:
-        action = {
-            MemoryScope.PERSONAL: AccessAction.READ_PERSONAL_MEMORY,
-            MemoryScope.PROJECT: AccessAction.READ_PROJECT_MEMORY,
-            MemoryScope.LAB: AccessAction.READ_LAB_MEMORY,
-        }[proposal.target_scope]
-        self._require_scope(principal, proposal, action)
+    def list_candidates(self, principal: Principal) -> tuple[MemoryEntry, ...]:
+        """Return only latest ACTIVE entries visible to the current Principal."""
+
+        visible = []
+        for entry in self.store.active_latest():
+            try:
+                self._require_read(principal, entry)
+            except AuthorizationDenied:
+                continue
+            visible.append(entry)
+        return tuple(visible)
+
+    def pending_proposal(self, proposal_id: UUID) -> MemoryUpdateProposal:
+        return self.store.get_proposal(proposal_id)
 
     def _require_approval(
         self,
@@ -195,7 +197,7 @@ class MemoryGovernanceService:
             MemoryScope.PROJECT: AccessAction.READ_PROJECT_MEMORY,
             MemoryScope.LAB: AccessAction.READ_LAB_MEMORY,
         }[entry.scope]
-        self.access.require_memory_scope(
+        self._required_access().require_memory_scope(
             principal,
             scope=entry.scope.value,
             owner_user_id=entry.owner_user_id,
@@ -212,7 +214,7 @@ class MemoryGovernanceService:
         proposal: MemoryUpdateProposal,
         action: AccessAction,
     ) -> None:
-        self.access.require_memory_scope(
+        self._required_access().require_memory_scope(
             principal,
             scope=proposal.target_scope.value,
             owner_user_id=proposal.owner_user_id,
@@ -223,20 +225,61 @@ class MemoryGovernanceService:
             run_id=proposal.source_run_id,
         )
 
-    @staticmethod
-    def _validate_update_scope(
+    def _validate_artifact_lineage(
+        self,
+        principal: Principal,
         proposal: MemoryUpdateProposal,
-        parent: MemoryEntry,
+        workspace: WorkspaceContext | None,
     ) -> None:
-        if (
-            proposal.target_scope is not parent.scope
-            or proposal.owner_user_id != parent.owner_user_id
-            or proposal.project_id != parent.project_id
-            or proposal.lab_id != parent.lab_id
-        ):
-            raise MemoryDecisionError(
-                "A Memory update must preserve scope, ownership, project, and lab"
+        if not proposal.evidence_artifact_ids:
+            return
+        if workspace is None or self.artifact_store is None:
+            raise MemoryEvidenceError(
+                "Memory Artifact evidence requires a bound governed workspace"
             )
+        if (
+            workspace.user_id != principal.user_id
+            or workspace.lab_id != principal.lab_id
+            or proposal.lab_id != workspace.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Memory evidence workspace is not bound to the Principal"
+            )
+        for artifact_id in proposal.evidence_artifact_ids:
+            ref = self.artifact_store.get_ref(artifact_id)
+            if (
+                ref.project_id != workspace.project_id
+                or ref.lab_id != workspace.lab_id
+            ):
+                raise AuthorizationDenied(
+                    "Memory evidence Artifact is outside the bound workspace"
+                )
+            self._required_access().require_artifact(
+                principal,
+                ref,
+                AccessAction.READ_ARTIFACT,
+            )
+            if ref.exposure_class is ArtifactExposureClass.RAW:
+                raise MemoryEvidenceError(
+                    "RAW Artifact references cannot support runtime-generated Memory"
+                )
+
+    @staticmethod
+    def _validate_source_lineage(proposal: MemoryUpdateProposal) -> None:
+        if proposal.evidence_run_ids not in {
+            (),
+            (proposal.source_run_id,),
+        }:
+            raise MemoryEvidenceError(
+                "Memory evidence run lineage must be the current source run"
+            )
+
+    def _required_access(self) -> AccessService:
+        if self.access is None:
+            raise MemoryDecisionError(
+                "Memory governance access service is not configured"
+            )
+        return self.access
 
     def _emit(
         self,

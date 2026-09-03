@@ -36,9 +36,17 @@ from labbioagentos.execution import (
 )
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.memory import (
+    MemoryConflictError,
+    MemoryDecisionError,
+    MemoryEvidenceError,
     MemoryGovernanceService,
     MemoryKind,
+    MemoryNotFoundError,
+    MemoryProposalAction,
     MemoryScope,
+    MemoryStaleUpdateError,
+    MemoryStatus,
+    MemoryStoreError,
     MemoryUpdateProposal,
 )
 from labbioagentos.skills import (
@@ -241,16 +249,48 @@ class MemoryCandidateView(BaseModel):
     )
     memory_id: UUID
     version: int
-    scope: StrictStr
-    kind: StrictStr
+    scope: MemoryScope
+    kind: MemoryKind
+    status: Literal[MemoryStatus.ACTIVE] = MemoryStatus.ACTIVE
     preview: StrictStr
+
+
+class MemoryCandidatePage(BaseModel):
+    """Stable bounded page of visible latest ACTIVE Memory candidates."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
+    items: tuple[MemoryCandidateView, ...] = Field(default=(), max_length=50)
+    returned_count: int = Field(ge=0, le=50)
+    available_count: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    effective_limit: int = Field(ge=1, le=50)
+    next_offset: int | None = Field(default=None, ge=0)
+    truncated: bool
+
+    @model_validator(mode="after")
+    def validate_page_completeness(self) -> "MemoryCandidatePage":
+        if self.returned_count != len(self.items):
+            raise ValueError("Memory candidate returned_count does not match items")
+        if self.returned_count > self.available_count:
+            raise ValueError("Memory candidate page exceeds available_count")
+        has_next = self.offset + self.returned_count < self.available_count
+        if self.truncated != has_next:
+            raise ValueError("Memory candidate truncated flag is inconsistent")
+        expected_next = self.offset + self.returned_count if has_next else None
+        if self.next_offset != expected_next:
+            raise ValueError("Memory candidate next_offset is inconsistent")
+        return self
 
 
 class MemoryDetailView(MemoryCandidateView):
     content: StrictStr
     previous_version: int | None = None
-    evidence_run_ids: tuple[UUID, ...] = ()
-    evidence_artifact_ids: tuple[UUID, ...] = ()
+    evidence_run_count: int = Field(ge=0)
+    evidence_artifact_count: int = Field(ge=0)
+    has_evidence: bool
 
 
 @dataclass(frozen=True)
@@ -602,14 +642,27 @@ class LabBioRuntimeToolSet(ToolSet):
     @tool
     async def memory_search(
         self,
-        query_text: str | None = None,
-        kind: str | None = None,
-        scope: str | None = None,
+        offset: int = 0,
         limit: int = 20,
+        kind: Literal[
+            "PREFERENCE",
+            "PROJECT_FACT",
+            "BIOLOGICAL_EVIDENCE",
+            "HYPOTHESIS",
+            "OPERATING_NOTE",
+        ] | None = None,
+        scope: Literal["PERSONAL", "PROJECT", "LAB"] | None = None,
     ) -> dict:
-        """Return bounded authorized Memory candidates."""
+        """Browse visible latest ACTIVE Memory without ranking relevance.
+
+        Args:
+            offset: Zero-based position in the stable visible catalog.
+            limit: Maximum candidates to return, from 1 through 50.
+            kind: Optional exact semantic kind filter.
+            scope: Optional exact visibility scope filter.
+        """
         return await self._call(
-            "memory_search", lambda: self._memory_search(query_text, kind, scope, limit)
+            "memory_search", lambda: self._memory_search(offset, limit, kind, scope)
         )
 
     @tool
@@ -622,9 +675,42 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
-    async def memory_propose_update(self, draft: dict) -> dict:
-        """Create a pending governed Memory proposal; it cannot approve it."""
-        return await self._call("memory_propose_update", lambda: self._memory_proposal(draft))
+    async def memory_propose_update(
+        self,
+        target_scope: Literal["PERSONAL", "PROJECT", "LAB"],
+        reason: str,
+        action: Literal["UPSERT", "RETIRE"] = "UPSERT",
+        target_memory_id: str | None = None,
+        target_version: int | None = None,
+        proposed_kind: Literal[
+            "PREFERENCE",
+            "PROJECT_FACT",
+            "BIOLOGICAL_EVIDENCE",
+            "HYPOTHESIS",
+            "OPERATING_NOTE",
+        ] | None = None,
+        proposed_content: str | None = None,
+        evidence_artifact_ids: list[str] | None = None,
+    ) -> dict:
+        """Propose governed contextual Memory; approval is always external.
+
+        Trusted owner, project, lab, source-run, and invocation fields are bound
+        by the host and cannot be supplied here. RETIRE requires an exact current
+        Memory ID/version and does not replace content.
+        """
+        return await self._call(
+            "memory_propose_update",
+            lambda: self._memory_proposal(
+                target_scope=target_scope,
+                reason=reason,
+                action=action,
+                target_memory_id=target_memory_id,
+                target_version=target_version,
+                proposed_kind=proposed_kind,
+                proposed_content=proposed_content,
+                evidence_artifact_ids=evidence_artifact_ids or [],
+            ),
+        )
 
     @tool
     async def report_submit(
@@ -811,32 +897,47 @@ class LabBioRuntimeToolSet(ToolSet):
             "status": "USER_APPROVAL_REQUIRED",
         }
 
-    def _memory_search(self, query_text, kind, scope, limit):
-        if limit < 1 or limit > 50:
+    def _memory_search(self, offset, limit, kind, scope):
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("Memory result offset must be a non-negative integer")
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1 or limit > 50:
             raise ValueError("Memory result limit must be between 1 and 50")
-        entries = self._required(self.services.memory_service, "memory").list_visible(
+        entries = self._required(self.services.memory_service, "memory").list_candidates(
             self.binding.principal
         )
         filtered = []
         for entry in entries:
             if entry.scope is MemoryScope.PROJECT and entry.project_id != self.binding.workspace.project_id:
                 continue
+            if entry.scope is MemoryScope.PERSONAL and entry.owner_user_id != self.binding.principal.user_id:
+                continue
+            if entry.lab_id != self.binding.workspace.lab_id:
+                continue
             if kind and entry.kind is not MemoryKind(kind):
                 continue
             if scope and entry.scope is not MemoryScope(scope):
-                continue
-            if query_text and query_text.casefold() not in entry.content.casefold():
                 continue
             filtered.append(
                 MemoryCandidateView(
                     memory_id=entry.memory_id,
                     version=entry.version,
-                    scope=entry.scope.value,
-                    kind=entry.kind.value,
+                    scope=entry.scope,
+                    kind=entry.kind,
                     preview=entry.content[:500],
                 )
             )
-        return filtered[:limit]
+        items = tuple(filtered[offset : offset + limit])
+        next_offset = offset + len(items)
+        truncated = next_offset < len(filtered)
+        return MemoryCandidatePage(
+            items=items,
+            returned_count=len(items),
+            available_count=len(filtered),
+            offset=offset,
+            effective_limit=limit,
+            next_offset=next_offset if truncated else None,
+            truncated=truncated,
+        )
 
     def _memory_view(self, memory_id, version):
         entry = self._required(self.services.memory_service, "memory").get(
@@ -847,44 +948,58 @@ class LabBioRuntimeToolSet(ToolSet):
         return MemoryDetailView(
             memory_id=entry.memory_id,
             version=entry.version,
-            scope=entry.scope.value,
-            kind=entry.kind.value,
+            scope=entry.scope,
+            kind=entry.kind,
             preview=entry.content[:500],
             content=entry.content[:4000],
             previous_version=entry.previous_version,
-            evidence_run_ids=entry.evidence_run_ids[:64],
-            evidence_artifact_ids=entry.evidence_artifact_ids[:64],
+            evidence_run_count=len(entry.evidence_run_ids),
+            evidence_artifact_count=len(entry.evidence_artifact_ids),
+            has_evidence=bool(entry.evidence_run_ids or entry.evidence_artifact_ids),
         )
 
-    def _memory_proposal(self, draft: dict):
-        allowed = {
-            "target_scope", "target_memory_id", "target_version", "proposed_kind",
-            "proposed_content", "reason", "evidence_run_ids", "evidence_artifact_ids",
-        }
-        if set(draft) - allowed:
-            raise ValueError("Memory proposal contains trusted or unsupported fields")
-        scope = MemoryScope(draft["target_scope"])
+    def _memory_proposal(
+        self,
+        *,
+        target_scope,
+        reason,
+        action,
+        target_memory_id,
+        target_version,
+        proposed_kind,
+        proposed_content,
+        evidence_artifact_ids,
+    ):
+        scope = MemoryScope(target_scope)
         proposal = MemoryUpdateProposal(
+            action=MemoryProposalAction(action),
             target_scope=scope,
-            owner_user_id=(self.binding.principal.user_id if scope is MemoryScope.PERSONAL else None),
+            owner_user_id=(
+                self.binding.principal.user_id
+                if scope in {MemoryScope.PERSONAL, MemoryScope.PROJECT}
+                else None
+            ),
             project_id=(self.binding.workspace.project_id if scope is MemoryScope.PROJECT else None),
             lab_id=self.binding.workspace.lab_id,
-            target_memory_id=draft.get("target_memory_id"),
-            target_version=draft.get("target_version"),
-            proposed_kind=MemoryKind(draft["proposed_kind"]),
-            proposed_content=draft["proposed_content"],
-            reason=draft["reason"],
-            evidence_run_ids=tuple(draft.get("evidence_run_ids", ())),
-            evidence_artifact_ids=tuple(draft.get("evidence_artifact_ids", ())),
+            target_memory_id=UUID(target_memory_id) if target_memory_id is not None else None,
+            target_version=target_version,
+            proposed_kind=MemoryKind(proposed_kind) if proposed_kind is not None else None,
+            proposed_content=proposed_content,
+            reason=reason,
+            evidence_run_ids=(self.binding.run_id,),
+            evidence_artifact_ids=tuple(UUID(item) for item in evidence_artifact_ids),
             proposing_invocation_id=self.binding.invocation_id,
             source_run_id=self.binding.run_id,
         )
         self._required(self.services.memory_service, "memory").submit_proposal(
-            self.binding.principal, proposal
+            self.binding.principal,
+            proposal,
+            workspace=self.binding.workspace,
         )
         return {
             "proposal_id": str(proposal.proposal_id),
             "approval_gate_id": proposal.approval_gate_id,
+            "domain_reference_id": f"memory-proposal:{proposal.proposal_id}",
             "status": "USER_APPROVAL_REQUIRED",
         }
 
@@ -943,6 +1058,36 @@ class LabBioRuntimeToolSet(ToolSet):
             return ToolError(
                 error_code="SKILL_OPERATION_FAILED",
                 safe_message="The governed Skill operation could not complete.",
+            )
+        if isinstance(exc, MemoryStaleUpdateError):
+            return ToolError(
+                error_code="STALE_MEMORY_VERSION",
+                safe_message="The Memory proposal no longer targets the latest active version.",
+            )
+        if isinstance(exc, MemoryEvidenceError):
+            return ToolError(
+                error_code="INVALID_MEMORY_PROVENANCE",
+                safe_message="The proposed Memory evidence lineage is not allowed.",
+            )
+        if isinstance(exc, MemoryNotFoundError):
+            return ToolError(
+                error_code="MEMORY_NOT_FOUND",
+                safe_message="The requested Memory lifecycle record does not exist.",
+            )
+        if isinstance(exc, MemoryDecisionError):
+            return ToolError(
+                error_code="INVALID_CONTROL_STATE",
+                safe_message="The Memory decision does not match pending control state.",
+            )
+        if isinstance(exc, MemoryConflictError):
+            return ToolError(
+                error_code="MEMORY_CONFLICT",
+                safe_message="The governed Memory operation conflicts with current state.",
+            )
+        if isinstance(exc, MemoryStoreError):
+            return ToolError(
+                error_code="MEMORY_OPERATION_FAILED",
+                safe_message="The governed Memory operation could not complete.",
             )
         if isinstance(exc, _InvalidArtifactQueryView):
             return ToolError(
