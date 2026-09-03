@@ -24,6 +24,8 @@ from labbioagentos.contracts import (
     GateDecisionRecord,
     InformationAuthority,
     NextActionProposal,
+    WorkflowDefinition,
+    WorkflowRun,
     WorkflowStage,
 )
 from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolicy
@@ -252,6 +254,14 @@ class RuntimeExecutionCapabilityView(BaseModel):
     image_key: StrictStr = Field(min_length=1, max_length=128)
     resources: RequestedResources
     network_required: bool
+    mountable_input_artifact_ids: tuple[UUID, ...] = Field(
+        default=(),
+        max_length=128,
+        description=(
+            "Run input Artifact UUIDs eligible for explicit selection in "
+            "execution_submit.input_artifact_ids; no input is mounted implicitly."
+        ),
+    )
     approved_output_contracts: tuple[RuntimeApprovedOutputContractView, ...] = Field(
         default=(), max_length=128
     )
@@ -300,6 +310,16 @@ class RuntimeExecutionCapabilityView(BaseModel):
                 for contract in contracts
             ),
         )
+
+    def with_mountable_inputs(
+        self,
+        artifact_ids: tuple[UUID, ...],
+    ) -> "RuntimeExecutionCapabilityView":
+        """Bind one run's explicit input allowlist without changing host policy."""
+
+        if len(set(artifact_ids)) != len(artifact_ids):
+            raise ValueError("Mountable input Artifact IDs must be unique")
+        return self.model_copy(update={"mountable_input_artifact_ids": artifact_ids})
 
 
 class CapabilityEvidenceItem(BaseModel):
@@ -524,6 +544,59 @@ class RuntimeEvidenceGroundingControl(BaseModel):
     )
 
 
+class RuntimeWorkflowControlView(BaseModel):
+    """Current graph-derived action envelope visible to the runtime model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal[InformationAuthority.CONTROL_STATE] = (
+        InformationAuthority.CONTROL_STATE
+    )
+    current_stage: WorkflowStage
+    transition_targets: tuple[WorkflowStage, ...] = Field(default=(), max_length=16)
+    request_user_input_available: bool
+    retry_available: bool
+    retry_transition_targets: tuple[WorkflowStage, ...] = Field(
+        default=(), max_length=16
+    )
+    finish_available: bool
+    fail_available: Literal[True] = True
+
+    @classmethod
+    def from_run(
+        cls,
+        definition: WorkflowDefinition,
+        run: WorkflowRun,
+    ) -> "RuntimeWorkflowControlView":
+        """Project legal action choices without prescribing which one to take."""
+
+        if run.current_stage is None:
+            raise ValueError("Workflow control requires a current stage")
+        stage = run.current_stage
+        transition_targets = tuple(
+            sorted(
+                (
+                    transition.target
+                    for transition in definition.allowed_transitions
+                    if transition.source is stage
+                    and transition.target is not WorkflowStage.USER_GATE
+                ),
+                key=lambda target: target.value,
+            )
+        )
+        retry_available = run.retry_counts.get(stage, 0) < run.retry_limit
+        return cls(
+            current_stage=stage,
+            transition_targets=transition_targets,
+            request_user_input_available=definition.allows(
+                stage, WorkflowStage.USER_GATE
+            ),
+            retry_available=retry_available,
+            retry_transition_targets=(transition_targets if retry_available else ()),
+            finish_available=stage in definition.terminal_stages,
+        )
+
+
 class RuntimePriorResultView(BaseModel):
     """Bounded mechanical projection of one already-validated stage result.
 
@@ -611,6 +684,7 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=32,
     )
+    workflow_control: RuntimeWorkflowControlView | None = None
     execution_capability: RuntimeExecutionCapabilityView | None = None
     body: RuntimeInputBody = Field(default_factory=RuntimeInputBody)
 

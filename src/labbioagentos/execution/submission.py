@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 from typing import Protocol
 from uuid import UUID
@@ -18,6 +19,7 @@ from labbioagentos.governance import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import ExecutionPlan, ExecutionPlanDraft, ExecutionReceipt, ExecutionResult
+from .errors import ExecutionScriptValidationError
 
 
 class ExecutorPort(Protocol):
@@ -53,6 +55,10 @@ class ExecutionSubmissionService:
         invocation_id: UUID,
     ) -> ExecutionReceipt:
         self._authorize_binding(principal, workspace, run_id)
+        try:
+            ast.parse(draft.script_content)
+        except SyntaxError as exc:
+            raise ExecutionScriptValidationError() from exc
         for artifact_id in draft.input_artifact_ids:
             ref = self.artifact_store.get_ref(artifact_id)
             self._require_exact_workspace(ref, workspace)

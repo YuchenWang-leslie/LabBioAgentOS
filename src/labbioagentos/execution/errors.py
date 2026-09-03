@@ -20,6 +20,16 @@ class ExecutionPlanRejected(ExecutionBoundaryError):
         super().__init__(message, ExecutionFailureClass.PLAN_REJECTED)
 
 
+class ExecutionScriptValidationError(ExecutionBoundaryError):
+    """The submitted runtime program is not syntactically valid."""
+
+    def __init__(self):
+        super().__init__(
+            "The submitted Python script is not syntactically valid",
+            ExecutionFailureClass.PLAN_REJECTED,
+        )
+
+
 class ImageNotApprovedError(ExecutionBoundaryError):
     """The plan requested an unknown or incompatible image key."""
 
@@ -43,4 +53,3 @@ class ContainerStartError(ExecutionBoundaryError):
 
 class OutputCollectionError(ExecutionBoundaryError):
     """A declared output could not be safely collected or registered."""
-

@@ -31,6 +31,7 @@ class ExecutionWorkspace:
     root: Path
     script_path: Path
     parameters_path: Path
+    input_manifest_path: Path
     output_root: Path
     log_root: Path
     script_hash: str
@@ -47,7 +48,11 @@ class ExecutionWorkspaceManager:
         if not self.root.is_dir():
             raise ValueError(f"Execution workspace root is not a directory: {self.root}")
 
-    def prepare(self, plan: ExecutionPlan) -> ExecutionWorkspace:
+    def prepare(
+        self,
+        plan: ExecutionPlan,
+        input_mounts: tuple[ResolvedMount, ...] = (),
+    ) -> ExecutionWorkspace:
         execution_root = (self.root / str(plan.execution_id)).resolve()
         if execution_root.parent != self.root:
             raise MountResolutionError("Execution workspace escaped its configured root")
@@ -59,9 +64,21 @@ class ExecutionWorkspaceManager:
             log_root.mkdir()
             script_path = execution_root / "script.py"
             parameters_path = execution_root / "parameters.json"
+            input_manifest_path = execution_root / "input-manifest.json"
             script_path.write_text(plan.script_content, encoding="utf-8")
             parameters_path.write_text(
                 json.dumps(plan.parameters, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            input_manifest_path.write_text(
+                json.dumps(
+                    {
+                        str(mount.artifact_id): str(mount.target)
+                        for mount in input_mounts
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -73,6 +90,7 @@ class ExecutionWorkspaceManager:
             root=execution_root,
             script_path=script_path,
             parameters_path=parameters_path,
+            input_manifest_path=input_manifest_path,
             output_root=output_root,
             log_root=log_root,
             script_hash=script_hash,

@@ -12,15 +12,19 @@ adapter, prompt, or monkey patch. The required source identities are:
 | Reasoning-only idle convergence patch | `ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44` |
 | Primitive schema-constraint patch | `45ef598f8d79bd98e9befc7c549980b731476662` |
 | Nested provider-schema fidelity patch | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42` |
-| Required LabBio Pantheon revision | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42` |
+| Canonical tool-call history replay patch | `0ebbb8bac68b8fa88e2d16439ed9ecae2a746815` |
+| Reasoning-only replay omission patch | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
+| Required LabBio Pantheon revision | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
 
-The three required patch commits form one linear history:
+The five required patch commits form one linear history:
 
 ```text
 5d3d459ac5752ed9d39432232d76ad1581296012
   -> ba7f0e4b13a312e954fcb96df8b1a7a3f1510d44
   -> 45ef598f8d79bd98e9befc7c549980b731476662
   -> 02ba577abd41d8b180a0dbb79fd057d2ca15ae42
+  -> 0ebbb8bac68b8fa88e2d16439ed9ecae2a746815
+  -> e2db6289a3daa0b42814c2ab02ad12c038e4428f
 ```
 
 `ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
@@ -28,13 +32,19 @@ loop. `45ef598f` preserves supported primitive constraints in provider-visible
 tool JSON Schema and restores standard `typing` annotations across funcdesc
 JSON serialization. `02ba577a` resolves postponed annotations before schema
 generation, carries nested Pydantic schemas across the descriptor transport,
-and inlines local references with bounded cycle handling. None of the patches
+and inlines local references with bounded cycle handling. `0ebbb8ba`
+canonicalizes only tool argument objects that Pantheon has already parsed
+successfully before replaying them to a provider; unparseable arguments remain
+failures and no nested application value is decoded or repaired. `e2db6289`
+omits a provider-private reasoning-only turn when redaction would otherwise
+leave an invalid empty assistant message; idle accounting is unchanged and no
+reasoning or invented placeholder content is replayed. None of the patches
 selects scientific methods, routes a LabBio
 stage, repairs model output, or contains a provider/PBMC special case.
 
 The integration source is the user-controlled fork
 `https://github.com/YuchenWang-leslie/PantheonOS`, branch
-`labbio-runtime-c12-schema`. The earlier focused branches remain available. The
+`fix/canonical-tool-call-history`. The earlier focused branches remain available. The
 fork remains traceable to upstream
 `https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
 part of an official Pantheon release. Do not copy their source into LabBio or
@@ -82,7 +92,7 @@ and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension ->
-adapter/plugin/provider/subclass -> PantheonOS. The three current generic patches
+adapter/plugin/provider/subclass -> PantheonOS. The five current generic patches
 above are the documented exceptions. The following is a deliberately small
 conditional watchlist, not a request to edit additional files now.
 

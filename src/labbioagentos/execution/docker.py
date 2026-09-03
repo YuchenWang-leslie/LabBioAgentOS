@@ -105,6 +105,7 @@ class DockerCommandBuilder:
 
     SCRIPT_TARGET = PurePosixPath("/labbio/script.py")
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
+    INPUT_MANIFEST_TARGET = PurePosixPath("/labbio/input-manifest.json")
     OUTPUT_TARGET = PurePosixPath("/workspace/outputs")
 
     def __init__(
@@ -160,6 +161,8 @@ class DockerCommandBuilder:
             "--env",
             f"LABBIO_PARAMETERS_PATH={self.PARAMETERS_TARGET}",
             "--env",
+            f"LABBIO_INPUT_MANIFEST_PATH={self.INPUT_MANIFEST_TARGET}",
+            "--env",
             f"LABBIO_OUTPUT_DIR={self.OUTPUT_TARGET}",
             "--env",
             "LABBIO_INPUT_DIR=/labbio/inputs",
@@ -169,6 +172,12 @@ class DockerCommandBuilder:
             self._mount(
                 workspace.parameters_path,
                 self.PARAMETERS_TARGET,
+                read_only=True,
+            ),
+            "--mount",
+            self._mount(
+                workspace.input_manifest_path,
+                self.INPUT_MANIFEST_TARGET,
                 read_only=True,
             ),
             "--mount",
@@ -233,7 +242,7 @@ class DockerExecutor:
         image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
         self.execution_policy.validate_plan(plan, image)
         mounts = self.mount_resolver.resolve_inputs(plan.input_artifact_ids)
-        workspace = self.workspace_manager.prepare(plan)
+        workspace = self.workspace_manager.prepare(plan, mounts)
         return self.command_builder.build(plan, image, workspace, mounts)
 
     def execute(self, plan: ExecutionPlan) -> ExecutionResult:
@@ -244,7 +253,7 @@ class DockerExecutor:
             input_mounts = self.mount_resolver.resolve_inputs(
                 plan.input_artifact_ids
             )
-            workspace = self.workspace_manager.prepare(plan)
+            workspace = self.workspace_manager.prepare(plan, input_mounts)
             script_ref = self._register_internal_file(
                 plan,
                 workspace.script_path,

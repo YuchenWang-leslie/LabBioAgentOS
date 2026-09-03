@@ -914,6 +914,7 @@ class LabBioApplication:
         coordinator = self._build_coordinator(
             principal=request.principal,
             workspace=request.workspace,
+            execution_input_artifact_ids=request.input_artifact_ids,
         )
         run = coordinator.create_run(
             principal=request.principal,
@@ -1008,6 +1009,7 @@ class LabBioApplication:
         coordinator = self._build_coordinator(
             principal=principal,
             workspace=workspace,
+            execution_input_artifact_ids=record.input_artifact_ids,
         )
         coordinator.attach_recovered_results(run_id, record.runtime_results)
         run = self.workflow_engine.attach_recovered_run(record.workflow_run)
@@ -1379,7 +1381,15 @@ class LabBioApplication:
         *,
         principal: Principal,
         workspace: WorkspaceContext,
+        execution_input_artifact_ids: tuple[UUID, ...] = (),
     ) -> RuntimeCoordinatorService:
+        execution_capability = (
+            self.execution_capability.with_mountable_inputs(
+                execution_input_artifact_ids
+            )
+            if self.execution_capability is not None
+            else None
+        )
         specs = []
         for assembly in self.configuration.stage_assemblies:
             invoker = PerInvocationPantheonStageInvoker(
@@ -1389,7 +1399,7 @@ class LabBioApplication:
                 workspace=workspace,
                 services=self.capability_services,
                 trace_recorder=self.trace_recorder,
-                execution_capability=self.execution_capability,
+                execution_capability=execution_capability,
                 plugin_factory=self._plugin_factories.get(assembly.stage_id),
                 boundary_observer=self.configuration.boundary_observer,
             )
@@ -1405,7 +1415,7 @@ class LabBioApplication:
         return RuntimeCoordinatorService(
             self.workflow_engine,
             StageRuntimeRegistry(specs),
-            execution_capability=self.execution_capability,
+            execution_capability=execution_capability,
         )
 
     def _authorized_runtime_reference(

@@ -139,8 +139,9 @@ def test_docker_argv_preserves_fixed_sandbox_vocabulary(tmp_path):
         for index, token in enumerate(command)
         if token == "--mount"
     ]
-    assert len(mounts) == 3
-    assert sum("readonly" in mount for mount in mounts) == 2
+    assert len(mounts) == 4
+    assert sum("readonly" in mount for mount in mounts) == 3
+    assert any("target=/labbio/input-manifest.json" in mount for mount in mounts)
     assert any("target=/workspace/outputs" in mount for mount in mounts)
 
 

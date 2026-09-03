@@ -289,6 +289,28 @@ def test_docker_command_is_deterministic_argument_list_with_security_defaults(tm
         item for item in command if f"{input_ref.artifact_id}" in item
     )
     assert input_mount.endswith(",readonly")
+    manifest_target = "/labbio/input-manifest.json"
+    manifest_mount = next(
+        item
+        for item in command
+        if item.startswith("type=bind") and f"target={manifest_target}" in item
+    )
+    assert manifest_mount.endswith(",readonly")
+    assert "LABBIO_INPUT_MANIFEST_PATH=" + manifest_target in command
+
+    manifest_source = Path(
+        dict(
+            part.split("=", 1)
+            for part in manifest_mount.split(",")
+            if "=" in part
+        )["source"]
+    )
+    input_target = dict(
+        part.split("=", 1) for part in input_mount.split(",") if "=" in part
+    )["target"]
+    assert json.loads(manifest_source.read_text(encoding="utf-8")) == {
+        str(input_ref.artifact_id): input_target,
+    }
 
 
 def test_script_and_streams_are_hashed_internal_refs_not_result_content(tmp_path):

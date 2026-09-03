@@ -110,6 +110,7 @@ class InspectingSubprocessDockerRunner(SubprocessDockerRunner):
         by_target = {_mount_fields(value)["target"]: value for value in mounts}
         assert by_target["/labbio/script.py"].endswith(",readonly")
         assert by_target["/labbio/parameters.json"].endswith(",readonly")
+        assert by_target["/labbio/input-manifest.json"].endswith(",readonly")
         assert not by_target["/workspace/outputs"].endswith(",readonly")
         inputs = [
             value
@@ -226,9 +227,9 @@ import json
 import os
 from pathlib import Path
 
-input_root = Path(os.environ["LABBIO_INPUT_DIR"])
+manifest = json.loads(Path(os.environ["LABBIO_INPUT_MANIFEST_PATH"]).read_text())
 output_root = Path(os.environ["LABBIO_OUTPUT_DIR"])
-input_files = sorted(path for path in input_root.rglob("*") if path.is_file())
+input_files = [Path(path) for path in manifest.values()]
 if len(input_files) != 1:
     raise RuntimeError("expected exactly one mounted input file")
 payload = input_files[0].read_bytes()

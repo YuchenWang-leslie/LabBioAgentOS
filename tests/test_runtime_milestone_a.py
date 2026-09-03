@@ -265,8 +265,19 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "gold_candidate_references",
         "allowed_capabilities",
         "gate_decisions",
+        "workflow_control",
         "execution_capability",
         "body",
+    }
+    assert dumped["workflow_control"] == {
+        "authority": "CONTROL_STATE",
+        "current_stage": "INTAKE",
+        "transition_targets": ["UNDERSTAND"],
+        "request_user_input_available": True,
+        "retry_available": False,
+        "retry_transition_targets": [],
+        "finish_available": False,
+        "fail_available": True,
     }
     assert dumped["execution_capability"] is None
     for forbidden in (

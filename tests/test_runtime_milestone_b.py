@@ -24,6 +24,7 @@ from labbioagentos import (
     CapabilityProfile,
     ExecutionPlanDraft,
     ExecutionReceipt,
+    ExecutionScriptValidationError,
     ExecutionResult,
     ExecutionRuntime,
     ExecutionStatus,
@@ -491,6 +492,32 @@ async def test_execution_host_injects_scope_authorizes_inputs_and_returns_receip
     assert (output.owner_user_id, output.project_id, output.lab_id, output.run_id) == (
         "user-a", "project-a", "lab-a", run_id
     )
+
+
+@pytest.mark.asyncio
+async def test_invalid_python_syntax_is_rejected_before_executor(boundary):
+    _, _, access, principal, workspace, store, _ = boundary
+    executor = MockExecutor(store)
+    service = ExecutionSubmissionService(
+        artifact_store=store,
+        access_service=access,
+        executor=executor,
+    )
+
+    with pytest.raises(ExecutionScriptValidationError):
+        await service.submit(
+            ExecutionPlanDraft(
+                image_key="approved",
+                script_content="for value in values\n    print(value)\n",
+            ),
+            principal=principal,
+            workspace=workspace,
+            run_id=uuid4(),
+            stage_id=WorkflowStage.EXECUTE,
+            invocation_id=uuid4(),
+        )
+
+    assert executor.plans == []
 
 
 @pytest.mark.asyncio

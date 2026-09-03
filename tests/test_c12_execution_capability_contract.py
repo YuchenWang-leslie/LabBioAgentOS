@@ -20,6 +20,7 @@ from labbioagentos import (
     ExecutionPlanDraft,
     ExecutionPolicy,
     ExecutionRuntime,
+    ExecutionScriptValidationError,
     ExecutionSubmitValidationStatus,
     InMemoryProjectStore,
     LocalArtifactStore,
@@ -331,6 +332,13 @@ async def test_le12_failed_request_audit_contains_only_safe_structure(
     assert "secret_parameter" not in encoded
 
 
+def test_le13_script_syntax_failure_has_a_safe_specific_error():
+    error = LabBioRuntimeToolSet._safe_error(ExecutionScriptValidationError())
+
+    assert error.error_code == "INVALID_EXECUTION_SCRIPT"
+    assert "script" in error.safe_message.lower()
+
+
 def _trusted_view() -> RuntimeExecutionCapabilityView:
     contract = StructuredOutputContract(
         contract_id="scalar.v1",
@@ -432,6 +440,17 @@ def test_ec7_view_has_no_host_paths_argv_credentials_or_image_identity():
 
     for forbidden in ("sha256", "host_path", "docker", "argv", "credential", "secret"):
         assert forbidden not in encoded.lower()
+
+
+def test_ec7a_run_inputs_are_explicit_mountable_control_state():
+    artifact_ids = (uuid4(), uuid4())
+
+    view = _trusted_view().with_mountable_inputs(artifact_ids)
+
+    assert view.mountable_input_artifact_ids == artifact_ids
+    assert view.model_dump(mode="json")["mountable_input_artifact_ids"] == [
+        str(artifact_id) for artifact_id in artifact_ids
+    ]
 
 
 def test_ec8_untrusted_stage_body_cannot_override_capability_view():

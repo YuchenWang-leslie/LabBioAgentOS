@@ -81,12 +81,12 @@ def test_real_docker_hostile_input_mount_rootfs_socket_and_output_boundaries(tmp
     host_only = tmp_path / "host-only-sentinel.txt"
     host_only.write_text("HOST_ONLY_C12_8841", encoding="utf-8")
     script = f"""
-import glob
 import json
 import os
 from pathlib import Path
 
-input_path = Path(glob.glob('/labbio/inputs/*/*')[0])
+manifest = json.loads(Path(os.environ['LABBIO_INPUT_MANIFEST_PATH']).read_text())
+input_path = Path(next(iter(manifest.values())))
 sentinel = input_path.read_text(encoding='utf-8')
 
 def attempt(action):

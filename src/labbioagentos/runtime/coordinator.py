@@ -28,6 +28,7 @@ from .contracts import (
     RuntimeReferenceKind,
     RuntimeStageInput,
     RuntimeStageResult,
+    RuntimeWorkflowControlView,
     RuntimeWorkspaceIdentifiers,
 )
 from .registry import StageRuntimeRegistry
@@ -127,6 +128,10 @@ class RuntimeCoordinatorService:
             gold_candidate_references=gold_candidate_references,
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
+            workflow_control=RuntimeWorkflowControlView.from_run(
+                self.engine.definition,
+                run,
+            ),
             execution_capability=self._execution_capability_for_stage(stage),
             body=body or RuntimeInputBody(),
         )
