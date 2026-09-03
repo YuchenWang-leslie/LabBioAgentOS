@@ -73,3 +73,40 @@ Networked acquisition, if added later, must execute with zero mounted local
 input Artifacts and produce a governed Artifact for a later offline analysis.
 C12 does not add a download or Search subsystem.
 
+## Post-hardening threat disposition
+
+The falsification pass reproduced and closed the three direct confidentiality
+failures in the initial model:
+
+- G4 is now mechanically enforced in both preflight and submission: any local
+  Artifact input combined with a network request is rejected before Docker.
+- G5 now separates output-shape validity from release authorization. Arbitrary
+  runtime strings remain RAW; a trusted contract can release only bounded
+  scalars whose string values were declared before execution.
+- G6 now uses a shared recursive bound and an explicit Artifact projection.
+  Stored metadata is allowlisted, schema properties are released only from
+  trusted inspectors, and summary/TOP_N content is bounded and checked for
+  unsafe fields and absolute paths.
+
+The remaining goals were re-proved under composition. Host-bound identities and
+capability ceilings survived malicious Gold/Memory text, actor/consumer spoof
+attempts, sibling delegation, recursive peer prose, and known foreign UUIDs.
+Workflow retry, Gold and Memory gates, restart, EXECUTE/VALIDATE, and terminal
+finalization composed without duplicate execution or domain decisions. A real
+Docker hostile suite confirmed no socket, arbitrary host path, input write, or
+root write; symlink output escape failed and a copied private sentinel stayed
+RAW and unavailable to the remote consumer.
+
+No P0/P1 threat remains in the tested core boundary. The known P2 surfaces are
+the absence of filesystem/daemon quota isolation for total undeclared output,
+the trusted Docker-engine/kernel boundary, the declared distributed/HA
+non-goals, and a provider-facing `execution_submit` schema that represents the
+nested draft only as an unconstrained JSON object. LabBio still validates the
+exact draft locally and starts no Docker process on invalid input.
+
+The single permitted provider-backed integration attempt did not produce a
+valid `execution_submit`, so it stopped safely before execution. That failed
+run does not weaken the threat boundary, but it prevents C12 milestone
+acceptance because a performed integrated run was required to be green. No
+second provider run, prompt workaround, Pantheon modification, or later phase
+was undertaken.

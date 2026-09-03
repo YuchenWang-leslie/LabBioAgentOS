@@ -46,10 +46,10 @@ therefore this audit makes no deployment or service-health claim.
 | `LabBioApplication.register_structural_artifact` | trusted host caller | STRUCTURAL | metadata/schema only | `TRUSTED_STRUCTURAL_INSPECTOR` contract | access plus exposure/projector |
 | configured `BioFormatInspector` via `inspect_bioformat_artifact` | trusted format adapter | STRUCTURAL/AGGREGATE | bounded safe inspection views | `TRUSTED_STRUCTURAL_INSPECTOR` / `TRUSTED_AGGREGATE_INSPECTOR` | inspector policy plus exposure/projector |
 | Docker script/stdout/stderr registration | trusted local executor handling untrusted bytes | RAW | identifiers only | `INTERNAL_ONLY` | fixed RAW classification |
-| `OutputCollector` and `ArtifactRegistrationPolicy` | trusted collector evaluating untrusted output | RAW or DERIVED | DERIVED is remotely queryable | intended `TRUSTED_EXECUTION_DECLASSIFICATION`; currently shape-only and violated | output shape plus required C12 release policy |
+| `OutputCollector` and `ArtifactRegistrationPolicy` | trusted collector evaluating untrusted output | RAW or DERIVED | only release-authorized DERIVED is remotely queryable | `TRUSTED_EXECUTION_DECLASSIFICATION` only after shape validation and pre-execution scalar declaration | output shape plus explicit declassification policy |
 | `ReportSubmissionService` | trusted registrar of model-authored prose | DERIVED | bounded report record | `MODEL_AUTHORED_REPORT`, not scientific truth | report bounds, evidence authorization, common projector |
 | `LocalArtifactStore.register[_file]` | trusted internal persistence primitive | caller supplied | none by itself | `INTERNAL_ONLY`; callers above must supply release basis | not an agent capability |
-| `USER_APPROVED` classification | trusted producer plus explicit user decision | USER_APPROVED | currently possible after process-local approval | `USER_APPROVED_RELEASE` but not restart-durable | C12 must disable or persist exact approval |
+| `USER_APPROVED` classification | trusted producer plus explicit user decision | USER_APPROVED | disabled by default; available only with exact durable consumer-bound approval in application composition | `USER_APPROVED_RELEASE` | disabled-by-default exposure policy plus SQLite approval store |
 
 `ArtifactExposureClass` is classification only. `requested_exposure=DERIVED`, a
 model claim of safety, a successful process, or a syntactically valid JSON file
@@ -84,3 +84,54 @@ is not release authority.
 10. Recursive scan of every representative model-visible object and all trace
     payloads.
 
+## Final invariant matrix
+
+The table below records the post-hardening result. All reproduced P0/P1 defects
+are closed. `PARTIALLY_PROVEN` is used only for the explicitly bounded local
+disk-denial-of-service residual, which is P2 and not a confidentiality or
+authority bypass. C12 as a milestone is nevertheless not accepted because the
+single performed provider-backed integration was not green.
+
+| Domain | Invariant | Final result | Deterministic/real evidence |
+| --- | --- | --- | --- |
+| Docker | no model-selected host path, arbitrary flag, or Docker socket | PROVEN | typed drafts, trusted mount resolution, fixed argv; C12 authority and real-Docker hostile tests |
+| Docker | immutable approved image and no runtime pull | PROVEN | tag-only rejection, digest/reference validation, exact `--pull never` argv |
+| Docker | no network for any execution with local Artifact inputs | PROVEN | preflight and submission rejection before Docker; real run remains `network=none` |
+| Docker | read-only input/root, controlled output, dropped capabilities, bounded resources | PROVEN | exact argv regression and real Docker write/socket/host-path attacks |
+| Docker | host storage exhaustion fully isolated | PARTIALLY_PROVEN | per-file 16 MiB collection/`fsize` and 64 MiB declared collection bounds; many undeclared files can still consume the bind-mounted filesystem |
+| Data | RAW direct remote exposure is denied | PROVEN | exposure policy plus deterministic and real sentinel-denial tests |
+| Data | private categorical values are denied by default | PROVEN | low-cardinality donor sentinels suppressed; trusted explicit safe-field enumeration remains available |
+| Data | untrusted execution output cannot self-declassify | PROVEN | shape-valid private string remains RAW; only predeclared bounded scalar output receives DERIVED release |
+| Artifact | every remotely visible non-RAW Artifact has a compatible trusted release basis | PROVEN | `ArtifactReleaseBasis`, producer assignments, exposure matrix, and regression updates |
+| Artifact | model projection is explicit, bounded, and path/content safe | PROVEN | `ArtifactModelViewProjector`, shared recursive validator, recursive DTO graph tests |
+| Agent | stage/actor/consumer/capability authority is host-bound | PROVEN | ceiling, spoof, sibling delegation, and malicious-context tests |
+| Gold | optional, adaptable, non-executable MODEL_CONTEXT | PROVEN | hostile Gold cannot widen tools; REUSE/ADAPT/REFERENCE/IGNORE all remain legal |
+| Memory | durable, versioned, optional MODEL_CONTEXT with gated mutation | PROVEN | hostile Memory cannot change policy; C11 lifecycle plus combined C12 restart test |
+| Workflow/Recovery | WorkflowEngine is sole state owner and uncertain effects are not replayed | PROVEN | retry + two USER_GATE decisions + EXECUTE/VALIDATE + restart/finalization composition |
+| Governance | known cross-user/project/lab UUIDs grant no access | PROVEN | Artifact list/query/mount/report/Memory, Gold, Memory, and run recovery attacks denied |
+| Trace | audit payloads exclude RAW bodies, provider bodies, reasoning, credentials, and paths | PROVEN | shared recursive validation, typed execution failure projection, adversarial TraceEvent tests |
+| Evidence | current governed results remain distinct from recursive model prose | PROVEN | item-level authority and specialist/reviewer prose laundering rejection |
+
+## Falsification results and disposition
+
+The initial six deterministic failures were: low-cardinality category-label
+release, free-form Artifact projection, shape-only output promotion, mutable
+image acceptance, data-bearing network acceptance, and missing
+`--pull=never`. The corresponding post-hardening regressions all pass. The
+complete local run, including the opt-in real Docker hostile test, is
+`376 passed, 11 skipped` with the pre-existing Uvicorn warning.
+
+Exactly one provider-backed attempt was made. It safely terminated before any
+Docker execution because no successful `execution_submit` evidence was
+produced. The provider-visible schema for that capability exposes `draft` only
+as an unconstrained object, while LabBio's local `ExecutionPlanDraft` remains
+the fail-closed authority. A direct nested-Pydantic annotation was also tested
+deterministically and Pantheon omitted the tool because the forward type could
+not be resolved. This is a bounded provider/tool-schema P2 limitation, not a
+security bypass; frozen Pantheon was not modified and no compatibility fallback
+was added. Because an integrated run was performed and was not green, the
+explicit acceptance condition is unsatisfied:
+
+```text
+C12 NOT ACCEPTED
+```

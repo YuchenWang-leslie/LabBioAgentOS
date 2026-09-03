@@ -708,3 +708,47 @@ and frozen Pantheon remain unchanged; C12 has not started.
 - **Limits retained:** no semantic/vector retrieval, truth scoring, contradiction
   resolution, asynchronous cross-user approval, distributed transaction,
   cross-process writer coordination, or automatic uncertain-effect repair.
+
+## C12 — Core architecture falsification, hardening, and closeout
+
+**Status:** not accepted on isolated branch
+`c12-core-architecture-hardening`. C11 and frozen Pantheon revision
+`45ef598f8d79bd98e9befc7c549980b731476662` remain unchanged. No production
+deployment or later evaluation/product work was started.
+
+- **Falsification-first result:** six deterministic violations were reproduced
+  before production fixes: low-cardinality private category disclosure,
+  free-form remote Artifact projection, shape-only RAW-output promotion,
+  data-bearing network acceptance, mutable image acceptance, and the absence of
+  `--pull=never`.
+- **Closed P0/P1 boundaries:** categorical value enumeration is trusted-policy
+  opt-in; all remote non-RAW views need a compatible trusted release basis and
+  explicit bounded projector; execution shape and declassification are
+  separate; mounted input always implies offline execution; executable images
+  are immutable and never pulled during execution; USER_APPROVED is disabled by
+  default and requires durable exact approval when enabled.
+- **Composition evidence:** malicious Gold/Memory and peer prose remain
+  MODEL_CONTEXT; stage/actor/consumer/delegation authority remains host-bound;
+  cross-scope UUID attacks fail; retry, Gold gate, Memory gate, restart,
+  EXECUTE/VALIDATE, and terminal finalization compose without duplicate side
+  effects. Recursive model-visible and Trace scans pass.
+- **Real Docker:** the bounded hostile suite against immutable local image
+  `sha256:fe316ce25958c9a5fd10d55a42d2597a2736a1c84f92690cf79cd8a0ada67506`
+  proves read-only input/root, controlled output, no socket/arbitrary host path,
+  symlink rejection, no undeclared promotion, and no sentinel declassification.
+  Docker, containerd, and docker.socket remained active.
+- **Regression:** with the live-provider flag explicitly unset and the real
+  Docker suite enabled, `376 passed, 11 skipped` with the one pre-existing
+  Uvicorn websocket warning.
+- **Provider gate:** exactly one allowed provider-backed attempt was made under
+  `.local/c12-integrated/51c763c4-a618-4f0b-8f73-e268c5fa4116`. It produced no
+  successful `execution_submit` and no Docker execution. The provider sees the
+  nested draft only as an unconstrained object; exact LabBio validation rejected
+  the request safely. A deterministic nested-Pydantic signature attempt caused
+  frozen Pantheon to omit the tool, and no duplicate flattened compatibility
+  contract or prompt workaround was added.
+- **Decision:** all reproduced P0/P1 issues are closed, but the performed
+  integrated architecture run was not green. That exact acceptance criterion is
+  unsatisfied and the at-most-one rule forbids a rerun. Therefore `C12 NOT
+  ACCEPTED`. Do not infer authorization for another numbered architecture
+  milestone, local real-world evaluation, API, CLI, UI, or deployment work.

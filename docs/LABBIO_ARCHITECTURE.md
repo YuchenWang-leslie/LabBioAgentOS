@@ -3,10 +3,13 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through accepted, frozen C11. Phase 1 adds typed stage contracts and a
-composition adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
-WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
-existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
+preserved through accepted, frozen C11. The C12 source hardening described below
+has passed deterministic and real-Docker verification but C12 is not accepted,
+because its one performed provider-backed integrated run was not green. Phase 1
+adds typed stage contracts and a composition adapter around PantheonTeam. Phase
+2 adds a deterministic, graph-driven WorkflowEngine. Phase 3 adds structural
+delegation policy around Pantheon's existing team tools. Phase 4 adds append-only
+RunTrace observation. Phase 5
 adds metadata-only artifact references, local development storage, and bounded
 exposure views. Phase 6 adds policy-controlled Docker command construction,
 trusted artifact mounts, local script/log handling, and conservative output
@@ -15,7 +18,10 @@ adds identity/scope authorization, project isolation, governed persistent
 Memory, and deterministic workspace resolution without adding authentication,
 bioinformatics methods, runtime scientific reasoning, or production services.
 
-The inspected PantheonOS baseline is version `0.6.4`, commit `5d3d459ac5752ed9d39432232d76ad1581296012` on branch `labbioagent-dev`.
+The inspected PantheonOS upstream baseline is version `0.6.4`, commit
+`5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
+Pantheon revision remains
+`45ef598f8d79bd98e9befc7c549980b731476662`.
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
 PantheonOS. PantheonOS remains an external runtime dependency; LabBio code is not
@@ -267,12 +273,15 @@ view type, status, and bounded counts only. They never contain representation
 records, stored content, or storage paths. Trace failures remain fail-loud and
 artifact behavior remains available when tracing is disabled.
 
-Phase 5 persistence is intentionally local-development only: representations
-are JSON-compatible, approvals are in-memory, and artifact classification is
-trusted producer input. There is no user authentication, permission scope,
-production raw-data reader, content-classification engine, or concrete Pantheon
-ToolProvider yet. Those limitations must be resolved in their authorized phases
-rather than bypassing `ArtifactExposureService`.
+Artifact persistence remains local-development infrastructure and
+representations are JSON-compatible. C12 disables USER_APPROVED remote exposure
+by default; enabling it in application composition requires an exact durable
+consumer-bound approval store, for which a local SQLite implementation exists.
+Artifact classification is trusted producer input but no longer sufficient for
+remote release: a compatible trusted release basis and the exposure projector
+are also required. There is no production authentication, raw-data service, or
+semantic PII classifier. Those limitations must not be bypassed through direct
+store access.
 
 ### Phase 6 Docker execution contract
 
@@ -621,7 +630,41 @@ version, and status only. They exclude Memory content, proposal reason,
 collaborator lists, artifact representations, and secrets. Tracing remains
 observational and fail-loud.
 
-## Out of scope after C11
+## C12 hardened core boundary and current status
+
+C12 introduced no scientific decision logic. It tightened only the legal action
+and data-release space:
+
+- every Artifact records a trusted release basis separate from exposure class;
+- stored Artifact state is projected through an explicit bounded model view;
+- H5AD categorical values are suppressed unless a trusted host policy permits a
+  named field, while structural counts/dtypes/numeric summaries remain useful;
+- syntactic output validity no longer authorizes remote release; arbitrary
+  runtime strings stay RAW and bounded predeclared scalars form the conservative
+  automatic declassification seam;
+- any execution with local Artifact inputs is offline, approved images are
+  immutable, runtime pull is disabled, and output files/collection have small
+  trusted byte bounds;
+- USER_APPROVED exposure is disabled by default and requires durable exact
+  approval when enabled;
+- Artifact/evidence/trace model surfaces share recursive size and unsafe-field
+  checks.
+
+Malicious Gold and Memory remain untrusted MODEL_CONTEXT and cannot widen tools,
+mounts, network, identity, delegation, or workflow authority. Known foreign
+UUIDs remain unusable. WorkflowEngine, RunStateStore, and RunTrace retain their
+separate state, durability, and observation roles. The complete local suite,
+including real Docker attacks, passes at `376 passed, 11 skipped` with one
+pre-existing Uvicorn warning.
+
+C12 is not accepted. Its only performed provider integration safely stopped
+before Docker because it produced no valid `execution_submit`. Frozen Pantheon
+exposes the nested draft as a broad JSON object; LabBio's exact local validation
+remains fail-closed, but the integrated-run acceptance condition is unmet and
+the at-most-one rule forbids a rerun. No deployment or service-health claim is
+made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and `KNOWN_LIMITATIONS.md`.
+
+## Out of scope after the C12 checkpoint
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
