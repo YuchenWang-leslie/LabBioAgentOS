@@ -353,7 +353,7 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
         allowed_fields=frozenset({"name", "value"}),
         required_fields=frozenset({"name", "value"}),
         max_records=3,
-        declassification_mode=OutputDeclassificationMode.PREDECLARED_SCALARS,
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
     )
 
     def write_output(root):
@@ -379,7 +379,6 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
                 artifact_type="generic-structured-result",
                 requested_exposure=ArtifactExposureClass.DERIVED,
                 output_contract_id=contract.contract_id,
-                predeclared_string_values={"name": ("alpha", "beta")},
             ),
         )
     )

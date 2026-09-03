@@ -121,7 +121,6 @@ _EXECUTION_VALIDATION_PATH_PARTS = frozenset(
         "artifact_type",
         "requested_exposure",
         "output_contract_id",
-        "predeclared_string_values",
         "cpus",
         "memory_mb",
         "pids_limit",

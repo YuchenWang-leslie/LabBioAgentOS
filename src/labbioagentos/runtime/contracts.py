@@ -238,7 +238,6 @@ class RuntimeApprovedOutputContractView(BaseModel):
     max_records: int = Field(ge=1, le=10_000)
     max_file_bytes: int = Field(ge=1, le=16_777_216)
     declassification_mode: OutputDeclassificationMode
-    requires_predeclared_string_values: bool
 
 
 class RuntimeExecutionCapabilityView(BaseModel):
@@ -297,10 +296,6 @@ class RuntimeExecutionCapabilityView(BaseModel):
                     max_records=contract.max_records,
                     max_file_bytes=contract.max_file_bytes,
                     declassification_mode=contract.declassification_mode,
-                    requires_predeclared_string_values=(
-                        contract.declassification_mode
-                        is OutputDeclassificationMode.PREDECLARED_SCALARS
-                    ),
                 )
                 for contract in contracts
             ),

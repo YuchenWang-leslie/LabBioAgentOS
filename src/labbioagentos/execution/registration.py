@@ -17,6 +17,10 @@ from labbioagentos.artifacts import (
     ArtifactStore,
     ArtifactStoreError,
 )
+from labbioagentos.model_safety import (
+    UnsafeModelContentError,
+    validate_model_visible_json,
+)
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .errors import OutputCollectionError
@@ -125,12 +129,12 @@ class ArtifactRegistrationPolicy:
                 contract_valid=True,
                 schema_id=contract.schema_id,
             )
-        if not self._strings_match_preexecution_declaration(
-            records, spec, contract
-        ):
+        try:
+            self._validate_model_safe_records(records, contract)
+        except UnsafeModelContentError:
             return self._raw_decision(
                 spec,
-                "Output shape is valid but runtime strings were not declared before execution.",
+                "Output shape is valid but model-visible safety validation failed.",
                 contract_valid=True,
                 schema_id=contract.schema_id,
             )
@@ -140,8 +144,8 @@ class ArtifactRegistrationPolicy:
             contract_valid=True,
             release_authorized=True,
             reason=(
-                "Output matched the approved shape and pre-execution scalar "
-                "declassification contract."
+                "Output matched the approved bounded-scalar shape and "
+                "model-visible safety contract."
             ),
             representation=ArtifactRepresentation(
                 records=records,
@@ -155,19 +159,21 @@ class ArtifactRegistrationPolicy:
         )
 
     @staticmethod
-    def _strings_match_preexecution_declaration(
+    def _validate_model_safe_records(
         records: tuple[dict[str, Any], ...],
-        spec: OutputArtifactSpec,
         contract: StructuredOutputContract,
-    ) -> bool:
-        declared = spec.predeclared_string_values
-        if not set(declared).issubset(contract.allowed_fields):
-            return False
-        for record in records:
-            for field, value in record.items():
-                if isinstance(value, str) and value not in declared.get(field, ()):
-                    return False
-        return True
+    ) -> None:
+        max_fields = max(1, len(contract.allowed_fields))
+        validate_model_visible_json(
+            records,
+            max_depth=2,
+            max_mapping_items=max_fields,
+            max_list_items=contract.max_records,
+            max_string_length=contract.max_scalar_string_length,
+            max_nodes=1 + contract.max_records * (1 + max_fields),
+            max_serialized_bytes=contract.max_file_bytes,
+            reject_absolute_paths=True,
+        )
 
     @staticmethod
     def _load_and_validate(

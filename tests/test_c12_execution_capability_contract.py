@@ -106,7 +106,6 @@ def _valid_wire_draft() -> dict:
                 "artifact_type": "scalar-records",
                 "requested_exposure": "DERIVED",
                 "output_contract_id": "scalar.v1",
-                "predeclared_string_values": {"metric": ["chosen_metric"]},
             }
         ],
         "resources": {
@@ -178,7 +177,6 @@ async def test_le5_requested_outputs_nested_contract_is_visible(execution_bounda
         "artifact_type",
         "requested_exposure",
         "output_contract_id",
-        "predeclared_string_values",
     }
 
 
@@ -283,7 +281,7 @@ def _trusted_view() -> RuntimeExecutionCapabilityView:
         required_fields=frozenset({"metric", "value"}),
         max_records=8,
         max_file_bytes=4096,
-        declassification_mode=OutputDeclassificationMode.PREDECLARED_SCALARS,
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
     )
     image_registry = ApprovedImageRegistry(
         (
@@ -357,8 +355,18 @@ def test_ec5_allowed_and_required_fields_are_bounded_and_deterministic():
 def test_ec6_declassification_semantics_are_present():
     contract = _trusted_view().approved_output_contracts[0]
 
-    assert contract.declassification_mode is OutputDeclassificationMode.PREDECLARED_SCALARS
-    assert contract.requires_predeclared_string_values is True
+    assert contract.declassification_mode is OutputDeclassificationMode.BOUNDED_SCALARS
+    assert set(type(contract).model_fields) == {
+        "contract_id",
+        "schema_id",
+        "document_type",
+        "document_required_keys",
+        "allowed_fields",
+        "required_fields",
+        "max_records",
+        "max_file_bytes",
+        "declassification_mode",
+    }
 
 
 def test_ec7_view_has_no_host_paths_argv_credentials_or_image_identity():
