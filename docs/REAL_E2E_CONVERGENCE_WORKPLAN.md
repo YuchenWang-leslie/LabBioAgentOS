@@ -745,26 +745,44 @@ or later evaluation/product work was started.
   proves read-only input/root, controlled output, no socket/arbitrary host path,
   symlink rejection, no undeclared promotion, and no sentinel declassification.
   Docker, containerd, and docker.socket remained active.
-- **Regression:** the revised full non-live regression is `418 passed, 12
-  skipped` with the one pre-existing Uvicorn warning. The real-Docker hostile
-  test is separately green.
 - **Provider contract:** frozen Pantheon exposes the typed nested execution
   draft, including the runtime enum, UUID inputs, closed resource/output items,
   and field bounds. The generic `parameters` mapping remains intentionally open
   within its own field; canonical LabBio validation remains authoritative.
-- **Final provider gate:** exactly one newly authorized post-policy run was made:
-  `b6392437-bb23-4570-b09f-639db0aa195a`, under
-  `.local/c12-bounded-release-final/d8e73bfb-7fde-4c0f-bbdc-92d3e587187c`.
-  Deterministic PREFLIGHT completed and the provider input contained the
-  trusted execution-capability view, but the provider returned typed
-  `next_action=fail` after incorrectly concluding that computation capability
-  was absent. The workflow stopped before EXECUTE with no execution, Docker
-  call, output, DERIVED Artifact, VALIDATE result, or report. Boundary/trace
-  leak scans passed.
-- **Decision:** all reproduced P0/P1 issues are closed, but the performed
-  post-policy provider run was not green. The earliest failure is
-  `PROVIDER_TOOL_USE_FAILURE`, not a scientific, Docker, schema-validation, or
-  release-policy failure. The acceptance criterion is unsatisfied and the
-  one-run rule forbids a rerun. Therefore `C12 NOT ACCEPTED`. The only valid
-  continuation entry is new explicit product-owner authorization; do not infer
-  authorization for another milestone, evaluation, API, CLI, UI, or deployment.
+- **Host-authoritative PREFLIGHT:** source review classified the previous run's
+  failure as `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`: host readiness had
+  passed before Pantheon was allowed to re-decide the same control state.
+  Commit `220d6cb261cf7d416f5e41b918f70482d75d3bf3` moves readiness after the
+  in-flight checkpoint and records/applies one trusted typed result through the
+  coordinator and WorkflowEngine. Configured PREFLIGHT now invokes neither
+  Pantheon nor Docker; no-profile behavior is unchanged. PF1-PF11 pass.
+- **Regression:** after the host-authority fix the full non-live regression is
+  `421 passed, 12 skipped` with the one pre-existing Uvicorn warning. The C12
+  real-Docker hostile test is separately green. LabBio and
+  `origin/c12-core-architecture-hardening` both resolved to `220d6cb` with a
+  clean tree before live; Pantheon remained frozen at `02ba577`.
+- **Final provider gate:** exactly one newly authorized post-fix run was made:
+  `72f0ad4a-72af-4676-88f9-8a5a3529119a`, under
+  `.local/c12-host-preflight-final/76c1b4d4-9801-4eaa-8f14-d8b5c28b8f1b`.
+  The workflow path was INTAKE, UNDERSTAND, PLAN, PREFLIGHT, EXECUTE, VALIDATE,
+  INTERPRET, REPORT, LEARN; provider stage input occurred once for each stage
+  except PREFLIGHT, where it was zero. The
+  first execution `4d1fa1c1-a33b-4eb2-b73d-c94dee49c679` exited 1. A second
+  submission in the same bounded EXECUTE capability phase,
+  `d02fb75c-cef2-40bc-ae3e-f05afeda7441`, exited 0 but requested `AGGREGATE`;
+  no workflow-stage retry occurred. Output
+  `57d3ab69-322d-4660-9961-45c88bb6e614` remained RAW with
+  `OUTPUT_CONTRACT_FAILURE`. No bounded execution DERIVED Artifact existed.
+  VALIDATE and report recorded limitations and the workflow reached
+  LEARN/COMPLETED, but the acceptance harness failed its mandatory DERIVED
+  assertion. Boundary/trace leak scans passed.
+- **Decision:** all reproduced P0/P1 issues and the duplicated PREFLIGHT
+  authority are closed, but the one post-fix provider run was not green. The
+  recovered first technical failure was `NON_ZERO_EXIT`; the terminal
+  acceptance failure is `PROVIDER_TOOL_USE_FAILURE` from the schema-valid but
+  semantically wrong output exposure, not a scientific acceptance, Docker,
+  schema-validation, or framework release failure. The acceptance criterion is
+  unsatisfied and the one-run rule forbids a rerun. Therefore `C12 NOT
+  ACCEPTED`. The only valid continuation entry is new explicit product-owner
+  authorization; do not infer authorization for another milestone, local
+  real-world evaluation, API, CLI, UI, or deployment.

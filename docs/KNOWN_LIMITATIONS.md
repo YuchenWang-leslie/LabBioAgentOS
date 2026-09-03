@@ -14,15 +14,19 @@ exactly `relative_path`, `artifact_type`, `requested_exposure`, and
 `output_contract_id`. LabBio's canonical local validation remains authoritative.
 
 Two bounded provider-robustness limitations remain. The generic execution
-`parameters` mapping intentionally has field-local arbitrary values, and the
-provider can still make a semantically incorrect lifecycle decision even when
-the trusted capability state and schema are present. Final run
-`b6392437-bb23-4570-b09f-639db0aa195a` demonstrated the latter: after a
-successful deterministic PREFLIGHT receipt, the provider returned
-`next_action=fail` because it incorrectly concluded that computation capability
-was absent. The PREFLIGHT input did contain the trusted execution capability.
-No EXECUTE stage, execution workspace, Docker call, output, or RAW exposure
-followed. The explicit one-run rule prevents another provider attempt in C12.
+`parameters` mapping intentionally has field-local arbitrary values, and a
+provider can choose a schema-valid but semantically wrong execution-output
+exposure. Final post-fix run `72f0ad4a-72af-4676-88f9-8a5a3529119a`
+demonstrated the latter: its second Docker execution exited 0, but the provider
+requested `AGGREGATE` for the approved `BOUNDED_SCALARS` contract. The trusted
+policy correctly retained the output as RAW rather than rewriting or promoting
+it. A later limitations report and workflow `COMPLETED` state do not establish
+the missing acceptance evidence. The explicit one-run rule prevents another
+provider attempt in C12.
+
+The previous run's PREFLIGHT failure is not retained as a provider limitation.
+It was `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and was closed by making
+configured execution PREFLIGHT host-authoritative with zero provider calls.
 
 ## Local storage denial of service
 
@@ -57,8 +61,8 @@ biological identifiers and does not choose scientific methods.
 
 ## Operational status
 
-C12 is not accepted because its one post-policy provider-backed integrated run
-failed at the provider's PREFLIGHT decision before EXECUTE. Local deterministic
-and real-Docker evidence is green, but it does not substitute for that explicit
-acceptance condition. No source release was deployed and no production-service
-health claim is made.
+C12 is not accepted because its one post-fix provider-backed integrated run had
+no `TRUSTED_EXECUTION_DECLASSIFICATION` output. Local deterministic and
+real-Docker evidence is green, and the host-owned PREFLIGHT worked, but neither
+substitutes for the missing live DERIVED execution result. No source release was
+deployed and no production-service health claim is made.

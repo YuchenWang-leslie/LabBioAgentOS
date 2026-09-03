@@ -6,27 +6,40 @@
 C12 NOT ACCEPTED
 ```
 
-The revised bounded-scalar product policy is deterministically green, the full
-non-live regression is green, and the real-Docker hostile suite is green. The
-one additionally authorized provider-backed run was performed exactly once. It
-reached a successful deterministic PREFLIGHT receipt, but the provider then
-returned typed `next_action=fail` because it incorrectly concluded that no
-computation capability was available. The provider input did contain the
-trusted `RuntimeExecutionCapabilityView`. The run therefore stopped before
-EXECUTE, created no Execution or DERIVED Artifact, and produced no report.
+The prior provider failure was traced to
+`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`: the host had already accepted
+execution readiness, but Pantheon was then allowed to re-decide the same
+control outcome. Commit `220d6cb261cf7d416f5e41b918f70482d75d3bf3`
+makes configured execution PREFLIGHT host-authoritative. The full non-live
+regression and real-Docker hostile suite remain green.
 
-The earliest failure is classified as `PROVIDER_TOOL_USE_FAILURE`: the provider
-did not transition from the trusted PREFLIGHT control state to use the execution
-capability. It is not a scientific-result failure, an execution-schema
-rejection, a Docker failure, or a bounded-release failure. The explicit rule
-forbids another provider run, so deterministic evidence cannot replace the
-unsatisfied live acceptance gate.
+The one newly authorized provider-backed run after that fix was performed
+exactly once. Host PREFLIGHT passed, caused zero PREFLIGHT provider calls, and
+transitioned through WorkflowEngine to EXECUTE. The first submitted execution
+exited 1 and the provider made a second submission within the same bounded
+EXECUTE capability phase. The second exited 0, but
+its schema-valid request selected `requested_exposure=AGGREGATE` for the named
+bounded-scalar contract. The trusted registration policy therefore retained the
+output as RAW with `contract_valid=false` and `release_authorized=false`. No
+execution-output DERIVED Artifact existed, so the acceptance harness stopped at
+its mandatory DERIVED assertion. The model-driven workflow itself continued
+through VALIDATE, INTERPRET, REPORT, and LEARN and recorded COMPLETED, but that
+does not satisfy C12 acceptance.
+
+The recovered exit-1 execution is the first technical failure in the live
+sequence. The first terminal acceptance failure is classified as
+`PROVIDER_TOOL_USE_FAILURE`: a semantically wrong exposure class was selected
+for `execution_submit`; it is not an execution-schema rejection, Docker policy
+failure, framework release failure, or scientific-result acceptance. The
+framework correctly refused promotion. The explicit one-run rule forbids
+another provider run, so deterministic evidence cannot replace the unsatisfied
+live acceptance gate.
 
 ## Required final report
 
 | # | Required item | C12 result and evidence |
 | ---: | --- | --- |
-| 1 | Starting LabBio SHA | `de346ca3615f52616e564ad5f52576d41c21e4aa`; clean C12 closure baseline. |
+| 1 | Starting LabBio SHA | `6c5ba0e5317fe37cbe16c0d28241fbba7e903dcd`; clean baseline for the host-authority closure pass. |
 | 2 | Frozen Pantheon SHA | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; tree remained clean and unchanged. |
 | 3 | Revised threat decision | Ordinary bounded scientific/sample identifier strings are not sensitive by type alone. RAW data, unrestricted documents/rows/matrices, execution bodies, host/system material, and secrets remain outside automatic release. |
 | 4 | Former behavior | `PREDECLARED_SCALARS` admitted runtime strings only when every value was declared before execution. That behavior matched the former strict policy but is no longer the active product contract. |
@@ -38,25 +51,25 @@ unsatisfied live acceptance gate.
 | 10 | HC1-HC6 | Green: low-cardinality condition/donor/sample categories enumerate within bounds; high-cardinality categories remain suppressed; observation rows and matrix values remain absent. |
 | 11 | Laundering boundary | Shape-valid but uncontracted, nested, oversized, system/path/key-bearing, or `NONE` output remains RAW and cannot be queried by `REMOTE_LLM`; no conversion, normalization, field dropping, or retry fallback was added. |
 | 12 | Provider schema | Deterministic Pantheon inspection shows a typed nested `ExecutionPlanDraft`: root/draft/output/resource objects forbid extra properties, runtime is enum `PYTHON`, IDs/resources are typed, and each requested output exposes exactly `relative_path`, `artifact_type`, `requested_exposure`, and `output_contract_id`. `strict` remains false and generic `parameters` remains a field-local object. |
-| 13 | Capability view | PREFLIGHT provider input for the final run contained `execution_capability` with authority `CONTROL_STATE`, runtime `PYTHON`, image key `python-c12-real`, `network_required=false`, and one approved output contract. |
+| 13 | Capability view | EXECUTE provider input contained `execution_capability` with authority `CONTROL_STATE`, runtime `PYTHON`, image key `python-c12-real`, `network_required=false`, and approved contract `c12.scalar-records.v1` with `BOUNDED_SCALARS`. PREFLIGHT had no provider input. |
 | 14 | Gold/Memory/security | Existing Gold, Memory, authority, cross-scope, evidence-grounding, and recursive model-visible tests remain green. No scientific decision logic or authority widening was introduced. |
-| 15 | Full regression | `418 passed, 12 skipped`, plus the one pre-existing Uvicorn websocket warning. |
+| 15 | Full regression | `421 passed, 12 skipped`, plus the one pre-existing Uvicorn websocket warning. |
 | 16 | Real Docker hostile test | `1 passed` with the existing warning. Docker, containerd, and `docker.socket` remained active; server version `29.1.3`. |
-| 17 | Deterministic commits | `00ac765` execution contract/release; `6b83dde` H5AD categories; `d71e0cb` C12 tests/harness; `84015f7` revised threat-model documentation. |
-| 18 | Push before live | Local and `origin/c12-core-architecture-hardening` both resolved to `84015f7b8bf3e8a1079b6948de7f0151ae2f6145`; the tree was clean before the one live run. `main` was not modified. |
-| 19 | Provider run ID | `b6392437-bb23-4570-b09f-639db0aa195a`. No second provider run was made. |
-| 20 | Run evidence root | `.local/c12-bounded-release-final/d8e73bfb-7fde-4c0f-bbdc-92d3e587187c`; retained as failed local evidence and not committed. |
-| 21 | Execution ID | None. EXECUTE was never entered and no `execution_submit` occurred. |
-| 22 | Docker invocation/exit | No invocation and therefore no container exit code. The Docker services were not stopped or changed. |
-| 23 | DERIVED Artifact IDs | None. The store contains only the governed RAW source and trusted STRUCTURAL inspection Artifact. |
-| 24 | Live release basis | None, because no execution output was registered. Deterministic tests prove `TRUSTED_EXECUTION_DECLASSIFICATION` for eligible bounded results only. |
-| 25 | Runtime-discovered strings | Not demonstrated live because execution never began; demonstrated only by deterministic DS tests. |
-| 26 | VALIDATE/Reviewer | VALIDATE was never reached, so no Reviewer decision or scientific validation result exists. |
-| 27 | Report | No report Artifact was created. |
-| 28 | Workflow path/status | `INTAKE -> UNDERSTAND -> PLAN -> PREFLIGHT -> FAILED`; deterministic PREFLIGHT completed before the provider-authored `next_action=fail`. Final run status is FAILED. |
-| 29 | Leak audit | Boundary/trace scans found zero full RAW document copies, absolute paths, run-root paths, script/stdout/stderr bodies, provider request/response bodies, hidden reasoning, credential material, private-key blocks, or Docker socket strings. `executions/` is empty. |
+| 17 | Deterministic commits | `00ac765` execution contract/release; `6b83dde` H5AD categories; `d71e0cb` C12 tests/harness; `84015f7` revised threat model; `220d6cb` host-authoritative configured PREFLIGHT. |
+| 18 | Push before live | Local and `origin/c12-core-architecture-hardening` both resolved to `220d6cb261cf7d416f5e41b918f70482d75d3bf3`; the tree was clean before the one new live run. `main` was not modified. |
+| 19 | Provider run ID | `72f0ad4a-72af-4676-88f9-8a5a3529119a`. This was the only newly authorized post-fix provider run; no smoke or replacement run was made. |
+| 20 | Run evidence root | `.local/c12-host-preflight-final/76c1b4d4-9801-4eaa-8f14-d8b5c28b8f1b`; retained as failed local evidence and not committed. |
+| 21 | Execution IDs | `4d1fa1c1-a33b-4eb2-b73d-c94dee49c679` and `d02fb75c-cef2-40bc-ae3e-f05afeda7441`. One earlier invalid string-shaped draft was rejected before execution. |
+| 22 | Docker invocation/exit | Two invocations within one bounded EXECUTE capability phase: exit 1 with `NON_ZERO_EXIT`, then exit 0. No workflow-stage retry occurred. Docker, containerd, and `docker.socket` remained active at server version `29.1.3`. |
+| 23 | DERIVED Artifact IDs | No execution-output DERIVED Artifact. Output `57d3ab69-322d-4660-9961-45c88bb6e614` remained RAW. Report `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` is separately DERIVED as model-authored report prose and is not bounded execution evidence. |
+| 24 | Live release basis | The execution output retained `INTERNAL_ONLY`; requested `AGGREGATE`, actual `RAW`, contract invalid, release unauthorized. Therefore no live `TRUSTED_EXECUTION_DECLASSIFICATION` occurred. |
+| 25 | Runtime-discovered strings | The execution wrote a local result, but runtime-originated scalar strings were not demonstrated through an authorized DERIVED model view. Deterministic DS tests remain the only positive proof. |
+| 26 | VALIDATE/Reviewer | VALIDATE was reached and returned technical `COMPLETED` with explicit inability to compute or validate the requested summary. It did not validate a successful DERIVED execution result and cannot satisfy the acceptance gate. |
+| 27 | Report | Report Artifact `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` was registered with `MODEL_AUTHORED_REPORT`; it documents limitations but does not repair or replace missing governed execution evidence. |
+| 28 | Workflow path/status | Workflow path: `INTAKE -> UNDERSTAND -> PLAN -> PREFLIGHT -> EXECUTE -> VALIDATE -> INTERPRET -> REPORT -> LEARN`, ending `COMPLETED`. Provider stage input occurred once for each stage except PREFLIGHT, where it was zero. The live pytest failed at `assert derived`, so workflow completion is not C12 acceptance. |
+| 29 | Leak audit | Boundary/trace scans found zero full RAW document copies, absolute paths, run-root paths, storage locators, script/stdout/stderr bodies, provider request/response bodies, hidden reasoning, credential/secret keys, private-key blocks, or Docker socket strings. Execution bodies and streams remain only in the governed local evidence root. |
 | 30 | P2 limitations | Provider robustness remains probabilistic despite a faithful schema/control view; generic execution `parameters` is intentionally open; output-mount disk use has no full filesystem quota; covert channels, kernel zero-days, distributed transactions, multi-writer coordination, and HA are not claimed. |
-| 31 | Final LabBio SHA | The documentation-only failure closeout commit is reported in the final handoff; no production code changed after the failed live run. |
+| 31 | Final LabBio SHA | Host-authority infrastructure is `220d6cb261cf7d416f5e41b918f70482d75d3bf3`; the subsequent documentation-only terminal closeout SHA is reported in the final handoff. No production code changed after the failed live run. |
 | 32 | Final Pantheon SHA | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`, unchanged locally and remotely. |
 | 33 | Final C12 status | **C12 NOT ACCEPTED.** No further provider run, production patch, deployment, next milestone, or evaluation is authorized by this checkpoint. |
 

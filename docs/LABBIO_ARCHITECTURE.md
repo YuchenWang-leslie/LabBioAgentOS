@@ -646,6 +646,9 @@ and data-release space:
 - any execution with local Artifact inputs is offline, approved images are
   immutable, runtime pull is disabled, and output files/collection have small
   trusted byte bounds;
+- configured execution PREFLIGHT is a host-owned readiness decision recorded
+  through the coordinator and applied only through WorkflowEngine; Pantheon is
+  not invoked to re-decide that control result;
 - USER_APPROVED exposure is disabled by default and requires durable exact
   approval when enabled;
 - Artifact/evidence/trace model surfaces share recursive size and unsafe-field
@@ -655,20 +658,25 @@ Malicious Gold and Memory remain untrusted MODEL_CONTEXT and cannot widen tools,
 mounts, network, identity, delegation, or workflow authority. Known foreign
 UUIDs remain unusable. WorkflowEngine, RunStateStore, and RunTrace retain their
 separate state, durability, and observation roles. The revised full non-live
-suite passes at `418 passed, 12 skipped` with one pre-existing Uvicorn warning,
+suite passes at `421 passed, 12 skipped` with one pre-existing Uvicorn warning,
 and the real-Docker hostile test passes.
 
-C12 is not accepted. Its one post-policy provider integration completed the
-deterministic PREFLIGHT receipt, and the model input contained the trusted
-execution-capability view, but the provider then returned `next_action=fail`
-after incorrectly concluding that computation capability was unavailable. It
-stopped before EXECUTE, so no execution, Docker call, output, DERIVED Artifact,
-VALIDATE result, or report exists. Frozen Pantheon exposes the typed nested
-draft at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; this failure is classified
-as `PROVIDER_TOOL_USE_FAILURE`, not schema rejection or release-policy bypass.
-The one-run rule forbids another attempt. No deployment or service-health claim
-is made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and
-`KNOWN_LIMITATIONS.md`.
+C12 is not accepted. The earlier failed run exposed
+`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`, now closed by commit `220d6cb`: the
+final post-fix run had one host PREFLIGHT result, no PREFLIGHT provider input,
+and transitioned to EXECUTE. Its first execution exited 1; the configured
+EXECUTE capability phase allowed a second submission, which exited 0 but
+requested `AGGREGATE` for the bounded-scalar output contract. No workflow-stage
+retry occurred. The trusted collector therefore retained the output as RAW
+and reported `OUTPUT_CONTRACT_FAILURE`. No execution-output DERIVED Artifact
+received `TRUSTED_EXECUTION_DECLASSIFICATION`. The model-driven workflow later
+recorded a limitations report and reached LEARN/COMPLETED, but the live harness
+correctly failed the mandatory DERIVED assertion. Frozen Pantheon remains
+unchanged at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; the terminal failure is
+classified as `PROVIDER_TOOL_USE_FAILURE`, not schema rejection, Docker policy
+failure, or framework release bypass. The one-run rule forbids another attempt.
+No deployment or service-health claim is made. See
+`C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and `KNOWN_LIMITATIONS.md`.
 
 ## Out of scope after the C12 checkpoint
 

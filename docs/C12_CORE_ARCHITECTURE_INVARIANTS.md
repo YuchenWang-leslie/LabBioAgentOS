@@ -5,7 +5,9 @@
 C12 originally started from LabBio
 `091be5e7f1d08af1ea76ee55f83e0845b7c15e62`. The final simplified-release
 closure starts from LabBio `de346ca3615f52616e564ad5f52576d41c21e4aa`
-and frozen Pantheon `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
+and the host-PREFLIGHT closure starts from
+`6c5ba0e5317fe37cbe16c0d28241fbba7e903dcd`, with frozen Pantheon
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
 Statuses below are based on production-source inspection and accepted tests,
 not milestone prose. `PARTIALLY_PROVEN` means the source boundary exists but a
 required C12 adversarial/composition reproduction is not yet present.
@@ -109,7 +111,7 @@ unaccepted until the explicitly authorized post-policy provider run is green.
 | Agent | stage/actor/consumer/capability authority is host-bound | PROVEN | ceiling, spoof, sibling delegation, and malicious-context tests |
 | Gold | optional, adaptable, non-executable MODEL_CONTEXT | PROVEN | hostile Gold cannot widen tools; REUSE/ADAPT/REFERENCE/IGNORE all remain legal |
 | Memory | durable, versioned, optional MODEL_CONTEXT with gated mutation | PROVEN | hostile Memory cannot change policy; C11 lifecycle plus combined C12 restart test |
-| Workflow/Recovery | WorkflowEngine is sole state owner and uncertain effects are not replayed | PROVEN | retry + two USER_GATE decisions + EXECUTE/VALIDATE + restart/finalization composition |
+| Workflow/Recovery | WorkflowEngine is sole state owner, configured execution PREFLIGHT is host-authoritative, and uncertain effects are not replayed | PROVEN | shared trusted-result acceptance, zero-provider PREFLIGHT, retry + two USER_GATE decisions + EXECUTE/VALIDATE + restart/finalization composition |
 | Governance | known cross-user/project/lab UUIDs grant no access | PROVEN | Artifact list/query/mount/report/Memory, Gold, Memory, and run recovery attacks denied |
 | Trace | audit payloads exclude RAW bodies, provider bodies, reasoning, credentials, and paths | PROVEN | shared recursive validation, typed execution failure projection, adversarial TraceEvent tests |
 | Evidence | current governed results remain distinct from recursive model prose | PROVEN | item-level authority and specialist/reviewer prose laundering rejection |
@@ -126,21 +128,32 @@ earlier evidence.
 The active candidate replaces predeclared strings with `BOUNDED_SCALARS`,
 removes the obsolete execution field/capability hint, uses the shared
 model-visible validator before promotion, and removes the semantic H5AD field
-allowlist while retaining cardinality/size bounds. DS1-DS15, HC1-HC6, the full
-`418 passed, 12 skipped` non-live regression, and the real-Docker hostile test
-are green. Pantheon's nested provider schema remains frozen and unchanged at
+allowlist while retaining cardinality/size bounds. Commit
+`220d6cb261cf7d416f5e41b918f70482d75d3bf3` also removes the duplicated
+PREFLIGHT authority: after `STAGE_IN_FLIGHT`, a configured execution preflight
+is decided by the host, recorded through the coordinator's shared result path,
+and applied only through WorkflowEngine. DS1-DS15, HC1-HC6, the full `421
+passed, 12 skipped` non-live regression, and the real-Docker hostile test are
+green. Pantheon's nested provider schema remains frozen and unchanged at
 `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
 
-The one newly authorized post-policy provider run was performed exactly once as
-run `b6392437-bb23-4570-b09f-639db0aa195a`. Its deterministic PREFLIGHT receipt
-was successful and its provider input contained the trusted
-`RuntimeExecutionCapabilityView`, but the provider then returned
-`next_action=fail` after incorrectly concluding that no computation capability
-was available. The run stopped before EXECUTE with no execution, Docker
-invocation, output, DERIVED Artifact, VALIDATE stage, or report. This is a
-`PROVIDER_TOOL_USE_FAILURE`; it does not falsify any execution or release
-invariant because those boundaries were not exercised. The one-run rule forbids
-a replacement attempt, so the live acceptance condition remains unsatisfied:
+The prior run's model-authored PREFLIGHT failure is now correctly classified as
+`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`, not provider execution-tool failure.
+The one newly authorized post-fix provider run was performed exactly once as
+run `72f0ad4a-72af-4676-88f9-8a5a3529119a`. It had exactly one host PREFLIGHT
+result and no PREFLIGHT provider input, then entered EXECUTE. The first Docker
+execution exited 1 and the provider submitted a second execution within the
+same bounded EXECUTE capability phase, which exited 0. No workflow-stage retry
+occurred. That second request selected `AGGREGATE` rather than `DERIVED`,
+so the release policy correctly registered output
+`57d3ab69-322d-4660-9961-45c88bb6e614` as RAW with an output-contract failure.
+No execution-output DERIVED Artifact was produced. The model-driven stages
+nevertheless reached LEARN/COMPLETED and registered a limitations report, but
+the live harness correctly failed its mandatory DERIVED assertion. The
+terminal acceptance failure is `PROVIDER_TOOL_USE_FAILURE`; it does not
+falsify the execution/release invariant because the framework refused
+promotion. The one-run rule forbids a replacement attempt, so the live
+acceptance condition remains unsatisfied:
 
 ```text
 C12 NOT ACCEPTED

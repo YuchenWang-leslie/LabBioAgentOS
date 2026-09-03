@@ -3,8 +3,8 @@
 ## Scope and current status
 
 This document records the final C12 product threat model on branch
-`c12-core-architecture-hardening`. The simplified bounded-result closure starts
-from LabBio revision `de346ca3615f52616e564ad5f52576d41c21e4aa` and frozen
+`c12-core-architecture-hardening`. The host-authority closure starts from
+LabBio revision `6c5ba0e5317fe37cbe16c0d28241fbba7e903dcd` and frozen
 Pantheon revision `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. It is not a
 production-deployment or service-health claim.
 
@@ -12,10 +12,10 @@ production-deployment or service-health claim.
 C12 NOT ACCEPTED
 ```
 
-The deterministic policy revision is green. The one explicitly authorized
-post-policy provider-backed integration was performed and failed at the
-provider's PREFLIGHT decision before execution; the final acceptance gate is
-therefore not met.
+The deterministic policy revision and host-authoritative configured PREFLIGHT
+are green. The one explicitly authorized post-fix provider-backed integration
+was performed and reached the full workflow, but it produced no authorized
+DERIVED execution result; the final acceptance gate is therefore not met.
 
 ## Product privacy decision
 
@@ -42,6 +42,7 @@ afterward.
 | Workflow, durable run state, access policy, host principal/workspace | trusted control plane | Own lifecycle and scope; model text and UUID possession grant no authority. |
 | Artifact store, model-view projector, inspectors, output registration policy | trusted data plane | Keep locators local and decide which bounded representation may cross to a remote model. |
 | approved image registry, execution policy, mount resolver, Docker builder | trusted execution plane | Resolve immutable images, offline mounts, fixed argv, isolation, and resource limits. |
+| configured execution PREFLIGHT | trusted control plane | After an in-flight checkpoint, decides host readiness once and records/applies its typed result through the shared coordinator and WorkflowEngine path; Pantheon does not re-decide it. |
 | runtime tool arguments, generated programs, uploaded files, execution output | untrusted | Express intent or data only; cannot choose host identity, paths, Docker flags, release authority, or scope. |
 | Gold, Memory, specialist prose, reports, interpretations | MODEL_CONTEXT | May inform reasoning but cannot widen tools, evidence, network, workflow, identity, or release policy. |
 | approved output contract plus trusted collector/registration policy | trusted release decision | May release only the exact bounded representation admitted below. |
@@ -101,7 +102,7 @@ out of scope.
   overflow, system-field, absolute-path, private-key, and `NONE` behavior.
 - HC1-HC6 cover bounded condition/donor/sample enumeration, high-cardinality
   suppression, and the absence of observation rows and expression values.
-- The full non-live suite passes with `418 passed, 12 skipped`; the existing
+- The full non-live suite passes with `421 passed, 12 skipped`; the existing
   real-Docker hostile test also passes while Docker, containerd, and
   `docker.socket` remain active.
 - Gold, Memory, cross-scope, authority-composition, and recursive model-visible
@@ -110,13 +111,25 @@ out of scope.
 These results establish the deterministic release candidate. They do not by
 themselves accept or freeze C12.
 
-The final provider run `b6392437-bb23-4570-b09f-639db0aa195a` saw the trusted
-execution-capability control state and a successful deterministic PREFLIGHT
-receipt, then returned typed `next_action=fail` because it incorrectly treated
-the absence of ordinary PREFLIGHT tool calls as absence of next-stage
-computation authority. The workflow stopped before EXECUTE. No execution,
-Docker invocation, output registration, DERIVED Artifact, VALIDATE decision, or
-report exists. Boundary and trace scans contain no RAW document, absolute path,
+The previous provider run exposed a duplicated control authority: trusted host
+PREFLIGHT passed and Pantheon then re-decided PREFLIGHT. That defect is
+`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and is closed by `220d6cb`; configured
+PREFLIGHT now has no provider input.
+
+The final post-fix provider run `72f0ad4a-72af-4676-88f9-8a5a3529119a`
+confirmed exactly one host-owned PREFLIGHT transition to EXECUTE and a provider
+stage path omitting PREFLIGHT. Its first Docker execution exited 1. The normal
+bounded EXECUTE capability phase reached a second execution with exit 0 and no
+workflow-stage retry, but the model chose `requested_exposure=AGGREGATE` for the
+approved bounded-scalar output. The
+collector correctly retained artifact
+`57d3ab69-322d-4660-9961-45c88bb6e614` as RAW with `contract_valid=false` and
+`release_authorized=false`. The later VALIDATE/report stages documented the
+failure and the workflow recorded COMPLETED, but no execution-output DERIVED
+Artifact existed and the acceptance harness failed. This terminal result is
+`PROVIDER_TOOL_USE_FAILURE`, not a release-policy bypass.
+
+Boundary and trace scans contain no RAW document, absolute path,
 script/log/provider/reasoning/credential body, private-key material, or Docker
-socket string. This is `PROVIDER_TOOL_USE_FAILURE`, not a release-policy bypass.
-No further provider run is authorized, so C12 remains not accepted.
+socket string. No further provider run is authorized, so C12 remains not
+accepted.
