@@ -3,7 +3,7 @@
 ## Decision
 
 ```text
-C12 NOT ACCEPTED
+C12 CORE ARCHITECTURE ACCEPTED AND FROZEN
 ```
 
 The prior provider failure was traced to
@@ -13,27 +13,27 @@ control outcome. Commit `220d6cb261cf7d416f5e41b918f70482d75d3bf3`
 makes configured execution PREFLIGHT host-authoritative. The full non-live
 regression and real-Docker hostile suite remain green.
 
-The one newly authorized provider-backed run after that fix was performed
-exactly once. Host PREFLIGHT passed, caused zero PREFLIGHT provider calls, and
-transitioned through WorkflowEngine to EXECUTE. The first submitted execution
-exited 1 and the provider made a second submission within the same bounded
-EXECUTE capability phase. The second exited 0, but
-its schema-valid request selected `requested_exposure=AGGREGATE` for the named
-bounded-scalar contract. The trusted registration policy therefore retained the
-output as RAW with `contract_valid=false` and `release_authorized=false`. No
-execution-output DERIVED Artifact existed, so the acceptance harness stopped at
-its mandatory DERIVED assertion. The model-driven workflow itself continued
-through VALIDATE, INTERPRET, REPORT, and LEARN and recorded COMPLETED, but that
-does not satisfy C12 acceptance.
+The product owner subsequently removed scientific-result quality and DERIVED
+classification from C12's self-acceptance criteria. The framework must preserve
+the requested classification, enforce trusted release policy, retain failures,
+and save whatever report the Agent produces; it must not grade whether the
+scientific result is good enough. Scientific usefulness is an external
+evaluation concern.
 
-The recovered exit-1 execution is the first technical failure in the live
-sequence. The first terminal acceptance failure is classified as
-`PROVIDER_TOOL_USE_FAILURE`: a semantically wrong exposure class was selected
-for `execution_submit`; it is not an execution-schema rejection, Docker policy
-failure, framework release failure, or scientific-result acceptance. The
-framework correctly refused promotion. The explicit one-run rule forbids
-another provider run, so deterministic evidence cannot replace the unsatisfied
-live acceptance gate.
+Under that revised criterion, the preserved provider-backed run is acceptable
+framework evidence. Host PREFLIGHT passed with zero PREFLIGHT provider calls,
+the workflow exercised EXECUTE through LEARN, two real Docker invocations and
+output registration were observable, the incorrectly requested AGGREGATE
+output remained RAW, a limitations report was retained, and no unauthorized
+promotion or leak occurred. Workflow `COMPLETED` means the governed lifecycle
+closed; it is not a scientific-quality verdict.
+
+The live run still records a real `PROVIDER_TOOL_USE_FAILURE`: a semantically
+wrong exposure class was selected for `execution_submit`. That fact remains an
+external model-behavior limitation, not a framework release failure and no
+longer a C12 acceptance gate. Commit `eba5f96` removes only the harness's
+DERIVED/content/release-basis grading assertions. Production classification,
+declassification, Docker, authority, and trace behavior are unchanged.
 
 ## Required final report
 
@@ -55,23 +55,23 @@ live acceptance gate.
 | 14 | Gold/Memory/security | Existing Gold, Memory, authority, cross-scope, evidence-grounding, and recursive model-visible tests remain green. No scientific decision logic or authority widening was introduced. |
 | 15 | Full regression | `421 passed, 12 skipped`, plus the one pre-existing Uvicorn websocket warning. |
 | 16 | Real Docker hostile test | `1 passed` with the existing warning. Docker, containerd, and `docker.socket` remained active; server version `29.1.3`. |
-| 17 | Deterministic commits | `00ac765` execution contract/release; `6b83dde` H5AD categories; `d71e0cb` C12 tests/harness; `84015f7` revised threat model; `220d6cb` host-authoritative configured PREFLIGHT. |
-| 18 | Push before live | Local and `origin/c12-core-architecture-hardening` both resolved to `220d6cb261cf7d416f5e41b918f70482d75d3bf3`; the tree was clean before the one new live run. `main` was not modified. |
+| 17 | Deterministic commits | `00ac765` execution contract/release; `6b83dde` H5AD categories; `d71e0cb` C12 tests/harness; `84015f7` revised threat model; `220d6cb` host-authoritative configured PREFLIGHT; `eba5f96` externalized scientific-result evaluation. |
+| 18 | Push state | Acceptance-policy test commit `eba5f96` was pushed to `origin/c12-core-architecture-hardening` before PBMC external evaluation. `main` was not modified. |
 | 19 | Provider run ID | `72f0ad4a-72af-4676-88f9-8a5a3529119a`. This was the only newly authorized post-fix provider run; no smoke or replacement run was made. |
 | 20 | Run evidence root | `.local/c12-host-preflight-final/76c1b4d4-9801-4eaa-8f14-d8b5c28b8f1b`; retained as failed local evidence and not committed. |
 | 21 | Execution IDs | `4d1fa1c1-a33b-4eb2-b73d-c94dee49c679` and `d02fb75c-cef2-40bc-ae3e-f05afeda7441`. One earlier invalid string-shaped draft was rejected before execution. |
 | 22 | Docker invocation/exit | Two invocations within one bounded EXECUTE capability phase: exit 1 with `NON_ZERO_EXIT`, then exit 0. No workflow-stage retry occurred. Docker, containerd, and `docker.socket` remained active at server version `29.1.3`. |
-| 23 | DERIVED Artifact IDs | No execution-output DERIVED Artifact. Output `57d3ab69-322d-4660-9961-45c88bb6e614` remained RAW. Report `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` is separately DERIVED as model-authored report prose and is not bounded execution evidence. |
+| 23 | Result classification | No execution-output DERIVED Artifact. Output `57d3ab69-322d-4660-9961-45c88bb6e614` remained RAW. Report `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` is separately DERIVED as model-authored report prose. Neither classification is a C12 scientific-quality score. |
 | 24 | Live release basis | The execution output retained `INTERNAL_ONLY`; requested `AGGREGATE`, actual `RAW`, contract invalid, release unauthorized. Therefore no live `TRUSTED_EXECUTION_DECLASSIFICATION` occurred. |
-| 25 | Runtime-discovered strings | The execution wrote a local result, but runtime-originated scalar strings were not demonstrated through an authorized DERIVED model view. Deterministic DS tests remain the only positive proof. |
-| 26 | VALIDATE/Reviewer | VALIDATE was reached and returned technical `COMPLETED` with explicit inability to compute or validate the requested summary. It did not validate a successful DERIVED execution result and cannot satisfy the acceptance gate. |
-| 27 | Report | Report Artifact `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` was registered with `MODEL_AUTHORED_REPORT`; it documents limitations but does not repair or replace missing governed execution evidence. |
-| 28 | Workflow path/status | Workflow path: `INTAKE -> UNDERSTAND -> PLAN -> PREFLIGHT -> EXECUTE -> VALIDATE -> INTERPRET -> REPORT -> LEARN`, ending `COMPLETED`. Provider stage input occurred once for each stage except PREFLIGHT, where it was zero. The live pytest failed at `assert derived`, so workflow completion is not C12 acceptance. |
+| 25 | Runtime-discovered strings | Deterministic DS tests prove the allowed bounded-string release path. C12 no longer requires one provider sample to reproduce that already-tested result. |
+| 26 | VALIDATE/Reviewer | VALIDATE returned its typed technical account and limitations. C12 checks schema, authority, evidence boundaries, and persistence but does not treat that model-authored assessment as an acceptance oracle. |
+| 27 | Report | Report Artifact `e7d1bcb9-d79f-45a4-a28a-1e26a4404ae1` was registered with `MODEL_AUTHORED_REPORT` and retained for external review; C12 does not grade its scientific usefulness. |
+| 28 | Workflow path/status | Workflow path: `INTAKE -> UNDERSTAND -> PLAN -> PREFLIGHT -> EXECUTE -> VALIDATE -> INTERPRET -> REPORT -> LEARN`, ending `COMPLETED`. Provider stage input occurred once for each stage except PREFLIGHT, where it was zero. Under the revised acceptance policy, this proves governed lifecycle closure without claiming scientific success. |
 | 29 | Leak audit | Boundary/trace scans found zero full RAW document copies, absolute paths, run-root paths, storage locators, script/stdout/stderr bodies, provider request/response bodies, hidden reasoning, credential/secret keys, private-key blocks, or Docker socket strings. Execution bodies and streams remain only in the governed local evidence root. |
 | 30 | P2 limitations | Provider robustness remains probabilistic despite a faithful schema/control view; generic execution `parameters` is intentionally open; output-mount disk use has no full filesystem quota; covert channels, kernel zero-days, distributed transactions, multi-writer coordination, and HA are not claimed. |
-| 31 | Final LabBio SHA | Host-authority infrastructure is `220d6cb261cf7d416f5e41b918f70482d75d3bf3`; the subsequent documentation-only terminal closeout SHA is reported in the final handoff. No production code changed after the failed live run. |
+| 31 | Final LabBio SHA | Acceptance-policy test code is `eba5f96`; the documentation-only freeze SHA is reported in the final handoff. No production code changed after the provider runs. |
 | 32 | Final Pantheon SHA | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`, unchanged locally and remotely. |
-| 33 | Final C12 status | **C12 NOT ACCEPTED.** No further provider run, production patch, deployment, next milestone, or evaluation is authorized by this checkpoint. |
+| 33 | Final C12 status | **C12 CORE ARCHITECTURE ACCEPTED AND FROZEN.** No further numbered architecture milestone is authorized. Scientific/model quality remains externally evaluated. |
 
 ## Exact provider-schema characteristics
 
@@ -116,9 +116,35 @@ contract, LabBio monkey-patch, or post-failure repair was added.
 | Scientific method, tool order, metric choice, interpretation | No production change |
 | Compatibility fallback | None |
 
+## PBMC external evaluation
+
+After the acceptance criterion was revised, the Agent received one open-ended
+PBMC task using the governed canonical PBMC3k input. The harness supplied only
+trusted data provenance, execution-environment facts, resource bounds, and
+capabilities; it did not choose the scientific question, method, parameters,
+program, or conclusion. Scientific quality was not scored.
+
+Three bounded attempts are retained under
+`.local/c12-pbmc-external-evaluation/`:
+
+| Attempt | Run | Reached | Result |
+| ---: | --- | --- | --- |
+| 1 | `39118171-40d6-4be8-a6e9-6a6f8543eaf3` | EXECUTE | `execution_submit.draft` arrived as `STRING`, was rejected as `INVALID_EXECUTION_DRAFT`, and the following provider request returned HTTP 400. |
+| 2 | `027fabf6-0b05-4b02-a136-67a5ee9f134c` | PLAN | The model proposed an invalid direct PLAN-to-EXECUTE transition; WorkflowEngine rejected it. |
+| 3 | `55332c8e-2070-422f-b0cd-62d54fdbd606` | EXECUTE | The first failure class repeated: string-shaped execution draft followed by provider HTTP 400. |
+
+No attempt started Docker, registered a result Artifact, or produced a
+scientific report. The repeated failure stopped further runs; no string parser,
+prompt workaround, transition bypass, automatic repair, or hidden retry was
+added. The retained boundary/trace packets passed the leak scan and are an
+external model-effectiveness result, not a C12 framework failure or a successful
+PBMC analysis.
+
 ## Stop boundary
 
-No production deployment was performed or claimed. No further provider run was
-made after the failed authorized run. No new milestone, local real-world
-evaluation, API, CLI, UI, Search, workflow, specialist, R, vector retrieval, or
-deployment work was started.
+No production deployment was performed or claimed. The specifically requested
+PBMC external evaluation was performed and stopped after its failure repeated.
+No new numbered milestone, API, CLI, UI, Search, workflow, specialist, R,
+vector retrieval, or deployment work was started. C12 is frozen; the PBMC
+packets remain available for external inspection without being promoted into a
+scientific success claim.

@@ -93,8 +93,9 @@ is not release authority.
 The table below records the current deterministic result under the revised
 product threat model. All reproduced P0/P1 defects are closed.
 `PARTIALLY_PROVEN` is used only for the bounded local disk-denial-of-service
-residual, which is P2 and not a confidentiality or authority bypass. C12 remains
-unaccepted until the explicitly authorized post-policy provider run is green.
+residual, which is P2 and not a confidentiality or authority bypass. Under the
+revised acceptance policy, scientific-result quality and output classification
+are external evaluation concerns rather than C12 self-acceptance gates.
 
 | Domain | Invariant | Final result | Deterministic/real evidence |
 | --- | --- | --- | --- |
@@ -139,22 +140,23 @@ green. Pantheon's nested provider schema remains frozen and unchanged at
 
 The prior run's model-authored PREFLIGHT failure is now correctly classified as
 `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`, not provider execution-tool failure.
-The one newly authorized post-fix provider run was performed exactly once as
-run `72f0ad4a-72af-4676-88f9-8a5a3529119a`. It had exactly one host PREFLIGHT
-result and no PREFLIGHT provider input, then entered EXECUTE. The first Docker
-execution exited 1 and the provider submitted a second execution within the
-same bounded EXECUTE capability phase, which exited 0. No workflow-stage retry
-occurred. That second request selected `AGGREGATE` rather than `DERIVED`,
-so the release policy correctly registered output
-`57d3ab69-322d-4660-9961-45c88bb6e614` as RAW with an output-contract failure.
-No execution-output DERIVED Artifact was produced. The model-driven stages
-nevertheless reached LEARN/COMPLETED and registered a limitations report, but
-the live harness correctly failed its mandatory DERIVED assertion. The
-terminal acceptance failure is `PROVIDER_TOOL_USE_FAILURE`; it does not
-falsify the execution/release invariant because the framework refused
-promotion. The one-run rule forbids a replacement attempt, so the live
-acceptance condition remains unsatisfied:
+The preserved post-fix provider run
+`72f0ad4a-72af-4676-88f9-8a5a3529119a` had exactly one host PREFLIGHT result
+and no PREFLIGHT provider input, then exercised the complete governed
+lifecycle. Its first Docker execution exited 1 and the provider submitted a
+second execution within the same bounded EXECUTE capability phase, which
+exited 0. No workflow-stage retry occurred. That second request selected
+`AGGREGATE` rather than `DERIVED`, so the release policy correctly registered
+output `57d3ab69-322d-4660-9961-45c88bb6e614` as RAW with an output-contract
+failure. The model-driven stages reached LEARN/COMPLETED and registered a
+limitations report without bypassing the release boundary.
+
+Commit `eba5f96` removes the test harness's former DERIVED/content/release-basis
+self-grading requirement. It does not change production classification or
+release behavior. The framework evidence, deterministic adversarial coverage,
+real-Docker coverage, bounded persistence, and fail-closed outcome satisfy the
+revised C12 criterion. Scientific usefulness remains for external evaluation:
 
 ```text
-C12 NOT ACCEPTED
+C12 CORE ARCHITECTURE ACCEPTED AND FROZEN
 ```

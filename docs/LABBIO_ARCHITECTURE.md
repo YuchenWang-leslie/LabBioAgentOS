@@ -3,9 +3,10 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through accepted, frozen C11. The C12 source hardening described below
-has passed deterministic and real-Docker verification but C12 is not accepted,
-because its one performed provider-backed integrated run was not green. Phase 1
+preserved through accepted, frozen C12. The C12 source hardening described below
+passed deterministic, real-Docker, and fail-closed provider integration
+verification. Scientific-result quality and output classification are reserved
+for external evaluation rather than framework self-acceptance. Phase 1
 adds typed stage contracts and a composition adapter around PantheonTeam. Phase
 2 adds a deterministic, graph-driven WorkflowEngine. Phase 3 adds structural
 delegation policy around Pantheon's existing team tools. Phase 4 adds append-only
@@ -661,22 +662,30 @@ separate state, durability, and observation roles. The revised full non-live
 suite passes at `421 passed, 12 skipped` with one pre-existing Uvicorn warning,
 and the real-Docker hostile test passes.
 
-C12 is not accepted. The earlier failed run exposed
-`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`, now closed by commit `220d6cb`: the
-final post-fix run had one host PREFLIGHT result, no PREFLIGHT provider input,
-and transitioned to EXECUTE. Its first execution exited 1; the configured
-EXECUTE capability phase allowed a second submission, which exited 0 but
-requested `AGGREGATE` for the bounded-scalar output contract. No workflow-stage
-retry occurred. The trusted collector therefore retained the output as RAW
-and reported `OUTPUT_CONTRACT_FAILURE`. No execution-output DERIVED Artifact
-received `TRUSTED_EXECUTION_DECLASSIFICATION`. The model-driven workflow later
-recorded a limitations report and reached LEARN/COMPLETED, but the live harness
-correctly failed the mandatory DERIVED assertion. Frozen Pantheon remains
-unchanged at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; the terminal failure is
-classified as `PROVIDER_TOOL_USE_FAILURE`, not schema rejection, Docker policy
-failure, or framework release bypass. The one-run rule forbids another attempt.
-No deployment or service-health claim is made. See
-`C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and `KNOWN_LIMITATIONS.md`.
+C12 core architecture is accepted and frozen. The earlier failed run exposed
+`PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION`, closed by commit `220d6cb`: the
+preserved post-fix run had one host PREFLIGHT result, no PREFLIGHT provider
+input, and transitioned to EXECUTE. Its first execution exited 1; the
+configured EXECUTE capability phase allowed a second submission, which exited
+0 but requested `AGGREGATE` for the bounded-scalar output contract. No
+workflow-stage retry occurred. The trusted collector retained the output as RAW
+and reported `OUTPUT_CONTRACT_FAILURE`; no execution-output Artifact received
+unauthorized declassification. The model-driven workflow recorded a limitations
+report and reached LEARN/COMPLETED. Under the revised acceptance policy, this
+demonstrates governed lifecycle and fail-closed release behavior without
+claiming scientific success. Commit `eba5f96` removes only the harness's
+DERIVED/content/release-basis self-grading assertions; production behavior is
+unchanged.
+
+The separately requested PBMC external evaluation produced no scientific
+report. Two bounded attempts submitted a string-shaped execution draft and
+then received provider HTTP 400; one attempt proposed an invalid workflow
+transition. LabBio rejected every invalid action before Docker and retained
+leak-safe evidence. These are explicit model-effectiveness limitations, not an
+architecture bypass. Frozen Pantheon remains unchanged at
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. No deployment or service-health
+claim is made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and
+`KNOWN_LIMITATIONS.md`.
 
 ## Out of scope after the C12 checkpoint
 

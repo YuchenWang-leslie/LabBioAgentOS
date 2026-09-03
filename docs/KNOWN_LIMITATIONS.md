@@ -20,9 +20,25 @@ exposure. Final post-fix run `72f0ad4a-72af-4676-88f9-8a5a3529119a`
 demonstrated the latter: its second Docker execution exited 0, but the provider
 requested `AGGREGATE` for the approved `BOUNDED_SCALARS` contract. The trusted
 policy correctly retained the output as RAW rather than rewriting or promoting
-it. A later limitations report and workflow `COMPLETED` state do not establish
-the missing acceptance evidence. The explicit one-run rule prevents another
-provider attempt in C12.
+it. A later limitations report and workflow `COMPLETED` state prove governed
+closure but do not establish scientific quality. Scientific-result quality and
+output classification are no longer C12 self-acceptance criteria.
+
+The requested PBMC external evaluation exposed a separate provider/model
+effectiveness limitation. Runs `39118171-40d6-4be8-a6e9-6a6f8543eaf3` and
+`55332c8e-2070-422f-b0cd-62d54fdbd606` supplied
+`execution_submit.draft` as a string; LabBio rejected both with
+`INVALID_EXECUTION_DRAFT`, after which MiMo returned HTTP 400. Run
+`027fabf6-0b05-4b02-a136-67a5ee9f134c` proposed a direct PLAN-to-EXECUTE
+transition and WorkflowEngine rejected it. No Docker execution or scientific
+report resulted. Repetition stopped further attempts, and no string parsing,
+prompt-specific repair, transition bypass, or hidden retry was added.
+
+In these PBMC attempts, PLAN did not receive package-availability facts that
+are projected only in PREFLIGHT/EXECUTE; one plan consequently assumed
+Scanpy-like methods although Scanpy was absent. This is retained as a possible
+future environment-grounding/product-quality limitation, not repaired as part
+of the frozen C12 architecture.
 
 The previous run's PREFLIGHT failure is not retained as a provider limitation.
 It was `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and was closed by making
@@ -61,8 +77,8 @@ biological identifiers and does not choose scientific methods.
 
 ## Operational status
 
-C12 is not accepted because its one post-fix provider-backed integrated run had
-no `TRUSTED_EXECUTION_DECLASSIFICATION` output. Local deterministic and
-real-Docker evidence is green, and the host-owned PREFLIGHT worked, but neither
-substitutes for the missing live DERIVED execution result. No source release was
-deployed and no production-service health claim is made.
+C12 core architecture is accepted and frozen under the revised criterion.
+Local deterministic and real-Docker evidence is green, the host-owned PREFLIGHT
+worked, and failed provider actions remained visible and fail-closed. This does
+not claim that the external PBMC task succeeded; it produced no report. No
+source release was deployed and no production-service health claim is made.

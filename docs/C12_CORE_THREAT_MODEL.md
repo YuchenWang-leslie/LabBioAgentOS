@@ -9,13 +9,15 @@ Pantheon revision `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. It is not a
 production-deployment or service-health claim.
 
 ```text
-C12 NOT ACCEPTED
+C12 CORE ARCHITECTURE ACCEPTED AND FROZEN
 ```
 
 The deterministic policy revision and host-authoritative configured PREFLIGHT
-are green. The one explicitly authorized post-fix provider-backed integration
-was performed and reached the full workflow, but it produced no authorized
-DERIVED execution result; the final acceptance gate is therefore not met.
+are green. The preserved provider-backed integration reached the full governed
+workflow and failed closed when the model requested an incompatible exposure.
+Under the revised product decision, C12 evaluates architecture, authority,
+isolation, persistence, and release enforcement; it does not self-grade the
+scientific result or require a particular output classification.
 
 ## Product privacy decision
 
@@ -108,15 +110,16 @@ out of scope.
 - Gold, Memory, cross-scope, authority-composition, and recursive model-visible
   regressions pass without production changes to those subsystems.
 
-These results establish the deterministic release candidate. They do not by
-themselves accept or freeze C12.
+These results establish the deterministic architecture evidence used to accept
+and freeze C12. A provider run exercises composition, but its scientific result
+quality is not a security acceptance oracle.
 
 The previous provider run exposed a duplicated control authority: trusted host
 PREFLIGHT passed and Pantheon then re-decided PREFLIGHT. That defect is
 `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and is closed by `220d6cb`; configured
 PREFLIGHT now has no provider input.
 
-The final post-fix provider run `72f0ad4a-72af-4676-88f9-8a5a3529119a`
+The preserved post-fix provider run `72f0ad4a-72af-4676-88f9-8a5a3529119a`
 confirmed exactly one host-owned PREFLIGHT transition to EXECUTE and a provider
 stage path omitting PREFLIGHT. Its first Docker execution exited 1. The normal
 bounded EXECUTE capability phase reached a second execution with exit 0 and no
@@ -125,11 +128,15 @@ approved bounded-scalar output. The
 collector correctly retained artifact
 `57d3ab69-322d-4660-9961-45c88bb6e614` as RAW with `contract_valid=false` and
 `release_authorized=false`. The later VALIDATE/report stages documented the
-failure and the workflow recorded COMPLETED, but no execution-output DERIVED
-Artifact existed and the acceptance harness failed. This terminal result is
-`PROVIDER_TOOL_USE_FAILURE`, not a release-policy bypass.
+failure and the workflow recorded COMPLETED. This result is
+`PROVIDER_TOOL_USE_FAILURE`, not a release-policy bypass or scientific success;
+its output classification no longer determines C12 acceptance.
 
 Boundary and trace scans contain no RAW document, absolute path,
 script/log/provider/reasoning/credential body, private-key material, or Docker
-socket string. No further provider run is authorized, so C12 remains not
-accepted.
+socket string. The later requested PBMC external evaluation produced no Docker
+execution or report: two attempts exposed a string-shaped execution draft
+followed by provider HTTP 400, and one exposed an invalid workflow transition.
+All failed closed and retained leak-safe evidence. These model-effectiveness
+outcomes remain explicit non-gating limitations. C12 is accepted and frozen;
+no further numbered architecture milestone is implied.

@@ -711,10 +711,11 @@ and frozen Pantheon remain unchanged; C12 has not started.
 
 ## C12 — Core architecture falsification, hardening, and closeout
 
-**Status:** not accepted on isolated branch
-`c12-core-architecture-hardening`. C11 remains accepted/frozen and Pantheon is
-frozen at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. No production deployment
-or later evaluation/product work was started.
+**Status:** core architecture accepted and frozen on isolated branch
+`c12-core-architecture-hardening`. Pantheon is frozen at
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. Scientific-result quality and
+output classification are externally evaluated rather than used as framework
+self-acceptance gates. No production deployment was performed.
 
 - **Falsification-first result:** six deterministic violations were reproduced
   before production fixes: low-cardinality private category disclosure,
@@ -759,9 +760,9 @@ or later evaluation/product work was started.
 - **Regression:** after the host-authority fix the full non-live regression is
   `421 passed, 12 skipped` with the one pre-existing Uvicorn warning. The C12
   real-Docker hostile test is separately green. LabBio and
-  `origin/c12-core-architecture-hardening` both resolved to `220d6cb` with a
-  clean tree before live; Pantheon remained frozen at `02ba577`.
-- **Final provider gate:** exactly one newly authorized post-fix run was made:
+  `origin/c12-core-architecture-hardening` include acceptance-policy commit
+  `eba5f96`; Pantheon remained frozen at `02ba577`.
+- **Preserved provider composition evidence:** the post-fix run was
   `72f0ad4a-72af-4676-88f9-8a5a3529119a`, under
   `.local/c12-host-preflight-final/76c1b4d4-9801-4eaa-8f14-d8b5c28b8f1b`.
   The workflow path was INTAKE, UNDERSTAND, PLAN, PREFLIGHT, EXECUTE, VALIDATE,
@@ -774,15 +775,29 @@ or later evaluation/product work was started.
   `57d3ab69-322d-4660-9961-45c88bb6e614` remained RAW with
   `OUTPUT_CONTRACT_FAILURE`. No bounded execution DERIVED Artifact existed.
   VALIDATE and report recorded limitations and the workflow reached
-  LEARN/COMPLETED, but the acceptance harness failed its mandatory DERIVED
-  assertion. Boundary/trace leak scans passed.
-- **Decision:** all reproduced P0/P1 issues and the duplicated PREFLIGHT
-  authority are closed, but the one post-fix provider run was not green. The
-  recovered first technical failure was `NON_ZERO_EXIT`; the terminal
-  acceptance failure is `PROVIDER_TOOL_USE_FAILURE` from the schema-valid but
-  semantically wrong output exposure, not a scientific acceptance, Docker,
-  schema-validation, or framework release failure. The acceptance criterion is
-  unsatisfied and the one-run rule forbids a rerun. Therefore `C12 NOT
-  ACCEPTED`. The only valid continuation entry is new explicit product-owner
-  authorization; do not infer authorization for another milestone, local
-  real-world evaluation, API, CLI, UI, or deployment.
+  LEARN/COMPLETED. Boundary/trace leak scans passed. This proves lifecycle and
+  fail-closed release behavior but does not claim a scientifically successful
+  result.
+- **Acceptance-policy adjustment:** commit `eba5f96` removes the C12 live
+  harness requirement that an Agent output be DERIVED, release-authorized, and
+  content-graded. It retains output registration, report persistence, stage and
+  invocation correlation, trace/leak checks, and the production release
+  policy. C12 no longer uses Reviewer prose or Artifact classification as a
+  scientific-quality oracle.
+- **PBMC external evaluation:** the Agent received one open-ended PBMC3k task
+  without a Codex-selected method, program, parameters, or conclusion. Runs
+  `39118171-40d6-4be8-a6e9-6a6f8543eaf3` and
+  `55332c8e-2070-422f-b0cd-62d54fdbd606` reached EXECUTE but supplied a
+  string-shaped execution draft, which LabBio rejected before Docker; each was
+  followed by provider HTTP 400. Run
+  `027fabf6-0b05-4b02-a136-67a5ee9f134c` proposed an illegal direct
+  PLAN-to-EXECUTE transition and was rejected by WorkflowEngine. No attempt
+  produced a scientific report. The repeated failure stopped further retries,
+  and the leak-safe packets are retained under
+  `.local/c12-pbmc-external-evaluation/` for external review.
+- **Decision:** all reproduced P0/P1 issues and duplicated control authority
+  are closed. Invalid provider/model actions remain observable and fail closed.
+  Under the product owner's revised criterion, `C12 CORE ARCHITECTURE ACCEPTED
+  AND FROZEN`. This does not turn the unsuccessful PBMC evaluation into a
+  success claim. No further numbered architecture milestone, API, CLI, UI, or
+  deployment is authorized by this closeout.
