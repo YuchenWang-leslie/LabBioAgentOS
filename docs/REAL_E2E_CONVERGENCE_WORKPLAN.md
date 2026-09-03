@@ -673,3 +673,38 @@ Pantheon remain frozen; C11 and C12 have not started.
   JSONL, Artifact files, Docker, and the provider; no multi-process claim/lock,
   HA failover, automatic uncertain-effect reconciliation, or runtime migration.
   These are explicit future concerns, not hidden fallbacks.
+
+## C11 — Real persistent Memory lifecycle
+
+**Status:** accepted on the isolated `c11-real-persistent-memory` branch. C10
+and frozen Pantheon remain unchanged; C12 has not started.
+
+- **Durability and atomicity:** `MemoryStore` now has in-memory and transactional
+  SQLite implementations. A single decision operation persists rejection alone
+  or approval plus one immutable version, with the stale latest-version check in
+  the same transaction. v1-to-v2 updates and immutable RETIRED successors survive
+  restart; normal discovery exposes latest ACTIVE versions only.
+- **Trusted boundary:** the model supplies only semantic Memory intent. Host code
+  binds identity, project/lab, current run, and invocation. Evidence Artifact
+  references must exist, stay in the current workspace, pass read access, and be
+  non-RAW. Model-facing views expose bounded lineage counts rather than IDs.
+- **Application lifecycle:** `MemoryDomainDecisionHandler` applies exact
+  `memory-proposal:<id>` decisions before WorkflowEngine resumes. The configured
+  service is rebound to the application's access, trace, and Artifact authorities.
+  WAITING reconstruction succeeds with SQLite RunState/Memory and JSONL trace;
+  an in-flight post-commit crash blocks operator reconciliation without replay.
+- **Retrieval and authority:** model-facing search is a stable paginated catalog
+  with optional enum filters and no literal text hard filter, ranking, automatic
+  paging, or injection. Every Memory kind remains `MODEL_CONTEXT`; proposals are
+  `CONTROL_STATE`. Memory neither changes policy nor merges with Gold.
+- **Verification:** M1-M35 and the full non-live regression pass at `344 passed,
+  10 skipped`, plus the existing Uvicorn warning. One real MiMo creation run
+  `3e09a75f-3d7f-46f8-bbb3-652ca863cf8e` produced an externally approved,
+  restart-reconstructed PERSONAL Memory `66c1972f-aabd-4ce7-bfaf-13265a791645`
+  v1. A first over-filtered later retrieval was preserved as failed evidence;
+  the second/final generic attempt `0e81cc34-f7f5-48e9-bb50-69b6d3f8c7a9`
+  reused the same v1 and completed a real governed `memory_view` with
+  `MODEL_CONTEXT` authority.
+- **Limits retained:** no semantic/vector retrieval, truth scoring, contradiction
+  resolution, asynchronous cross-user approval, distributed transaction,
+  cross-process writer coordination, or automatic uncertain-effect repair.

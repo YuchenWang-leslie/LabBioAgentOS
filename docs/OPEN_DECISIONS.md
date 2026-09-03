@@ -114,15 +114,34 @@ replayed; it reports operator reconciliation required. This intentionally does
 not promise a transaction across SQLite, trace, Artifact files, Docker, and the
 provider.
 
-## Deferred beyond C10
+## RESOLVED-008 — C11 durable contextual Memory lifecycle
+
+C11 makes LabBio persistent Memory durable without making it evidence, policy,
+or executable procedure. `MemoryStore` has in-memory and one-local-process
+SQLite implementations. Proposal decisions and optional new versions share one
+transaction; updates/retirements must target the latest ACTIVE version.
+
+The runtime may propose semantic intent only. Trusted scope identity, current
+source run, and invocation are host bound. Artifact provenance must exist in the
+current workspace, pass read authorization, and be non-RAW. A synchronous
+proposal is admitted only if the current actor can complete its approval.
+
+`MemoryDomainDecisionHandler` owns exact Memory proposal references through the
+generic application USER_GATE. Application reconstruction rebinds Memory to its
+current access, trace, and Artifact authorities. Latest ACTIVE versions alone
+appear in the stable paginated catalog; retirement is a new immutable RETIRED
+version, never deletion. Memory search/view remain `MODEL_CONTEXT`, even for
+fact/evidence semantic kinds.
+
+## Deferred beyond C11
 
 The following are intentionally deferred to their roadmap phases and must not
 be invented now: EventBus, multi-process trace writers, production-grade
 workflow and artifact persistence, production image registry and scheduler,
 deployment-specific Docker identities/limits, trusted producer authorization,
-exposure approval UX, production Project/Artifact/Memory/Gold persistence,
+exposure approval UX, production Project/Artifact/Memory/Gold database services,
 multi-process claims, distributed transactions, identity provider/authentication,
 ACL administration, real curator implementation, semantic Memory retrieval, candidate-retrieval
 backend, and bioinformatics agent roster. Scientific Skill
 similarity and adaptation remain runtime-LLM/user decisions rather than an
-unresolved deterministic policy. None is needed to complete C10.
+unresolved deterministic policy. None is needed to complete C11.

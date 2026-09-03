@@ -3,7 +3,7 @@
 ## Status and scope
 
 This document records the approved architecture established in Phase 0 and
-preserved through accepted, frozen C10. Phase 1 adds typed stage contracts and a
+preserved through accepted, frozen C11. Phase 1 adds typed stage contracts and a
 composition adapter around PantheonTeam. Phase 2 adds a deterministic, graph-driven
 WorkflowEngine. Phase 3 adds structural delegation policy around Pantheon's
 existing team tools. Phase 4 adds append-only RunTrace observation. Phase 5
@@ -119,6 +119,34 @@ increment/reset workflow retry counts, infer a scientific action, or claim
 exactly-once external effects. Stable CREATED, RUNNING, WAITING_FOR_USER, and
 terminal snapshots can be reconstructed explicitly; terminal `run()` calls do
 not rerun stages, and existing Skill usage finalization remains idempotent.
+
+## C11 durable persistent-Memory boundary
+
+C11 extends the Phase-8 proposal contract into a durable contextual-memory
+lifecycle. `MemoryStore` has locked in-memory and transactional stdlib-SQLite
+implementations. `SQLiteMemoryStore` stores strict Pydantic JSON with no pickle;
+one public decision transaction records either a rejection alone or an approval
+plus one immutable version. Latest-version validation occurs inside that same
+transaction, so a stale proposal cannot fork a second successor.
+
+The model-facing proposal tool exposes only semantic intent. Principal,
+owner/project/lab, current source run, and invocation are host bound. Artifact
+evidence IDs are accepted only after current-store existence, workspace,
+authorization, and non-RAW checks. Internal lineage retains IDs, while remote
+Memory detail exposes only bounded counts and safe indicators.
+
+`MemoryDomainDecisionHandler` composes Memory with the existing generic
+application USER_GATE without adding a Memory branch to `WorkflowEngine`.
+Application construction rebinds the configured Memory service to the same
+`AccessService`, `RunTraceRecorder`, and Artifact store. C10's
+`GATE_DECISION_IN_FLIGHT` marker remains the cross-store replay barrier; it does
+not imply a distributed transaction.
+
+Normal runtime discovery is a stable, paginated, non-ranked catalog of latest
+ACTIVE versions. Optional scope/kind filters are finite enums. RETIRE creates a
+new immutable RETIRED version and removes that lineage from ordinary discovery,
+without deleting history. Search/view remain `MODEL_CONTEXT`; proposal output
+remains `CONTROL_STATE`.
 
 ## Ownership boundaries
 
@@ -564,21 +592,23 @@ there is still no automatic promotion, ranking, or mode selection. The
 underlying in-memory store is a trusted persistence implementation, not a
 caller-facing authorization boundary.
 
-Persistent Memory follows:
+Persistent Memory now follows:
 
 ```text
-runtime/user supplied MemoryUpdateProposal
-  -> scope visibility check
-  -> matching explicit MemoryDecision by authorized owner/admin
-  -> immutable MemoryEntry version
+model semantic proposal intent + host-bound identity/current-run provenance
+  -> mutation-authority and governed Artifact-lineage checks
+  -> application USER_GATE + MemoryDomainDecisionHandler
+  -> atomic MemoryDecision + immutable ACTIVE/RETIRED MemoryEntry version
 ```
 
 The proposed `MemoryKind` is never inferred from content. PERSONAL decisions
 require the owner, PROJECT decisions require project owner/LAB_ADMIN, and LAB
 decisions require LAB_ADMIN. Rejection creates no version. Updates preserve
 scope/ownership and create the next version while retaining prior versions.
-Evidence is stored as run and Artifact IDs rather than artifact payloads. The
-in-memory store intentionally exposes no public direct entry-write method.
+Evidence is stored internally as run and Artifact IDs rather than artifact
+payloads. Model-facing detail returns counts rather than raw lineage IDs. Both
+stores intentionally expose no public direct entry-write or delete operation;
+the SQLite store is the durable one-local-process implementation.
 
 `WorkspaceResolver` accepts only validated IDs, a fixed `WorkspaceArea` enum,
 and a matching Principal/WorkspaceContext. Project paths are derived from the
@@ -591,7 +621,7 @@ version, and status only. They exclude Memory content, proposal reason,
 collaborator lists, artifact representations, and secrets. Tracing remains
 observational and fail-loud.
 
-## Out of scope after C10
+## Out of scope after C11
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
@@ -608,7 +638,7 @@ observational and fail-loud.
 - no embedding similarity, scientific ranking, or automatic use mode;
 - no automatic Gold or lab-wide promotion;
 - no production Skill database/deployment, authentication, or ACL service;
-- no production Project/Memory database or cross-process transactions;
+- no production Project/Memory database service or cross-process transactions;
 - no login, OAuth, SSO, password, token, or identity-provider implementation;
 - no semantic Memory retrieval, embedding, ranking, or automatic writes;
 - no executable Gold Skills or direct workflow control;
