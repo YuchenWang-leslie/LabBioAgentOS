@@ -39,6 +39,7 @@ from labbioagentos import (
     MountResolutionError,
     MountResolver,
     OutputArtifactSpec,
+    OutputDeclassificationMode,
     OutputCollector,
     ProcessOutcome,
     RequestedResources,
@@ -97,6 +98,7 @@ def _image(*, network_allowed=False):
     return ApprovedImage(
         key="python-analysis",
         reference="local/python-fixture:3.11",
+        digest="sha256:" + "1" * 64,
         runtime=ExecutionRuntime.PYTHON,
         executable=("python",),
         network_allowed=network_allowed,
@@ -155,7 +157,7 @@ def _environment(
 def test_approved_image_key_resolves_and_unapproved_key_is_rejected():
     registry = ApprovedImageRegistry((_image(),))
     assert registry.resolve("python-analysis").resolved_reference == (
-        "local/python-fixture:3.11"
+        "local/python-fixture:3.11@sha256:" + "1" * 64
     )
     with pytest.raises(ImageNotApprovedError, match="not present"):
         registry.resolve("arbitrary/remote:latest")
@@ -351,6 +353,7 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
         allowed_fields=frozenset({"name", "value"}),
         required_fields=frozenset({"name", "value"}),
         max_records=3,
+        declassification_mode=OutputDeclassificationMode.PREDECLARED_SCALARS,
     )
 
     def write_output(root):
@@ -376,6 +379,7 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
                 artifact_type="generic-structured-result",
                 requested_exposure=ArtifactExposureClass.DERIVED,
                 output_contract_id=contract.contract_id,
+                predeclared_string_values={"name": ("alpha", "beta")},
             ),
         )
     )

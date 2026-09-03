@@ -24,6 +24,7 @@ from labbioagentos import (
     H5ADMatrixStorage,
     LocalArtifactStore,
     OutputArtifactSpec,
+    OutputDeclassificationMode,
     StructuredOutputContract,
 )
 
@@ -78,6 +79,7 @@ def _generic_contract() -> StructuredOutputContract:
         ),
         required_fields=frozenset({"record_type"}),
         max_records=128,
+        declassification_mode=OutputDeclassificationMode.PREDECLARED_SCALARS,
     )
 
 
@@ -128,6 +130,11 @@ def test_different_anndata_schema_uses_generic_inspection_and_output_policy(tmp_
             artifact_type="generic-qc-summary",
             requested_exposure=ArtifactExposureClass.DERIVED,
             output_contract_id="generic-qc-scalar-records-v1",
+            predeclared_string_values={
+                "record_type": ("dataset_summary",),
+                "metric": ("observation_count", "variable_count"),
+                "unit": ("observations", "variables"),
+            },
         ),
         result_path,
     )

@@ -14,6 +14,7 @@ from labbioagentos import (
     ArtifactExposureService,
     ArtifactQuery,
     ArtifactRepresentation,
+    ArtifactReleaseBasis,
     ArtifactViewType,
     ExposurePolicy,
     InformationAuthority,
@@ -83,6 +84,7 @@ def _derived_service(tmp_path, record_count: int):
     ref = store.register(
         artifact_type="generic-measurements",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(
             records=records,
             record_count=len(records),
@@ -208,6 +210,7 @@ def test_g7_completeness_metadata_preserves_the_leak_boundary(tmp_path):
         "artifact_type",
         "view_type",
         "exposure_class",
+        "release_basis",
         "authority",
         "metadata",
         "schema",

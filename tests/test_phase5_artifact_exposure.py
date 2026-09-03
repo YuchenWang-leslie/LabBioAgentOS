@@ -16,6 +16,7 @@ from labbioagentos import (
     ArtifactExposureService,
     ArtifactQuery,
     ArtifactQueryError,
+    ArtifactReleaseBasis,
     ArtifactRef,
     ArtifactRepresentation,
     ArtifactSchema,
@@ -39,6 +40,7 @@ def _components(tmp_path, *, max_top_n=2, traced=False):
     approvals = InMemoryArtifactApprovalStore()
     policy = ExposurePolicy(
         approval_store=approvals,
+        user_approved_enabled=True,
         max_top_n=max_top_n,
         default_top_n=min(2, max_top_n),
     )
@@ -59,9 +61,25 @@ def _register(
     records=(),
     stored_content=None,
 ):
+    release_basis = {
+        ArtifactExposureClass.RAW: ArtifactReleaseBasis.RAW_INGESTION,
+        ArtifactExposureClass.STRUCTURAL: (
+            ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR
+        ),
+        ArtifactExposureClass.AGGREGATE: (
+            ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR
+        ),
+        ArtifactExposureClass.DERIVED: (
+            ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION
+        ),
+        ArtifactExposureClass.USER_APPROVED: (
+            ArtifactReleaseBasis.USER_APPROVED_RELEASE
+        ),
+    }[exposure_class]
     return store.register(
         artifact_type="synthetic-result",
         exposure_class=exposure_class,
+        release_basis=release_basis,
         run_id=run_id,
         stage_id=stage_id,
         producer_invocation_id=producer_invocation_id,

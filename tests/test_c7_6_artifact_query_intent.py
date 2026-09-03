@@ -12,6 +12,7 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureService,
     ArtifactRepresentation,
+    ArtifactReleaseBasis,
     ExposurePolicy,
     InMemoryTraceSink,
     LabBioRuntimeToolSet,
@@ -53,6 +54,7 @@ def query_boundary(tmp_path):
     ref = store.register(
         artifact_type="synthetic-bounded-table",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(
             summary={"record_count": 18},
             records=tuple({"row": index} for index in range(18)),

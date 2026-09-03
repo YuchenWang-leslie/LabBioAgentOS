@@ -17,6 +17,7 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactQuery,
     ArtifactRepresentation,
+    ArtifactReleaseBasis,
     ArtifactViewType,
     CapabilityProfile,
     ExecuteStageBody,
@@ -183,6 +184,7 @@ async def _run_scenario(
     input_ref = application.artifact_store.register(
         artifact_type="safe-input-summary",
         exposure_class=ArtifactExposureClass.AGGREGATE,
+        release_basis=ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR,
         representation=ArtifactRepresentation(summary={"bounded": True}),
         owner_user_id=PRINCIPAL.user_id,
         project_id=WORKSPACE.project_id,
@@ -204,6 +206,9 @@ async def _run_scenario(
                     application.artifact_store.register(
                         artifact_type=f"generic-output-{output_index}",
                         exposure_class=ArtifactExposureClass.DERIVED,
+                        release_basis=(
+                            ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION
+                        ),
                         representation=ArtifactRepresentation(
                             records=(
                                 {
@@ -242,6 +247,9 @@ async def _run_scenario(
                     application.artifact_store.register(
                         artifact_type="unrelated-later-output",
                         exposure_class=ArtifactExposureClass.DERIVED,
+                        release_basis=(
+                            ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION
+                        ),
                         representation=ArtifactRepresentation(
                             records=({"record_type": "unrelated"},),
                             record_count=1,

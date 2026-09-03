@@ -19,6 +19,7 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureService,
     ArtifactRepresentation,
+    ArtifactReleaseBasis,
     AuthorizationPolicy,
     CapabilityProfile,
     ExecutionPlanDraft,
@@ -379,12 +380,14 @@ async def test_artifact_tools_are_authorized_bounded_and_locator_free(boundary):
     own = store.register(
         artifact_type="synthetic-result",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(summary={"count": 2}),
         owner_user_id="user-a", project_id="project-a", lab_id="lab-a",
     )
     other = store.register(
         artifact_type="other-result",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(summary={"count": 9}),
         owner_user_id="user-b", project_id="project-b", lab_id="lab-a",
     )
@@ -431,6 +434,7 @@ class MockExecutor:
         )
         output = self.store.register(
             artifact_type="output", exposure_class=ArtifactExposureClass.DERIVED,
+            release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
             representation=ArtifactRepresentation(summary={"ok": True}), **kwargs,
         )
         now = datetime.now(timezone.utc)

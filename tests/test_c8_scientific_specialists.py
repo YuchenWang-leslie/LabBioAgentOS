@@ -16,6 +16,7 @@ from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureService,
     ArtifactRepresentation,
+    ArtifactReleaseBasis,
     AuthorizationPolicy,
     CapabilityProfile,
     DelegationPolicyPlugin,
@@ -116,6 +117,7 @@ def governed_boundary(tmp_path):
     derived = store.register(
         artifact_type="synthetic-c8-derived",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(summary={"bounded_metric": 3}),
         owner_user_id=principal.user_id,
         project_id=workspace.project_id,

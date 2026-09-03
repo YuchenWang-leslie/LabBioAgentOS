@@ -329,10 +329,11 @@ def _preflight(boundary, recorder=None):
         access_service=access,
         image_registry=ApprovedImageRegistry(
             (
-                ApprovedImage(
-                    key="python-c4",
-                    reference="python:3.11-slim",
-                    runtime=ExecutionRuntime.PYTHON,
+                    ApprovedImage(
+                        key="python-c4",
+                        reference="python:3.11-slim",
+                        digest="sha256:" + "4" * 64,
+                        runtime=ExecutionRuntime.PYTHON,
                 ),
             )
         ),
