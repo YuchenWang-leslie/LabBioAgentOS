@@ -11,7 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints,
 
 from labbioagentos.contracts import WorkflowStage
 
-from .contracts import RuntimeStageResult, runtime_stage_result_format
+from .contracts import (
+    RuntimeStageResult,
+    RuntimeWorkflowControlView,
+    runtime_stage_result_format,
+)
 
 
 Key = Annotated[
@@ -58,10 +62,16 @@ class ResponseSchemaRef(BaseModel):
     schema_id: Key = "runtime-stage-result"
     version: Key = "1"
 
-    def response_format(self, stage_id: WorkflowStage | None = None):
+    def response_format(
+        self,
+        stage_id: WorkflowStage | None = None,
+        workflow_control: RuntimeWorkflowControlView | None = None,
+    ):
         if stage_id is None:
+            if workflow_control is not None:
+                raise ValueError("Workflow control requires a finalization stage")
             return RuntimeStageResult
-        return runtime_stage_result_format(stage_id)
+        return runtime_stage_result_format(stage_id, workflow_control)
 
 
 class CapabilityProfile(BaseModel):

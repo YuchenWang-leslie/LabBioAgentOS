@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from pantheon.agent import Agent
 from pantheon.team import PantheonTeam
 from pantheon.toolset import ToolSet
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from labbioagentos.trace import (
     InstructionKind,
@@ -31,6 +31,7 @@ from .contracts import (
     MAX_CAPABILITY_EVIDENCE_ITEMS,
     RuntimeStageInput,
     RuntimeStageResult,
+    RuntimeWorkflowControlView,
 )
 from .profiles import (
     AgentProfile,
@@ -117,6 +118,7 @@ class PantheonRuntimeFactory:
         toolset: ToolSet | None = None,
         invocation_mode: RuntimeInvocationMode = RuntimeInvocationMode.FINALIZE,
         finalization_stage: WorkflowStage | None = None,
+        workflow_control: RuntimeWorkflowControlView | None = None,
     ) -> tuple[Agent, RenderedPrompt]:
         try:
             profile = self.catalog.agents[profile_key]
@@ -133,10 +135,10 @@ class PantheonRuntimeFactory:
             )
         if (
             invocation_mode is RuntimeInvocationMode.CAPABILITY
-            and finalization_stage is not None
+            and (finalization_stage is not None or workflow_control is not None)
         ):
             raise RuntimeProfileConfigurationError(
-                "CAPABILITY mode cannot bind a finalization stage schema"
+                "CAPABILITY mode cannot bind finalization schema control"
             )
         model_identifier = self._configure_transport(model)
         model_params = {"thinking": model.thinking_enabled}
@@ -151,7 +153,7 @@ class PantheonRuntimeFactory:
             response_format=(
                 None
                 if invocation_mode is RuntimeInvocationMode.CAPABILITY
-                else schema.response_format(finalization_stage)
+                else schema.response_format(finalization_stage, workflow_control)
             ),
             use_memory=False,
         )
@@ -218,6 +220,7 @@ class PantheonRuntimeFactory:
         max_delegate_depth: int = 5,
         invocation_mode: RuntimeInvocationMode = RuntimeInvocationMode.FINALIZE,
         finalization_stage: WorkflowStage | None = None,
+        workflow_control: RuntimeWorkflowControlView | None = None,
     ) -> tuple[PantheonTeam, dict[str, RenderedPrompt]]:
         agents = []
         rendered = {}
@@ -228,6 +231,7 @@ class PantheonRuntimeFactory:
                 toolset=(toolsets or {}).get(profile_key),
                 invocation_mode=invocation_mode,
                 finalization_stage=finalization_stage,
+                workflow_control=workflow_control,
             )
             agents.append(agent)
             rendered[profile_key] = prompt
@@ -605,8 +609,10 @@ class PantheonTypedStageInvoker:
             raise error from exc
         try:
             content = getattr(response, "content", response)
-            if isinstance(content, RuntimeStageResult):
-                result = content
+            if isinstance(content, BaseModel):
+                result = RuntimeStageResult.model_validate(
+                    content.model_dump(mode="python")
+                )
             elif isinstance(content, str):
                 result = RuntimeStageResult.model_validate_json(content)
             elif isinstance(content, Mapping):

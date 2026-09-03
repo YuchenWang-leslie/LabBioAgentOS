@@ -14,6 +14,7 @@ from labbioagentos import (
     PreflightStageBody,
     ResponseSchemaRef,
     RunStatus,
+    RuntimeWorkflowControlView,
     WorkflowDefinition,
     WorkflowEngine,
     WorkflowStage,
@@ -183,6 +184,54 @@ def test_provider_finalize_schema_embeds_strict_proposal_union():
     invalid = deepcopy(valid)
     invalid["next_action"]["user_prompt"] = "Unexpected prompt."
     assert list(validator.iter_errors(invalid))
+
+
+def test_provider_finalize_schema_exposes_only_currently_legal_actions():
+    control = RuntimeWorkflowControlView(
+        current_stage=WorkflowStage.EXECUTE,
+        transition_targets=(WorkflowStage.VALIDATE,),
+        request_user_input_available=False,
+        retry_available=True,
+        retry_transition_targets=(
+            WorkflowStage.EXECUTE,
+            WorkflowStage.VALIDATE,
+        ),
+        finish_available=False,
+    )
+    response_model = ResponseSchemaRef().response_format(
+        WorkflowStage.EXECUTE,
+        workflow_control=control,
+    )
+    valid = {
+        "stage_id": "EXECUTE",
+        "summary": "Execution produced governed evidence.",
+        "body": {
+            "kind": "EXECUTE",
+            "execution_status": "Governed execution succeeded.",
+        },
+        "references": [],
+        "next_action": {
+            "action": "transition",
+            "target_stage": "VALIDATE",
+        },
+    }
+    schema = response_model.model_json_schema()
+    validator = Draft202012Validator(schema)
+
+    assert list(validator.iter_errors(valid)) == []
+    assert response_model.model_validate(valid)
+
+    invalid_finish = deepcopy(valid)
+    invalid_finish["next_action"] = {"action": "finish"}
+    assert list(validator.iter_errors(invalid_finish))
+    with pytest.raises(ValidationError):
+        response_model.model_validate(invalid_finish)
+
+    invalid_target = deepcopy(valid)
+    invalid_target["next_action"]["target_stage"] = "INTERPRET"
+    assert list(validator.iter_errors(invalid_target))
+    with pytest.raises(ValidationError):
+        response_model.model_validate(invalid_target)
 
 
 def _user_gate_definition() -> WorkflowDefinition:

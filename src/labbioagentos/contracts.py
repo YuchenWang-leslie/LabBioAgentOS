@@ -7,6 +7,7 @@ execution behavior, persistence, or biological interpretation.
 from __future__ import annotations
 
 from enum import StrEnum
+from functools import lru_cache
 from typing import Annotated, Literal, TypeAlias
 from uuid import UUID, uuid4
 
@@ -17,6 +18,7 @@ from pydantic import (
     JsonValue,
     RootModel,
     StrictStr,
+    create_model,
     model_validator,
 )
 
@@ -266,6 +268,56 @@ class NextActionProposal(RootModel[_NextActionVariant]):
     @property
     def domain_reference_id(self) -> str | None:
         return getattr(self.root, "domain_reference_id", None)
+
+
+@lru_cache(maxsize=128)
+def governed_next_action_proposal_format(
+    *,
+    transition_targets: tuple[WorkflowStage, ...],
+    request_user_input_available: bool,
+    retry_available: bool,
+    retry_transition_targets: tuple[WorkflowStage, ...],
+    finish_available: bool,
+) -> type[RootModel]:
+    """Build the provider proposal union from authoritative workflow control."""
+
+    variants: list[type[BaseModel]] = []
+    if transition_targets:
+        transition_target = Literal.__getitem__(transition_targets)
+        variants.append(
+            create_model(
+                "GovernedTransitionActionProposal",
+                __base__=_TransitionActionProposal,
+                target_stage=(transition_target, ...),
+            )
+        )
+    if retry_available:
+        if not retry_transition_targets:
+            raise ValueError("Available retry requires at least one legal target")
+        retry_target = Literal.__getitem__(retry_transition_targets)
+        variants.append(
+            create_model(
+                "GovernedRetryActionProposal",
+                __base__=_RetryActionProposal,
+                target_stage=(retry_target | None, None),
+            )
+        )
+    if request_user_input_available:
+        variants.append(_RequestUserInputActionProposal)
+    if finish_available:
+        variants.append(_FinishActionProposal)
+    variants.append(_FailActionProposal)
+
+    action_variant = variants[0]
+    for variant in variants[1:]:
+        action_variant = action_variant | variant
+    discriminated_variant = Annotated[
+        action_variant,
+        Field(discriminator="action"),
+    ]
+    proposal_format = RootModel[discriminated_variant]
+    proposal_format.__name__ = "GovernedNextActionProposal"
+    return proposal_format
 
 
 class PendingUserGate(BaseModel):

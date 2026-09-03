@@ -27,6 +27,7 @@ from labbioagentos.contracts import (
     WorkflowDefinition,
     WorkflowRun,
     WorkflowStage,
+    governed_next_action_proposal_format,
 )
 from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolicy
 from labbioagentos.execution.models import (
@@ -874,9 +875,14 @@ _STAGE_BODY_TYPES = {
 }
 
 
-@lru_cache(maxsize=9)
-def runtime_stage_result_format(
+@lru_cache(maxsize=128)
+def _runtime_stage_result_format(
     stage_id: WorkflowStage,
+    transition_targets: tuple[WorkflowStage, ...] | None,
+    request_user_input_available: bool,
+    retry_available: bool,
+    retry_transition_targets: tuple[WorkflowStage, ...],
+    finish_available: bool,
 ) -> type[RuntimeStageResult]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
@@ -884,9 +890,43 @@ def runtime_stage_result_format(
         body_type = _STAGE_BODY_TYPES[stage_id]
     except KeyError as exc:
         raise ValueError(f"No runtime result format for stage {stage_id.value}") from exc
+    fields = {
+        "stage_id": (Literal[stage_id], stage_id),
+        "body": (body_type, ...),
+    }
+    if transition_targets is not None:
+        fields["next_action"] = (
+            governed_next_action_proposal_format(
+                transition_targets=transition_targets,
+                request_user_input_available=request_user_input_available,
+                retry_available=retry_available,
+                retry_transition_targets=retry_transition_targets,
+                finish_available=finish_available,
+            ),
+            ...,
+        )
     return create_model(
         f"{stage_id.value.title()}RuntimeStageResult",
         __base__=RuntimeStageResult,
-        stage_id=(Literal[stage_id], stage_id),
-        body=(body_type, ...),
+        **fields,
+    )
+
+
+def runtime_stage_result_format(
+    stage_id: WorkflowStage,
+    workflow_control: RuntimeWorkflowControlView | None = None,
+) -> type[RuntimeStageResult]:
+    """Return a stage and, when available, current-control constrained format."""
+
+    if workflow_control is None:
+        return _runtime_stage_result_format(stage_id, None, False, False, (), False)
+    if workflow_control.current_stage is not stage_id:
+        raise ValueError("Workflow control stage must match the response stage")
+    return _runtime_stage_result_format(
+        stage_id,
+        workflow_control.transition_targets,
+        workflow_control.request_user_input_available,
+        workflow_control.retry_available,
+        workflow_control.retry_transition_targets,
+        workflow_control.finish_available,
     )

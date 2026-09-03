@@ -154,6 +154,7 @@ class PerInvocationPantheonStageInvoker:
             prompt_values=prompt_values,
             invocation_mode=RuntimeInvocationMode.FINALIZE,
             finalization_stage=self.assembly.stage_id,
+            workflow_control=stage_input.workflow_control,
         )
         finalizer = PantheonTypedStageInvoker(
             final_team,
