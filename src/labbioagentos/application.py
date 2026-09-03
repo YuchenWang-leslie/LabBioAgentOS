@@ -5,8 +5,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import (
     BaseModel,
@@ -20,6 +21,7 @@ from pydantic import (
 from .artifacts import (
     ArtifactExposureClass,
     ArtifactExposureService,
+    ArtifactNotFoundError,
     ArtifactRepresentation,
     ArtifactSchema,
     ExposurePolicy,
@@ -71,6 +73,14 @@ from .governance import (
     WorkspaceContext,
 )
 from .memory import MemoryGovernanceService
+from .run_state import (
+    ApplicationRunRecord,
+    InMemoryRunStateStore,
+    RunInflightOperation,
+    RunRecoveryState,
+    RunStateStore,
+    RunStateVersionConflictError,
+)
 from .runtime import (
     PantheonRuntimeFactory,
     PerInvocationPantheonStageInvoker,
@@ -107,6 +117,24 @@ class ApplicationRunNotFoundError(LookupError):
 
 class ApplicationRunStateError(RuntimeError):
     """The requested application lifecycle operation is invalid for the run."""
+
+
+class ApplicationRecoveryIssueCode(StrEnum):
+    """Bounded reason why a durable run cannot be safely reconstructed."""
+
+    STAGE_IN_FLIGHT = "STAGE_IN_FLIGHT"
+    GATE_DECISION_IN_FLIGHT = "GATE_DECISION_IN_FLIGHT"
+    RUNTIME_REVISION_MISMATCH = "RUNTIME_REVISION_MISMATCH"
+    REQUIRED_ARTIFACT_MISSING = "REQUIRED_ARTIFACT_MISSING"
+
+
+class ApplicationRecoveryError(ApplicationRunStateError):
+    """A durable run requires explicit operator reconciliation."""
+
+    def __init__(self, run_id: UUID, issue_code: ApplicationRecoveryIssueCode):
+        self.run_id = run_id
+        self.issue_code = issue_code
+        super().__init__(f"Run recovery blocked: {issue_code.value}")
 
 
 class ApplicationDomainDecisionHandler(ABC):
@@ -353,6 +381,24 @@ class ApplicationRunResult(BaseModel):
     trace_run_id: UUID
 
 
+class ApplicationRecoveryStatus(BaseModel):
+    """Bounded recovery assessment after current identity reauthorization."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    run_id: UUID
+    run_status: RunStatus
+    current_stage: WorkflowStage | None = None
+    recovery_state: RunRecoveryState
+    inflight_stage: WorkflowStage | None = None
+    inflight_invocation_id: UUID | None = None
+    inflight_operation: RunInflightOperation | None = None
+    recoverable: bool
+    automatic_continuation_allowed: bool
+    issue_code: ApplicationRecoveryIssueCode | None = None
+    record_version: int = Field(ge=1)
+
+
 @dataclass(frozen=True)
 class ApplicationStagePlugin:
     """Trusted exact-stage plugin factory; it performs no task-content routing."""
@@ -373,6 +419,7 @@ class ApplicationRuntimeConfiguration:
     execution_workspace_root: str | Path
     profile_catalog: RuntimeProfileCatalog
     stage_assemblies: tuple[RuntimeStageAssemblySpec, ...]
+    runtime_revision: str
     projects: tuple[Project, ...] = ()
     allowed_input_roots: tuple[str | Path, ...] = ()
     approved_images: tuple[ApprovedImage, ...] = ()
@@ -388,6 +435,7 @@ class ApplicationRuntimeConfiguration:
     exposure_policy: ExposurePolicy = field(default_factory=ExposurePolicy)
     stage_plugins: tuple[ApplicationStagePlugin, ...] = ()
     trace_sink: TraceSink | None = None
+    run_state_store: RunStateStore | None = None
     process_runner: DockerProcessRunner | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
@@ -401,6 +449,14 @@ class ApplicationRuntimeConfiguration:
     max_stage_invocations: int = 64
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.runtime_revision, str)
+            or not self.runtime_revision.strip()
+            or len(self.runtime_revision) > 256
+        ):
+            raise ApplicationConfigurationError(
+                "runtime_revision must be a non-empty string of at most 256 characters"
+            )
         if self.retry_limit < 0:
             raise ApplicationConfigurationError("retry_limit cannot be negative")
         if not 9 <= self.max_stage_invocations <= 512:
@@ -442,12 +498,13 @@ class ApplicationRuntimeConfiguration:
             )
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ApplicationRunSession:
     request: ApplicationRunRequest
     run: WorkflowRun
     artifact_references: tuple[RuntimeEvidenceReference, ...]
     coordinator: RuntimeCoordinatorService
+    record_version: int
 
 
 class LabBioApplication:
@@ -455,6 +512,9 @@ class LabBioApplication:
 
     def __init__(self, configuration: ApplicationRuntimeConfiguration):
         self.configuration = configuration
+        self.run_state_store = (
+            configuration.run_state_store or InMemoryRunStateStore()
+        )
         self.trace_sink = configuration.trace_sink or InMemoryTraceSink()
         self.trace_recorder = RunTraceRecorder(self.trace_sink)
 
@@ -724,13 +784,112 @@ class LabBioApplication:
             access_service=self.access_service,
             retry_limit=self.configuration.retry_limit,
         )
-        self._sessions[run.run_id] = _ApplicationRunSession(
+        session = _ApplicationRunSession(
             request=request,
             run=run,
             artifact_references=references,
             coordinator=coordinator,
+            record_version=1,
         )
+        stored = self.run_state_store.create(self._new_run_record(session))
+        session.record_version = stored.record_version
+        self._sessions[run.run_id] = session
         return ApplicationRunHandle(run_id=run.run_id)
+
+    def recovery_status(
+        self,
+        run_id: UUID,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationRecoveryStatus:
+        """Assess a durable run after exact current identity reauthorization."""
+
+        if not isinstance(run_id, UUID):
+            raise TypeError("Application recovery run_id must be a UUID")
+        record = self.run_state_store.get(run_id)
+        self._reauthorize_recovery(record, principal, workspace)
+        issue_code = self._recovery_issue(record)
+        if issue_code is None:
+            issue_code = self._required_artifact_issue(
+                record, principal=principal, workspace=workspace
+            )
+        recoverable = issue_code is None
+        return ApplicationRecoveryStatus(
+            run_id=record.run_id,
+            run_status=record.workflow_run.status,
+            current_stage=record.workflow_run.current_stage,
+            recovery_state=record.recovery_state,
+            inflight_stage=record.inflight_stage,
+            inflight_invocation_id=record.inflight_invocation_id,
+            inflight_operation=record.inflight_operation,
+            recoverable=recoverable,
+            automatic_continuation_allowed=(
+                recoverable
+                and record.workflow_run.status
+                in {RunStatus.CREATED, RunStatus.RUNNING}
+            ),
+            issue_code=issue_code,
+            record_version=record.record_version,
+        )
+
+    def recover_run(
+        self,
+        run_id: UUID,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationRunHandle:
+        """Explicitly reconstruct one stable run without invoking a model or tool."""
+
+        if run_id in self._sessions:
+            raise ApplicationRunStateError(
+                f"Application run is already attached: {run_id}"
+            )
+        status = self.recovery_status(
+            run_id, principal=principal, workspace=workspace
+        )
+        if not status.recoverable:
+            assert status.issue_code is not None
+            raise ApplicationRecoveryError(run_id, status.issue_code)
+        record = self.run_state_store.get(run_id)
+        if record.record_version != status.record_version:
+            raise RunStateVersionConflictError(
+                f"Run-state version changed during recovery for {run_id}"
+            )
+        references = tuple(
+            self._authorized_runtime_reference(
+                artifact_id,
+                principal=principal,
+                workspace=workspace,
+            )
+            for artifact_id in (
+                *record.input_artifact_ids,
+                *record.context_artifact_ids,
+            )
+        )
+        coordinator = self._build_coordinator(
+            principal=principal,
+            workspace=workspace,
+        )
+        coordinator.attach_recovered_results(run_id, record.runtime_results)
+        run = self.workflow_engine.attach_recovered_run(record.workflow_run)
+        request = ApplicationRunRequest(
+            task_text=record.task_text,
+            principal=principal,
+            workspace=workspace,
+            input_artifact_ids=record.input_artifact_ids,
+            context_artifact_ids=record.context_artifact_ids,
+            safe_domain_references=record.safe_domain_references,
+        )
+        self._sessions[run_id] = _ApplicationRunSession(
+            request=request,
+            run=run,
+            artifact_references=references,
+            coordinator=coordinator,
+            record_version=record.record_version,
+        )
+        return ApplicationRunHandle(run_id=run_id)
 
     async def run(
         self, handle: ApplicationRunHandle | UUID
@@ -738,13 +897,16 @@ class LabBioApplication:
         """Drive existing coordinator/engine semantics until a stable run state."""
 
         session = self._session(handle)
+        self._require_stable_session(session)
         run = session.run
         if run.status is RunStatus.CREATED:
             self.workflow_engine.start(run)
-        invocations = 0
+            self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
+        invocations = len(session.coordinator.results(run.run_id))
         while run.status is RunStatus.RUNNING:
             if invocations >= self.configuration.max_stage_invocations:
                 self.workflow_engine.fail(run, "APPLICATION_STAGE_INVOCATION_LIMIT")
+                self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
                 break
             stage = run.current_stage
             if stage is None:
@@ -752,6 +914,14 @@ class LabBioApplication:
                     "A running application run has no current stage"
                 )
             body = self._stage_body(session, stage)
+            invocation_id = uuid4()
+            self._checkpoint(
+                session,
+                recovery_state=RunRecoveryState.STAGE_IN_FLIGHT,
+                inflight_stage=stage,
+                inflight_invocation_id=invocation_id,
+                inflight_operation=RunInflightOperation.RUNTIME_STAGE,
+            )
             await session.coordinator.run_current_stage(
                 run,
                 instruction=(
@@ -764,7 +934,9 @@ class LabBioApplication:
                     stage=stage,
                 ),
                 body=body,
+                invocation_id=invocation_id,
             )
+            self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
             invocations += 1
         if self.configuration.skill_service is not None:
             self.configuration.skill_service.finalize_run_usage(
@@ -781,13 +953,19 @@ class LabBioApplication:
         """Apply one trusted gate decision, then continue through the same loop."""
 
         session = self._session(handle)
+        self._require_stable_session(session)
         if session.run.status is not RunStatus.WAITING_FOR_USER:
             raise ApplicationRunStateError("Run is not waiting for a user decision")
         session.coordinator.validate_gate_resume(session.run, decision)
         pending = session.run.pending_user_gate
         if pending is None:
             raise ApplicationRunStateError("Run has no pending user gate")
+        if decision.decided_by != session.request.principal.user_id:
+            raise AuthorizationDenied(
+                "Gate decision identity does not match the current Principal"
+            )
         effective_decision = decision
+        handlers: tuple[ApplicationDomainDecisionHandler, ...] = ()
         if pending.domain_reference_id is not None:
             handlers = tuple(
                 handler
@@ -798,6 +976,15 @@ class LabBioApplication:
                 raise ApplicationRunStateError(
                     "A domain user gate requires exactly one decision handler"
                 )
+        decision_invocation_id = uuid4()
+        self._checkpoint(
+            session,
+            recovery_state=RunRecoveryState.GATE_DECISION_IN_FLIGHT,
+            inflight_stage=WorkflowStage.USER_GATE,
+            inflight_invocation_id=decision_invocation_id,
+            inflight_operation=RunInflightOperation.DOMAIN_GATE_DECISION,
+        )
+        if pending.domain_reference_id is not None:
             decision_reference_id = await handlers[0].apply(
                 pending_gate=pending,
                 decision=decision,
@@ -809,7 +996,26 @@ class LabBioApplication:
                 update={"decision_reference_id": decision_reference_id}
             )
         session.coordinator.resume_gate(session.run, effective_decision)
+        self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
         return await self.run(handle)
+
+    def cancel_run(
+        self,
+        handle: ApplicationRunHandle | UUID,
+        *,
+        reason: str | None = None,
+    ) -> ApplicationRunResult:
+        """Cancel an attached stable run and persist the terminal boundary."""
+
+        session = self._session(handle)
+        self._require_stable_session(session)
+        self.workflow_engine.cancel(session.run, reason)
+        self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
+        if self.configuration.skill_service is not None:
+            self.configuration.skill_service.finalize_run_usage(
+                session.run.run_id, session.run.status
+            )
+        return self.result(handle)
 
     def result(
         self, handle: ApplicationRunHandle | UUID
@@ -1118,6 +1324,122 @@ class LabBioApplication:
             )
         return tuple(roots)
 
+    def _new_run_record(
+        self, session: _ApplicationRunSession
+    ) -> ApplicationRunRecord:
+        request = session.request
+        return ApplicationRunRecord(
+            run_id=session.run.run_id,
+            task_text=request.task_text,
+            owner_user_id=request.workspace.user_id,
+            project_id=request.workspace.project_id,
+            lab_id=request.workspace.lab_id,
+            input_artifact_ids=request.input_artifact_ids,
+            context_artifact_ids=request.context_artifact_ids,
+            safe_domain_references=request.safe_domain_references,
+            workflow_run=session.run,
+            runtime_results=session.coordinator.results(session.run.run_id),
+            runtime_revision=self.configuration.runtime_revision,
+            recovery_state=RunRecoveryState.STABLE,
+        )
+
+    def _checkpoint(
+        self,
+        session: _ApplicationRunSession,
+        *,
+        recovery_state: RunRecoveryState,
+        inflight_stage: WorkflowStage | None = None,
+        inflight_invocation_id: UUID | None = None,
+        inflight_operation: RunInflightOperation | None = None,
+    ) -> ApplicationRunRecord:
+        current = self.run_state_store.get(session.run.run_id)
+        if current.record_version != session.record_version:
+            raise RunStateVersionConflictError(
+                f"Run-state version conflict for {session.run.run_id}"
+            )
+        replacement = current.model_copy(
+            update={
+                "workflow_run": session.run,
+                "runtime_results": session.coordinator.results(session.run.run_id),
+                "recovery_state": recovery_state,
+                "inflight_stage": inflight_stage,
+                "inflight_invocation_id": inflight_invocation_id,
+                "inflight_operation": inflight_operation,
+            }
+        )
+        stored = self.run_state_store.update(
+            replacement, expected_version=session.record_version
+        )
+        session.record_version = stored.record_version
+        return stored
+
+    def _require_stable_session(self, session: _ApplicationRunSession) -> None:
+        record = self.run_state_store.get(session.run.run_id)
+        if record.record_version != session.record_version:
+            raise RunStateVersionConflictError(
+                f"Run-state version conflict for {session.run.run_id}"
+            )
+        issue = self._recovery_issue(record)
+        if issue is not None:
+            raise ApplicationRecoveryError(record.run_id, issue)
+        if (
+            record.workflow_run.model_dump_json() != session.run.model_dump_json()
+            or record.runtime_results != session.coordinator.results(session.run.run_id)
+        ):
+            raise ApplicationRunStateError(
+                "Attached application session diverged from durable run state"
+            )
+
+    def _reauthorize_recovery(
+        self,
+        record: ApplicationRunRecord,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> None:
+        if (
+            principal.user_id != record.owner_user_id
+            or principal.lab_id != record.lab_id
+            or workspace.user_id != record.owner_user_id
+            or workspace.project_id != record.project_id
+            or workspace.lab_id != record.lab_id
+        ):
+            raise AuthorizationDenied(
+                "Current recovery identity does not match the durable run scope"
+            )
+        self._require_trusted_scope(principal, workspace)
+
+    def _recovery_issue(
+        self, record: ApplicationRunRecord
+    ) -> ApplicationRecoveryIssueCode | None:
+        if record.runtime_revision != self.configuration.runtime_revision:
+            return ApplicationRecoveryIssueCode.RUNTIME_REVISION_MISMATCH
+        if record.recovery_state is RunRecoveryState.STAGE_IN_FLIGHT:
+            return ApplicationRecoveryIssueCode.STAGE_IN_FLIGHT
+        if record.recovery_state is RunRecoveryState.GATE_DECISION_IN_FLIGHT:
+            return ApplicationRecoveryIssueCode.GATE_DECISION_IN_FLIGHT
+        return None
+
+    def _required_artifact_issue(
+        self,
+        record: ApplicationRunRecord,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationRecoveryIssueCode | None:
+        for artifact_id in (
+            *record.input_artifact_ids,
+            *record.context_artifact_ids,
+        ):
+            try:
+                self._authorized_runtime_reference(
+                    artifact_id,
+                    principal=principal,
+                    workspace=workspace,
+                )
+            except ArtifactNotFoundError:
+                return ApplicationRecoveryIssueCode.REQUIRED_ARTIFACT_MISSING
+        return None
+
     def _session(
         self, handle: ApplicationRunHandle | UUID
     ) -> _ApplicationRunSession:
@@ -1149,6 +1471,9 @@ __all__ = [
     "ApplicationH5ADInspectionArtifacts",
     "ApplicationInputError",
     "ApplicationPendingUserGate",
+    "ApplicationRecoveryError",
+    "ApplicationRecoveryIssueCode",
+    "ApplicationRecoveryStatus",
     "ApplicationRunHandle",
     "ApplicationRunNotFoundError",
     "ApplicationRunRequest",

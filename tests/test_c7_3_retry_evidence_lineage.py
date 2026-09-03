@@ -118,6 +118,7 @@ def _configuration(tmp_path, *, retry_limit: int = 1):
     return ApplicationRuntimeConfiguration(
         artifact_root=tmp_path / "artifacts",
         execution_workspace_root=tmp_path / "executions",
+        runtime_revision="c7.3-test-runtime",
         allowed_input_roots=(input_root,),
         projects=(
             Project(

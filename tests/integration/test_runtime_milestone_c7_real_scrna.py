@@ -408,6 +408,7 @@ def _inspection_application(tmp_path) -> LabBioApplication:
         ApplicationRuntimeConfiguration(
             artifact_root=tmp_path / "artifacts",
             execution_workspace_root=tmp_path / "executions",
+            runtime_revision="c7-inspection-runtime",
             allowed_input_roots=(_data_path().parent,),
             projects=(
                 Project(
@@ -696,6 +697,7 @@ async def test_c7_c_d_real_runtime_selected_qc_and_completion(tmp_path):
         ApplicationRuntimeConfiguration(
             artifact_root=tmp_path / "artifacts",
             execution_workspace_root=tmp_path / "executions",
+            runtime_revision="c7-live-runtime",
             allowed_input_roots=(source.parent,),
             projects=(
                 Project(

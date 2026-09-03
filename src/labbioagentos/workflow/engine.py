@@ -112,6 +112,18 @@ class WorkflowEngine:
             lab_id=workspace.lab_id,
         )
 
+    def attach_recovered_run(self, snapshot: WorkflowRun) -> WorkflowRun:
+        """Validate and own a data-only WorkflowRun snapshot without transitioning it."""
+
+        if snapshot.run_id in self._runs:
+            raise InvalidRunStateError(
+                f"WorkflowRun is already attached: {snapshot.run_id}"
+            )
+        self._validate_recovered_run(snapshot)
+        owned = WorkflowRun.model_validate_json(snapshot.model_dump_json())
+        self._runs[owned.run_id] = owned
+        return owned
+
     def _create_run(
         self,
         *,
@@ -650,6 +662,88 @@ class WorkflowEngine:
             raise UnknownWorkflowRunError(
                 "WorkflowRun is not owned by this WorkflowEngine"
             )
+
+    def _validate_recovered_run(self, run: WorkflowRun) -> None:
+        if run.workflow_id != self.definition.workflow_id:
+            raise InvalidRunStateError(
+                "Recovered WorkflowRun workflow_id does not match the active workflow"
+            )
+        if run.current_stage is not None and run.current_stage not in self.definition.nodes:
+            raise InvalidRunStateError(
+                "Recovered WorkflowRun current stage is outside the active workflow"
+            )
+        if run.status is RunStatus.CREATED:
+            if run.current_stage is not None or run.pending_user_gate is not None:
+                raise InvalidRunStateError(
+                    "A recovered CREATED run cannot have an active stage or gate"
+                )
+        elif run.status is RunStatus.RUNNING:
+            if (
+                run.current_stage is None
+                or run.current_stage is WorkflowStage.USER_GATE
+                or run.pending_user_gate is not None
+            ):
+                raise InvalidRunStateError(
+                    "A recovered RUNNING run requires one non-gate current stage"
+                )
+        elif run.status is RunStatus.WAITING_FOR_USER:
+            gate = run.pending_user_gate
+            if (
+                run.current_stage is not WorkflowStage.USER_GATE
+                or gate is None
+                or gate.source_stage not in self.definition.nodes
+                or not self.definition.allows(
+                    gate.source_stage, WorkflowStage.USER_GATE
+                )
+                or not self.definition.allows(
+                    WorkflowStage.USER_GATE, gate.source_stage
+                )
+            ):
+                raise InvalidRunStateError(
+                    "A recovered waiting run requires one valid resumable gate"
+                )
+        elif run.pending_user_gate is not None:
+            raise InvalidRunStateError(
+                "A recovered terminal run cannot retain a pending gate"
+            )
+
+        if (
+            run.status is RunStatus.COMPLETED
+            and run.current_stage not in self.definition.terminal_stages
+        ):
+            raise InvalidRunStateError(
+                "A recovered completed run must remain at a terminal stage"
+            )
+        if any(stage not in self.definition.nodes for stage in run.retry_counts):
+            raise InvalidRunStateError(
+                "Recovered retry accounting contains an unknown stage"
+            )
+        if any(result.stage not in self.definition.nodes for result in run.stage_results):
+            raise InvalidRunStateError(
+                "Recovered stage results contain an unknown stage"
+            )
+        if any(
+            decision.source_stage not in self.definition.nodes
+            for decision in run.gate_decisions
+        ):
+            raise InvalidRunStateError(
+                "Recovered gate decisions contain an unknown source stage"
+            )
+        if tuple(entry.sequence for entry in run.history) != tuple(
+            range(len(run.history))
+        ):
+            raise InvalidRunStateError(
+                "Recovered WorkflowRun history sequence is not contiguous"
+            )
+        for entry in run.history:
+            stages = (entry.stage, entry.source_stage, entry.target_stage)
+            if any(
+                stage is not None and stage not in self.definition.nodes
+                for stage in stages
+            ):
+                raise InvalidRunStateError(
+                    "Recovered WorkflowRun history contains an unknown stage"
+                )
 
     @staticmethod
     def _require_status(run: WorkflowRun, expected: RunStatus) -> None:

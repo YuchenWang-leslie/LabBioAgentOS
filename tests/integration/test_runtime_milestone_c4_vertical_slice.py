@@ -393,6 +393,7 @@ async def test_real_full_powered_synthetic_vertical_slice(tmp_path):
         ApplicationRuntimeConfiguration(
             artifact_root=tmp_path / "artifacts",
             execution_workspace_root=tmp_path / "executions",
+            runtime_revision="c4-integration-runtime",
             allowed_input_roots=(tmp_path,),
             projects=(
                 Project(

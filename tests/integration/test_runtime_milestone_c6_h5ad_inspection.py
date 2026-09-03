@@ -277,6 +277,7 @@ async def test_real_h5ad_safe_inspection_vertical_slice(tmp_path):
         ApplicationRuntimeConfiguration(
             artifact_root=tmp_path / "artifacts",
             execution_workspace_root=tmp_path / "executions",
+            runtime_revision="c6-integration-runtime",
             allowed_input_roots=(tmp_path,),
             projects=(
                 Project(

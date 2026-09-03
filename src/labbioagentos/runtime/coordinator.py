@@ -137,6 +137,7 @@ class RuntimeCoordinatorService:
         memory_candidate_references: tuple[RuntimeReference, ...] = (),
         gold_candidate_references: tuple[RuntimeReference, ...] = (),
         body: RuntimeInputBody | None = None,
+        invocation_id: UUID | None = None,
     ) -> RuntimeStageResult:
         """Invoke, validate, safely record, and apply one explicit proposal."""
 
@@ -148,6 +149,7 @@ class RuntimeCoordinatorService:
             memory_candidate_references=memory_candidate_references,
             gold_candidate_references=gold_candidate_references,
             body=body,
+            invocation_id=invocation_id,
         )
         spec = self.registry.get(stage_input.stage_id)
         invoke_method = getattr(spec.invoker, "invoke", None)
@@ -206,6 +208,24 @@ class RuntimeCoordinatorService:
 
     def results(self, run_id: UUID) -> tuple[RuntimeStageResult, ...]:
         return self._results.get(run_id, ())
+
+    def attach_recovered_results(
+        self,
+        run_id: UUID,
+        results: tuple[RuntimeStageResult, ...],
+    ) -> None:
+        """Restore validated result context without invoking a runtime stage."""
+
+        if run_id in self._results:
+            raise RuntimeCoordinatorError(
+                f"Runtime results are already attached for run {run_id}"
+            )
+        for result in results:
+            self.registry.get(result.stage_id)
+        self._results[run_id] = tuple(
+            RuntimeStageResult.model_validate_json(result.model_dump_json())
+            for result in results
+        )
 
     @staticmethod
     def _validate_result(

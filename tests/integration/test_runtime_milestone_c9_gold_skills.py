@@ -782,6 +782,7 @@ async def test_c9_real_gold_creation_restart_and_familiar_use(tmp_path):
         ApplicationRuntimeConfiguration(
             artifact_root=live_root / "artifacts",
             execution_workspace_root=live_root / "executions",
+            runtime_revision="c9-live-runtime",
             allowed_input_roots=(input_root,),
             projects=(
                 Project(

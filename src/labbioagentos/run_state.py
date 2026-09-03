@@ -109,6 +109,19 @@ class ApplicationRunRecord(BaseModel):
         artifact_ids = (*self.input_artifact_ids, *self.context_artifact_ids)
         if len(set(artifact_ids)) != len(artifact_ids):
             raise ValueError("Durable run Artifact IDs must be unique")
+        if len(self.runtime_results) != len(run.stage_results):
+            raise ValueError(
+                "Runtime result history must match WorkflowRun stage result history"
+            )
+        for runtime_result, workflow_result in zip(
+            self.runtime_results, run.stage_results, strict=True
+        ):
+            if runtime_result.stage_id is not workflow_result.stage:
+                raise ValueError("Runtime and workflow result stages must match")
+            if workflow_result.payload.get("runtime_result_id") != str(
+                runtime_result.result_id
+            ):
+                raise ValueError("Runtime and workflow result identities must match")
 
         markers = (
             self.inflight_stage,

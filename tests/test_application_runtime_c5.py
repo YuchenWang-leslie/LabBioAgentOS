@@ -113,6 +113,7 @@ def _configuration(tmp_path) -> ApplicationRuntimeConfiguration:
     return ApplicationRuntimeConfiguration(
         artifact_root=tmp_path / "artifacts",
         execution_workspace_root=tmp_path / "executions",
+        runtime_revision="c5-test-runtime",
         allowed_input_roots=(input_root,),
         projects=(
             Project(

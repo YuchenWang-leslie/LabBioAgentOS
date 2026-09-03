@@ -705,6 +705,7 @@ def _application_configuration(tmp_path, service, handlers=()):
     return ApplicationRuntimeConfiguration(
         artifact_root=tmp_path / f"application-artifacts-{uuid4()}",
         execution_workspace_root=tmp_path / f"executions-{uuid4()}",
+        runtime_revision="c9-test-runtime",
         allowed_input_roots=(input_root,),
         projects=(
             Project(project_id="project-a", lab_id="lab-a", owner_user_id="user-a"),
