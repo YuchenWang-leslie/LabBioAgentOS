@@ -65,7 +65,6 @@ REAL_PYTHON_IMAGE_ID = (
 IMAGE_KEY = "python-c12-real"
 CONTRACT_ID = "c12.scalar-records.v1"
 SCHEMA_ID = "c12.scalar-records.v1"
-RAW_SENTINEL = "PRIVATE_C12_CLOSURE_SAMPLE_8842"
 USER_REQUEST = (
     "Assess the numeric feature balance in this governed representative assay "
     "table. Choose and compute one bounded descriptive numeric summary that is "
@@ -332,7 +331,7 @@ def _contract() -> StructuredOutputContract:
         required_fields=frozenset({"metric", "value"}),
         max_records=4,
         max_file_bytes=16_384,
-        declassification_mode=OutputDeclassificationMode.PREDECLARED_SCALARS,
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
     )
 
 
@@ -371,18 +370,14 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
     ).resolve() / str(uuid4())
     run_root.mkdir(parents=True, exist_ok=False)
     source = run_root / "representative-assay-table.json"
-    source.write_text(
-        json.dumps(
-            {
-                "records": [
-                    {"sample_id": RAW_SENTINEL, "feature_a": 3, "feature_b": 8},
-                    {"sample_id": "private-sample-2", "feature_a": 5, "feature_b": 13},
-                    {"sample_id": "private-sample-3", "feature_a": 2, "feature_b": 7},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    source_document = {
+        "records": [
+            {"sample_id": "sample_A", "feature_a": 3, "feature_b": 8},
+            {"sample_id": "sample_B", "feature_a": 5, "feature_b": 13},
+            {"sample_id": "sample_C", "feature_a": 2, "feature_b": 7},
+        ]
+    }
+    source.write_text(json.dumps(source_document), encoding="utf-8")
     principal = Principal(user_id="user-c12-live", lab_id="lab-c12-live")
     workspace = WorkspaceContext(
         user_id=principal.user_id,
@@ -565,6 +560,15 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
         and not isinstance(record["value"], bool)
         for record in derived_view.records
     )
+    runtime_discovered_strings = sorted(
+        {
+            value
+            for record in derived_view.records
+            for value in record.values()
+            if isinstance(value, str)
+        }
+    )
+    assert runtime_discovered_strings
     assert outcome.report_artifact_ids
     assert {
         TraceEventType.PREFLIGHT_COMPLETED,
@@ -583,9 +587,13 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
         },
         sort_keys=True,
     )
-    assert RAW_SENTINEL not in model_surfaces
+    assert json.dumps(source_document, sort_keys=True) not in model_surfaces
+    assert str(run_root) not in model_surfaces
     for forbidden in (
         "storage_locator",
+        "script_body",
+        "stdout_body",
+        "stderr_body",
         "provider_request_body",
         "provider_response_body",
         "reasoning_content",
@@ -612,6 +620,7 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
                 "report_artifact_ids": [
                     str(item) for item in outcome.report_artifact_ids
                 ],
+                "runtime_discovered_strings": runtime_discovered_strings,
                 "release_basis": [item.release_basis.value for item in derived],
                 "failed_execution_request_audits": failed_audits,
                 "docker_invocation_count": runner.invocation_count,

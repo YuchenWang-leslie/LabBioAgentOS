@@ -176,17 +176,19 @@ def test_output_collector_rejects_per_file_and_total_byte_overflow(tmp_path):
         oversized.collect(plan, output_root)
 
 
-def test_runtime_output_sentinel_stays_raw_and_remote_inaccessible(tmp_path):
-    sentinel = "PRIVATE_SAMPLE_C12_9182"
+def test_uncontracted_raw_row_dump_stays_raw_and_remote_inaccessible(tmp_path):
     store = LocalArtifactStore(tmp_path / "artifacts")
     output_root = tmp_path / "outputs"
     output_root.mkdir()
-    (output_root / "result.txt").write_text(sentinel, encoding="utf-8")
+    (output_root / "result.json").write_text(
+        '{"dataframe_rows":[{"sample":"P_01","value":1}]}',
+        encoding="utf-8",
+    )
     plan = _plan(
         requested_outputs=(
             OutputArtifactSpec(
-                relative_path="result.txt",
-                artifact_type="runtime-result",
+                relative_path="result.json",
+                artifact_type="raw-row-dump",
                 requested_exposure=ArtifactExposureClass.DERIVED,
             ),
         )
