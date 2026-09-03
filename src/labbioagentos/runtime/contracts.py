@@ -557,7 +557,13 @@ class RuntimeWorkflowControlView(BaseModel):
     request_user_input_available: bool
     retry_available: bool
     retry_transition_targets: tuple[WorkflowStage, ...] = Field(
-        default=(), max_length=16
+        default=(),
+        max_length=16,
+        description=(
+            "Allowed explicit target_stage values for retry. The current stage "
+            "means retry in place; an allowed outgoing stage means retry then "
+            "transition. Omitting target_stage also retries in place."
+        ),
     )
     finish_available: bool
     fail_available: Literal[True] = True
@@ -592,7 +598,9 @@ class RuntimeWorkflowControlView(BaseModel):
                 stage, WorkflowStage.USER_GATE
             ),
             retry_available=retry_available,
-            retry_transition_targets=(transition_targets if retry_available else ()),
+            retry_transition_targets=(
+                (stage, *transition_targets) if retry_available else ()
+            ),
             finish_available=stage in definition.terminal_stages,
         )
 

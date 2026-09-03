@@ -36,6 +36,7 @@ from labbioagentos import (
     RuntimeResultValidationError,
     RuntimeStageInput,
     RuntimeStageResult,
+    RuntimeWorkflowControlView,
     StageRuntimeRegistry,
     StageRuntimeSpec,
     TraceEventType,
@@ -63,6 +64,20 @@ MAIN_PATH = (
     WorkflowStage.REPORT,
     WorkflowStage.LEARN,
 )
+
+
+def test_workflow_control_exposes_current_stage_as_an_explicit_retry_target():
+    engine = WorkflowEngine(runtime_workflow_definition())
+    run = engine.create_run(retry_limit=1)
+    engine.start(run)
+
+    control = RuntimeWorkflowControlView.from_run(engine.definition, run)
+
+    assert control.retry_available is True
+    assert control.retry_transition_targets == (
+        WorkflowStage.INTAKE,
+        WorkflowStage.UNDERSTAND,
+    )
 
 
 def _body(stage: WorkflowStage):

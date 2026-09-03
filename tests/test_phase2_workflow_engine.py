@@ -281,6 +281,23 @@ def test_retry_count_and_limit_are_enforced_without_repair_logic():
     assert run.current_stage is WorkflowStage.INTAKE
 
 
+def test_retry_may_explicitly_target_the_current_stage():
+    engine = WorkflowEngine(default_workflow_definition())
+    run = engine.create_run(retry_limit=1)
+    engine.start(run)
+
+    engine.apply_proposal(
+        run,
+        NextActionProposal(
+            action=NextAction.RETRY,
+            target_stage=WorkflowStage.INTAKE,
+        ),
+    )
+
+    assert run.current_stage is WorkflowStage.INTAKE
+    assert run.retry_counts == {WorkflowStage.INTAKE: 1}
+
+
 def test_stage_history_reconstructs_workflow_path_and_statuses():
     engine = WorkflowEngine(default_workflow_definition())
     run = engine.create_run()
@@ -339,4 +356,3 @@ def test_malformed_or_unsupported_proposal_is_rejected_safely(proposal):
         engine.apply_proposal(run, proposal)
 
     assert run == state_before
-

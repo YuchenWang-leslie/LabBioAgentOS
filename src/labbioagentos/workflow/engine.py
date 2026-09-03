@@ -604,7 +604,10 @@ class WorkflowEngine:
                     raise InvalidTransitionError(
                         "Retry cannot target USER_GATE"
                     )
-                if not self.definition.allows(stage, normalized.target_stage):
+                if (
+                    normalized.target_stage is not stage
+                    and not self.definition.allows(stage, normalized.target_stage)
+                ):
                     raise InvalidTransitionError(
                         f"Retry transition {stage.value!r} -> "
                         f"{normalized.target_stage.value!r} is not allowed"
@@ -643,8 +646,12 @@ class WorkflowEngine:
                 domain_reference_id=normalized.domain_reference_id,
             )
         if normalized.action is NextAction.RETRY:
+            source = self._require_current_stage(run)
             self.retry(run)
-            if normalized.target_stage is not None:
+            if (
+                normalized.target_stage is not None
+                and normalized.target_stage is not source
+            ):
                 return self.transition(run, normalized.target_stage)
             return run
         if normalized.action is NextAction.FINISH:
