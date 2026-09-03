@@ -119,30 +119,39 @@ def _valid_wire_draft() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_le1_execution_draft_is_not_an_unconstrained_object(execution_boundary):
-    draft = (await _execution_schema(execution_boundary[0]))["parameters"][
-        "properties"
-    ]["draft"]
+async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
+    execution_boundary,
+):
+    parameters = (await _execution_schema(execution_boundary[0]))["parameters"]
 
-    assert draft["type"] == "object"
-    assert draft["additionalProperties"] is False
-    assert len(draft["properties"]) == 8
+    assert parameters["type"] == "object"
+    assert parameters["additionalProperties"] is False
+    assert "draft" not in parameters["properties"]
+    assert set(parameters["properties"]) == {
+        "runtime",
+        "image_key",
+        "script_content",
+        "input_artifact_ids",
+        "parameters",
+        "requested_outputs",
+        "resources",
+        "network_required",
+    }
+    assert set(parameters["required"]) == {"image_key", "script_content"}
 
 
 @pytest.mark.asyncio
 async def test_le2_runtime_enum_is_visible(execution_boundary):
-    draft = (await _execution_schema(execution_boundary[0]))["parameters"][
-        "properties"
-    ]["draft"]
+    parameters = (await _execution_schema(execution_boundary[0]))["parameters"]
 
-    assert draft["properties"]["runtime"]["enum"] == ["PYTHON"]
+    assert parameters["properties"]["runtime"]["enum"] == ["PYTHON"]
 
 
 @pytest.mark.asyncio
 async def test_le3_image_and_script_are_typed_and_bounded(execution_boundary):
     properties = (await _execution_schema(execution_boundary[0]))["parameters"][
         "properties"
-    ]["draft"]["properties"]
+    ]
 
     assert properties["image_key"]["type"] == "string"
     assert properties["image_key"]["maxLength"] == 128
@@ -155,7 +164,7 @@ async def test_le3_image_and_script_are_typed_and_bounded(execution_boundary):
 async def test_le4_input_artifact_ids_are_typed_arrays(execution_boundary):
     field = (await _execution_schema(execution_boundary[0]))["parameters"][
         "properties"
-    ]["draft"]["properties"]["input_artifact_ids"]
+    ]["input_artifact_ids"]
 
     assert field["type"] == "array"
     assert field["items"]["type"] == "string"
@@ -167,7 +176,7 @@ async def test_le4_input_artifact_ids_are_typed_arrays(execution_boundary):
 async def test_le5_requested_outputs_nested_contract_is_visible(execution_boundary):
     field = (await _execution_schema(execution_boundary[0]))["parameters"][
         "properties"
-    ]["draft"]["properties"]["requested_outputs"]
+    ]["requested_outputs"]
 
     assert field["type"] == "array"
     assert field["items"]["type"] == "object"
@@ -184,7 +193,7 @@ async def test_le5_requested_outputs_nested_contract_is_visible(execution_bounda
 async def test_le6_resources_nested_contract_is_visible(execution_boundary):
     resources = (await _execution_schema(execution_boundary[0]))["parameters"][
         "properties"
-    ]["draft"]["properties"]["resources"]
+    ]["resources"]
 
     assert resources["type"] == "object"
     assert resources["additionalProperties"] is False
@@ -200,9 +209,9 @@ async def test_le6_resources_nested_contract_is_visible(execution_boundary):
 async def test_le7_network_required_is_boolean(execution_boundary):
     network = (await _execution_schema(execution_boundary[0]))["parameters"][
         "properties"
-    ]["draft"]["properties"]["network_required"]
+    ]["network_required"]
 
-    assert network == {"type": "boolean"}
+    assert network["type"] == "boolean"
 
 
 def test_le8_canonical_validation_rejects_extra_fields():
@@ -219,7 +228,7 @@ async def test_le9_invalid_nested_value_fails_before_submission(execution_bounda
     wire = _valid_wire_draft()
     wire["resources"]["memory_mb"] = "not-an-integer"
 
-    result = await toolset.execution_submit(wire)
+    result = await toolset.execution_submit(**wire)
 
     assert result["error"]["error_code"] == "INVALID_EXECUTION_DRAFT"
     assert submission.drafts == []
@@ -234,12 +243,63 @@ def test_le10_provider_shaped_dictionary_validates_to_canonical_draft():
 
 
 @pytest.mark.asyncio
+async def test_le10b_local_provider_dispatches_flat_execution_arguments(
+    execution_boundary,
+):
+    toolset, submission = execution_boundary
+    provider = LocalProvider(toolset)
+    await provider.initialize()
+
+    result = await provider.call_tool("execution_submit", _valid_wire_draft())
+
+    assert result["success"] is True
+    assert len(submission.drafts) == 1
+    assert isinstance(submission.drafts[0], ExecutionPlanDraft)
+
+
+@pytest.mark.asyncio
+async def test_le10c_nested_string_draft_is_not_repaired(execution_boundary):
+    toolset, submission = execution_boundary
+    provider = LocalProvider(toolset)
+    await provider.initialize()
+
+    with pytest.raises(TypeError):
+        await provider.call_tool(
+            "execution_submit",
+            {"draft": json.dumps(_valid_wire_draft())},
+        )
+
+    assert submission.drafts == []
+
+
+@pytest.mark.asyncio
+async def test_le10d_canonical_numeric_strings_use_normal_model_validation(
+    execution_boundary,
+):
+    toolset, submission = execution_boundary
+    wire = _valid_wire_draft()
+    wire["resources"] = {
+        "cpus": "1.0",
+        "memory_mb": "512",
+        "pids_limit": "128",
+        "timeout_seconds": "60.0",
+    }
+
+    result = await toolset.execution_submit(**wire)
+
+    assert result["success"] is True
+    assert len(submission.drafts) == 1
+    assert submission.drafts[0].resources.memory_mb == 512
+    assert submission.drafts[0].resources.timeout_seconds == 60.0
+
+
+@pytest.mark.asyncio
 async def test_le11_successful_request_audit_has_no_script_or_parameter_content(
     execution_boundary,
 ):
     toolset, submission = execution_boundary
 
-    result = await toolset.execution_submit(_valid_wire_draft())
+    result = await toolset.execution_submit(**_valid_wire_draft())
     audit = toolset.evidence_items()[-1].execution_submit_request
     encoded = audit.model_dump_json()
 
@@ -258,16 +318,14 @@ async def test_le12_failed_request_audit_contains_only_safe_structure(
     toolset, submission = execution_boundary
     wire = _valid_wire_draft()
     wire["resources"]["memory_mb"] = "PRIVATE_REJECTED_VALUE"
-    wire["PRIVATE_UNKNOWN_FIELD"] = "PRIVATE_EXTRA_VALUE"
 
-    await toolset.execution_submit(wire)
+    await toolset.execution_submit(**wire)
     audit = toolset.evidence_items()[-1].execution_submit_request
     encoded = audit.model_dump_json()
 
     assert submission.drafts == []
     assert audit.validation_status is ExecutionSubmitValidationStatus.INVALID
     assert "resources.memory_mb" in audit.validation_error_field_paths
-    assert "unknown_field" in audit.validation_error_field_paths
     assert "PRIVATE_" not in encoded
     assert "print(" not in encoded
     assert "secret_parameter" not in encoded

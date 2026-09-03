@@ -441,7 +441,10 @@ async def test_delegated_specialist_owns_tools_and_evidence_is_attributed_and_ag
     assert "actor_profile_key" not in inspect.signature(
         specialist.artifact_query
     ).parameters
-    denied_execution = await specialist.execution_submit({})
+    denied_execution = await specialist.execution_submit(
+        image_key="python-c8",
+        script_content="print('denied')",
+    )
     assert denied_execution["error"]["error_code"] == "AUTHORIZATION_DENIED"
     assert execution_service.calls == 0
     denied_inheritance = await reviewer.artifact_query(

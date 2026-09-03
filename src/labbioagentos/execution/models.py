@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
+from typing import Annotated
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -93,6 +94,25 @@ class OutputArtifactSpec(BaseModel):
             raise ValueError("Output path must stay beneath the execution output root")
         return value
 
+
+ExecutionImageKey = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=128, pattern=r"^[a-z0-9][a-z0-9._-]*$"),
+]
+ExecutionScriptContent = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=1_000_000),
+]
+ExecutionInputArtifactIds = Annotated[
+    tuple[UUID, ...],
+    Field(max_length=128),
+]
+ExecutionRequestedOutputs = Annotated[
+    tuple[OutputArtifactSpec, ...],
+    Field(max_length=128),
+]
+
+
 class ExecutionPlan(BaseModel):
     """Runtime intent with no raw Docker flags, images, or host paths."""
 
@@ -106,12 +126,8 @@ class ExecutionPlan(BaseModel):
     project_id: StrictStr = Field(default="local-project", min_length=1)
     lab_id: StrictStr = Field(default="local-lab", min_length=1)
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
-    image_key: StrictStr = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
-    script_content: StrictStr = Field(min_length=1, max_length=1_000_000)
+    image_key: ExecutionImageKey
+    script_content: ExecutionScriptContent
     input_artifact_ids: tuple[UUID, ...] = ()
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
     requested_outputs: tuple[OutputArtifactSpec, ...] = ()
@@ -144,15 +160,11 @@ class ExecutionPlanDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
-    image_key: StrictStr = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[a-z0-9][a-z0-9._-]*$",
-    )
-    script_content: StrictStr = Field(min_length=1, max_length=1_000_000)
-    input_artifact_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    image_key: ExecutionImageKey
+    script_content: ExecutionScriptContent
+    input_artifact_ids: ExecutionInputArtifactIds = ()
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
-    requested_outputs: tuple[OutputArtifactSpec, ...] = Field(default=(), max_length=128)
+    requested_outputs: ExecutionRequestedOutputs = ()
     resources: RequestedResources = Field(default_factory=RequestedResources)
     network_required: bool = False
 

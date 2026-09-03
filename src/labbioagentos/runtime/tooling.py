@@ -31,8 +31,16 @@ from labbioagentos.artifacts import (
 from labbioagentos.artifacts.store import coerce_artifact_id
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.execution import (
+    ExecutionRuntime,
     ExecutionPlanDraft,
     ExecutionSubmissionService,
+    RequestedResources,
+)
+from labbioagentos.execution.models import (
+    ExecutionImageKey,
+    ExecutionInputArtifactIds,
+    ExecutionRequestedOutputs,
+    ExecutionScriptContent,
 )
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.memory import (
@@ -579,13 +587,44 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
-    async def execution_submit(self, draft: ExecutionPlanDraft) -> dict:
-        """Submit one governed execution intent through the canonical draft contract.
+    async def execution_submit(
+        self,
+        image_key: ExecutionImageKey,
+        script_content: ExecutionScriptContent,
+        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
+        input_artifact_ids: ExecutionInputArtifactIds = (),
+        parameters: dict[str, JsonValue] = {},
+        requested_outputs: ExecutionRequestedOutputs = (),
+        resources: RequestedResources = {},
+        network_required: bool = False,
+    ) -> dict:
+        """Submit one governed execution intent through canonical draft fields.
 
         The offline script discovers mounted input files recursively beneath the
         directory named by ``LABBIO_INPUT_DIR`` and writes declared relative
         outputs beneath the directory named by ``LABBIO_OUTPUT_DIR``.
+
+        Args:
+            image_key: Approved key from the current execution capability.
+            script_content: Complete program to execute in the approved runtime.
+            runtime: Runtime family from the current execution capability.
+            input_artifact_ids: Governed input Artifact UUIDs to mount read-only.
+            parameters: Optional JSON-compatible execution parameters.
+            requested_outputs: Declared relative output files and exposure intent.
+            resources: Requested resources within the current trusted envelope.
+            network_required: Whether the program requires network access.
         """
+
+        draft = {
+            "runtime": runtime,
+            "image_key": image_key,
+            "script_content": script_content,
+            "input_artifact_ids": input_artifact_ids,
+            "parameters": parameters,
+            "requested_outputs": requested_outputs,
+            "resources": resources,
+            "network_required": network_required,
+        }
 
         if "execution_submit" not in self.binding.capability_allowlist:
             return await self._call(

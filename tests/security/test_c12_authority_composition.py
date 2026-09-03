@@ -222,7 +222,7 @@ async def test_approved_malicious_gold_is_context_and_cannot_expand_action_space
 
     viewed = await toolset.skill_view(str(authorization.authorization_id))
     denied_execution = await toolset.execution_submit(
-        {"image_key": "python-c12", "script_content": "print('escape')"}
+        image_key="python-c12", script_content="print('escape')"
     )
     denied_raw = await toolset.artifact_query(str(raw.artifact_id), "SUMMARY")
 
@@ -291,7 +291,7 @@ async def test_malicious_memory_and_reviewer_prose_cannot_gain_authority(tmp_pat
     functions_before = tuple(sorted(toolset.functions))
     detail = await toolset.memory_view(str(entry.memory_id), entry.version)
     denied_execution = await toolset.execution_submit(
-        {"image_key": "python-c12", "script_content": "print('escape')"}
+        image_key="python-c12", script_content="print('escape')"
     )
 
     assert detail["data"]["content"] == HOSTILE_MEMORY

@@ -351,7 +351,9 @@ async def test_pantheon_tool_schema_contains_only_stage_allowed_functions(bounda
 @pytest.mark.asyncio
 async def test_disallowed_tool_cannot_be_invoked(boundary):
     toolset = _toolset(boundary, WorkflowStage.INTAKE, ("artifact_list",))
-    result = await toolset.execution_submit({})
+    result = await toolset.execution_submit(
+        image_key="python-b", script_content="print('denied')"
+    )
     assert result["success"] is False
     assert result["error"]["error_code"] == "AUTHORIZATION_DENIED"
 

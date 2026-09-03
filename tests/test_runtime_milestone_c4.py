@@ -457,11 +457,9 @@ async def test_execution_draft_validation_returns_stable_bounded_error(
     )
 
     result = await toolset.execution_submit(
-        {
-            "runtime": "python",
-            "image_key": "python-c4",
-            "script_content": "print('safe synthetic script')",
-        }
+        runtime="python",
+        image_key="python-c4",
+        script_content="print('safe synthetic script')",
     )
 
     assert result["error"]["error_code"] == "INVALID_EXECUTION_DRAFT"
