@@ -5,43 +5,24 @@ not a future architecture roadmap and does not authorize a later milestone.
 
 ## Provider tool-schema fidelity
 
-The current frozen Pantheon conversion exposes `execution_submit` to an
-OpenAI-compatible provider as:
+Frozen Pantheon revision
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42` exposes the canonical nested
+`ExecutionPlanDraft` fields and constraints. The provider sees a closed root and
+draft object, runtime enum `PYTHON`, typed UUID inputs, bounded script/image
+fields, a closed resource object, and closed requested-output items containing
+exactly `relative_path`, `artifact_type`, `requested_exposure`, and
+`output_contract_id`. LabBio's canonical local validation remains authoritative.
 
-```json
-{
-  "description": "Submit a governed draft; use the exact PYTHON literal for draft.runtime.",
-  "name": "execution_submit",
-  "parameters": {
-    "additionalProperties": false,
-    "properties": {
-      "draft": {
-        "additionalProperties": true,
-        "description": "",
-        "type": "object"
-      }
-    },
-    "required": ["draft"],
-    "type": "object"
-  },
-  "strict": false
-}
-```
-
-The provider therefore cannot see the nested fields, enums, and constraints in
-`ExecutionPlanDraft`. LabBio validates that exact internal model locally and
-fails closed before Docker, so this is a P2 provider robustness limitation, not
-an authority or confidentiality bypass. A direct nested-Pydantic annotation was
-tested deterministically; frozen Pantheon could not resolve the forward type
-and omitted the tool. A flattened parallel wire contract was not introduced
-because it would duplicate and weaken the canonical contract. Pantheon remains
-at `45ef598f8d79bd98e9befc7c549980b731476662`.
-
-The one C12 provider attempt exercised this limitation: it returned a bounded
-failure, created no per-execution workspace or execution output, and did not
-expose RAW content. The in-memory failed request arguments were not persisted,
-so its exact malformed request cannot be reconstructed. The explicit at-most-one
-rule prevents another provider attempt in C12.
+Two bounded provider-robustness limitations remain. The generic execution
+`parameters` mapping intentionally has field-local arbitrary values, and the
+provider can still make a semantically incorrect lifecycle decision even when
+the trusted capability state and schema are present. Final run
+`b6392437-bb23-4570-b09f-639db0aa195a` demonstrated the latter: after a
+successful deterministic PREFLIGHT receipt, the provider returned
+`next_action=fail` because it incorrectly concluded that computation capability
+was absent. The PREFLIGHT input did contain the trusted execution capability.
+No EXECUTE stage, execution workspace, Docker call, output, or RAW exposure
+followed. The explicit one-run rule prevents another provider attempt in C12.
 
 ## Local storage denial of service
 
@@ -66,16 +47,18 @@ effect.
 
 ## Release-policy scope
 
-Automatic execution-output release currently supports bounded scalars with
-pre-execution-declared string values. Arbitrary runtime-originated strings,
-tables, identifiers, and free text remain RAW unless a separate trusted policy
-or explicit durable user approval authorizes them. This conservative boundary
-does not classify biological identifiers and does not choose scientific
-methods.
+Automatic execution-output release supports approved bounded flat JSON scalar
+records, including runtime-originated strings. Ordinary scientific/sample
+identifier strings are not sensitive by type alone. Unknown/nested/oversized
+fields, unrestricted tables or files, RAW documents/rows/matrices, absolute
+paths, system keys, private-key material, scripts, stdout/stderr, and provider
+bodies remain outside this release path. This boundary does not classify
+biological identifiers and does not choose scientific methods.
 
 ## Operational status
 
-C12 is not accepted because its one performed provider-backed integrated run
-was not green. Local deterministic and real-Docker evidence is green, but it
-does not substitute for that explicit acceptance condition. No source release
-was deployed and no production-service health claim is made.
+C12 is not accepted because its one post-policy provider-backed integrated run
+failed at the provider's PREFLIGHT decision before EXECUTE. Local deterministic
+and real-Docker evidence is green, but it does not substitute for that explicit
+acceptance condition. No source release was deployed and no production-service
+health claim is made.

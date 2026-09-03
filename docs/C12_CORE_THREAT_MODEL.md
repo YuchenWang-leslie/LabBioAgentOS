@@ -13,7 +13,9 @@ C12 NOT ACCEPTED
 ```
 
 The deterministic policy revision is green. The one explicitly authorized
-post-policy provider-backed integration remains the final acceptance gate.
+post-policy provider-backed integration was performed and failed at the
+provider's PREFLIGHT decision before execution; the final acceptance gate is
+therefore not met.
 
 ## Product privacy decision
 
@@ -93,7 +95,7 @@ disk exhaustion remains P2. Distributed transactions, HA, multi-writer
 coordination, and automatic reconciliation of uncertain external effects remain
 out of scope.
 
-## Deterministic evidence before the final provider run
+## Deterministic and final-provider evidence
 
 - DS1-DS15 cover numeric, ordinary-string, mixed-scalar, malformed-shape,
   overflow, system-field, absolute-path, private-key, and `NONE` behavior.
@@ -107,3 +109,14 @@ out of scope.
 
 These results establish the deterministic release candidate. They do not by
 themselves accept or freeze C12.
+
+The final provider run `b6392437-bb23-4570-b09f-639db0aa195a` saw the trusted
+execution-capability control state and a successful deterministic PREFLIGHT
+receipt, then returned typed `next_action=fail` because it incorrectly treated
+the absence of ordinary PREFLIGHT tool calls as absence of next-stage
+computation authority. The workflow stopped before EXECUTE. No execution,
+Docker invocation, output registration, DERIVED Artifact, VALIDATE decision, or
+report exists. Boundary and trace scans contain no RAW document, absolute path,
+script/log/provider/reasoning/credential body, private-key material, or Docker
+socket string. This is `PROVIDER_TOOL_USE_FAILURE`, not a release-policy bypass.
+No further provider run is authorized, so C12 remains not accepted.

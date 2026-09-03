@@ -131,8 +131,16 @@ allowlist while retaining cardinality/size bounds. DS1-DS15, HC1-HC6, the full
 are green. Pantheon's nested provider schema remains frozen and unchanged at
 `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
 
-The one newly authorized post-policy provider run has not yet been performed,
-so the explicit acceptance condition remains unsatisfied:
+The one newly authorized post-policy provider run was performed exactly once as
+run `b6392437-bb23-4570-b09f-639db0aa195a`. Its deterministic PREFLIGHT receipt
+was successful and its provider input contained the trusted
+`RuntimeExecutionCapabilityView`, but the provider then returned
+`next_action=fail` after incorrectly concluding that no computation capability
+was available. The run stopped before EXECUTE with no execution, Docker
+invocation, output, DERIVED Artifact, VALIDATE stage, or report. This is a
+`PROVIDER_TOOL_USE_FAILURE`; it does not falsify any execution or release
+invariant because those boundaries were not exercised. The one-run rule forbids
+a replacement attempt, so the live acceptance condition remains unsatisfied:
 
 ```text
 C12 NOT ACCEPTED

@@ -712,21 +712,29 @@ and frozen Pantheon remain unchanged; C12 has not started.
 ## C12 — Core architecture falsification, hardening, and closeout
 
 **Status:** not accepted on isolated branch
-`c12-core-architecture-hardening`. C11 and frozen Pantheon revision
-`45ef598f8d79bd98e9befc7c549980b731476662` remain unchanged. No production
-deployment or later evaluation/product work was started.
+`c12-core-architecture-hardening`. C11 remains accepted/frozen and Pantheon is
+frozen at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. No production deployment
+or later evaluation/product work was started.
 
 - **Falsification-first result:** six deterministic violations were reproduced
   before production fixes: low-cardinality private category disclosure,
   free-form remote Artifact projection, shape-only RAW-output promotion,
   data-bearing network acceptance, mutable image acceptance, and the absence of
-  `--pull=never`.
-- **Closed P0/P1 boundaries:** categorical value enumeration is trusted-policy
-  opt-in; all remote non-RAW views need a compatible trusted release basis and
-  explicit bounded projector; execution shape and declassification are
-  separate; mounted input always implies offline execution; executable images
-  are immutable and never pulled during execution; USER_APPROVED is disabled by
-  default and requires durable exact approval when enabled.
+  `--pull=never`. The later product-owner decision permits ordinary bounded
+  scientific/sample strings; it does not erase the earlier evidence under the
+  former strict-privacy assumption.
+- **Final release policy:** `BOUNDED_SCALARS` replaced
+  `PREDECLARED_SCALARS`. Approved flat JSON scalars, including
+  runtime-originated strings, may become DERIVED only after exact output-contract
+  and shared model-safety validation. `NONE`, RAW documents/rows/matrices,
+  nested or oversized output, system/path/key material, scripts, logs, and
+  provider bodies remain unreleasable. Low-cardinality H5AD categories
+  enumerate within existing bounds; high-cardinality fields remain suppressed.
+- **Other closed P0/P1 boundaries:** all remote non-RAW views need a compatible
+  trusted release basis and explicit bounded projector; mounted input always
+  implies offline execution; executable images are immutable and never pulled;
+  USER_APPROVED is disabled by default and requires durable exact approval when
+  enabled.
 - **Composition evidence:** malicious Gold/Memory and peer prose remain
   MODEL_CONTEXT; stage/actor/consumer/delegation authority remains host-bound;
   cross-scope UUID attacks fail; retry, Gold gate, Memory gate, restart,
@@ -737,18 +745,26 @@ deployment or later evaluation/product work was started.
   proves read-only input/root, controlled output, no socket/arbitrary host path,
   symlink rejection, no undeclared promotion, and no sentinel declassification.
   Docker, containerd, and docker.socket remained active.
-- **Regression:** with the live-provider flag explicitly unset and the real
-  Docker suite enabled, `376 passed, 11 skipped` with the one pre-existing
-  Uvicorn websocket warning.
-- **Provider gate:** exactly one allowed provider-backed attempt was made under
-  `.local/c12-integrated/51c763c4-a618-4f0b-8f73-e268c5fa4116`. It produced no
-  successful `execution_submit` and no Docker execution. The provider sees the
-  nested draft only as an unconstrained object; exact LabBio validation rejected
-  the request safely. A deterministic nested-Pydantic signature attempt caused
-  frozen Pantheon to omit the tool, and no duplicate flattened compatibility
-  contract or prompt workaround was added.
+- **Regression:** the revised full non-live regression is `418 passed, 12
+  skipped` with the one pre-existing Uvicorn warning. The real-Docker hostile
+  test is separately green.
+- **Provider contract:** frozen Pantheon exposes the typed nested execution
+  draft, including the runtime enum, UUID inputs, closed resource/output items,
+  and field bounds. The generic `parameters` mapping remains intentionally open
+  within its own field; canonical LabBio validation remains authoritative.
+- **Final provider gate:** exactly one newly authorized post-policy run was made:
+  `b6392437-bb23-4570-b09f-639db0aa195a`, under
+  `.local/c12-bounded-release-final/d8e73bfb-7fde-4c0f-bbdc-92d3e587187c`.
+  Deterministic PREFLIGHT completed and the provider input contained the
+  trusted execution-capability view, but the provider returned typed
+  `next_action=fail` after incorrectly concluding that computation capability
+  was absent. The workflow stopped before EXECUTE with no execution, Docker
+  call, output, DERIVED Artifact, VALIDATE result, or report. Boundary/trace
+  leak scans passed.
 - **Decision:** all reproduced P0/P1 issues are closed, but the performed
-  integrated architecture run was not green. That exact acceptance criterion is
-  unsatisfied and the at-most-one rule forbids a rerun. Therefore `C12 NOT
-  ACCEPTED`. Do not infer authorization for another numbered architecture
-  milestone, local real-world evaluation, API, CLI, UI, or deployment work.
+  post-policy provider run was not green. The earliest failure is
+  `PROVIDER_TOOL_USE_FAILURE`, not a scientific, Docker, schema-validation, or
+  release-policy failure. The acceptance criterion is unsatisfied and the
+  one-run rule forbids a rerun. Therefore `C12 NOT ACCEPTED`. The only valid
+  continuation entry is new explicit product-owner authorization; do not infer
+  authorization for another milestone, evaluation, API, CLI, UI, or deployment.

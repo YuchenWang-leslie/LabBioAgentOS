@@ -6,99 +6,106 @@
 C12 NOT ACCEPTED
 ```
 
-All deterministically reproduced P0/P1 defects are closed, the local adversarial
-suite is green, and the real Docker hostile suite is green. The exact violated
-acceptance condition is narrower: one provider-backed integrated architecture
-run was performed, but it did not complete a valid `execution_submit`. Section
-59 requires an integrated run to be green if performed. The at-most-one rule
-forbids another attempt in C12, so local evidence cannot be substituted for that
-failed acceptance gate.
+The revised bounded-scalar product policy is deterministically green, the full
+non-live regression is green, and the real-Docker hostile suite is green. The
+one additionally authorized provider-backed run was performed exactly once. It
+reached a successful deterministic PREFLIGHT receipt, but the provider then
+returned typed `next_action=fail` because it incorrectly concluded that no
+computation capability was available. The provider input did contain the
+trusted `RuntimeExecutionCapabilityView`. The run therefore stopped before
+EXECUTE, created no Execution or DERIVED Artifact, and produced no report.
+
+The earliest failure is classified as `PROVIDER_TOOL_USE_FAILURE`: the provider
+did not transition from the trusted PREFLIGHT control state to use the execution
+capability. It is not a scientific-result failure, an execution-schema
+rejection, a Docker failure, or a bounded-release failure. The explicit rule
+forbids another provider run, so deterministic evidence cannot replace the
+unsatisfied live acceptance gate.
 
 ## Required final report
 
 | # | Required item | C12 result and evidence |
 | ---: | --- | --- |
-| 1 | Starting LabBio SHA | `091be5e7f1d08af1ea76ee55f83e0845b7c15e62`; clean accepted C11 baseline. |
-| 2 | Frozen Pantheon SHA | `45ef598f8d79bd98e9befc7c549980b731476662`; tree remained clean and unchanged. |
-| 3 | Threat model summary | Trusted control/data/execution planes mechanically constrain untrusted model arguments, code, uploaded data, outputs, and model-context prose. Docker/kernel, local administrator, covert channels, distributed transactions, and HA are explicit non-goals. |
-| 4 | Trusted/untrusted boundary matrix | Recorded in `C12_CORE_THREAT_MODEL.md`; Agent origin never implies trust and prior user approval never changes prose into evidence. |
-| 5 | Complete invariant matrix | Recorded in `C12_CORE_ARCHITECTURE_INVARIANTS.md`; all core P0/P1 rows are PROVEN after hardening, with only bounded P2 limitations. |
-| 6 | Artifact producer/release matrix | Each production path now has `RAW_INGESTION`, trusted inspector, trusted execution declassification, model-authored report, durable user approval, or `INTERNAL_ONLY` basis. Exposure class alone is not authority. |
-| 7 | Semantic H5AD privacy finding | Initial audit proved that low cardinality caused category values to be enumerated without a semantic release decision: P0 violation. Trusted policy now denies enumeration by default. |
-| 8 | Private categorical sentinel test | `PRIVATE_DONOR_A/B` and observation identifiers do not occur in inspection serialization; counts/cardinality remain. An explicitly configured safe field still enumerates. |
-| 9 | Artifact remote-projection finding | Initial METADATA, SCHEMA, and SUMMARY paths could reuse store-private free-form objects: P1 violation. |
-| 10 | Artifact projection fix | `ArtifactModelViewProjector` allowlists metadata, restricts schema properties to trusted inspectors, retains bounded structural fields, and recursively validates summary/records and the complete view. |
-| 11 | Execution RAW-laundering reproduction | A shape-valid record containing `PRIVATE_OBSERVATION_001` was initially eligible for DERIVED solely from its JSON contract: P0 violation. |
-| 12 | Declassification architecture | Shape validation and remote release are separate. Outputs begin untrusted; only `PREDECLARED_SCALARS` with all runtime strings declared before execution receives `TRUSTED_EXECUTION_DECLASSIFICATION`. Default `NONE` stays RAW. |
-| 13 | Direct sentinel result after fix | The same contract-valid private sentinel is shape-valid but release-unauthorized, has an empty model representation, remains RAW, and is denied to `REMOTE_LLM`. |
-| 14 | Docker network-with-input reproduction | Before hardening, host/image policy could accept `network_required=true` with a mounted Artifact. The adversarial reproduction established a P0 path. |
-| 15 | Final network invariant | Preflight and final plan validation reject any network request with any local input Artifact before Docker. Networked acquisition with zero local inputs remains a separately governed future seam. |
-| 16 | Image immutability | Executable registry entries require an image ID, `repository@sha256`, or reference plus validated sha256 digest. Mutable `python:3.11` and unknown keys are rejected. |
-| 17 | `--pull=never` | Exact argv contains `--pull`, `never`; execution cannot fetch an image in the model-generated path. |
-| 18 | Mount/socket/rootfs | Exact and real-Docker tests prove read-only input, read-only root, controlled output, no Docker socket, no arbitrary host path, `cap-drop ALL`, and `no-new-privileges`. |
-| 19 | Output/disk bound | Default per-file collection and `fsize` are 16 MiB; declared total collection is 64 MiB. Full writable-bind-mount quota isolation is not implemented and remains P2 local DoS. |
-| 20 | USER_APPROVED durability | Model exposure is disabled by default. When enabled in `LabBioApplication`, a durable store is mandatory. SQLite approvals bind Artifact, consumer, approver, and time, survive reconstruction, and validate payload identity against the persistence key. |
-| 21 | Malicious Gold | Approved hostile instructions remain visible MODEL_CONTEXT but cannot add execution, RAW access, Docker/socket/network, foreign Artifact, or sibling capabilities. Gold has no `run`/`apply`. |
-| 22 | Gold modes | REUSE, ADAPT, and REFERENCE proposals remain legal; explicit no-match/IGNORE remains possible. There is no selector/router or mandatory use. |
-| 23 | Malicious Memory | Hostile persistent text remains MODEL_CONTEXT; it cannot enable network, add tools, mutate WorkflowRun, skip validation, or grant evidence authority. |
-| 24 | Memory authority | Search/view are MODEL_CONTEXT; proposals are CONTROL_STATE; mutation stays user-gated, durable, versioned, and immutable-lineage. Reviewer cannot call Memory mutation outside its ceiling. |
-| 25 | Specialist/peer escalation | Stage ceiling, actor attribution, fixed `REMOTE_LLM` consumer, and sibling delegation attacks are denied. Recursive specialist/reviewer prose remains MODEL_CONTEXT. |
-| 26 | Cross-scope attacks | Known foreign UUIDs cannot be listed, queried, mounted, cited by Report/Memory, used to discover/read Gold/Memory, or used to recover another run. Executor call count remains zero. |
-| 27 | Workflow/recovery composition | One deterministic run combined a workflow retry, Gold USER_GATE/use, EXECUTE, VALIDATE, Memory USER_GATE/update, application reconstruction, and terminal finalization. EXECUTE/VALIDATE and both domain decisions occurred exactly once. |
-| 28 | Recursive leak scan | Representative runtime input, evidence, Artifact list/view, execution receipt, Gold, Memory, gates, and finalization DTOs contain no locator/path, RAW rows, script/log/provider/reasoning/credential body, Docker socket, or internal object. Trace rejects the same unsafe classes. |
-| 29 | Local hostile Docker suite | Green with immutable local image `sha256:fe316ce25958c9a5fd10d55a42d2597a2736a1c84f92690cf79cd8a0ada67506`: input read and declared write succeed; input/root writes, host path, socket, symlink escape, data-bearing network request, many undeclared-file promotion, sentinel declassification, and mutable/unknown image fail safely. |
-| 30 | Integrated provider run | Exactly one attempt under `.local/c12-integrated/51c763c4-a618-4f0b-8f73-e268c5fa4116`; it produced zero successful `execution_submit`, no per-execution workspace/output, and stopped with a bounded `CAPABILITY_FAILED`. Persisted state contains only the governed RAW source/blob and safe STRUCTURAL Artifact; the sentinel occurs only in the authorized RAW locations, and no provider/reasoning/credential body was persisted. It is not green and was not rerun. |
-| 31 | Full regression | `LABBIO_RUN_C12_DOCKER=1`, live-provider flag explicitly unset: `376 passed, 11 skipped, 1 warning in 6.99s`; the warning is the pre-existing Uvicorn websocket deprecation. Docker/containerd/socket remained active. |
-| 32 | P2 limitations | Nested execution draft is an unconstrained provider object; exact failed args were not persisted; total undeclared-output disk use lacks quota; no covert-channel, kernel-zero-day, distributed transaction, multi-writer, or HA claim. |
-| 33 | Production files changed | Shared model-safety validator; Artifact approvals/exposure/models/store; H5AD adapter; execution image/policy/models/preflight/Docker/registration; application composition; runtime evidence/report/tooling; trace validation; public exports. No scientific runtime intelligence was added. |
-| 34 | Commit SHAs | Audit `c027909b339e0163ab9fd3b6aede3f3d6d366be4`; Artifact boundary `215e533eb9f0b57ea7c777e05641cf88960f11d7`; execution/declassification `cea9fe63e0b2a75753af6f349e0402dba206f040`; adversarial tests `8f0f6d77575d9b271069c6c0ceb50a05c4a4c4b9`; closeout documentation `95089851285daafbae074f39510aa69e4214d5a5`. |
-| 35 | Push status | Verified on `origin/c12-core-architecture-hardening`; the final remote SHA is recorded in the handoff. `main` was not a push target. |
-| 36 | Final C12 status | **C12 NOT ACCEPTED.** Exact unmet criterion: the one performed provider-backed integrated architecture run was not green. No later architecture/evaluation/API/UI work is authorized by this closeout. |
+| 1 | Starting LabBio SHA | `de346ca3615f52616e564ad5f52576d41c21e4aa`; clean C12 closure baseline. |
+| 2 | Frozen Pantheon SHA | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; tree remained clean and unchanged. |
+| 3 | Revised threat decision | Ordinary bounded scientific/sample identifier strings are not sensitive by type alone. RAW data, unrestricted documents/rows/matrices, execution bodies, host/system material, and secrets remain outside automatic release. |
+| 4 | Former behavior | `PREDECLARED_SCALARS` admitted runtime strings only when every value was declared before execution. That behavior matched the former strict policy but is no longer the active product contract. |
+| 5 | Active bounded contract | `BOUNDED_SCALARS` admits approved flat JSON scalar records, including runtime-originated strings, only within the named output contract and shared model-safety bounds. `NONE` remains RAW. |
+| 6 | Removed fields | `predeclared_string_values` and `requires_predeclared_string_values` were removed from the execution DTO, provider schema, capability view, tests, and active documentation. |
+| 7 | Registration policy | Collected outputs begin untrusted. Exact schema/field/record/file limits and safe scalar types are validated without rewriting invalid values. Only a passing `BOUNDED_SCALARS` result may receive DERIVED plus `TRUSTED_EXECUTION_DECLASSIFICATION`. |
+| 8 | Shared model safety | Release reuses `validate_model_visible_json` with explicit depth, node, mapping, string, serialized-byte, prohibited-key, absolute-path, and private-key checks. |
+| 9 | DS1-DS15 | Green: numeric values; GZMK/CXCL13, ENSG, GO/pathway, donor/sample/cluster/barcode labels; mixed scalars; missing/unknown/nested/oversized records; file overflow; absolute paths; system keys; private-key material; and `NONE`. |
+| 10 | HC1-HC6 | Green: low-cardinality condition/donor/sample categories enumerate within bounds; high-cardinality categories remain suppressed; observation rows and matrix values remain absent. |
+| 11 | Laundering boundary | Shape-valid but uncontracted, nested, oversized, system/path/key-bearing, or `NONE` output remains RAW and cannot be queried by `REMOTE_LLM`; no conversion, normalization, field dropping, or retry fallback was added. |
+| 12 | Provider schema | Deterministic Pantheon inspection shows a typed nested `ExecutionPlanDraft`: root/draft/output/resource objects forbid extra properties, runtime is enum `PYTHON`, IDs/resources are typed, and each requested output exposes exactly `relative_path`, `artifact_type`, `requested_exposure`, and `output_contract_id`. `strict` remains false and generic `parameters` remains a field-local object. |
+| 13 | Capability view | PREFLIGHT provider input for the final run contained `execution_capability` with authority `CONTROL_STATE`, runtime `PYTHON`, image key `python-c12-real`, `network_required=false`, and one approved output contract. |
+| 14 | Gold/Memory/security | Existing Gold, Memory, authority, cross-scope, evidence-grounding, and recursive model-visible tests remain green. No scientific decision logic or authority widening was introduced. |
+| 15 | Full regression | `418 passed, 12 skipped`, plus the one pre-existing Uvicorn websocket warning. |
+| 16 | Real Docker hostile test | `1 passed` with the existing warning. Docker, containerd, and `docker.socket` remained active; server version `29.1.3`. |
+| 17 | Deterministic commits | `00ac765` execution contract/release; `6b83dde` H5AD categories; `d71e0cb` C12 tests/harness; `84015f7` revised threat-model documentation. |
+| 18 | Push before live | Local and `origin/c12-core-architecture-hardening` both resolved to `84015f7b8bf3e8a1079b6948de7f0151ae2f6145`; the tree was clean before the one live run. `main` was not modified. |
+| 19 | Provider run ID | `b6392437-bb23-4570-b09f-639db0aa195a`. No second provider run was made. |
+| 20 | Run evidence root | `.local/c12-bounded-release-final/d8e73bfb-7fde-4c0f-bbdc-92d3e587187c`; retained as failed local evidence and not committed. |
+| 21 | Execution ID | None. EXECUTE was never entered and no `execution_submit` occurred. |
+| 22 | Docker invocation/exit | No invocation and therefore no container exit code. The Docker services were not stopped or changed. |
+| 23 | DERIVED Artifact IDs | None. The store contains only the governed RAW source and trusted STRUCTURAL inspection Artifact. |
+| 24 | Live release basis | None, because no execution output was registered. Deterministic tests prove `TRUSTED_EXECUTION_DECLASSIFICATION` for eligible bounded results only. |
+| 25 | Runtime-discovered strings | Not demonstrated live because execution never began; demonstrated only by deterministic DS tests. |
+| 26 | VALIDATE/Reviewer | VALIDATE was never reached, so no Reviewer decision or scientific validation result exists. |
+| 27 | Report | No report Artifact was created. |
+| 28 | Workflow path/status | `INTAKE -> UNDERSTAND -> PLAN -> PREFLIGHT -> FAILED`; deterministic PREFLIGHT completed before the provider-authored `next_action=fail`. Final run status is FAILED. |
+| 29 | Leak audit | Boundary/trace scans found zero full RAW document copies, absolute paths, run-root paths, script/stdout/stderr bodies, provider request/response bodies, hidden reasoning, credential material, private-key blocks, or Docker socket strings. `executions/` is empty. |
+| 30 | P2 limitations | Provider robustness remains probabilistic despite a faithful schema/control view; generic execution `parameters` is intentionally open; output-mount disk use has no full filesystem quota; covert channels, kernel zero-days, distributed transactions, multi-writer coordination, and HA are not claimed. |
+| 31 | Final LabBio SHA | The documentation-only failure closeout commit is reported in the final handoff; no production code changed after the failed live run. |
+| 32 | Final Pantheon SHA | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`, unchanged locally and remotely. |
+| 33 | Final C12 status | **C12 NOT ACCEPTED.** No further provider run, production patch, deployment, next milestone, or evaluation is authorized by this checkpoint. |
 
-## Provider schema evidence
+## Exact provider-schema characteristics
 
-The exact deterministic provider-visible `execution_submit` schema is:
+The provider-visible `execution_submit` schema at frozen Pantheon revision
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42` has a closed root and closed nested
+`draft`. The draft requires `image_key` and `script_content` and exposes eight
+fields: `runtime`, `image_key`, `script_content`, `input_artifact_ids`,
+`parameters`, `requested_outputs`, `resources`, and `network_required`.
+`requested_outputs.items` is closed and exposes exactly:
 
 ```json
 {
-  "description": "Submit a governed draft; use the exact PYTHON literal for draft.runtime.",
-  "name": "execution_submit",
-  "parameters": {
-    "additionalProperties": false,
-    "properties": {
-      "draft": {
-        "additionalProperties": true,
-        "description": "",
-        "type": "object"
-      }
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {"type": "string"},
+    "output_contract_id": {
+      "anyOf": [{"type": "string"}, {"type": "null"}]
     },
-    "required": ["draft"],
-    "type": "object"
+    "relative_path": {"type": "string"},
+    "requested_exposure": {
+      "enum": ["RAW", "STRUCTURAL", "AGGREGATE", "DERIVED", "USER_APPROVED"],
+      "type": "string"
+    }
   },
-  "strict": false
+  "required": ["relative_path", "artifact_type"],
+  "type": "object"
 }
 ```
 
-LabBio's internal `ExecutionPlanDraft` remains authoritative and rejects invalid
-requests before Docker. Replacing `dict` with the nested Pydantic annotation was
-tested without a provider call; Pantheon could not resolve the forward type and
-omitted the tool. A second flattened contract was not adopted because it would
-be a parallel compatibility wire format rather than a faithful projection. No
-Pantheon code or prompt-only workaround was introduced.
+The full deterministic schema test additionally verifies UUID typing, length
+and numeric bounds, runtime enum `PYTHON`, and closed resource fields. Canonical
+LabBio validation remains authoritative. No prompt workaround, duplicate wire
+contract, LabBio monkey-patch, or post-failure repair was added.
 
 ## Code classification
 
 | Change | Classification |
 | --- | --- |
-| Artifact release basis, safe projection, approval durability, shared model/trace bounds | GENERIC INFRASTRUCTURE |
-| Immutable/offline Docker policy, output limits, explicit declassification | GENERIC INFRASTRUCTURE |
-| Default-suppressed H5AD category labels and trusted allowlist | FORMAT ADAPTER with generic inspection-policy seam |
-| C12 sentinels, malicious Gold/Memory, cross-scope, graph, composition, Docker/provider harnesses | TEST FIXTURE |
+| Bounded scalar output contract and shared safe release validation | GENERIC INFRASTRUCTURE |
+| Low-cardinality categorical enumeration within existing context bounds | FORMAT ADAPTER |
+| DS/HC/security/provider/full-workflow cases | TEST FIXTURE |
 | Scientific method, tool order, metric choice, interpretation | No production change |
 | Compatibility fallback | None |
 
 ## Stop boundary
 
-No production deployment was performed or claimed. No new numbered milestone,
-local real-world evaluation, API, CLI, UI, Search, workflow, specialist, R,
-vector retrieval, or deployment work was started.
+No production deployment was performed or claimed. No further provider run was
+made after the failed authorized run. No new milestone, local real-world
+evaluation, API, CLI, UI, Search, workflow, specialist, R, vector retrieval, or
+deployment work was started.

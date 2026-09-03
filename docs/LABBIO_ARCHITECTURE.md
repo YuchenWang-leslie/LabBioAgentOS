@@ -637,11 +637,12 @@ and data-release space:
 
 - every Artifact records a trusted release basis separate from exposure class;
 - stored Artifact state is projected through an explicit bounded model view;
-- H5AD categorical values are suppressed unless a trusted host policy permits a
-  named field, while structural counts/dtypes/numeric summaries remain useful;
-- syntactic output validity no longer authorizes remote release; arbitrary
-  runtime strings stay RAW and bounded predeclared scalars form the conservative
-  automatic declassification seam;
+- bounded low-cardinality H5AD categorical values may be enumerated, while
+  high-cardinality fields, observation rows, and matrices remain suppressed;
+- syntactic output validity alone does not authorize remote release; approved
+  flat scalar results, including ordinary runtime-originated strings, require
+  the `BOUNDED_SCALARS` contract and shared model-safety validation before
+  automatic declassification;
 - any execution with local Artifact inputs is offline, approved images are
   immutable, runtime pull is disabled, and output files/collection have small
   trusted byte bounds;
@@ -653,16 +654,21 @@ and data-release space:
 Malicious Gold and Memory remain untrusted MODEL_CONTEXT and cannot widen tools,
 mounts, network, identity, delegation, or workflow authority. Known foreign
 UUIDs remain unusable. WorkflowEngine, RunStateStore, and RunTrace retain their
-separate state, durability, and observation roles. The complete local suite,
-including real Docker attacks, passes at `376 passed, 11 skipped` with one
-pre-existing Uvicorn warning.
+separate state, durability, and observation roles. The revised full non-live
+suite passes at `418 passed, 12 skipped` with one pre-existing Uvicorn warning,
+and the real-Docker hostile test passes.
 
-C12 is not accepted. Its only performed provider integration safely stopped
-before Docker because it produced no valid `execution_submit`. Frozen Pantheon
-exposes the nested draft as a broad JSON object; LabBio's exact local validation
-remains fail-closed, but the integrated-run acceptance condition is unmet and
-the at-most-one rule forbids a rerun. No deployment or service-health claim is
-made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and `KNOWN_LIMITATIONS.md`.
+C12 is not accepted. Its one post-policy provider integration completed the
+deterministic PREFLIGHT receipt, and the model input contained the trusted
+execution-capability view, but the provider then returned `next_action=fail`
+after incorrectly concluding that computation capability was unavailable. It
+stopped before EXECUTE, so no execution, Docker call, output, DERIVED Artifact,
+VALIDATE result, or report exists. Frozen Pantheon exposes the typed nested
+draft at `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`; this failure is classified
+as `PROVIDER_TOOL_USE_FAILURE`, not schema rejection or release-policy bypass.
+The one-run rule forbids another attempt. No deployment or service-health claim
+is made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and
+`KNOWN_LIMITATIONS.md`.
 
 ## Out of scope after the C12 checkpoint
 
