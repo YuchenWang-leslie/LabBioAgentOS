@@ -1,112 +1,109 @@
 # C12 Core Threat Model
 
-## Scope
+## Scope and current status
 
-This document records the falsification boundary for the final named core
-architecture milestone. It describes the source tree rooted at accepted C11
-revision `091be5e7f1d08af1ea76ee55f83e0845b7c15e62` and frozen Pantheon revision
-`45ef598f8d79bd98e9befc7c549980b731476662`. It is not a production-deployment
-or service-health claim.
+This document records the final C12 product threat model on branch
+`c12-core-architecture-hardening`. The simplified bounded-result closure starts
+from LabBio revision `de346ca3615f52616e564ad5f52576d41c21e4aa` and frozen
+Pantheon revision `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. It is not a
+production-deployment or service-health claim.
+
+```text
+C12 NOT ACCEPTED
+```
+
+The deterministic policy revision is green. The one explicitly authorized
+post-policy provider-backed integration remains the final acceptance gate.
+
+## Product privacy decision
+
+Ordinary scientific and sample identifier strings are not sensitive by type
+alone. A gene symbol, pathway name, feature or variant identifier, donor or
+sample label, cluster name, cell barcode, or other scientific label may be
+model-visible when it occurs inside an approved, bounded, flat structured
+result.
+
+The core does not contain a biological-string allowlist, ontology validator,
+donor detector, barcode detector, or general PII classifier. C12 does not
+promise observation-identifier confidentiality, donor/sample-label
+confidentiality, or arbitrary scalar-value noninterference.
+
+This is an intentional product-owner policy revision. The earlier C12
+implementation correctly prevented runtime-originated strings under the former
+strict privacy assumption. That history remains valid; the threat model changed
+afterward.
 
 ## Trust boundaries
 
-| Boundary | Classification | Authority and limits |
+| Boundary | Trust | Authority and limits |
 | --- | --- | --- |
-| `WorkflowEngine`, `RunStateStore` | trusted control plane | Own workflow mutation and durable restart state. They do not choose scientific methods. |
-| `AccessService`, `AuthorizationPolicy`, host `Principal`/`WorkspaceContext` | trusted control plane | Bind user, project, lab, run, and access actions. Model text and UUID possession do not grant access. |
-| runtime capability binding and stage ceilings | trusted control plane | Bind actor, consumer, and available tools outside model arguments. |
-| `ArtifactStore` internals and approved projection/release policies | trusted data plane | Own locators and decide what may cross to a remote model. An exposure enum requested by a model is not authority. |
-| approved format inspectors | trusted format adapters | May read RAW locally and emit only policy-bounded structural/aggregate DTOs. |
-| approved image registry and Docker command builder | trusted execution plane | Resolve exact images, mounts, argv, isolation, and resource bounds. |
-| Gold and Memory governance services | trusted control plane | Persist user decisions and immutable lineage; their model-visible prose is not evidence or policy. |
-| runtime-model tool arguments and generated Python | untrusted | May express intent only through typed capabilities and cannot supply host identity, paths, or Docker flags. |
-| uploaded RAW data and execution output | untrusted data | Stay local unless a trusted inspector or exact release contract declassifies a bounded projection. |
-| Gold text, Memory text, specialist prose, reports, interpretations | untrusted or semi-trusted model context | May influence reasoning but cannot expand capability, data, workflow, Docker, or authorization boundaries. |
-| approved Gold/Memory changes and optional Artifact release | explicit user-governed content | An exact decision may authorize the bounded operation it names; prior approval does not make prose authoritative evidence. |
+| Workflow, durable run state, access policy, host principal/workspace | trusted control plane | Own lifecycle and scope; model text and UUID possession grant no authority. |
+| Artifact store, model-view projector, inspectors, output registration policy | trusted data plane | Keep locators local and decide which bounded representation may cross to a remote model. |
+| approved image registry, execution policy, mount resolver, Docker builder | trusted execution plane | Resolve immutable images, offline mounts, fixed argv, isolation, and resource limits. |
+| runtime tool arguments, generated programs, uploaded files, execution output | untrusted | Express intent or data only; cannot choose host identity, paths, Docker flags, release authority, or scope. |
+| Gold, Memory, specialist prose, reports, interpretations | MODEL_CONTEXT | May inform reasoning but cannot widen tools, evidence, network, workflow, identity, or release policy. |
+| approved output contract plus trusted collector/registration policy | trusted release decision | May release only the exact bounded representation admitted below. |
 
-## Security goals and initial falsification status
+## Automatic bounded-result release
 
-The initial status is recorded before C12 production hardening. Final evidence
-and dispositions are maintained in `C12_CORE_ARCHITECTURE_INVARIANTS.md`.
+`OutputDeclassificationMode.BOUNDED_SCALARS` may produce a DERIVED Artifact with
+`TRUSTED_EXECUTION_DECLASSIFICATION` only when all of the following hold:
 
-| Goal | Initial status | Threat and current evidence |
-| --- | --- | --- |
-| G1 model code cannot select host paths or Docker flags | PROVEN | `ExecutionPlanDraft` has no host-path/argv fields; `MountResolver` and `DockerCommandBuilder` derive them from trusted objects. Existing Phase 6 tests cover extra-field and path rejection. |
-| G2 model code cannot mount Docker socket or arbitrary host directories | PROVEN | Artifact UUIDs are resolved below configured roots; socket, symlink, non-file, and out-of-root locators are rejected. |
-| G3 remote model never directly receives RAW content | PROVEN | `ExposurePolicy` denies RAW to `REMOTE_LLM`; scripts and process streams are registered RAW. C12 adds an object-graph regression rather than weakening this result. |
-| G4 local mounted data cannot use normal outbound execution network | VIOLATED (P0) | The accepted policy can allow `network_required=true` and the command builder selects `bridge` even when input Artifact mounts exist. |
-| G5 untrusted output cannot self-promote to remote visibility | VIOLATED (P0) | A syntactically valid flat JSON contract currently promotes arbitrary runtime strings to DERIVED without a separate declassification decision. |
-| G6 model-visible Artifact projections are bounded and intentionally released | VIOLATED (P1) | `ArtifactExposureService._build_view` returns stored metadata, schema properties, and representation summary directly. TOP_N is count-bounded but not yet subject to a common recursive projection boundary. |
-| G7 Gold/Memory/specialist prose cannot expand authority | PARTIALLY_PROVEN | Host-bound capability ceilings and policy services provide the mechanical boundary; C12 malicious-context composition tests remain required. |
-| G8 only host-bound identities grant scope authority | PARTIALLY_PROVEN | Capability context binds principal/workspace/actor/consumer; C12 cross-user/project/lab and spoof attempts remain required. |
-| G9 `WorkflowEngine` alone owns `WorkflowRun` state | PROVEN | Runtime stages return typed proposals and the application/coordinator invoke WorkflowEngine mutation methods. C12 composition regression remains required. |
-| G10 uncertain external effects are not replayed after restart | PROVEN | C10 `STAGE_IN_FLIGHT` and `GATE_DECISION_IN_FLIGHT` barriers fail closed. C12 re-runs the combined gate/retry/restart scenario. |
-| G11 current evidence remains distinct from prior model context | PROVEN | Runtime contracts label prior results `MODEL_CONTEXT` and current governed references/capability items separately. |
-| G12 Gold is optional, adaptable procedural memory | PROVEN | Search is high recall/non-ranked; REUSE, ADAPT, REFERENCE, IGNORE/no-match remain runtime choices; Gold has no execute/apply API. |
-| G13 Memory is optional contextual memory | PROVEN | Search/view are `MODEL_CONTEXT`; proposal is approval-gated `CONTROL_STATE`; no Memory path changes policy or workflow directly. |
+- the model requested DERIVED and named an approved output contract;
+- the document contains exactly `schema_id` and `records`, with the expected
+  schema ID;
+- record count and file size are within the contract;
+- every record is a flat object using only allowed fields and containing every
+  required field;
+- values are JSON string, integer, number, boolean, or null scalars and strings
+  remain within the contract length bound;
+- the shared model-visible validator rejects no prohibited system key, absolute
+  host path, private-key block, unsupported value, excessive depth, excessive
+  node count, or excessive serialized size.
 
-## Guaranteed boundary targeted by C12
+Strings require no pre-execution value declaration. `NONE` remains
+non-releasable even when shape-valid. A requested exposure enum or successful
+process is never release authority by itself.
 
-C12 targets mechanical prevention of direct RAW access by the remote model,
-direct copying of private rows or identifiers into automatically released
-execution results, arbitrary runtime string declassification, accidental
-path/log/credential release, unbounded model-visible records, model-controlled
-host mounts or Docker flags, network egress from any execution with local input
-Artifacts, cross-scope access, capability escalation, and silent replay of an
-uncertain side effect.
+## Boundaries that remain strict
 
-The target does not rely on prompts, Gold phrasing, Memory phrasing, or a model
-correctly describing an output as safe.
+- RAW Artifacts, unrestricted files, H5AD observation rows, matrices, FASTQ,
+  BAM, stdout/stderr, and script bodies cannot be sent directly to a remote
+  model.
+- Artifact model views remain explicit, bounded, recursively validated, and
+  mediated by `ArtifactModelViewProjector`.
+- Low-cardinality H5AD category labels may enumerate within inspector limits;
+  high-cardinality fields remain suppressed for context and size control.
+- Any execution with a local Artifact input remains offline.
+- Approved execution images remain immutable and Docker uses `--pull never`,
+  read-only input/root, a controlled output mount, dropped capabilities,
+  `no-new-privileges`, and CPU/memory/PID/time/output bounds.
+- Cross-user, cross-project, and cross-lab authorization remains denied.
+- Gold and Memory remain optional non-authoritative MODEL_CONTEXT.
 
-## Explicit non-goals and trusted dependencies
+## Explicit non-goals and residual risk
 
-C12 does not claim information-theoretic non-interference. Arbitrary code could
-encode secret bits in an allowed numeric sequence, timing, CPU/cache behavior,
-or resource consumption. Docker and the host kernel are trusted against
-zero-days; a malicious local administrator is out of scope. Multi-process
-writers, distributed transactions, HA, automatic uncertain-side-effect
-reconciliation, and complete bind-mount disk quotas are also out of scope for
-the MVP. Provider transport is trusted to receive only the already-projected
-objects supplied by LabBio.
+C12 does not attempt to detect every secret encoded in arbitrary text and does
+not claim information-theoretic noninterference. Allowed scalar values, timing,
+resource use, or numeric sequences can form covert channels. Docker and the host
+kernel are trusted against zero-days, and a malicious local administrator is out
+of scope. The writable execution output bind mount has per-file and declared
+collection limits but no complete filesystem quota, so undeclared-file local
+disk exhaustion remains P2. Distributed transactions, HA, multi-writer
+coordination, and automatic reconciliation of uncertain external effects remain
+out of scope.
 
-Networked acquisition, if added later, must execute with zero mounted local
-input Artifacts and produce a governed Artifact for a later offline analysis.
-C12 does not add a download or Search subsystem.
+## Deterministic evidence before the final provider run
 
-## Post-hardening threat disposition
+- DS1-DS15 cover numeric, ordinary-string, mixed-scalar, malformed-shape,
+  overflow, system-field, absolute-path, private-key, and `NONE` behavior.
+- HC1-HC6 cover bounded condition/donor/sample enumeration, high-cardinality
+  suppression, and the absence of observation rows and expression values.
+- The full non-live suite passes with `418 passed, 12 skipped`; the existing
+  real-Docker hostile test also passes while Docker, containerd, and
+  `docker.socket` remain active.
+- Gold, Memory, cross-scope, authority-composition, and recursive model-visible
+  regressions pass without production changes to those subsystems.
 
-The falsification pass reproduced and closed the three direct confidentiality
-failures in the initial model:
-
-- G4 is now mechanically enforced in both preflight and submission: any local
-  Artifact input combined with a network request is rejected before Docker.
-- G5 now separates output-shape validity from release authorization. Arbitrary
-  runtime strings remain RAW; a trusted contract can release only bounded
-  scalars whose string values were declared before execution.
-- G6 now uses a shared recursive bound and an explicit Artifact projection.
-  Stored metadata is allowlisted, schema properties are released only from
-  trusted inspectors, and summary/TOP_N content is bounded and checked for
-  unsafe fields and absolute paths.
-
-The remaining goals were re-proved under composition. Host-bound identities and
-capability ceilings survived malicious Gold/Memory text, actor/consumer spoof
-attempts, sibling delegation, recursive peer prose, and known foreign UUIDs.
-Workflow retry, Gold and Memory gates, restart, EXECUTE/VALIDATE, and terminal
-finalization composed without duplicate execution or domain decisions. A real
-Docker hostile suite confirmed no socket, arbitrary host path, input write, or
-root write; symlink output escape failed and a copied private sentinel stayed
-RAW and unavailable to the remote consumer.
-
-No P0/P1 threat remains in the tested core boundary. The known P2 surfaces are
-the absence of filesystem/daemon quota isolation for total undeclared output,
-the trusted Docker-engine/kernel boundary, the declared distributed/HA
-non-goals, and a provider-facing `execution_submit` schema that represents the
-nested draft only as an unconstrained JSON object. LabBio still validates the
-exact draft locally and starts no Docker process on invalid input.
-
-The single permitted provider-backed integration attempt did not produce a
-valid `execution_submit`, so it stopped safely before execution. That failed
-run does not weaken the threat boundary, but it prevents C12 milestone
-acceptance because a performed integrated run was required to be green. No
-second provider run, prompt workaround, Pantheon modification, or later phase
-was undertaken.
+These results establish the deterministic release candidate. They do not by
+themselves accept or freeze C12.

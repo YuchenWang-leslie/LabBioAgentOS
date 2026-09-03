@@ -2,8 +2,10 @@
 
 ## Audit method and baselines
 
-C12 starts from LabBio `091be5e7f1d08af1ea76ee55f83e0845b7c15e62`
-and frozen Pantheon `45ef598f8d79bd98e9befc7c549980b731476662`.
+C12 originally started from LabBio
+`091be5e7f1d08af1ea76ee55f83e0845b7c15e62`. The final simplified-release
+closure starts from LabBio `de346ca3615f52616e564ad5f52576d41c21e4aa`
+and frozen Pantheon `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
 Statuses below are based on production-source inspection and accepted tests,
 not milestone prose. `PARTIALLY_PROVEN` means the source boundary exists but a
 required C12 adversarial/composition reproduction is not yet present.
@@ -46,7 +48,7 @@ therefore this audit makes no deployment or service-health claim.
 | `LabBioApplication.register_structural_artifact` | trusted host caller | STRUCTURAL | metadata/schema only | `TRUSTED_STRUCTURAL_INSPECTOR` contract | access plus exposure/projector |
 | configured `BioFormatInspector` via `inspect_bioformat_artifact` | trusted format adapter | STRUCTURAL/AGGREGATE | bounded safe inspection views | `TRUSTED_STRUCTURAL_INSPECTOR` / `TRUSTED_AGGREGATE_INSPECTOR` | inspector policy plus exposure/projector |
 | Docker script/stdout/stderr registration | trusted local executor handling untrusted bytes | RAW | identifiers only | `INTERNAL_ONLY` | fixed RAW classification |
-| `OutputCollector` and `ArtifactRegistrationPolicy` | trusted collector evaluating untrusted output | RAW or DERIVED | only release-authorized DERIVED is remotely queryable | `TRUSTED_EXECUTION_DECLASSIFICATION` only after shape validation and pre-execution scalar declaration | output shape plus explicit declassification policy |
+| `OutputCollector` and `ArtifactRegistrationPolicy` | trusted collector evaluating untrusted output | RAW or DERIVED | only release-authorized DERIVED is remotely queryable | `TRUSTED_EXECUTION_DECLASSIFICATION` only after bounded flat-scalar validation and shared model-safety checks | output shape plus explicit declassification policy |
 | `ReportSubmissionService` | trusted registrar of model-authored prose | DERIVED | bounded report record | `MODEL_AUTHORED_REPORT`, not scientific truth | report bounds, evidence authorization, common projector |
 | `LocalArtifactStore.register[_file]` | trusted internal persistence primitive | caller supplied | none by itself | `INTERNAL_ONLY`; callers above must supply release basis | not an agent capability |
 | `USER_APPROVED` classification | trusted producer plus explicit user decision | USER_APPROVED | disabled by default; available only with exact durable consumer-bound approval in application composition | `USER_APPROVED_RELEASE` | disabled-by-default exposure policy plus SQLite approval store |
@@ -70,9 +72,9 @@ is not release authority.
 
 ## Required C12 reproductions before final disposition
 
-1. Low-cardinality private H5AD categories and explicit safe enumeration.
+1. Low-cardinality H5AD category enumeration and high-cardinality suppression.
 2. Arbitrary free-form Artifact metadata/schema/summary projection.
-3. RAW sentinel copied into contract-valid execution output.
+3. Bounded ordinary strings plus nested/raw-row/system-material laundering attacks.
 4. Mounted input combined with a network request, proving no Docker start.
 5. Tag-only/unavailable immutable image and exact `--pull=never` argv.
 6. Symlink, socket, host path, rootfs, input-write, and undeclared-output attacks.
@@ -86,11 +88,11 @@ is not release authority.
 
 ## Final invariant matrix
 
-The table below records the post-hardening result. All reproduced P0/P1 defects
-are closed. `PARTIALLY_PROVEN` is used only for the explicitly bounded local
-disk-denial-of-service residual, which is P2 and not a confidentiality or
-authority bypass. C12 as a milestone is nevertheless not accepted because the
-single performed provider-backed integration was not green.
+The table below records the current deterministic result under the revised
+product threat model. All reproduced P0/P1 defects are closed.
+`PARTIALLY_PROVEN` is used only for the bounded local disk-denial-of-service
+residual, which is P2 and not a confidentiality or authority bypass. C12 remains
+unaccepted until the explicitly authorized post-policy provider run is green.
 
 | Domain | Invariant | Final result | Deterministic/real evidence |
 | --- | --- | --- | --- |
@@ -100,8 +102,8 @@ single performed provider-backed integration was not green.
 | Docker | read-only input/root, controlled output, dropped capabilities, bounded resources | PROVEN | exact argv regression and real Docker write/socket/host-path attacks |
 | Docker | host storage exhaustion fully isolated | PARTIALLY_PROVEN | per-file 16 MiB collection/`fsize` and 64 MiB declared collection bounds; many undeclared files can still consume the bind-mounted filesystem |
 | Data | RAW direct remote exposure is denied | PROVEN | exposure policy plus deterministic and real sentinel-denial tests |
-| Data | private categorical values are denied by default | PROVEN | low-cardinality donor sentinels suppressed; trusted explicit safe-field enumeration remains available |
-| Data | untrusted execution output cannot self-declassify | PROVEN | shape-valid private string remains RAW; only predeclared bounded scalar output receives DERIVED release |
+| Data | H5AD categorical projection is useful and bounded | PROVEN | low-cardinality condition/donor/sample labels enumerate; high-cardinality labels remain suppressed; rows and matrices remain absent |
+| Data | untrusted execution output cannot bypass bounded release policy | PROVEN | approved flat ordinary scalars may become DERIVED; unknown/nested/oversized/system/path/private-key content and `NONE` remain RAW |
 | Artifact | every remotely visible non-RAW Artifact has a compatible trusted release basis | PROVEN | `ArtifactReleaseBasis`, producer assignments, exposure matrix, and regression updates |
 | Artifact | model projection is explicit, bounded, and path/content safe | PROVEN | `ArtifactModelViewProjector`, shared recursive validator, recursive DTO graph tests |
 | Agent | stage/actor/consumer/capability authority is host-bound | PROVEN | ceiling, spoof, sibling delegation, and malicious-context tests |
@@ -114,23 +116,23 @@ single performed provider-backed integration was not green.
 
 ## Falsification results and disposition
 
-The initial six deterministic failures were: low-cardinality category-label
-release, free-form Artifact projection, shape-only output promotion, mutable
-image acceptance, data-bearing network acceptance, and missing
-`--pull=never`. The corresponding post-hardening regressions all pass. The
-complete local run, including the opt-in real Docker hostile test, is
-`376 passed, 11 skipped` with the pre-existing Uvicorn warning.
+The original falsification correctly hardened low-cardinality labels and
+runtime-originated strings under the former strict privacy assumption. The
+product owner subsequently revised that assumption: ordinary bounded
+scientific/sample strings are permitted, while unrestricted RAW and system
+material remain prohibited. This is a policy change, not a rewriting of the
+earlier evidence.
 
-Exactly one provider-backed attempt was made. It safely terminated before any
-Docker execution because no successful `execution_submit` evidence was
-produced. The provider-visible schema for that capability exposes `draft` only
-as an unconstrained object, while LabBio's local `ExecutionPlanDraft` remains
-the fail-closed authority. A direct nested-Pydantic annotation was also tested
-deterministically and Pantheon omitted the tool because the forward type could
-not be resolved. This is a bounded provider/tool-schema P2 limitation, not a
-security bypass; frozen Pantheon was not modified and no compatibility fallback
-was added. Because an integrated run was performed and was not green, the
-explicit acceptance condition is unsatisfied:
+The active candidate replaces predeclared strings with `BOUNDED_SCALARS`,
+removes the obsolete execution field/capability hint, uses the shared
+model-visible validator before promotion, and removes the semantic H5AD field
+allowlist while retaining cardinality/size bounds. DS1-DS15, HC1-HC6, the full
+`418 passed, 12 skipped` non-live regression, and the real-Docker hostile test
+are green. Pantheon's nested provider schema remains frozen and unchanged at
+`02ba577abd41d8b180a0dbb79fd057d2ca15ae42`.
+
+The one newly authorized post-policy provider run has not yet been performed,
+so the explicit acceptance condition remains unsatisfied:
 
 ```text
 C12 NOT ACCEPTED
