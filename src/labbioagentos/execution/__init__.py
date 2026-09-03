@@ -26,6 +26,7 @@ from .models import (
     ExecutionRuntime,
     ExecutionStatus,
     OutputArtifactSpec,
+    OutputDeclassificationMode,
     RequestedResources,
     StructuredOutputContract,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "MountResolutionError",
     "MountResolver",
     "OutputArtifactSpec",
+    "OutputDeclassificationMode",
     "OutputCollectionError",
     "OutputCollector",
     "ProcessOutcome",

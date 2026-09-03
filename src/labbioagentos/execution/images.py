@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from .errors import ExecutionPlanRejected, ImageNotApprovedError
 from .models import ExecutionPlan, ExecutionRuntime, RequestedResources
@@ -39,6 +46,19 @@ class ApprovedImage(BaseModel):
         if value is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
             raise ValueError("Image digest must be a sha256 digest")
         return value
+
+    @model_validator(mode="after")
+    def require_immutable_identity(self) -> "ApprovedImage":
+        immutable_id = re.fullmatch(r"sha256:[0-9a-f]{64}", self.reference)
+        pinned_reference = re.fullmatch(
+            r"[^@\s]+@(sha256:[0-9a-f]{64})", self.reference
+        )
+        if immutable_id is None and pinned_reference is None and self.digest is None:
+            raise ValueError("Approved executable image identity must be immutable")
+        if pinned_reference is not None and self.digest is not None:
+            if pinned_reference.group(1) != self.digest:
+                raise ValueError("Approved image reference and digest do not match")
+        return self
 
     @property
     def resolved_reference(self) -> str:
@@ -86,12 +106,15 @@ class ExecutionPolicy(BaseModel):
     max_memory_mb: int = Field(default=8192, ge=16)
     max_pids: int = Field(default=512, ge=1)
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
+    max_output_file_bytes: int = Field(default=16_777_216, ge=1)
+    max_collected_output_bytes: int = Field(default=67_108_864, ge=1)
 
     def validate_plan(self, plan: ExecutionPlan, image: ApprovedImage) -> None:
         self.validate_request(
             plan.resources,
             network_required=plan.network_required,
             image=image,
+            has_local_inputs=bool(plan.input_artifact_ids),
         )
 
     def validate_request(
@@ -100,6 +123,7 @@ class ExecutionPolicy(BaseModel):
         *,
         network_required: bool,
         image: ApprovedImage,
+        has_local_inputs: bool = False,
     ) -> None:
         """Validate a script-free resource/network request during preflight."""
 
@@ -111,6 +135,10 @@ class ExecutionPolicy(BaseModel):
             raise ExecutionPlanRejected("Requested pids limit exceeds host policy")
         if requested.timeout_seconds > self.max_timeout_seconds:
             raise ExecutionPlanRejected("Requested timeout exceeds host policy")
+        if network_required and has_local_inputs:
+            raise ExecutionPlanRejected(
+                "Network is prohibited when local input Artifacts are mounted"
+            )
         if network_required and not self.allow_network:
             raise ExecutionPlanRejected("Network was requested but host policy denies it")
         if network_required and not image.network_allowed:

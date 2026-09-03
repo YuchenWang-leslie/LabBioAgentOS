@@ -137,6 +137,7 @@ class ExecutionPreflightService:
                 request.resources,
                 network_required=request.network_required,
                 image=image,
+                has_local_inputs=bool(request.input_requirements),
             )
             contracts = tuple(
                 self.registration_policy.resolve_contract(contract_id)

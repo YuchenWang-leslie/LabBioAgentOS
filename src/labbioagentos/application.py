@@ -20,6 +20,7 @@ from pydantic import (
 
 from .artifacts import (
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactExposureService,
     ArtifactNotFoundError,
     ArtifactRepresentation,
@@ -617,6 +618,13 @@ class LabBioApplication:
             configuration.artifact_root,
             trace_recorder=self.trace_recorder,
         )
+        if (
+            configuration.exposure_policy.user_approved_enabled
+            and not configuration.exposure_policy.approval_store.durable
+        ):
+            raise ApplicationConfigurationError(
+                "Enabled USER_APPROVED exposure requires a durable approval store"
+            )
         if configuration.memory_service is not None:
             configuration.memory_service.bind_runtime_context(
                 access_service=self.access_service,
@@ -657,9 +665,15 @@ class LabBioApplication:
                 self.artifact_store,
                 self.registration_policy,
                 trace_recorder=self.trace_recorder,
+                max_output_file_bytes=self.execution_policy.max_output_file_bytes,
+                max_collected_output_bytes=(
+                    self.execution_policy.max_collected_output_bytes
+                ),
             ),
             process_runner=configuration.process_runner,
-            command_builder=DockerCommandBuilder(),
+            command_builder=DockerCommandBuilder(
+                max_output_file_bytes=self.execution_policy.max_output_file_bytes
+            ),
             trace_recorder=self.trace_recorder,
         )
         self.execution_submission = ExecutionSubmissionService(
@@ -732,6 +746,7 @@ class LabBioApplication:
             source_path,
             artifact_type=artifact_type,
             exposure_class=ArtifactExposureClass.RAW,
+            release_basis=ArtifactReleaseBasis.RAW_INGESTION,
             representation=ArtifactRepresentation(),
             owner_user_id=principal.user_id,
             project_id=workspace.project_id,
@@ -756,6 +771,7 @@ class LabBioApplication:
         ref = self.artifact_store.register(
             artifact_type=artifact_type,
             exposure_class=ArtifactExposureClass.STRUCTURAL,
+            release_basis=ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR,
             representation=ArtifactRepresentation(),
             owner_user_id=principal.user_id,
             project_id=workspace.project_id,
@@ -840,6 +856,7 @@ class LabBioApplication:
             self.artifact_store.register(
                 artifact_type=spec.artifact_type,
                 exposure_class=spec.exposure_class,
+                release_basis=spec.release_basis,
                 representation=spec.representation,
                 owner_user_id=source_ref.owner_user_id,
                 project_id=source_ref.project_id,

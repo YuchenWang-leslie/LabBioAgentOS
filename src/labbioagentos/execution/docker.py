@@ -107,10 +107,18 @@ class DockerCommandBuilder:
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
     OUTPUT_TARGET = PurePosixPath("/workspace/outputs")
 
-    def __init__(self, docker_binary: str = "docker"):
+    def __init__(
+        self,
+        docker_binary: str = "docker",
+        *,
+        max_output_file_bytes: int = 16_777_216,
+    ):
         if not docker_binary or docker_binary.startswith("-"):
             raise ValueError("docker_binary must be a configured executable name")
+        if max_output_file_bytes < 1:
+            raise ValueError("max_output_file_bytes must be positive")
         self.docker_binary = docker_binary
+        self.max_output_file_bytes = max_output_file_bytes
 
     def build(
         self,
@@ -124,6 +132,8 @@ class DockerCommandBuilder:
             self.docker_binary,
             "run",
             "--rm",
+            "--pull",
+            "never",
             "--name",
             f"labbio-{plan.execution_id.hex}",
             "--cap-drop",
@@ -140,6 +150,8 @@ class DockerCommandBuilder:
             f"{plan.resources.memory_mb}m",
             "--pids-limit",
             str(plan.resources.pids_limit),
+            "--ulimit",
+            f"fsize={self.max_output_file_bytes}:{self.max_output_file_bytes}",
             "--read-only",
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,size=64m",
@@ -552,7 +564,7 @@ class DockerExecutor:
         payload: dict[str, Any] = {
             "execution_id": str(plan.execution_id),
             "error_class": error_class.value,
-            "error_message": message[:2000],
+            "error_message": f"Technical execution failure: {error_class.value}.",
         }
         if exit_code is not None:
             payload["exit_code"] = exit_code

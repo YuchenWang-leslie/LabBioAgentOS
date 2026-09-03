@@ -10,6 +10,7 @@ from typing import Any
 
 from labbioagentos.artifacts import (
     ArtifactExposureClass,
+    ArtifactReleaseBasis,
     ArtifactRef,
     ArtifactRepresentation,
     ArtifactSchema,
@@ -24,6 +25,7 @@ from .models import (
     ExecutionIssue,
     ExecutionPlan,
     OutputArtifactSpec,
+    OutputDeclassificationMode,
     StructuredOutputContract,
 )
 
@@ -39,10 +41,12 @@ class ArtifactRegistrationDecision:
     requested_exposure: ArtifactExposureClass
     actual_exposure: ArtifactExposureClass
     contract_valid: bool
+    release_authorized: bool
     reason: str
     representation: ArtifactRepresentation
     artifact_schema: ArtifactSchema | None = None
     schema_id: str | None = None
+    release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
 
 
 @dataclass(frozen=True)
@@ -114,11 +118,31 @@ class ArtifactRegistrationPolicy:
             )
 
         records = tuple(document["records"])
+        if contract.declassification_mode is OutputDeclassificationMode.NONE:
+            return self._raw_decision(
+                spec,
+                "Output shape is valid but the trusted contract does not authorize remote release.",
+                contract_valid=True,
+                schema_id=contract.schema_id,
+            )
+        if not self._strings_match_preexecution_declaration(
+            records, spec, contract
+        ):
+            return self._raw_decision(
+                spec,
+                "Output shape is valid but runtime strings were not declared before execution.",
+                contract_valid=True,
+                schema_id=contract.schema_id,
+            )
         return ArtifactRegistrationDecision(
             requested_exposure=spec.requested_exposure,
             actual_exposure=ArtifactExposureClass.DERIVED,
             contract_valid=True,
-            reason="Output matched the approved bounded structured contract.",
+            release_authorized=True,
+            reason=(
+                "Output matched the approved shape and pre-execution scalar "
+                "declassification contract."
+            ),
             representation=ArtifactRepresentation(
                 records=records,
                 record_count=len(records),
@@ -127,7 +151,23 @@ class ArtifactRegistrationPolicy:
                 columns=tuple(sorted(contract.allowed_fields)),
             ),
             schema_id=contract.schema_id,
+            release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         )
+
+    @staticmethod
+    def _strings_match_preexecution_declaration(
+        records: tuple[dict[str, Any], ...],
+        spec: OutputArtifactSpec,
+        contract: StructuredOutputContract,
+    ) -> bool:
+        declared = spec.predeclared_string_values
+        if not set(declared).issubset(contract.allowed_fields):
+            return False
+        for record in records:
+            for field, value in record.items():
+                if isinstance(value, str) and value not in declared.get(field, ()):
+                    return False
+        return True
 
     @staticmethod
     def _load_and_validate(
@@ -178,6 +218,7 @@ class ArtifactRegistrationPolicy:
             requested_exposure=spec.requested_exposure,
             actual_exposure=ArtifactExposureClass.RAW,
             contract_valid=contract_valid,
+            release_authorized=False,
             reason=reason,
             representation=ArtifactRepresentation(),
             schema_id=schema_id,
@@ -193,10 +234,18 @@ class OutputCollector:
         registration_policy: ArtifactRegistrationPolicy,
         *,
         trace_recorder: RunTraceRecorder | None = None,
+        max_output_file_bytes: int = 16_777_216,
+        max_collected_output_bytes: int = 67_108_864,
     ):
         self.store = store
         self.registration_policy = registration_policy
         self.trace_recorder = trace_recorder
+        if max_output_file_bytes < 1 or max_collected_output_bytes < 1:
+            raise ValueError("Output collection byte limits must be positive")
+        if max_output_file_bytes > max_collected_output_bytes:
+            raise ValueError("Per-file output limit cannot exceed the collection limit")
+        self.max_output_file_bytes = max_output_file_bytes
+        self.max_collected_output_bytes = max_collected_output_bytes
 
     def collect(
         self,
@@ -205,9 +254,21 @@ class OutputCollector:
     ) -> tuple[CollectedOutput, ...]:
         controlled_root = output_root.resolve(strict=True)
         collected: list[CollectedOutput] = []
+        collected_bytes = 0
         for spec in plan.requested_outputs:
             path = self._resolve_declared_output(controlled_root, spec)
             size = path.stat().st_size
+            collected_bytes += size
+            if size > self.max_output_file_bytes:
+                raise OutputCollectionError(
+                    "Declared output exceeds the trusted per-file collection limit",
+                    ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                )
+            if collected_bytes > self.max_collected_output_bytes:
+                raise OutputCollectionError(
+                    "Declared outputs exceed the trusted total collection limit",
+                    ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                )
             sha256 = self._sha256(path)
             self._emit(
                 plan,
@@ -224,6 +285,7 @@ class OutputCollector:
                 "requested_exposure": spec.requested_exposure.value,
                 "actual_exposure": decision.actual_exposure.value,
                 "contract_valid": decision.contract_valid,
+                "release_authorized": decision.release_authorized,
                 "size_bytes": size,
                 "sha256": sha256,
             }
@@ -236,6 +298,7 @@ class OutputCollector:
                     path,
                     artifact_type=spec.artifact_type,
                     exposure_class=decision.actual_exposure,
+                    release_basis=decision.release_basis,
                     representation=decision.representation,
                     owner_user_id=plan.owner_user_id,
                     project_id=plan.project_id,
@@ -270,6 +333,7 @@ class OutputCollector:
                     "requested_exposure": spec.requested_exposure.value,
                     "actual_exposure": ref.exposure_class.value,
                     "contract_valid": decision.contract_valid,
+                    "release_authorized": decision.release_authorized,
                 },
             )
         return tuple(collected)

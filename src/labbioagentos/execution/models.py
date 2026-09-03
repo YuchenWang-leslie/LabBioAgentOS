@@ -49,6 +49,13 @@ class ExecutionFailureClass(StrEnum):
     ARTIFACT_REGISTRATION_FAILURE = "ARTIFACT_REGISTRATION_FAILURE"
 
 
+class OutputDeclassificationMode(StrEnum):
+    """Trusted release behavior associated with one approved shape contract."""
+
+    NONE = "NONE"
+    PREDECLARED_SCALARS = "PREDECLARED_SCALARS"
+
+
 class RequestedResources(BaseModel):
     """Requested resource intent, bounded later by ExecutionPolicy."""
 
@@ -73,6 +80,9 @@ class OutputArtifactSpec(BaseModel):
         min_length=1,
         max_length=128,
     )
+    predeclared_string_values: dict[StrictStr, tuple[StrictStr, ...]] = Field(
+        default_factory=dict
+    )
 
     @field_validator("relative_path")
     @classmethod
@@ -84,6 +94,27 @@ class OutputArtifactSpec(BaseModel):
             part in {"", ".", ".."} for part in path.parts
         ):
             raise ValueError("Output path must stay beneath the execution output root")
+        return value
+
+    @field_validator("predeclared_string_values")
+    @classmethod
+    def bound_predeclared_strings(
+        cls, value: dict[str, tuple[str, ...]]
+    ) -> dict[str, tuple[str, ...]]:
+        if len(value) > 128:
+            raise ValueError("Predeclared output strings exceed 128 fields")
+        if any(len(items) > 256 for items in value.values()):
+            raise ValueError("Predeclared output strings exceed 256 values per field")
+        if any(
+            not key
+            or len(key) > 128
+            or any(not item or len(item) > 4096 for item in items)
+            for key, items in value.items()
+        ):
+            raise ValueError("Predeclared output strings exceed safe text bounds")
+        encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 64 * 1024:
+            raise ValueError("Predeclared output strings exceed 64 KiB")
         return value
 
 
@@ -279,6 +310,7 @@ class StructuredOutputContract(BaseModel):
     max_records: int = Field(default=100, ge=1, le=10_000)
     max_file_bytes: int = Field(default=1_048_576, ge=1, le=16_777_216)
     max_scalar_string_length: int = Field(default=4096, ge=1, le=65_536)
+    declassification_mode: OutputDeclassificationMode = OutputDeclassificationMode.NONE
 
     @model_validator(mode="after")
     def validate_required_fields(self) -> "StructuredOutputContract":
