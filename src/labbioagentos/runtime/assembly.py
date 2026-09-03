@@ -12,6 +12,7 @@ from labbioagentos.trace import RunTraceRecorder
 from .contracts import (
     CapabilityEvidenceBundle,
     CapabilityEvidenceStatus,
+    RuntimeExecutionCapabilityView,
     RuntimeStageInput,
     RuntimeStageResult,
 )
@@ -109,6 +110,7 @@ class PerInvocationPantheonStageInvoker:
         workspace: WorkspaceContext,
         services: RuntimeCapabilityServices,
         trace_recorder: RunTraceRecorder | None = None,
+        execution_capability: RuntimeExecutionCapabilityView | None = None,
         plugin_factory: PluginFactory | None = None,
         toolset_factory: ToolSetFactory = LabBioRuntimeToolSet,
         boundary_observer: BoundaryObserver | None = None,
@@ -119,6 +121,7 @@ class PerInvocationPantheonStageInvoker:
         self.workspace = workspace
         self.services = services
         self.trace_recorder = trace_recorder
+        self.execution_capability = execution_capability
         self.plugin_factory = plugin_factory
         self.toolset_factory = toolset_factory
         self.boundary_observer = boundary_observer
@@ -289,6 +292,16 @@ class PerInvocationPantheonStageInvoker:
         if stage_input.allowed_capabilities != self.assembly.capability_allowlist:
             raise RuntimeProfileConfigurationError(
                 "Runtime input capabilities do not match trusted assembly allowlist"
+            )
+        expected_execution_capability = (
+            self.execution_capability
+            if self.assembly.stage_id
+            in {WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}
+            else None
+        )
+        if stage_input.execution_capability != expected_execution_capability:
+            raise RuntimeProfileConfigurationError(
+                "Runtime input execution capability does not match trusted configuration"
             )
         expected_workspace = (
             self.workspace.user_id,

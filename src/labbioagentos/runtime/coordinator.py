@@ -20,6 +20,7 @@ from labbioagentos.workflow import InvalidRunStateError, WorkflowEngine
 
 from .contracts import (
     RuntimeEvidenceReference,
+    RuntimeExecutionCapabilityView,
     RuntimeGateDecisionView,
     RuntimeInputBody,
     RuntimePriorResultView,
@@ -47,9 +48,11 @@ class RuntimeCoordinatorService:
         self,
         engine: WorkflowEngine,
         registry: StageRuntimeRegistry,
+        execution_capability: RuntimeExecutionCapabilityView | None = None,
     ):
         self.engine = engine
         self.registry = registry
+        self.execution_capability = execution_capability
         self._results: dict[UUID, tuple[RuntimeStageResult, ...]] = {}
 
     def create_run(
@@ -124,8 +127,16 @@ class RuntimeCoordinatorService:
             gold_candidate_references=gold_candidate_references,
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
+            execution_capability=self._execution_capability_for_stage(stage),
             body=body or RuntimeInputBody(),
         )
+
+    def _execution_capability_for_stage(
+        self, stage: WorkflowStage
+    ) -> RuntimeExecutionCapabilityView | None:
+        if stage in {WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}:
+            return self.execution_capability
+        return None
 
     async def run_current_stage(
         self,

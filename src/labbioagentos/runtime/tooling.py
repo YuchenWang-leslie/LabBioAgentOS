@@ -66,6 +66,10 @@ from .contracts import (
     ArtifactQueryRequestAudit,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
+    ExecutionAuditWireType,
+    ExecutionDraftField,
+    ExecutionSubmitRequestAudit,
+    ExecutionSubmitValidationStatus,
     SkillSearchRequestAudit,
 )
 from .reporting import ReportSubmissionService
@@ -110,6 +114,20 @@ if frozenset(CAPABILITY_INFORMATION_AUTHORITY) != ALL_CAPABILITIES:
     raise RuntimeError("Capability information-authority mapping is incomplete")
 _SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _CANONICAL_INTEGER_WIRE_TOKEN = re.compile(r"(?:0|-?[1-9][0-9]{0,127})")
+_EXECUTION_VALIDATION_PATH_PARTS = frozenset(
+    {
+        *(field.value for field in ExecutionDraftField),
+        "relative_path",
+        "artifact_type",
+        "requested_exposure",
+        "output_contract_id",
+        "predeclared_string_values",
+        "cpus",
+        "memory_mb",
+        "pids_limit",
+        "timeout_seconds",
+    }
+)
 
 
 def _normalize_canonical_integer_wire_value(value: Any) -> tuple[Any, bool]:
@@ -129,6 +147,10 @@ class _InvalidArtifactQueryView(ValueError):
 
 class _InvalidArtifactQueryShape(ValueError):
     """artifact_query received an invalid view/limit combination."""
+
+
+class _InvalidExecutionDraft(ValueError):
+    """execution_submit received a draft rejected by its canonical model."""
 
 
 class ToolError(BaseModel):
@@ -389,6 +411,7 @@ class LabBioRuntimeToolSet(ToolSet):
         request_ids: dict[str, JsonValue] | None = None,
         artifact_query_request: ArtifactQueryRequestAudit | None = None,
         skill_search_request: SkillSearchRequestAudit | None = None,
+        execution_submit_request: ExecutionSubmitRequestAudit | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
         information_authority = CAPABILITY_INFORMATION_AUTHORITY[capability]
@@ -402,6 +425,10 @@ class LabBioRuntimeToolSet(ToolSet):
         if skill_search_request is not None:
             request_audit_payload["skill_search_request"] = (
                 skill_search_request.model_dump(mode="json")
+            )
+        if execution_submit_request is not None:
+            request_audit_payload["execution_submit_request"] = (
+                execution_submit_request.model_dump(mode="json")
             )
         try:
             self._guard(capability)
@@ -472,6 +499,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     correlation_id=error.correlation_id,
                     artifact_query_request=artifact_query_request,
                     skill_search_request=skill_search_request,
+                    execution_submit_request=execution_submit_request,
                 )
             )
             return ToolResult(
@@ -504,6 +532,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 safe_result=value,
                 artifact_query_request=artifact_query_request,
                 skill_search_request=skill_search_request,
+                execution_submit_request=execution_submit_request,
             )
         )
         return result.model_dump(mode="json", by_alias=True)
@@ -551,19 +580,55 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
-    async def execution_submit(self, draft: dict) -> dict:
-        """Submit a governed draft; use the exact PYTHON literal for draft.runtime."""
+    async def execution_submit(self, draft: ExecutionPlanDraft) -> dict:
+        """Submit one governed execution intent through the canonical draft contract.
+
+        The offline script discovers mounted input files recursively beneath the
+        directory named by ``LABBIO_INPUT_DIR`` and writes declared relative
+        outputs beneath the directory named by ``LABBIO_OUTPUT_DIR``.
+        """
+
+        if "execution_submit" not in self.binding.capability_allowlist:
+            return await self._call(
+                "execution_submit",
+                lambda: None,
+                execution_submit_request=self._execution_submit_request_audit(draft),
+            )
+        try:
+            validated = ExecutionPlanDraft.model_validate(draft)
+        except ValidationError as exc:
+            request_audit = self._execution_submit_request_audit(
+                draft,
+                validation_error=exc,
+            )
+
+            def reject_invalid_draft():
+                raise _InvalidExecutionDraft
+
+            return await self._call(
+                "execution_submit",
+                reject_invalid_draft,
+                execution_submit_request=request_audit,
+            )
+
         async def submit():
             service = self._required(self.services.execution_submission, "execution")
             return await service.submit(
-                ExecutionPlanDraft.model_validate(draft),
+                validated,
                 principal=self.binding.principal,
                 workspace=self.binding.workspace,
                 run_id=self.binding.run_id,
                 stage_id=self.binding.stage_id,
                 invocation_id=self.binding.invocation_id,
             )
-        return await self._call("execution_submit", submit)
+        return await self._call(
+            "execution_submit",
+            submit,
+            execution_submit_request=self._execution_submit_request_audit(
+                draft,
+                validation_status=ExecutionSubmitValidationStatus.VALID,
+            ),
+        )
 
     @tool
     async def skill_search(
@@ -1101,6 +1166,11 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="INVALID_QUERY_SHAPE",
                 safe_message="The artifact view and limit combination is invalid.",
             )
+        if isinstance(exc, _InvalidExecutionDraft):
+            return ToolError(
+                error_code="INVALID_EXECUTION_DRAFT",
+                safe_message="The execution draft does not match the canonical contract.",
+            )
         if isinstance(exc, ValidationError):
             summaries: list[str] = []
             for issue in exc.errors(include_url=False, include_input=False)[:8]:
@@ -1198,6 +1268,107 @@ class LabBioRuntimeToolSet(ToolSet):
             limit_type=limit_type,
             normalization_applied=normalization_applied,
         )
+
+    @staticmethod
+    def _execution_submit_request_audit(
+        draft: Any,
+        *,
+        validation_status: ExecutionSubmitValidationStatus = (
+            ExecutionSubmitValidationStatus.NOT_VALIDATED
+        ),
+        validation_error: ValidationError | None = None,
+    ) -> ExecutionSubmitRequestAudit:
+        """Project only execution request shape and stable validation diagnostics."""
+
+        wire_type = LabBioRuntimeToolSet._execution_wire_type(draft)
+        if isinstance(draft, ExecutionPlanDraft):
+            present_names = draft.model_fields_set
+
+            def field_value(name: str) -> Any:
+                return getattr(draft, name)
+
+        elif isinstance(draft, dict):
+            present_names = draft.keys()
+
+            def field_value(name: str) -> Any:
+                return draft.get(name)
+
+        else:
+            present_names = ()
+
+            def field_value(_name: str) -> Any:
+                return None
+
+        presence = tuple(
+            field
+            for field in ExecutionDraftField
+            if field.value in present_names
+        )
+        input_ids = field_value("input_artifact_ids")
+        outputs = field_value("requested_outputs")
+        network = field_value("network_required")
+        paths: list[str] = []
+        error_types: list[str] = []
+        if validation_error is not None:
+            validation_status = ExecutionSubmitValidationStatus.INVALID
+            for issue in validation_error.errors(
+                include_url=False,
+                include_input=False,
+                include_context=False,
+            )[:16]:
+                safe_parts = []
+                for item in issue.get("loc", ())[:8]:
+                    if isinstance(item, int):
+                        safe_parts.append("item")
+                    elif item in _EXECUTION_VALIDATION_PATH_PARTS:
+                        safe_parts.append(str(item))
+                    else:
+                        safe_parts.append("unknown_field")
+                paths.append(".".join(safe_parts) or "draft")
+                error_type = str(issue.get("type", "invalid"))
+                error_types.append(
+                    error_type
+                    if _SAFE_ARTIFACT_QUERY_TOKEN.fullmatch(error_type) is not None
+                    else "invalid"
+                )
+        return ExecutionSubmitRequestAudit(
+            wire_type=wire_type,
+            known_top_level_field_presence=presence,
+            input_artifact_count=(
+                len(input_ids) if isinstance(input_ids, (tuple, list)) else None
+            ),
+            requested_output_count=(
+                len(outputs) if isinstance(outputs, (tuple, list)) else None
+            ),
+            resources_present="resources" in present_names,
+            network_required_type=(
+                LabBioRuntimeToolSet._execution_wire_type(network)
+                if "network_required" in present_names
+                else None
+            ),
+            network_required_value=network if isinstance(network, bool) else None,
+            validation_status=validation_status,
+            validation_error_field_paths=tuple(paths),
+            validation_error_types=tuple(error_types),
+        )
+
+    @staticmethod
+    def _execution_wire_type(value: Any) -> ExecutionAuditWireType:
+        if value is None:
+            return ExecutionAuditWireType.NULL
+        if isinstance(value, bool):
+            return ExecutionAuditWireType.BOOLEAN
+        if isinstance(value, (dict, BaseModel)):
+            return ExecutionAuditWireType.OBJECT
+        if isinstance(value, (tuple, list)):
+            return ExecutionAuditWireType.ARRAY
+        if isinstance(value, str):
+            return ExecutionAuditWireType.STRING
+        if isinstance(value, int):
+            return ExecutionAuditWireType.INTEGER
+        if isinstance(value, float):
+            return ExecutionAuditWireType.NUMBER
+        return ExecutionAuditWireType.OTHER
 
     @staticmethod
     def _bounded_identifiers(values: dict[str, JsonValue]) -> dict[str, JsonValue]:

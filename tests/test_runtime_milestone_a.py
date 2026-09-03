@@ -265,8 +265,10 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "gold_candidate_references",
         "allowed_capabilities",
         "gate_decisions",
+        "execution_capability",
         "body",
     }
+    assert dumped["execution_capability"] is None
     for forbidden in (
         "Principal",
         "WorkflowRun",

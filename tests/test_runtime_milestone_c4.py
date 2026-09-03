@@ -434,7 +434,7 @@ def test_deterministic_preflight_rejects_unapproved_execution_envelope(boundary,
 
 
 @pytest.mark.asyncio
-async def test_execution_draft_validation_returns_safe_actionable_field_feedback(
+async def test_execution_draft_validation_returns_stable_bounded_error(
     boundary,
 ):
     _, principal, workspace, store, exposure = boundary
@@ -464,9 +464,9 @@ async def test_execution_draft_validation_returns_safe_actionable_field_feedback
         }
     )
 
-    assert result["error"]["error_code"] == "INVALID_REQUEST"
+    assert result["error"]["error_code"] == "INVALID_EXECUTION_DRAFT"
     assert result["error"]["safe_message"] == (
-        "Invalid request fields: runtime (expected 'PYTHON')."
+        "The execution draft does not match the canonical contract."
     )
 
 

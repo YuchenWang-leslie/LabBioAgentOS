@@ -26,6 +26,13 @@ from labbioagentos.contracts import (
     NextActionProposal,
     WorkflowStage,
 )
+from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolicy
+from labbioagentos.execution.models import (
+    ExecutionRuntime,
+    OutputDeclassificationMode,
+    RequestedResources,
+)
+from labbioagentos.execution.registration import ArtifactRegistrationPolicy
 from labbioagentos.model_safety import validate_model_visible_json
 
 
@@ -136,6 +143,170 @@ class SkillSearchRequestAudit(BaseModel):
         return self
 
 
+class ExecutionAuditWireType(StrEnum):
+    """Non-sensitive outer wire type observed for an execution request field."""
+
+    OBJECT = "OBJECT"
+    ARRAY = "ARRAY"
+    STRING = "STRING"
+    INTEGER = "INTEGER"
+    NUMBER = "NUMBER"
+    BOOLEAN = "BOOLEAN"
+    NULL = "NULL"
+    OTHER = "OTHER"
+
+
+class ExecutionSubmitValidationStatus(StrEnum):
+    """Canonical draft-validation outcome without rejected values or messages."""
+
+    NOT_VALIDATED = "NOT_VALIDATED"
+    VALID = "VALID"
+    INVALID = "INVALID"
+
+
+class ExecutionDraftField(StrEnum):
+    """Known canonical top-level fields whose presence is safe to audit."""
+
+    RUNTIME = "runtime"
+    IMAGE_KEY = "image_key"
+    SCRIPT_CONTENT = "script_content"
+    INPUT_ARTIFACT_IDS = "input_artifact_ids"
+    PARAMETERS = "parameters"
+    REQUESTED_OUTPUTS = "requested_outputs"
+    RESOURCES = "resources"
+    NETWORK_REQUIRED = "network_required"
+
+
+class ExecutionSubmitRequestAudit(BaseModel):
+    """Bounded shape-only projection of one execution_submit request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    wire_type: ExecutionAuditWireType
+    known_top_level_field_presence: tuple[ExecutionDraftField, ...] = Field(
+        default=(), max_length=8
+    )
+    input_artifact_count: int | None = Field(default=None, ge=0)
+    requested_output_count: int | None = Field(default=None, ge=0)
+    resources_present: bool = False
+    network_required_type: ExecutionAuditWireType | None = None
+    network_required_value: bool | None = None
+    validation_status: ExecutionSubmitValidationStatus
+    validation_error_field_paths: tuple[SafeIdentifier, ...] = Field(
+        default=(), max_length=16
+    )
+    validation_error_types: tuple[ArtifactQueryAuditToken, ...] = Field(
+        default=(), max_length=16
+    )
+
+    @model_validator(mode="after")
+    def validate_structural_diagnostics(self) -> "ExecutionSubmitRequestAudit":
+        if (
+            self.network_required_value is not None
+            and self.network_required_type is not ExecutionAuditWireType.BOOLEAN
+        ):
+            raise ValueError("Network value is valid only for a boolean wire type")
+        has_errors = bool(
+            self.validation_error_field_paths or self.validation_error_types
+        )
+        if len(self.validation_error_field_paths) != len(
+            self.validation_error_types
+        ):
+            raise ValueError("Execution validation diagnostics must remain paired")
+        if self.validation_status is ExecutionSubmitValidationStatus.INVALID:
+            if not has_errors:
+                raise ValueError("Invalid execution audit requires diagnostics")
+        elif has_errors:
+            raise ValueError("Only invalid execution audits may contain diagnostics")
+        return self
+
+
+class RuntimeApprovedOutputContractView(BaseModel):
+    """Model-safe trusted shape and declassification policy for one output."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    contract_id: StrictStr = Field(min_length=1, max_length=128)
+    schema_id: StrictStr = Field(min_length=1, max_length=128)
+    document_type: Literal["JSON_RECORDS"] = "JSON_RECORDS"
+    document_required_keys: tuple[Literal["schema_id", "records"], ...] = (
+        "schema_id",
+        "records",
+    )
+    allowed_fields: tuple[StrictStr, ...] = Field(min_length=1, max_length=128)
+    required_fields: tuple[StrictStr, ...] = Field(default=(), max_length=128)
+    max_records: int = Field(ge=1, le=10_000)
+    max_file_bytes: int = Field(ge=1, le=16_777_216)
+    declassification_mode: OutputDeclassificationMode
+    requires_predeclared_string_values: bool
+
+
+class RuntimeExecutionCapabilityView(BaseModel):
+    """Trusted script-free execution envelope visible to runtime models."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal[InformationAuthority.CONTROL_STATE] = (
+        InformationAuthority.CONTROL_STATE
+    )
+    runtime: ExecutionRuntime
+    image_key: StrictStr = Field(min_length=1, max_length=128)
+    resources: RequestedResources
+    network_required: bool
+    approved_output_contracts: tuple[RuntimeApprovedOutputContractView, ...] = Field(
+        default=(), max_length=128
+    )
+
+    @classmethod
+    def from_trusted_configuration(
+        cls,
+        *,
+        runtime: ExecutionRuntime,
+        image_key: str,
+        resources: RequestedResources,
+        network_required: bool,
+        output_contract_ids: tuple[str, ...],
+        image_registry: ApprovedImageRegistry,
+        execution_policy: ExecutionPolicy,
+        registration_policy: ArtifactRegistrationPolicy,
+    ) -> "RuntimeExecutionCapabilityView":
+        """Project only trusted model-relevant configuration, never host identity."""
+
+        image = image_registry.resolve(image_key, runtime=runtime)
+        execution_policy.validate_request(
+            resources,
+            network_required=network_required,
+            image=image,
+            has_local_inputs=False,
+        )
+        contracts = tuple(
+            registration_policy.resolve_contract(contract_id)
+            for contract_id in output_contract_ids
+        )
+        return cls(
+            runtime=runtime,
+            image_key=image_key,
+            resources=resources,
+            network_required=network_required,
+            approved_output_contracts=tuple(
+                RuntimeApprovedOutputContractView(
+                    contract_id=contract.contract_id,
+                    schema_id=contract.schema_id,
+                    allowed_fields=tuple(sorted(contract.allowed_fields)),
+                    required_fields=tuple(sorted(contract.required_fields)),
+                    max_records=contract.max_records,
+                    max_file_bytes=contract.max_file_bytes,
+                    declassification_mode=contract.declassification_mode,
+                    requires_predeclared_string_values=(
+                        contract.declassification_mode
+                        is OutputDeclassificationMode.PREDECLARED_SCALARS
+                    ),
+                )
+                for contract in contracts
+            ),
+        )
+
+
 class CapabilityEvidenceItem(BaseModel):
     """One bounded governed-tool outcome, never a provider conversation."""
 
@@ -154,6 +325,7 @@ class CapabilityEvidenceItem(BaseModel):
     correlation_id: UUID | None = None
     artifact_query_request: ArtifactQueryRequestAudit | None = None
     skill_search_request: SkillSearchRequestAudit | None = None
+    execution_submit_request: ExecutionSubmitRequestAudit | None = None
 
     @field_validator("safe_result")
     @classmethod
@@ -181,6 +353,13 @@ class CapabilityEvidenceItem(BaseModel):
         ):
             raise ValueError(
                 "Skill search request audit is valid only for skill_search"
+            )
+        if (
+            self.execution_submit_request is not None
+            and self.capability_name != "execution_submit"
+        ):
+            raise ValueError(
+                "Execution submit request audit is valid only for execution_submit"
             )
         return self
 
@@ -437,6 +616,7 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=32,
     )
+    execution_capability: RuntimeExecutionCapabilityView | None = None
     body: RuntimeInputBody = Field(default_factory=RuntimeInputBody)
 
     @model_validator(mode="after")
@@ -455,6 +635,13 @@ class RuntimeStageInput(BaseModel):
         )
         if len(prior_json.encode("utf-8")) > 256_000:
             raise ValueError("Prior result context exceeds 256000 bytes")
+        if self.execution_capability is not None and self.stage_id not in {
+            WorkflowStage.PREFLIGHT,
+            WorkflowStage.EXECUTE,
+        }:
+            raise ValueError(
+                "Execution capability state is limited to PREFLIGHT and EXECUTE"
+            )
         return self
 
 

@@ -89,6 +89,7 @@ from .runtime import (
     RuntimeCapabilityServices,
     RuntimeEvidenceReference,
     RuntimeEvidenceRole,
+    RuntimeExecutionCapabilityView,
     RuntimeInputBody,
     RuntimeProfileCatalog,
     RuntimeReference,
@@ -650,6 +651,21 @@ class LabBioApplication:
         )
         self.image_registry = ApprovedImageRegistry(configuration.approved_images)
         self.execution_policy = configuration.execution_policy
+        profile = configuration.execution_profile
+        self.execution_capability = (
+            RuntimeExecutionCapabilityView.from_trusted_configuration(
+                runtime=profile.runtime,
+                image_key=profile.image_key,
+                resources=profile.resources,
+                network_required=profile.network_required,
+                output_contract_ids=profile.output_contract_ids,
+                image_registry=self.image_registry,
+                execution_policy=self.execution_policy,
+                registration_policy=self.registration_policy,
+            )
+            if profile is not None
+            else None
+        )
         self.docker_executor = DockerExecutor(
             store=self.artifact_store,
             image_registry=self.image_registry,
@@ -1325,6 +1341,7 @@ class LabBioApplication:
                 workspace=workspace,
                 services=self.capability_services,
                 trace_recorder=self.trace_recorder,
+                execution_capability=self.execution_capability,
                 plugin_factory=self._plugin_factories.get(assembly.stage_id),
                 boundary_observer=self.configuration.boundary_observer,
             )
@@ -1340,6 +1357,7 @@ class LabBioApplication:
         return RuntimeCoordinatorService(
             self.workflow_engine,
             StageRuntimeRegistry(specs),
+            execution_capability=self.execution_capability,
         )
 
     def _authorized_runtime_reference(
