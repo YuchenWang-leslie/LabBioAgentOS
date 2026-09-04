@@ -60,6 +60,7 @@ from labbioagentos.memory import (
 )
 from labbioagentos.skills import (
     GoldSkillService,
+    SkillAdaptationPoint,
     SkillApprovalRequiredError,
     SkillDecisionError,
     SkillNotFoundError,
@@ -271,6 +272,8 @@ class SkillDetailView(SkillCandidateView):
     execution_guidance: tuple[StrictStr, ...] = ()
     validation_expectations: tuple[StrictStr, ...] = ()
     limitations: tuple[StrictStr, ...] = ()
+    reusable_principles: tuple[StrictStr, ...] = ()
+    adaptation_points: tuple[SkillAdaptationPoint, ...] = ()
 
 
 class MemoryCandidateView(BaseModel):
@@ -981,6 +984,8 @@ class LabBioRuntimeToolSet(ToolSet):
             execution_guidance=tuple(skill.procedure.execution_guidance[:16]),
             validation_expectations=tuple(skill.procedure.validation_expectations[:16]),
             limitations=tuple(skill.procedure.known_limitations[:16]),
+            reusable_principles=tuple(skill.procedure.reusable_principles[:16]),
+            adaptation_points=tuple(skill.procedure.adaptation_points[:16]),
         )
 
     def _skill_propose_use(self, skill_id, version, mode, reason, deviations):

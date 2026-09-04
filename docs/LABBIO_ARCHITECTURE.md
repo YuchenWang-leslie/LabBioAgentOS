@@ -510,11 +510,17 @@ ArtifactRefs/IDs, and trace references for validation, retries, and failures. It
 does not rank evidence, infer scientific importance, copy artifact
 representations, or reconstruct provider conversations or chain-of-thought.
 
-The remote curator receives only the explicit safe source view and may populate
-only a strict `SkillCuratorDraft`. It cannot choose IDs, gates, scope, ownership,
-source lineage, or parent/usage lineage. `GoldSkillService` assembles those
-trusted fields and contains no heuristic curator fallback. A proposal cannot
-become Gold without the matching user-owned decision for its exact gate.
+The remote curator receives only the explicit safe source view, which may also
+contain a small bounded set of policy-controlled terminal Artifact views. The
+adaptive curator schema requires reusable principles and explicit modifiable
+future-task decisions with current-evidence, selection, and revalidation
+requirements. A separate Agent audit and Agent revision can be retained as
+observable boundaries before the untrusted draft is submitted for human review.
+The mechanical conversion into `SkillCuratorDraft` adds no scientific content.
+The curator cannot choose IDs, gates, scope, ownership, source lineage, or
+parent/usage lineage. `GoldSkillService` assembles those trusted fields and
+contains no heuristic curator fallback. A proposal cannot become Gold without
+the matching user-owned decision for its exact gate.
 
 `LabBioApplication` composes workflow and domain decisions without teaching
 `WorkflowEngine` about Skills. It validates the pending workflow gate and
@@ -537,8 +543,12 @@ Full procedure materialization requires an exact approved authorization for the
 current run, user, project, lab, Skill, and version; this creates
 `SkillContextAccess`. Only accessed authorizations receive an idempotent
 terminal `SkillUsageRecord`. Search, proposal, approval, or rejection alone is
-not usage. Skill and Memory capability items remain `MODEL_CONTEXT`; proposal
-items are `CONTROL_STATE`.
+not usage. Once one run has accessed an approved Skill version, another use
+proposal for that same run and version is an invalid control state; a different
+run may still propose the same version. A resolved same-stage domain gate is
+retained in trace/control history but its superseded request result is not
+replayed as an active model prior. Skill and Memory capability items remain
+`MODEL_CONTEXT`; proposal items are `CONTROL_STATE`.
 
 Search remains an eligibility operation with stable ordering and no score,
 scientific ranking, automatic selection, or use-mode decision. Internal
@@ -569,6 +579,19 @@ terminal report registration, one successful usage receipt, and the complete
 later-use leak audit. Multi-candidate and anti-hard-fit provider diagnostics,
 novel/no-match coverage, and the 303-passed/9-skipped non-live regression also
 pass. Pantheon and production remain frozen.
+
+A later post-C12 real PBMC lifecycle validates the stronger adaptive curation
+path without changing Gold authority. Proposal
+`d0978295-ec6f-4dee-85fd-b51b24fb7b2e`, produced by Agent draft/audit/revision,
+became Gold `ed438224-6c89-4b75-896a-d26387903955` v1 after Codex, acting as the
+user-authorized human-review proxy, inspected and approved the exact unchanged
+proposal; it survived SQLite restart. Fresh run
+`d00f236e-9cb8-4077-a3be-7a888c3cfdb2` found it, independently selected
+`REFERENCE`, received approval, accessed the procedure, generated a new script,
+completed a real offline Docker analysis and report, and recorded one successful
+usage receipt. The new script ID is disjoint from every source script ID. This
+proves guidance reuse; it does not make Gold executable or make source results
+authoritative for the later run.
 
 Pantheon's automatic learning/extraction path remains disabled for this
 lifecycle because it lacks the successful-trace and explicit-approval gates.

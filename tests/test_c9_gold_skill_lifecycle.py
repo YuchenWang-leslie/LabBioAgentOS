@@ -19,6 +19,7 @@ from labbioagentos import (
     ApplicationRuntimeConfiguration,
     ArtifactExposureClass,
     ArtifactExposureService,
+    ArtifactReleaseBasis,
     ArtifactRepresentation,
     AuthorizationDenied,
     AuthorizationPolicy,
@@ -38,6 +39,8 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
+    PantheonAdaptiveSkillCurator,
+    PantheonAuditedAdaptiveSkillCurator,
     PantheonSkillCurator,
     PerInvocationPantheonStageInvoker,
     Principal,
@@ -52,11 +55,22 @@ from labbioagentos import (
     RuntimeProfileCatalog,
     RuntimeStageAssemblySpec,
     RuntimeStageResult,
+    SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
     SKILL_CURATOR_INSTRUCTIONS,
+    SKILL_CURATOR_AUDIT_INSTRUCTIONS,
+    SKILL_CURATOR_REVISION_INSTRUCTIONS,
     SQLiteSkillStore,
     SkillApprovalRequiredError,
     SkillCapabilityUsageRef,
+    SkillCurationSourceView,
+    SkillAdaptationPoint,
+    SkillAdaptiveCuratorDraft,
+    SkillAdaptiveProcedureDraft,
+    SkillCuratorAudit,
+    SkillCuratorAuditCategory,
+    SkillCuratorAuditFinding,
     SkillCuratorDraft,
+    SkillDecisionError,
     SkillExecutionRef,
     SkillInstructionRef,
     SkillProcedureDraft,
@@ -253,6 +267,17 @@ def _draft(name="Generic validated analysis procedure"):
             known_limitations=("Prior scientific facts do not prove current facts.",),
             tags=frozenset({"validated-analysis"}),
             artifact_types=frozenset({"generic-analysis-result"}),
+            reusable_principles=(
+                "Use governed current-task evidence before making scientific choices.",
+            ),
+            adaptation_points=(
+                SkillAdaptationPoint(
+                    decision="Choose the current task analysis approach.",
+                    evidence_requirements=("Current governed input structure.",),
+                    selection_considerations=("Current task objective and data.",),
+                    revalidation_requirements=("Validate current outputs.",),
+                ),
+            ),
         ),
     )
 
@@ -408,6 +433,226 @@ async def test_s1_s4_safe_curator_projection_and_trusted_proposal_assembly(tmp_p
         bundle.instruction_refs[0].instruction_id,
     )
     assert "scope" not in SkillCuratorDraft.model_json_schema()["properties"]
+
+
+@pytest.mark.asyncio
+async def test_adaptive_curator_mechanically_preserves_agent_authored_choices(
+    tmp_path,
+):
+    _, _, artifacts, _, store, service, _, _ = _governed(tmp_path)
+    bundle = _source_bundle(artifacts)
+    store.save_source_bundle(bundle)
+    view = service.create_curation_view(bundle.bundle_id)
+    adaptive = SkillAdaptiveCuratorDraft(
+        proposed_name="Adaptable governed analysis guidance",
+        description="Reusable evidence and decision guidance.",
+        procedure=SkillAdaptiveProcedureDraft(
+            applicability="Use for compatible governed analysis tasks.",
+            workflow_guidance=("Inspect current evidence before planning.",),
+            reusable_principles=("Keep claims bounded by current evidence.",),
+            adaptation_points=(
+                SkillAdaptationPoint(
+                    decision="Choose a method for the current task.",
+                    evidence_requirements=("Current input structure.",),
+                    selection_considerations=("Current objective and constraints.",),
+                    revalidation_requirements=("Validate the produced evidence.",),
+                ),
+            ),
+            validation_expectations=("Validate current outputs.",),
+        ),
+    )
+    captured = {}
+    agent = Agent(
+        name="SkillAdaptiveCuratorAgent",
+        instructions=SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
+        model="openai/mock",
+        response_format=SkillAdaptiveCuratorDraft,
+        use_memory=False,
+    )
+
+    async def run(_self, message, **_kwargs):
+        captured.update(json.loads(message))
+        return SimpleNamespace(content=adaptive)
+
+    agent.run = MethodType(run, agent)
+    result = await PantheonAdaptiveSkillCurator(agent).propose(view)
+
+    assert result.procedure.workflow_outline == adaptive.procedure.workflow_guidance
+    assert result.procedure.reusable_principles == adaptive.procedure.reusable_principles
+    assert result.procedure.adaptation_points == adaptive.procedure.adaptation_points
+    assert result.procedure.execution_guidance == ()
+    assert result.procedure.parameter_guidance == ()
+    assert result.procedure.input_contract_ids == ()
+    assert result.procedure.output_contract_ids == ()
+    adaptive_procedure_schema = SkillAdaptiveProcedureDraft.model_json_schema()[
+        "properties"
+    ]
+    assert "input_contract_ids" not in adaptive_procedure_schema
+    assert "output_contract_ids" not in adaptive_procedure_schema
+    assert "storage_locator" not in json.dumps(captured)
+
+
+@pytest.mark.asyncio
+async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
+    _, _, artifacts, _, store, service, _, _ = _governed(tmp_path)
+    bundle = _source_bundle(artifacts)
+    store.save_source_bundle(bundle)
+    view = service.create_curation_view(bundle.bundle_id)
+
+    def adaptive(description):
+        return SkillAdaptiveCuratorDraft(
+            proposed_name="Adaptable governed analysis guidance",
+            description=description,
+            procedure=SkillAdaptiveProcedureDraft(
+                applicability="Use for compatible governed analysis tasks.",
+                workflow_guidance=("Inspect current evidence before planning.",),
+                reusable_principles=("Keep claims bounded by current evidence.",),
+                adaptation_points=(
+                    SkillAdaptationPoint(
+                        decision="Choose an approach for the current task.",
+                        evidence_requirements=("Current input structure.",),
+                        selection_considerations=("Current objective and constraints.",),
+                        revalidation_requirements=("Validate the produced evidence.",),
+                    ),
+                ),
+            ),
+        )
+
+    initial = adaptive("Initial adaptive Agent draft.")
+    revised = adaptive("Independently audited and revised Agent draft.")
+    audit = SkillCuratorAudit(
+        findings=(
+            SkillCuratorAuditFinding(
+                category=SkillCuratorAuditCategory.PRESCRIPTIVE_FUTURE_CHOICE,
+                draft_field="procedure.adaptation_points",
+                statement="The initial draft fixes a future choice.",
+                rationale="A future task must decide from its current evidence.",
+            ),
+        ),
+        summary="The adaptive draft requires Agent revision.",
+    )
+
+    def agent(name, instructions, response_format):
+        return Agent(
+            name=name,
+            instructions=instructions,
+            model="openai/mock",
+            response_format=response_format,
+            use_memory=False,
+        )
+
+    drafting_agent = agent(
+        "SkillAdaptiveCuratorAgent",
+        SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
+        SkillAdaptiveCuratorDraft,
+    )
+    audit_agent = agent(
+        "SkillCuratorAuditorAgent",
+        SKILL_CURATOR_AUDIT_INSTRUCTIONS,
+        SkillCuratorAudit,
+    )
+    revision_agent = agent(
+        "SkillAdaptiveRevisionAgent",
+        SKILL_CURATOR_REVISION_INSTRUCTIONS,
+        SkillAdaptiveCuratorDraft,
+    )
+    captured = {}
+
+    async def draft_run(_self, message, **_kwargs):
+        captured["draft"] = json.loads(message)
+        return SimpleNamespace(content=initial)
+
+    async def audit_run(_self, message, **_kwargs):
+        captured["audit"] = json.loads(message)
+        return SimpleNamespace(content=audit)
+
+    async def revision_run(_self, message, **_kwargs):
+        captured["revision"] = json.loads(message)
+        return SimpleNamespace(content=revised)
+
+    drafting_agent.run = MethodType(draft_run, drafting_agent)
+    audit_agent.run = MethodType(audit_run, audit_agent)
+    revision_agent.run = MethodType(revision_run, revision_agent)
+    observed = []
+    result = await PantheonAuditedAdaptiveSkillCurator(
+        drafting_agent,
+        audit_agent,
+        revision_agent,
+        boundary_observer=lambda kind, value: observed.append((kind, value)),
+    ).propose(view)
+
+    assert result == revised.to_curator_draft()
+    assert captured["draft"] == view.model_dump(mode="json")
+    assert captured["audit"] == {
+        "source": view.model_dump(mode="json"),
+        "draft": initial.model_dump(mode="json"),
+    }
+    assert captured["revision"]["audit"] == audit.model_dump(mode="json")
+    assert [kind for kind, _ in observed] == [
+        "curator_source",
+        "curator_initial_adaptive_draft",
+        "curator_audit",
+        "curator_revised_adaptive_draft",
+    ]
+    assert "storage_locator" not in json.dumps(captured)
+
+
+def test_curator_contract_preserves_future_task_choices_and_identifier_kinds():
+    schema = SkillCuratorDraft.model_json_schema()
+    procedure = schema["$defs"]["SkillProcedureDraft"]["properties"]
+
+    assert "Future-task decision considerations" in procedure[
+        "parameter_guidance"
+    ]["description"]
+    assert "Artifact UUIDs are not contract identifiers" in procedure[
+        "input_contract_ids"
+    ]["description"]
+    assert "Artifact UUIDs are not contract identifiers" in procedure[
+        "output_contract_ids"
+    ]["description"]
+    assert all(
+        marker in SKILL_CURATOR_INSTRUCTIONS
+        for marker in ("RAW script", "stdout", "stderr")
+    )
+    assert "future task" in SKILL_CURATOR_INSTRUCTIONS
+
+
+def test_curator_source_accepts_only_bounded_governed_artifact_evidence(tmp_path):
+    principal, workspace, artifacts, exposure, store, service, _, _ = _governed(
+        tmp_path
+    )
+    bundle = _source_bundle(artifacts)
+    store.save_source_bundle(bundle)
+    derived = artifacts.register(
+        artifact_type="derived-measurements",
+        exposure_class=ArtifactExposureClass.DERIVED,
+        representation=ArtifactRepresentation(
+            summary={"method": "source-run choice"},
+            records=({"metric": "value", "value": 1},),
+            record_count=1,
+        ),
+        owner_user_id=principal.user_id,
+        project_id=workspace.project_id,
+        lab_id=workspace.lab_id,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
+    )
+    evidence = exposure.artifact_query(
+        derived.artifact_id,
+        {"view_type": "TOP_N", "limit": 1},
+        "REMOTE_LLM",
+        principal=principal,
+    )
+
+    view = service.create_curation_view(bundle.bundle_id)
+    grounded = SkillCurationSourceView.model_validate(
+        {
+            **view.model_dump(mode="python"),
+            "artifact_evidence_views": (evidence,),
+        }
+    )
+
+    assert grounded.artifact_evidence_views == (evidence,)
+    assert "storage_locator" not in grounded.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -588,6 +833,29 @@ async def test_s9_s11_full_context_requires_exact_run_version_user_and_scope(tmp
             project_id=workspace.project_id,
             principal=Principal(user_id="user-b", lab_id="lab-a"),
         )
+
+
+def test_accessed_skill_version_cannot_be_proposed_twice_for_the_same_run(tmp_path):
+    principal, workspace, artifacts, _, store, service, _, _ = _governed(tmp_path)
+    _, _, gold = _create_gold(service, store, principal, artifacts)
+    run_id = uuid4()
+    proposal = _submit_use(service, principal, workspace, gold, run_id)
+    authorization = _decide_use(service, principal, proposal)
+    service.get_authorized_context(
+        authorization.authorization_id,
+        run_id=run_id,
+        project_id=workspace.project_id,
+        principal=principal,
+    )
+
+    with pytest.raises(
+        SkillDecisionError,
+        match="already accessed the approved Skill version",
+    ):
+        _submit_use(service, principal, workspace, gold, run_id)
+
+    distinct_run = _submit_use(service, principal, workspace, gold, uuid4())
+    assert distinct_run.skill_id == gold.skill_id
 
 
 def test_s12_s15_sqlite_restart_rejection_and_immutability(tmp_path):

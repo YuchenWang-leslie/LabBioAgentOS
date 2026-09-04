@@ -592,6 +592,14 @@ class WorkflowEngine:
                 raise InvalidTransitionError(
                     f"Transition {source.value!r} -> 'USER_GATE' is not allowed"
                 )
+            if normalized.domain_reference_id is not None and any(
+                record.source_stage is source
+                and record.domain_reference_id == normalized.domain_reference_id
+                for record in run.gate_decisions
+            ):
+                raise InvalidProposalError(
+                    "User input was already resolved for this domain reference"
+                )
         elif normalized.action is NextAction.RETRY:
             self._require_status(run, RunStatus.RUNNING)
             stage = self._require_current_stage(run)

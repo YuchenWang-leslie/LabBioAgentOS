@@ -48,6 +48,7 @@ from labbioagentos import (
     runtime_workflow_definition,
 )
 from labbioagentos.workflow import (
+    InvalidProposalError,
     InvalidTransitionError,
     RetryLimitExceededError,
 )
@@ -443,6 +444,19 @@ async def test_plan_gate_resumes_only_to_plan_and_presents_decision(
     )
     assert len(stage_input.gate_decisions) == 1
     assert stage_input.gate_decisions[0].approved is True
+    assert stage_input.prior_results == ()
+    assert stage_input.model_context_references == ()
+    with pytest.raises(
+        InvalidProposalError,
+        match="already resolved for this domain reference",
+    ):
+        coordinator.engine.validate_proposal(run, gate_result.next_action)
+    distinct_request = NextActionProposal(
+        action=NextAction.REQUEST_USER_INPUT,
+        user_prompt="Approve a distinct synthetic domain proposal.",
+        domain_reference_id="proposal-2",
+    )
+    assert coordinator.engine.validate_proposal(run, distinct_request) == distinct_request
 
 
 def test_runtime_gate_decision_cannot_supply_arbitrary_target():

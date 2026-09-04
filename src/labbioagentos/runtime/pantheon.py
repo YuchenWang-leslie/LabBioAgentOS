@@ -19,7 +19,7 @@ from labbioagentos.trace import (
     RunTraceRecorder,
     TraceEventType,
 )
-from labbioagentos.contracts import StageContext, WorkflowStage
+from labbioagentos.contracts import InformationAuthority, StageContext, WorkflowStage
 from labbioagentos.teams.delegation import (
     DelegationPolicyPlugin,
     delegation_session,
@@ -28,6 +28,7 @@ from labbioagentos.teams.delegation import (
 from .contracts import (
     CapabilityEvidenceBundle,
     CapabilityEvidenceItem,
+    CapabilityEvidenceStatus,
     MAX_CAPABILITY_EVIDENCE_ITEMS,
     RuntimeStageInput,
     RuntimeStageResult,
@@ -83,6 +84,33 @@ def _safe_validation_projection(
         paths.append(location[:256] or "<root>")
         error_types.append(str(item.get("type", "validation_error"))[:128])
     return tuple(paths), tuple(error_types)
+
+
+def _runtime_result_validation_projection(
+    error: ValidationError,
+    content: object,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Combine stable-envelope and effective-schema errors without raw values."""
+
+    projections = [_safe_validation_projection(error)]
+    try:
+        if isinstance(content, BaseModel):
+            RuntimeStageResult.model_validate(content.model_dump(mode="python"))
+        elif isinstance(content, str):
+            RuntimeStageResult.model_validate_json(content)
+        elif isinstance(content, Mapping):
+            RuntimeStageResult.model_validate(content)
+    except ValidationError as stable_error:
+        projections.insert(0, _safe_validation_projection(stable_error))
+    combined: list[tuple[str, str]] = []
+    for paths, error_types in projections:
+        for pair in zip(paths, error_types, strict=True):
+            if pair not in combined:
+                combined.append(pair)
+    return (
+        tuple(path for path, _ in combined[:32]),
+        tuple(error_type for _, error_type in combined[:32]),
+    )
 
 
 class RuntimeProfileCatalog:
@@ -647,6 +675,16 @@ class PantheonTypedStageInvoker:
             raise RuntimeProfileConfigurationError(
                 "Capability evidence does not match the finalization invocation"
             )
+        effective_stage_input = self._finalization_stage_input(
+            stage_input,
+            capability_evidence,
+        )
+        response_format = self.response_schema.response_format(
+            effective_stage_input.stage_id,
+            effective_stage_input.workflow_control,
+        )
+        for agent in self.team.team_agents:
+            agent.response_format = response_format
         self._emit(
             stage_input,
             TraceEventType.FINALIZATION_PHASE_STARTED,
@@ -688,11 +726,11 @@ class PantheonTypedStageInvoker:
             None,
         )
         active_session = None
-        message = stage_input.model_dump_json()
+        message = effective_stage_input.model_dump_json()
         if capability_evidence is not None:
             message = json.dumps(
                 {
-                    "stage_input": stage_input.model_dump(mode="json"),
+                    "stage_input": effective_stage_input.model_dump(mode="json"),
                     "capability_evidence": capability_evidence.model_dump(mode="json"),
                 },
                 separators=(",", ":"),
@@ -747,19 +785,25 @@ class PantheonTypedStageInvoker:
         try:
             content = getattr(response, "content", response)
             if isinstance(content, BaseModel):
-                result = RuntimeStageResult.model_validate(
+                validated = response_format.model_validate(
                     content.model_dump(mode="python")
                 )
             elif isinstance(content, str):
-                result = RuntimeStageResult.model_validate_json(content)
+                validated = response_format.model_validate_json(content)
             elif isinstance(content, Mapping):
-                result = RuntimeStageResult.model_validate(content)
+                validated = response_format.model_validate(content)
             else:
                 raise ValueError("Unsupported runtime response value")
+            result = RuntimeStageResult.model_validate(
+                validated.model_dump(mode="python")
+            )
             if result.stage_id is not stage_input.stage_id:
                 raise ValueError("Runtime result stage does not match the requested stage")
         except ValidationError as exc:
-            field_paths, error_types = _safe_validation_projection(exc)
+            field_paths, error_types = _runtime_result_validation_projection(
+                exc,
+                content,
+            )
             error = PantheonRuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Pantheon returned a response that does not satisfy RuntimeStageResult.",
@@ -802,6 +846,39 @@ class PantheonTypedStageInvoker:
             },
         )
         return result
+
+    @staticmethod
+    def _finalization_stage_input(
+        stage_input: RuntimeStageInput,
+        capability_evidence: CapabilityEvidenceBundle | None,
+    ) -> RuntimeStageInput:
+        control = stage_input.workflow_control
+        if control is None or not control.request_user_input_available:
+            return stage_input
+        has_resolved_domain_gate = any(
+            decision.domain_reference_id is not None
+            for decision in stage_input.gate_decisions
+        )
+        has_fresh_domain_proposal = bool(
+            capability_evidence is not None
+            and any(
+                item.status is CapabilityEvidenceStatus.COMPLETED
+                and item.information_authority is InformationAuthority.CONTROL_STATE
+                and isinstance(item.safe_result, dict)
+                and isinstance(item.safe_result.get("domain_reference_id"), str)
+                and bool(item.safe_result["domain_reference_id"])
+                for item in capability_evidence.items
+            )
+        )
+        if not has_resolved_domain_gate or has_fresh_domain_proposal:
+            return stage_input
+        return stage_input.model_copy(
+            update={
+                "workflow_control": control.model_copy(
+                    update={"request_user_input_available": False}
+                )
+            }
+        )
 
     def _emit_failure(self, stage_input, error):
         self._emit(

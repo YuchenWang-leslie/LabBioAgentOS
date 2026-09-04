@@ -75,6 +75,22 @@ complete-report reproducibility gap. Provider calls still have high and
 variable latency, and the compatible HTTP stack can emit a non-fatal
 `httpcore2` asynchronous-generator cleanup warning after a completed run.
 
+## Gold guidance quality and discovery
+
+Gold content is Agent-authored, human-approved, immutable procedural
+`MODEL_CONTEXT`; it is not scientific evidence and cannot execute, choose tools,
+or control workflow. The adaptive schema makes future choices explicit and
+modifiable, and an independent Agent audit/revision can reduce source-run
+overfitting, but human approval remains the authority boundary. The service does
+not self-grade whether prose is scientifically optimal.
+
+The current model-facing catalog has stable bounded enumeration and exact
+optional tag/Artifact-type filters, not semantic or vector retrieval. The Agent
+must judge relevance and choose REUSE, ADAPT, REFERENCE, or no use. A real PBMC
+restart/reuse run validated this path and produced a fresh disjoint script and
+current report, but production Skill hosting, cross-process transactions, and an
+approval UI remain unimplemented.
+
 The previous run's PREFLIGHT failure is not retained as a provider limitation.
 It was `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and was closed by making
 configured execution PREFLIGHT host-authoritative with zero provider calls.

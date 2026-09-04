@@ -872,3 +872,28 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   `REPORT.md`. No scientific result was self-scored. Final regression is
   `443 passed, 12 skipped`; the opt-in real-Docker hostile suite is `1 passed`.
   No source release or service deployment was performed.
+- The accepted PBMC run was then used for a complete Agent-owned Gold lifecycle.
+  An adaptive Curator Agent drafted reusable guidance from bounded governed
+  result/report views, an independent Agent audited it, and an Agent reviser
+  produced proposal `d0978295-ec6f-4dee-85fd-b51b24fb7b2e`. Codex supplied no
+  scientific text, method, parameter, program, or conclusion. Codex, acting as
+  the user-authorized human-review proxy, inspected the exact proposal without
+  changing its content; after that approval it became PERSONAL Gold
+  `ed438224-6c89-4b75-896a-d26387903955` v1. Its procedure contains three
+  explicit `modifiable=true` adaptation points and treats source-run values only
+  as historical evidence. SQLite close/reopen reconstructed the exact Gold.
+- Fresh run `d00f236e-9cb8-4077-a3be-7a888c3cfdb2` independently browsed the
+  recovered catalog, selected `REFERENCE`, persisted use proposal
+  `44b49ac7-54f0-4c83-b0fd-079daf26ac6d`, passed exact human approval, and then
+  accessed the full procedure. It authored a new script
+  `434fde44-c728-4eb6-8c2d-0f627fa34a6f`, disjoint from all six source scripts,
+  completed offline Docker execution `d7bb239b-97ed-4ffe-9369-012a69e818bd`,
+  registered current DERIVED result `5324700c-bd80-45f5-ba09-a122ca9cb5f5`
+  and report `e944de77-be1b-4320-b63c-cd7989e665eb`, reached LEARN/COMPLETED,
+  and persisted SUCCEEDED usage receipt
+  `742d467b-b30f-43d2-9de0-47008f041c83`. A repeated same-run proposal after
+  context access failed visibly with `INVALID_CONTROL_STATE`; it was not
+  auto-corrected or suppressed. Restart, leak, container-cleanup, and fresh-use
+  reconstruction checks pass. Final non-live regression is `449 passed, 12
+  skipped`; the opt-in real-Docker hostile suite is `1 passed`. No production
+  deployment was performed.

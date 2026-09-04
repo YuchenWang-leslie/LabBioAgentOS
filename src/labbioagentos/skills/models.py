@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import StrEnum
 import re
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef
+from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef, ArtifactView
 from labbioagentos.contracts import RunStatus, WorkflowStage
 from labbioagentos.trace import DelegationProjection, InvocationProjection, InstructionKind
 
@@ -78,6 +78,18 @@ class SkillUseMode(StrEnum):
     REUSE = "REUSE"
     ADAPT = "ADAPT"
     REFERENCE = "REFERENCE"
+
+
+class SkillCuratorAuditCategory(StrEnum):
+    """Generic defects an Agent auditor can identify before user review."""
+
+    UNSUPPORTED_BY_SOURCE = "UNSUPPORTED_BY_SOURCE"
+    SOURCE_FACT_AS_FUTURE_DEFAULT = "SOURCE_FACT_AS_FUTURE_DEFAULT"
+    PRESCRIPTIVE_FUTURE_CHOICE = "PRESCRIPTIVE_FUTURE_CHOICE"
+    IDENTIFIER_KIND_MISUSE = "IDENTIFIER_KIND_MISUSE"
+    RAW_CONTENT_ACCESS = "RAW_CONTENT_ACCESS"
+    HIDDEN_FALLBACK = "HIDDEN_FALLBACK"
+    OVERSTATED_FAILURE_CAUSE = "OVERSTATED_FAILURE_CAUSE"
 
 
 class SkillUsageOutcome(StrEnum):
@@ -204,6 +216,14 @@ class SkillCurationSourceView(BaseModel):
     artifact_descriptors: tuple[SkillArtifactDescriptor, ...] = Field(
         default=(), max_length=256
     )
+    artifact_evidence_views: tuple[ArtifactView, ...] = Field(
+        default=(),
+        max_length=32,
+        description=(
+            "Bounded policy-controlled views of terminal run outputs; source-run "
+            "facts are evidence for abstraction, not fixed future-task choices."
+        ),
+    )
     failure_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
     retry_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
     validation_refs: tuple[SkillTraceRef, ...] = Field(default=(), max_length=128)
@@ -216,6 +236,8 @@ class SkillCurationSourceView(BaseModel):
         _reject_unsafe_remote_text(
             self.model_dump(mode="python"), label="Skill curation source view"
         )
+        if len(self.model_dump_json().encode("utf-8")) > 512_000:
+            raise ValueError("Skill curation source view exceeds the size bound")
         return self
 
 
@@ -250,6 +272,32 @@ class SkillSourceBundle(BaseModel):
         return value.astimezone(timezone.utc)
 
 
+class SkillAdaptationPoint(BaseModel):
+    """A future-task choice that Gold deliberately leaves unresolved."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    decision: BoundedText = Field(
+        description="Decision the future task must make; never a fixed answer or value."
+    )
+    evidence_requirements: tuple[BoundedText, ...] = Field(
+        min_length=1,
+        max_length=16,
+        description="Current-task evidence needed before making the decision.",
+    )
+    selection_considerations: tuple[BoundedText, ...] = Field(
+        min_length=1,
+        max_length=16,
+        description="Criteria for the future Agent, without a prescribed choice.",
+    )
+    revalidation_requirements: tuple[BoundedText, ...] = Field(
+        min_length=1,
+        max_length=16,
+        description="Checks required after the future Agent makes its choice.",
+    )
+    modifiable: Literal[True] = True
+
+
 class SkillProcedureDraft(BaseModel):
     """Untrusted curator-authored procedure content without evidence authority."""
 
@@ -268,14 +316,26 @@ class SkillProcedureDraft(BaseModel):
     parameter_guidance: tuple[BoundedText, ...] = Field(
         default_factory=tuple,
         max_length=100,
+        description=(
+            "Future-task decision considerations; never fixed scientific methods, "
+            "parameter values, code, or tool order."
+        ),
     )
     input_contract_ids: tuple[ShortText, ...] = Field(
         default_factory=tuple,
         max_length=100,
+        description=(
+            "Exact reusable input contract identifiers explicitly present in the "
+            "safe source view; Artifact UUIDs are not contract identifiers."
+        ),
     )
     output_contract_ids: tuple[ShortText, ...] = Field(
         default_factory=tuple,
         max_length=100,
+        description=(
+            "Exact reusable output contract identifiers explicitly present in the "
+            "safe source view; Artifact UUIDs are not contract identifiers."
+        ),
     )
     validation_expectations: tuple[BoundedText, ...] = Field(
         default_factory=tuple,
@@ -297,6 +357,14 @@ class SkillProcedureDraft(BaseModel):
     artifact_types: frozenset[ShortText] = Field(
         default_factory=frozenset,
         max_length=100,
+    )
+    reusable_principles: tuple[BoundedText, ...] = Field(
+        default_factory=tuple,
+        max_length=32,
+    )
+    adaptation_points: tuple[SkillAdaptationPoint, ...] = Field(
+        default_factory=tuple,
+        max_length=32,
     )
 
 
@@ -321,6 +389,94 @@ class SkillCuratorDraft(BaseModel):
     def reject_explicit_unsafe_text(self) -> "SkillCuratorDraft":
         _reject_unsafe_remote_text(
             self.model_dump(mode="python"), label="Skill curator draft"
+        )
+        return self
+
+
+class SkillAdaptiveProcedureDraft(BaseModel):
+    """Agent-authored procedure that separates stable guidance from choices."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    applicability: BoundedText
+    workflow_guidance: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
+    reusable_principles: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
+    adaptation_points: tuple[SkillAdaptationPoint, ...] = Field(
+        min_length=1,
+        max_length=32,
+    )
+    validation_expectations: tuple[BoundedText, ...] = Field(
+        default=(), max_length=32
+    )
+    known_failure_modes: tuple[BoundedText, ...] = Field(default=(), max_length=32)
+    known_limitations: tuple[BoundedText, ...] = Field(default=(), max_length=32)
+    tags: frozenset[ShortText] = Field(default_factory=frozenset, max_length=32)
+    artifact_types: frozenset[ShortText] = Field(
+        default_factory=frozenset,
+        max_length=32,
+    )
+
+
+class SkillAdaptiveCuratorDraft(BaseModel):
+    """Strict Agent output for an adaptable, non-executable Gold proposal."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposed_name: ShortText
+    description: BoundedText
+    procedure: SkillAdaptiveProcedureDraft
+
+    @model_validator(mode="after")
+    def reject_explicit_unsafe_text(self) -> "SkillAdaptiveCuratorDraft":
+        _reject_unsafe_remote_text(
+            self.model_dump(mode="python"), label="Adaptive Skill curator draft"
+        )
+        return self
+
+    def to_curator_draft(self) -> SkillCuratorDraft:
+        """Mechanically preserve Agent content in the durable procedure model."""
+
+        procedure = self.procedure
+        return SkillCuratorDraft(
+            proposed_name=self.proposed_name,
+            description=self.description,
+            procedure=SkillProcedureDraft(
+                applicability=procedure.applicability,
+                workflow_outline=procedure.workflow_guidance,
+                validation_expectations=procedure.validation_expectations,
+                known_failure_modes=procedure.known_failure_modes,
+                known_limitations=procedure.known_limitations,
+                tags=procedure.tags,
+                artifact_types=procedure.artifact_types,
+                reusable_principles=procedure.reusable_principles,
+                adaptation_points=procedure.adaptation_points,
+            ),
+        )
+
+
+class SkillCuratorAuditFinding(BaseModel):
+    """One Agent-authored curation defect tied to a draft field."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    category: SkillCuratorAuditCategory
+    draft_field: ShortText
+    statement: BoundedText
+    rationale: BoundedText
+
+
+class SkillCuratorAudit(BaseModel):
+    """Strict untrusted Agent audit used to drive one bounded revision."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    findings: tuple[SkillCuratorAuditFinding, ...] = Field(max_length=64)
+    summary: BoundedText
+
+    @model_validator(mode="after")
+    def reject_explicit_unsafe_text(self) -> "SkillCuratorAudit":
+        _reject_unsafe_remote_text(
+            self.model_dump(mode="python"), label="Skill curator audit"
         )
         return self
 

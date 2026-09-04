@@ -76,8 +76,9 @@ slice:
 
 - semantic/vector retrieval for Memory or Gold Skill candidates; eligibility
   filtering and runtime-model judgment are sufficient initially;
-- a real SkillCurator agent; optional Gold save can be omitted or use a typed
-  mock proposal while validating the approval boundary;
+- production SkillCurator hosting and approval UX; a local Pantheon-backed
+  adaptive Curator, independent Agent audit/revision, exact human approval,
+  SQLite restart, and later real approved use have been validated;
 - literature/search capability for a task that does not require external
   evidence;
 - asynchronous execution status, background queues, and remote schedulers; the

@@ -31,7 +31,12 @@ from .models import (
     SkillUserDecision,
 )
 from .source import SkillSourceProjector
-from .store import SkillApprovalRequiredError, SkillStore, SkillStoreError
+from .store import (
+    SkillApprovalRequiredError,
+    SkillDecisionError,
+    SkillStore,
+    SkillStoreError,
+)
 
 
 class GoldSkillService:
@@ -247,6 +252,14 @@ class GoldSkillService:
         ):
             raise AuthorizationDenied(
                 "Skill use proposal scope does not match the Principal"
+            )
+        if any(
+            access.skill_id == proposal.skill_id
+            and access.skill_version == proposal.skill_version
+            for access in self.store.accesses_for_run(proposal.run_id)
+        ):
+            raise SkillDecisionError(
+                "This run already accessed the approved Skill version"
             )
         if self.access_service is not None:
             skill = self.store.get_gold(proposal.skill_id, proposal.skill_version)

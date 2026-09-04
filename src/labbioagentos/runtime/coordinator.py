@@ -91,10 +91,24 @@ class RuntimeCoordinatorService:
         if run.status is not RunStatus.RUNNING or run.current_stage is None:
             raise InvalidRunStateError(
                 "Runtime stage invocation requires a running run with a current stage"
-            )
+        )
         stage = run.current_stage
         spec = self.registry.get(stage)
-        prior_results = self._results.get(run.run_id, ())[-9:]
+        resolved_domain_references = {
+            record.domain_reference_id
+            for record in run.gate_decisions
+            if record.source_stage is stage and record.domain_reference_id is not None
+        }
+        prior_results = tuple(
+            result
+            for result in self._results.get(run.run_id, ())
+            if not (
+                result.stage_id is stage
+                and result.next_action.action is NextAction.REQUEST_USER_INPUT
+                and result.next_action.domain_reference_id
+                in resolved_domain_references
+            )
+        )[-9:]
         prior_references = tuple(
             RuntimeReference(
                 reference_id=str(result.result_id),

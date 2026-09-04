@@ -46,12 +46,14 @@ from labbioagentos import (
     RuntimeCapabilityContext,
     RuntimeCapabilityServices,
     RuntimeCoordinatorService,
+    RuntimeGateDecisionView,
     RuntimeInvocationMode,
     RuntimeProfileCatalog,
     RuntimeProfileConfigurationError,
     RuntimeResultValidationError,
     RuntimeStageInput,
     RuntimeStageResult,
+    RuntimeWorkflowControlView,
     RuntimeWorkspaceIdentifiers,
     StageRuntimeRegistry,
     StageRuntimeSpec,
@@ -482,6 +484,85 @@ async def test_finalization_receives_safe_evidence_and_returns_explicit_proposal
     event_types = [event.event_type for event in sink.read(stage_input.run_id)]
     assert TraceEventType.FINALIZATION_PHASE_STARTED in event_types
     assert TraceEventType.FINALIZATION_PHASE_COMPLETED in event_types
+
+
+@pytest.mark.asyncio
+async def test_finalization_schema_closes_resolved_domain_gate_without_new_proposal():
+    factory = PantheonRuntimeFactory(_catalog())
+    team, rendered = await factory.create_team(
+        ("coordinator",), invocation_mode=RuntimeInvocationMode.FINALIZE
+    )
+    stage_input = RuntimeStageInput(
+        run_id=uuid4(),
+        stage_id=WorkflowStage.PLAN,
+        instruction="Continue after the resolved domain gate.",
+        workspace=RuntimeWorkspaceIdentifiers(
+            user_id="user-c2", project_id="project-c2", lab_id="lab-c2"
+        ),
+        gate_decisions=(
+            RuntimeGateDecisionView(
+                gate_id="plan-gate-1",
+                source_stage=WorkflowStage.PLAN,
+                approved=True,
+                domain_reference_id="skill-use:proposal-1",
+                decision_reference_id="authorization-1",
+            ),
+        ),
+        workflow_control=RuntimeWorkflowControlView(
+            current_stage=WorkflowStage.PLAN,
+            transition_targets=(WorkflowStage.PREFLIGHT,),
+            request_user_input_available=True,
+            retry_available=False,
+            finish_available=False,
+        ),
+    )
+    evidence = CapabilityEvidenceBundle(
+        run_id=stage_input.run_id,
+        stage_id=stage_input.stage_id,
+        invocation_id=stage_input.invocation_id,
+        items=(
+            CapabilityEvidenceItem(
+                actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent",
+                capability_name="skill_view",
+                information_authority=InformationAuthority.MODEL_CONTEXT,
+                status=CapabilityEvidenceStatus.COMPLETED,
+                safe_result={"skill_id": str(uuid4()), "version": 1},
+            ),
+        ),
+    )
+    result = RuntimeStageResult(
+        stage_id=WorkflowStage.PLAN,
+        summary="Plan continued after approved context access.",
+        body={"kind": "PLAN", "procedure_steps": ["Current-task step."]},
+        next_action=NextActionProposal(
+            action=NextAction.TRANSITION,
+            target_stage=WorkflowStage.PREFLIGHT,
+        ),
+    )
+
+    async def run(_self, message):
+        payload = json.loads(message)
+        assert (
+            payload["stage_input"]["workflow_control"][
+                "request_user_input_available"
+            ]
+            is False
+        )
+        schema = json.dumps(team.team_agents[0].response_format.model_json_schema())
+        assert "request_user_input" not in schema
+        return SimpleNamespace(content=result.model_dump(mode="json"))
+
+    team.run = MethodType(run, team)
+    invoker = PantheonTypedStageInvoker(
+        team,
+        profile=_profile(),
+        prompt=rendered["coordinator"],
+        response_schema=ResponseSchemaRef(),
+    )
+
+    finalized = await invoker.invoke(stage_input, capability_evidence=evidence)
+    assert finalized.next_action.action is NextAction.TRANSITION
 
 
 @pytest.mark.asyncio
