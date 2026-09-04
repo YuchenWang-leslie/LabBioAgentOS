@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from pantheon.agent import NoObservableProgressError, ProviderTurnObservation
 
 from labbioagentos import (
     AccessService,
@@ -31,12 +32,14 @@ from labbioagentos import (
     NextActionProposal,
     PantheonCapabilityStageInvoker,
     PantheonRuntimeFactory,
+    PantheonRuntimeIntegrationError,
     PantheonTwoModeStageInvoker,
     PantheonTypedStageInvoker,
     Principal,
     Project,
     PromptProfile,
     ProviderConfigRef,
+    ProviderThinkingWireFormat,
     ProviderTransport,
     ResponseSchemaRef,
     RunTraceRecorder,
@@ -217,7 +220,7 @@ async def test_capability_mode_uses_structural_tool_loop_and_builds_bounded_evid
         invocation_mode=RuntimeInvocationMode.CAPABILITY,
     )
 
-    async def run(_self, _message):
+    async def run(_self, _message, **_kwargs):
         await toolset.artifact_list()
         return SimpleNamespace(content="structural provider loop completed")
 
@@ -253,6 +256,106 @@ async def test_capability_mode_uses_structural_tool_loop_and_builds_bounded_evid
     assert TraceEventType.CAPABILITY_INVOKED in event_types
     assert TraceEventType.CAPABILITY_COMPLETED in event_types
     assert TraceEventType.CAPABILITY_PHASE_COMPLETED in event_types
+
+
+@pytest.mark.asyncio
+async def test_capability_mode_persists_content_free_provider_turn_observation(tmp_path):
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    stage_input = _stage_input()
+    factory = PantheonRuntimeFactory(_catalog())
+    team, rendered = await factory.create_team(
+        ("coordinator",), invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+
+    async def run(_self, _message, **kwargs):
+        kwargs["process_turn_observation"](
+            ProviderTurnObservation(
+                agent_name="CoordinatorAgent",
+                execution_context_id=None,
+                turn_index=1,
+                progress_kind="REASONING_ONLY",
+                observable_progress=False,
+                elapsed_ms=1234,
+                total_tokens=321,
+                tool_names=(),
+            )
+        )
+        return SimpleNamespace(content=None)
+
+    team.run = MethodType(run, team)
+    await PantheonCapabilityStageInvoker(
+        team,
+        profile=_profile(),
+        prompt=rendered["coordinator"],
+        trace_recorder=recorder,
+        max_no_progress_seconds=300,
+    ).invoke(stage_input)
+
+    event = next(
+        item
+        for item in sink.read(stage_input.run_id)
+        if item.event_type is TraceEventType.PROVIDER_TURN_OBSERVED
+    )
+    assert event.payload == {
+        "invocation_mode": "CAPABILITY",
+        "template_id": "runtime-generic",
+        "template_version": "1",
+        "template_hash": rendered["coordinator"].template_hash,
+        "profile_key": "coordinator",
+        "turn_index": 1,
+        "progress_kind": "REASONING_ONLY",
+        "observable_progress": False,
+        "elapsed_ms": 1234,
+        "total_tokens": 321,
+        "tool_names": [],
+    }
+    encoded = event.model_dump_json()
+    for forbidden in (
+        "reasoning_content",
+        "provider_request",
+        "provider_response",
+        "api_key",
+        "script",
+        "stdout",
+    ):
+        assert forbidden not in encoded
+
+
+@pytest.mark.asyncio
+async def test_capability_mode_maps_no_progress_budget_to_safe_error(tmp_path):
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    stage_input = _stage_input()
+    factory = PantheonRuntimeFactory(_catalog())
+    team, rendered = await factory.create_team(
+        ("coordinator",), invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+
+    async def run(_self, _message, **_kwargs):
+        raise NoObservableProgressError(elapsed_ms=301000, turn_count=2)
+
+    team.run = MethodType(run, team)
+    invoker = PantheonCapabilityStageInvoker(
+        team,
+        profile=_profile(),
+        prompt=rendered["coordinator"],
+        trace_recorder=recorder,
+        max_no_progress_seconds=300,
+    )
+
+    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
+        await invoker.invoke(stage_input)
+
+    assert caught.value.error_code == "PROVIDER_NO_OBSERVABLE_PROGRESS"
+    failed = next(
+        item
+        for item in sink.read(stage_input.run_id)
+        if item.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+    )
+    assert failed.payload["error_code"] == "PROVIDER_NO_OBSERVABLE_PROGRESS"
+    assert failed.payload["elapsed_ms"] == 301000
+    assert failed.payload["turn_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -449,6 +552,7 @@ async def test_chat_transport_uses_compatible_alias_for_pro_suffix(monkeypatch):
         provider_config=ProviderConfigRef(config_id="external-mimo", provider="mimo"),
         transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
         thinking_enabled=False,
+        thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
         max_output_tokens=1200,
     )
     agent, _ = await PantheonRuntimeFactory(_catalog(model=model)).create_agent(
@@ -456,4 +560,7 @@ async def test_chat_transport_uses_compatible_alias_for_pro_suffix(monkeypatch):
     )
     assert agent.models[0].startswith("labbiochat-")
     assert agent.models[0].endswith("/mimo-v2.5-pro")
-    assert agent.model_params == {"thinking": False, "max_tokens": 1200}
+    assert agent.model_params == {
+        "thinking": {"type": "disabled"},
+        "max_tokens": 1200,
+    }

@@ -26,6 +26,7 @@ from labbioagentos import (
     PerInvocationPantheonStageInvoker,
     Principal,
     ProviderConfigRef,
+    ProviderThinkingWireFormat,
     ProviderTransport,
     RunStatus,
     RuntimeCapabilityContext,
@@ -63,6 +64,7 @@ def _provider_model() -> str:
         ),
         transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
         thinking_enabled=False,
+        thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
         max_output_tokens=1536,
     )
     return PantheonRuntimeFactory._configure_transport(profile)

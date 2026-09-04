@@ -819,8 +819,10 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   retry target. Accepted commits are `6650f6f`, `a782297`, `e9b9bd7`,
   `90161f4`, and `9b62e1f`.
 - Pantheon remains external and is required at
-  `e2db6289a3daa0b42814c2ab02ad12c038e4428f`; its focused additions preserve
-  canonical parsed tool-call arguments and omit empty reasoning-only replay.
+  `381146326e58720db2fcaf5f47419ae271a5d058`; in addition to preserving
+  canonical parsed tool-call arguments and omitting empty reasoning-only
+  replay, it now preserves reusable provider parameters and emits bounded,
+  content-free provider-turn progress observations.
 - Fresh PBMC run `795906c2-bf04-4955-bad4-debd5c81654f`, retained under
   `.local/c12-pbmc-external-evaluation/83bb359f-1536-4266-af2b-53af35fca7b7`,
   completed one real offline Docker invocation. Execution
@@ -839,8 +841,12 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   Uvicorn warning; the opt-in real-Docker hostile suite also passes.
 - The next fresh run under
   `.local/c12-pbmc-external-evaluation/b59aef51-7370-436b-96b1-6f46c2fbfb04`
-  accepted the constrained finalization schemas through PREFLIGHT, then
-  produced repeated EXECUTE provider turns without a tool call or new
-  persistent evidence. It was interrupted under the two-strike rule before any
-  Docker invocation. This leaves a complete fresh PBMC report lifecycle
-  unproven, while preserving the successful real sandbox result above.
+  accepted the constrained finalization schemas through PREFLIGHT. EXECUTE then
+  spent two long provider turns without observable progress; a third turn made
+  SCHEMA and METADATA `artifact_query` calls, but those calls became visible
+  only when the interrupted trace flushed. No `execution_submit` or Docker
+  invocation occurred. The root cause was that `thinking_enabled=False` became
+  Pantheon's omitted shorthand rather than MiMo's explicit disabled wire value,
+  while reasoning-only turns had no content-free LabBio observation. This
+  leaves a complete fresh PBMC report lifecycle unproven pending one post-fix
+  run, while preserving the successful real sandbox result above.

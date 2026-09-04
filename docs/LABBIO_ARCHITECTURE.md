@@ -21,8 +21,8 @@ bioinformatics methods, runtime scientific reasoning, or production services.
 
 The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
-Pantheon revision remains
-`45ef598f8d79bd98e9befc7c549980b731476662`.
+Pantheon revision is
+`381146326e58720db2fcaf5f47419ae271a5d058`.
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
 PantheonOS. PantheonOS remains an external runtime dependency; LabBio code is not

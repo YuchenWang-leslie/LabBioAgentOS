@@ -39,6 +39,13 @@ class ProviderTransport(StrEnum):
     OPENAI_CHAT_COMPLETIONS = "OPENAI_CHAT_COMPLETIONS"
 
 
+class ProviderThinkingWireFormat(StrEnum):
+    """Trusted mapping from LabBio thinking intent to provider wire syntax."""
+
+    PANTHEON_SHORTHAND = "PANTHEON_SHORTHAND"
+    TYPE_OBJECT = "TYPE_OBJECT"
+
+
 class RuntimeInvocationMode(StrEnum):
     """Protocol mode, not a scientific agent role."""
 
@@ -54,6 +61,9 @@ class ModelProfile(BaseModel):
     provider_config: ProviderConfigRef
     transport: ProviderTransport = ProviderTransport.AUTO
     thinking_enabled: bool = False
+    thinking_wire_format: ProviderThinkingWireFormat = (
+        ProviderThinkingWireFormat.PANTHEON_SHORTHAND
+    )
     max_output_tokens: int | None = Field(default=None, ge=256, le=32_768)
 
 

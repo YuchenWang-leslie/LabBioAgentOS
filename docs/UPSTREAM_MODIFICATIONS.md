@@ -14,9 +14,10 @@ adapter, prompt, or monkey patch. The required source identities are:
 | Nested provider-schema fidelity patch | `02ba577abd41d8b180a0dbb79fd057d2ca15ae42` |
 | Canonical tool-call history replay patch | `0ebbb8bac68b8fa88e2d16439ed9ecae2a746815` |
 | Reasoning-only replay omission patch | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
-| Required LabBio Pantheon revision | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
+| Provider-turn progress and parameter reuse patch | `381146326e58720db2fcaf5f47419ae271a5d058` |
+| Required LabBio Pantheon revision | `381146326e58720db2fcaf5f47419ae271a5d058` |
 
-The five required patch commits form one linear history:
+The six required patch commits form one linear history:
 
 ```text
 5d3d459ac5752ed9d39432232d76ad1581296012
@@ -25,6 +26,7 @@ The five required patch commits form one linear history:
   -> 02ba577abd41d8b180a0dbb79fd057d2ca15ae42
   -> 0ebbb8bac68b8fa88e2d16439ed9ecae2a746815
   -> e2db6289a3daa0b42814c2ab02ad12c038e4428f
+  -> 381146326e58720db2fcaf5f47419ae271a5d058
 ```
 
 `ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
@@ -38,13 +40,18 @@ successfully before replaying them to a provider; unparseable arguments remain
 failures and no nested application value is decoded or repaired. `e2db6289`
 omits a provider-private reasoning-only turn when redaction would otherwise
 leave an invalid empty assistant message; idle accounting is unchanged and no
-reasoning or invented placeholder content is replayed. None of the patches
+reasoning or invented placeholder content is replayed. `38114632` copies
+provider parameters before translating Pantheon's thinking shorthand, exposes
+a content-free provider-turn observation, and accepts a caller-bounded
+no-progress wall-clock. The observation contains only agent/context identity,
+turn number, progress class, elapsed milliseconds, token count, and tool names;
+it never contains provider bodies, message content, or hidden reasoning. None of the patches
 selects scientific methods, routes a LabBio
 stage, repairs model output, or contains a provider/PBMC special case.
 
 The integration source is the user-controlled fork
 `https://github.com/YuchenWang-leslie/PantheonOS`, branch
-`fix/canonical-tool-call-history`. The earlier focused branches remain available. The
+`fix/provider-turn-observability`. The earlier focused branches remain available. The
 fork remains traceable to upstream
 `https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
 part of an official Pantheon release. Do not copy their source into LabBio or
@@ -92,7 +99,7 @@ and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension ->
-adapter/plugin/provider/subclass -> PantheonOS. The five current generic patches
+adapter/plugin/provider/subclass -> PantheonOS. The six current generic patches
 above are the documented exceptions. The following is a deliberately small
 conditional watchlist, not a request to edit additional files now.
 

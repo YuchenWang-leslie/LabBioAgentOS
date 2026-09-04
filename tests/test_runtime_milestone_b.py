@@ -51,6 +51,7 @@ from labbioagentos import (
     Project,
     PromptProfile,
     ProviderConfigRef,
+    ProviderThinkingWireFormat,
     ProviderTransport,
     ReportSubmissionService,
     ResponseSchemaRef,
@@ -165,11 +166,13 @@ def test_provider_transport_and_thinking_are_trusted_model_configuration():
         provider_config=ProviderConfigRef(config_id="external", provider="mimo"),
         transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
         thinking_enabled=False,
+        thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
         max_output_tokens=1200,
     )
     dumped = profile.model_dump(mode="json")
     assert dumped["transport"] == "OPENAI_CHAT_COMPLETIONS"
     assert dumped["thinking_enabled"] is False
+    assert dumped["thinking_wire_format"] == "TYPE_OBJECT"
     assert dumped["max_output_tokens"] == 1200
     assert "api_key" not in dumped and "base_url" not in dumped
 

@@ -61,6 +61,7 @@ class RuntimeStageAssemblySpec:
     preserve_capability_completion: bool = False
     required_capabilities: tuple[str, ...] = ()
     max_capability_turns: int = 24
+    max_no_progress_seconds: int = 300
 
     def __post_init__(self) -> None:
         if self.stage_id in {
@@ -73,6 +74,11 @@ class RuntimeStageAssemblySpec:
             raise ValueError("max_delegate_depth must be positive")
         if self.max_capability_turns < 4 or self.max_capability_turns > 128:
             raise ValueError("max_capability_turns must be between 4 and 128")
+        if (
+            self.max_no_progress_seconds < 30
+            or self.max_no_progress_seconds > 1_800
+        ):
+            raise ValueError("max_no_progress_seconds must be between 30 and 1800")
         if not set(self.required_capabilities).issubset(self.capability_allowlist):
             raise ValueError("required_capabilities must be within the allowlist")
         if not self.capability_phase_enabled and (
@@ -213,6 +219,7 @@ class PerInvocationPantheonStageInvoker:
                 self.assembly.preserve_capability_completion
             ),
             max_turns=self.assembly.max_capability_turns,
+            max_no_progress_seconds=self.assembly.max_no_progress_seconds,
         )
         result = await PantheonTwoModeStageInvoker(
             capability,

@@ -8,7 +8,7 @@ import os
 from collections.abc import Callable, Mapping
 from uuid import UUID, uuid4
 
-from pantheon.agent import Agent
+from pantheon.agent import Agent, NoObservableProgressError, ProviderTurnObservation
 from pantheon.team import PantheonTeam
 from pantheon.toolset import ToolSet
 from pydantic import BaseModel, ValidationError
@@ -38,6 +38,7 @@ from .profiles import (
     CapabilityProfile,
     ModelProfile,
     PromptProfile,
+    ProviderThinkingWireFormat,
     ProviderTransport,
     RenderedPrompt,
     ResponseSchemaRef,
@@ -141,7 +142,9 @@ class PantheonRuntimeFactory:
                 "CAPABILITY mode cannot bind finalization schema control"
             )
         model_identifier = self._configure_transport(model)
-        model_params = {"thinking": model.thinking_enabled}
+        model_params = {
+            "thinking": self._thinking_model_param(model),
+        }
         if model.max_output_tokens is not None:
             model_params["max_tokens"] = model.max_output_tokens
         agent = Agent(
@@ -160,6 +163,18 @@ class PantheonRuntimeFactory:
         if toolset is not None:
             await agent.toolset(toolset)
         return agent, prompt
+
+    @staticmethod
+    def _thinking_model_param(model: ModelProfile) -> bool | dict[str, str]:
+        if model.thinking_wire_format is ProviderThinkingWireFormat.PANTHEON_SHORTHAND:
+            return model.thinking_enabled
+        if model.thinking_wire_format is ProviderThinkingWireFormat.TYPE_OBJECT:
+            return {
+                "type": "enabled" if model.thinking_enabled else "disabled",
+            }
+        raise RuntimeProfileConfigurationError(
+            f"Unsupported thinking wire format {model.thinking_wire_format.value!r}"
+        )
 
     @staticmethod
     def _configure_transport(model: ModelProfile) -> str:
@@ -258,6 +273,7 @@ class PantheonCapabilityStageInvoker:
         trace_recorder: RunTraceRecorder | None = None,
         preserve_explicit_completion: bool = False,
         max_turns: int | None = None,
+        max_no_progress_seconds: int | None = None,
     ):
         if not isinstance(team, PantheonTeam):
             raise TypeError("team must be a PantheonTeam")
@@ -272,6 +288,7 @@ class PantheonCapabilityStageInvoker:
         self.trace_recorder = trace_recorder
         self.preserve_explicit_completion = preserve_explicit_completion
         self.max_turns = max_turns
+        self.max_no_progress_seconds = max_no_progress_seconds
 
     async def invoke(self, stage_input: RuntimeStageInput) -> CapabilityEvidenceBundle:
         for source in self.evidence_sources:
@@ -311,6 +328,12 @@ class PantheonCapabilityStageInvoker:
         )
         active_session = None
         run_kwargs = {"max_turns": self.max_turns} if self.max_turns is not None else {}
+        if self.max_no_progress_seconds is not None:
+            run_kwargs["max_no_progress_seconds"] = self.max_no_progress_seconds
+        if self.trace_recorder is not None:
+            run_kwargs["process_turn_observation"] = lambda observation: (
+                self._record_provider_turn(stage_input, observation)
+            )
         try:
             if plugin is None:
                 response = await self.team.run(
@@ -340,6 +363,24 @@ class PantheonCapabilityStageInvoker:
                         **run_kwargs,
                     )
                     active_session.raise_trace_error()
+        except NoObservableProgressError as exc:
+            error = PantheonRuntimeIntegrationError(
+                "PROVIDER_NO_OBSERVABLE_PROGRESS",
+                "Provider produced no observable progress within the configured budget.",
+            )
+            self._emit(
+                stage_input,
+                TraceEventType.CAPABILITY_PHASE_FAILED,
+                "FAILED",
+                {
+                    "profile_key": self.profile.profile_key,
+                    "error_code": error.error_code,
+                    "correlation_id": str(error.correlation_id),
+                    "elapsed_ms": exc.elapsed_ms,
+                    "turn_count": exc.turn_count,
+                },
+            )
+            raise error from exc
         except Exception as exc:
             if active_session is not None and active_session.is_trace_error(exc):
                 raise
@@ -403,6 +444,81 @@ class PantheonCapabilityStageInvoker:
             },
         )
         return bundle
+
+    def _record_provider_turn(
+        self,
+        stage_input: RuntimeStageInput,
+        observation: ProviderTurnObservation,
+    ) -> None:
+        if self.trace_recorder is None:
+            return
+        if observation.progress_kind not in {
+            "REASONING_ONLY",
+            "THINK_ONLY",
+            "TOOL_CALL",
+            "CONTENT",
+            "EMPTY",
+        }:
+            raise RuntimeProfileConfigurationError(
+                "Pantheon provider-turn progress kind is invalid"
+            )
+        if (
+            not isinstance(observation.agent_name, str)
+            or not 1 <= len(observation.agent_name) <= 128
+            or (
+                observation.execution_context_id is not None
+                and (
+                    not isinstance(observation.execution_context_id, str)
+                    or not 1 <= len(observation.execution_context_id) <= 128
+                )
+            )
+            or not isinstance(observation.turn_index, int)
+            or isinstance(observation.turn_index, bool)
+            or not 1 <= observation.turn_index <= 10_000
+            or not isinstance(observation.observable_progress, bool)
+            or not isinstance(observation.elapsed_ms, int)
+            or isinstance(observation.elapsed_ms, bool)
+            or observation.elapsed_ms < 0
+            or observation.elapsed_ms > 86_400_000
+            or (
+                observation.total_tokens is not None
+                and (
+                    not isinstance(observation.total_tokens, int)
+                    or isinstance(observation.total_tokens, bool)
+                    or not 0 <= observation.total_tokens <= 100_000_000
+                )
+            )
+            or len(observation.tool_names) > 64
+            or any(
+                not isinstance(name, str) or not name or len(name) > 128
+                for name in observation.tool_names
+            )
+        ):
+            raise RuntimeProfileConfigurationError(
+                "Pantheon provider-turn observation is outside safe bounds"
+            )
+        self.trace_recorder.emit(
+            stage_input.run_id,
+            TraceEventType.PROVIDER_TURN_OBSERVED,
+            stage_id=stage_input.stage_id,
+            invocation_id=stage_input.invocation_id,
+            agent_name=observation.agent_name,
+            execution_context_id=observation.execution_context_id,
+            status="OBSERVED",
+            payload={
+                "invocation_mode": RuntimeInvocationMode.CAPABILITY.value,
+                "template_id": self.prompt.template_id,
+                "template_version": self.prompt.version,
+                "template_hash": self.prompt.template_hash,
+                "profile_key": self.profile.profile_key,
+                "turn_index": observation.turn_index,
+                "progress_kind": observation.progress_kind,
+                "observable_progress": observation.observable_progress,
+                "elapsed_ms": observation.elapsed_ms,
+                "total_tokens": observation.total_tokens,
+                "tool_names": list(observation.tool_names),
+            },
+        )
 
     @staticmethod
     def _explicit_completion(response) -> str:
