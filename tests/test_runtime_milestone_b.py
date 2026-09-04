@@ -248,7 +248,13 @@ async def test_malformed_runtime_result_is_bounded_and_raw_body_not_traced():
     with pytest.raises(PantheonRuntimeIntegrationError) as caught:
         await invoker.invoke(_intake_input())
     assert caught.value.error_code == "MALFORMED_RUNTIME_RESULT"
-    assert secret not in json.dumps([event.model_dump(mode="json") for event in sink.read()])
+    encoded = json.dumps([event.model_dump(mode="json") for event in sink.read()])
+    assert secret not in encoded
+    failed = next(
+        event for event in sink.read() if event.event_type is TraceEventType.AGENT_FAILED
+    )
+    assert "stage_id" in failed.payload["validation_error_field_paths"]
+    assert failed.payload["validation_error_types"]
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,14 @@ class OutputContractFailureCode(StrEnum):
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
     RECORD_LIMIT_EXCEEDED = "RECORD_LIMIT_EXCEEDED"
     INVALID_DOCUMENT = "INVALID_DOCUMENT"
+    QUERYABLE_OUTPUT_REQUIRED = "QUERYABLE_OUTPUT_REQUIRED"
+
+
+class ExecutionDiagnosticCode(StrEnum):
+    """Safe technical diagnostic classes derived from process control output."""
+
+    PYTHON_EXCEPTION = "PYTHON_EXCEPTION"
+    PYTHON_MODULE_NOT_FOUND = "PYTHON_MODULE_NOT_FOUND"
 
 
 class OutputDeclassificationMode(StrEnum):
@@ -218,6 +226,44 @@ class ExecutionIssue(BaseModel):
     output_path: StrictStr | None = Field(default=None, min_length=1)
 
 
+class ExecutionDiagnostic(BaseModel):
+    """Bounded process-failure evidence without raw stream or source content."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    code: ExecutionDiagnosticCode
+    exception_type: StrictStr = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
+    )
+    script_line_numbers: tuple[int, ...] = Field(default=(), max_length=16)
+    missing_module: StrictStr | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
+    )
+
+    @field_validator("script_line_numbers")
+    @classmethod
+    def require_positive_unique_lines(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(item < 1 for item in value):
+            raise ValueError("Script line numbers must be positive")
+        if len(set(value)) != len(value):
+            raise ValueError("Script line numbers must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def require_module_only_for_module_error(self) -> "ExecutionDiagnostic":
+        if self.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND:
+            if self.missing_module is None:
+                raise ValueError("Missing-module diagnostics require a module name")
+        elif self.missing_module is not None:
+            raise ValueError("Only missing-module diagnostics may include a module name")
+        return self
+
+
 class ExecutionResult(BaseModel):
     """Model-safe process metadata and references, never unrestricted logs."""
 
@@ -242,6 +288,7 @@ class ExecutionResult(BaseModel):
     error_class: ExecutionFailureClass | None = None
     error_message: StrictStr | None = Field(default=None, max_length=2000)
     issues: tuple[ExecutionIssue, ...] = ()
+    diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -261,12 +308,22 @@ class ExecutionReceipt(BaseModel):
     image_key: StrictStr = Field(min_length=1, max_length=128)
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     exit_code: int | None = None
-    output_artifact_ids: tuple[UUID, ...] = ()
-    stdout_artifact_id: UUID | None = None
-    stderr_artifact_id: UUID | None = None
+    output_artifact_ids: tuple[UUID, ...] = Field(
+        default=(),
+        description="Output Artifact UUIDs that are queryable by remote runtime models.",
+    )
+    stdout_artifact_id: UUID | None = Field(
+        default=None,
+        description="Reserved for compatibility; RAW stdout is never model-queryable.",
+    )
+    stderr_artifact_id: UUID | None = Field(
+        default=None,
+        description="Reserved for compatibility; RAW stderr is never model-queryable.",
+    )
     issue_codes: tuple[ExecutionFailureClass, ...] = ()
     issue_detail_codes: tuple[OutputContractFailureCode, ...] = ()
     issue_messages: tuple[StrictStr, ...] = Field(default=(), max_length=32)
+    diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
     retryable: bool = False
 
     @classmethod
@@ -299,17 +356,16 @@ class ExecutionReceipt(BaseModel):
             script_hash=result.script_hash,
             exit_code=result.exit_code,
             output_artifact_ids=tuple(
-                ref.artifact_id for ref in result.output_artifact_refs
+                ref.artifact_id
+                for ref in result.output_artifact_refs
+                if ref.exposure_class is not ArtifactExposureClass.RAW
             ),
-            stdout_artifact_id=(
-                result.stdout_ref.artifact_id if result.stdout_ref else None
-            ),
-            stderr_artifact_id=(
-                result.stderr_ref.artifact_id if result.stderr_ref else None
-            ),
+            stdout_artifact_id=None,
+            stderr_artifact_id=None,
             issue_codes=codes,
             issue_detail_codes=detail_codes,
             issue_messages=messages,
+            diagnostics=result.diagnostics,
             retryable=any(code in retryable_classes for code in codes),
         )
 

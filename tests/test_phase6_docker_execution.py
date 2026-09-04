@@ -26,6 +26,7 @@ from labbioagentos import (
     ContainerStartError,
     DockerExecutor,
     DockerProcessRunner,
+    ExecutionDiagnosticCode,
     ExecutionFailureClass,
     ExecutionPlan,
     ExecutionPlanRejected,
@@ -129,6 +130,7 @@ def _environment(
     traced=False,
     allow_network=False,
     image_network_allowed=False,
+    minimum_queryable_output_count=0,
 ):
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink) if traced else None
@@ -154,6 +156,7 @@ def _environment(
         output_collector=collector,
         process_runner=runner,
         trace_recorder=recorder,
+        minimum_queryable_output_count=minimum_queryable_output_count,
     )
     return store, executor, sink
 
@@ -449,7 +452,12 @@ def test_valid_bounded_structured_output_becomes_exposable_derived(tmp_path):
         )
 
     runner = FakeDockerRunner(output_writer=write_output)
-    store, executor, _ = _environment(tmp_path, runner, contracts=(contract,))
+    store, executor, _ = _environment(
+        tmp_path,
+        runner,
+        contracts=(contract,),
+        minimum_queryable_output_count=1,
+    )
     plan = _plan(
         requested_outputs=(
             OutputArtifactSpec(
@@ -609,6 +617,9 @@ def test_output_contract_does_not_rewrite_an_unsupported_exposure_request(tmp_pa
 
     assert result.status is ExecutionStatus.FAILED
     assert result.output_artifact_refs[0].exposure_class is ArtifactExposureClass.RAW
+    assert receipt.output_artifact_ids == ()
+    assert receipt.stdout_artifact_id is None
+    assert receipt.stderr_artifact_id is None
     assert receipt.issue_detail_codes == (
         OutputContractFailureCode.REQUESTED_EXPOSURE_UNSUPPORTED,
     )
@@ -705,6 +716,99 @@ def test_non_zero_exit_and_timeout_are_structured(tmp_path):
     assert timed_out.status is ExecutionStatus.TIMED_OUT
     assert timed_out.exit_code is None
     assert timed_out.error_class is ExecutionFailureClass.TIMEOUT
+
+
+def test_non_zero_exit_projects_safe_python_diagnostics_without_raw_stderr(tmp_path):
+    secret = "PRIVATE_PATIENT_VALUE_MUST_NOT_ESCAPE"
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "/labbio/script.py", line 37, in <module>\n'
+        f"    raise RuntimeError({secret!r})\n"
+        f"RuntimeError: {secret}\n"
+    ).encode()
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(exit_code=1, stderr=stderr),
+    )
+
+    receipt = ExecutionReceipt.from_result(executor.execute(_plan()))
+
+    assert receipt.diagnostics[0].code is ExecutionDiagnosticCode.PYTHON_EXCEPTION
+    assert receipt.diagnostics[0].exception_type == "RuntimeError"
+    assert receipt.diagnostics[0].script_line_numbers == (37,)
+    assert secret not in receipt.model_dump_json()
+
+
+def test_missing_python_module_projects_only_safe_module_identity(tmp_path):
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "/labbio/script.py", line 9, in <module>\n'
+        "    import unavailable_module\n"
+        "ModuleNotFoundError: No module named 'unavailable_module'\n"
+    ).encode()
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(exit_code=1, stderr=stderr),
+    )
+
+    receipt = ExecutionReceipt.from_result(
+        executor.execute(_plan(script_content="import unavailable_module\n"))
+    )
+
+    diagnostic = receipt.diagnostics[0]
+    assert diagnostic.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND
+    assert diagnostic.missing_module == "unavailable_module"
+    assert diagnostic.script_line_numbers == (9,)
+
+
+def test_stderr_cannot_forge_a_missing_module_identity(tmp_path):
+    secret = "PRIVATE_PATIENT_IDENTIFIER"
+    stderr = (
+        "Traceback (most recent call last):\n"
+        '  File "/labbio/script.py", line 4, in <module>\n'
+        f"ModuleNotFoundError: No module named '{secret}'\n"
+    ).encode()
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(exit_code=1, stderr=stderr),
+    )
+
+    receipt = ExecutionReceipt.from_result(
+        executor.execute(_plan(script_content="raise RuntimeError()\n"))
+    )
+
+    assert receipt.diagnostics[0].exception_type == "ModuleNotFoundError"
+    assert receipt.diagnostics[0].missing_module is None
+    assert secret not in receipt.model_dump_json()
+
+
+def test_required_queryable_output_rejects_raw_only_success(tmp_path):
+    def write_output(root):
+        (root / "result.txt").write_text("PRIVATE_RAW_RESULT", encoding="utf-8")
+
+    _, executor, _ = _environment(
+        tmp_path,
+        FakeDockerRunner(output_writer=write_output),
+        minimum_queryable_output_count=1,
+    )
+    result = executor.execute(
+        _plan(
+            requested_outputs=(
+                OutputArtifactSpec(
+                    relative_path="result.txt",
+                    artifact_type="text-result",
+                ),
+            )
+        )
+    )
+    receipt = ExecutionReceipt.from_result(result)
+
+    assert result.status is ExecutionStatus.FAILED
+    assert result.output_artifact_refs[0].exposure_class is ArtifactExposureClass.RAW
+    assert receipt.issue_detail_codes == (
+        OutputContractFailureCode.QUERYABLE_OUTPUT_REQUIRED,
+    )
+    assert "PRIVATE_RAW_RESULT" not in receipt.model_dump_json()
 
 
 def test_container_start_failure_is_structured(tmp_path):

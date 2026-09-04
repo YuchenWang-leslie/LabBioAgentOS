@@ -8,7 +8,7 @@ not a future architecture roadmap and does not authorize a later milestone.
 The frozen C12 acceptance used Pantheon revision
 `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. Post-C12 generic execution
 follow-up now requires
-`381146326e58720db2fcaf5f47419ae271a5d058`, which also preserves canonical
+`93ec465c2f4cbbf44d594c4e142971de017ab232`, which also preserves canonical
 tool-call history, omits empty reasoning-only replay messages, preserves
 reusable provider parameters, and emits content-free provider-turn progress
 observations. LabBio exposes
@@ -62,15 +62,18 @@ provider turns invisible until a public message or tool call was flushed.
 Trusted MiMo configuration now sends its explicit disabled-thinking wire
 object, each provider turn has a bounded content-free audit, and 300 cumulative
 seconds without observable progress fails explicitly rather than resembling
-normal completion. A complete fresh PBMC workflow report still requires one
-post-fix run; the successful sandbox result is retained and must not be
-described as a completed report lifecycle.
+normal completion. PLAN, PREFLIGHT, and EXECUTE now receive one identical
+trusted execution capability, including immutable-image module inventory and
+any minimum queryable-output requirement. A non-zero Python exit returns only
+bounded diagnostic identifiers and Agent-script line numbers; raw process
+streams remain internal.
 
-In these PBMC attempts, PLAN did not receive package-availability facts that
-are projected only in PREFLIGHT/EXECUTE; one plan consequently assumed
-Scanpy-like methods although Scanpy was absent. This is retained as a possible
-future environment-grounding/product-quality limitation, not repaired as part
-of the frozen C12 architecture.
+Fresh run `54102b8e-8d5d-4394-93c7-fb0f401aba5e` completed through LEARN,
+released DERIVED execution result `17e7b744-4755-4aa8-aebc-672a6182daac`, and
+persisted report `39f6dd16-8679-4b2a-a0b0-ad05e9e223f4`. This closes the prior
+complete-report reproducibility gap. Provider calls still have high and
+variable latency, and the compatible HTTP stack can emit a non-fatal
+`httpcore2` asynchronous-generator cleanup warning after a completed run.
 
 The previous run's PREFLIGHT failure is not retained as a provider limitation.
 It was `PREFLIGHT_CONTROL_AUTHORITY_DUPLICATION` and was closed by making
@@ -109,9 +112,8 @@ biological identifiers and does not choose scientific methods.
 
 ## Operational status
 
-C12 core architecture is accepted and frozen under the revised criterion.
+C12 core architecture remains accepted and frozen under the revised criterion.
 Local deterministic and real-Docker evidence is green, the host-owned PREFLIGHT
-worked, and failed provider actions remained visible and fail-closed. Post-C12
-follow-up has produced one real successful PBMC sandbox result, but no complete
-fresh PBMC report lifecycle. No source release was deployed and no
-production-service health claim is made.
+worked, and failed provider actions remained visible and fail-closed. The
+post-C12 follow-up now has one complete fresh PBMC sandbox-to-report lifecycle.
+No source release was deployed and no production-service health claim is made.

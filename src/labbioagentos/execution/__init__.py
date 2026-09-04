@@ -18,6 +18,8 @@ from .errors import (
 )
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .models import (
+    ExecutionDiagnostic,
+    ExecutionDiagnosticCode,
     ExecutionFailureClass,
     ExecutionIssue,
     ExecutionPlan,
@@ -64,6 +66,8 @@ __all__ = [
     "DockerExecutor",
     "DockerProcessRunner",
     "ExecutionBoundaryError",
+    "ExecutionDiagnostic",
+    "ExecutionDiagnosticCode",
     "ExecutionFailureClass",
     "ExecutionIssue",
     "ExecutionPlan",

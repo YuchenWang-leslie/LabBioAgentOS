@@ -60,11 +60,29 @@ class PantheonRuntimeIntegrationError(RuntimeError):
         safe_message: str,
         *,
         correlation_id: UUID | None = None,
+        validation_error_field_paths: tuple[str, ...] = (),
+        validation_error_types: tuple[str, ...] = (),
     ):
         self.error_code = error_code
         self.safe_message = safe_message[:1000]
         self.correlation_id = correlation_id or uuid4()
+        self.validation_error_field_paths = validation_error_field_paths[:32]
+        self.validation_error_types = validation_error_types[:32]
         super().__init__(self.safe_message)
+
+
+def _safe_validation_projection(
+    error: ValidationError,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Retain bounded schema locations and codes, never rejected values/messages."""
+
+    paths: list[str] = []
+    error_types: list[str] = []
+    for item in error.errors()[:32]:
+        location = ".".join(str(part)[:64] for part in item.get("loc", ())[:8])
+        paths.append(location[:256] or "<root>")
+        error_types.append(str(item.get("type", "validation_error"))[:128])
+    return tuple(paths), tuple(error_types)
 
 
 class RuntimeProfileCatalog:
@@ -708,9 +726,12 @@ class PantheonTypedStageInvoker:
         except ValidationError as exc:
             if active_session is not None and active_session.is_trace_error(exc):
                 raise
+            field_paths, error_types = _safe_validation_projection(exc)
             error = PantheonRuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Pantheon returned a response that does not satisfy RuntimeStageResult.",
+                validation_error_field_paths=field_paths,
+                validation_error_types=error_types,
             )
             self._emit_failure(stage_input, error)
             raise error from exc
@@ -737,7 +758,17 @@ class PantheonTypedStageInvoker:
                 raise ValueError("Unsupported runtime response value")
             if result.stage_id is not stage_input.stage_id:
                 raise ValueError("Runtime result stage does not match the requested stage")
-        except (ValidationError, ValueError, TypeError) as exc:
+        except ValidationError as exc:
+            field_paths, error_types = _safe_validation_projection(exc)
+            error = PantheonRuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Pantheon returned a response that does not satisfy RuntimeStageResult.",
+                validation_error_field_paths=field_paths,
+                validation_error_types=error_types,
+            )
+            self._emit_failure(stage_input, error)
+            raise error from exc
+        except (ValueError, TypeError) as exc:
             error = PantheonRuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Pantheon returned a response that does not satisfy RuntimeStageResult.",
@@ -781,6 +812,10 @@ class PantheonTypedStageInvoker:
                 "profile_key": self.profile.profile_key,
                 "error_code": error.error_code,
                 "correlation_id": str(error.correlation_id),
+                "validation_error_field_paths": list(
+                    error.validation_error_field_paths
+                ),
+                "validation_error_types": list(error.validation_error_types),
             },
         )
         self._emit(
@@ -791,6 +826,10 @@ class PantheonTypedStageInvoker:
                 "profile_key": self.profile.profile_key,
                 "error_code": error.error_code,
                 "correlation_id": str(error.correlation_id),
+                "validation_error_field_paths": list(
+                    error.validation_error_field_paths
+                ),
+                "validation_error_types": list(error.validation_error_types),
             },
         )
 

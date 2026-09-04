@@ -49,12 +49,14 @@ from labbioagentos import (
     RuntimeInvocationMode,
     RuntimeProfileCatalog,
     RuntimeProfileConfigurationError,
+    RuntimeResultValidationError,
     RuntimeStageInput,
     RuntimeStageResult,
     RuntimeWorkspaceIdentifiers,
     StageRuntimeRegistry,
     StageRuntimeSpec,
     TraceEventType,
+    ValidateStageBody,
     WorkflowEngine,
     WorkflowStage,
     WorkspaceContext,
@@ -539,6 +541,74 @@ async def test_capability_turn_cannot_mutate_workflow_and_only_finalize_reaches_
     assert [name for name, _ in calls] == ["capability", "finalize"]
     assert len(run.stage_results) == 1
     assert run.current_stage is WorkflowStage.UNDERSTAND
+
+
+def test_stage_action_policy_is_projected_and_enforced():
+    class UnusedInvoker:
+        async def invoke(self, _stage_input):  # pragma: no cover
+            raise AssertionError("not invoked")
+
+    registry = StageRuntimeRegistry(
+        (
+            StageRuntimeSpec(
+                stage_id=WorkflowStage.VALIDATE,
+                profile_key="reviewer",
+                prompt_template_key="runtime-generic",
+                capability_allowlist=(),
+                invoker=UnusedInvoker(),
+                retry_enabled=False,
+                user_input_enabled=False,
+            ),
+        )
+    )
+    engine = WorkflowEngine(runtime_workflow_definition())
+    coordinator = RuntimeCoordinatorService(engine, registry)
+    run = engine.create_run(retry_limit=1)
+    engine.start(run)
+    for stage in (
+        WorkflowStage.UNDERSTAND,
+        WorkflowStage.PLAN,
+        WorkflowStage.PREFLIGHT,
+        WorkflowStage.EXECUTE,
+        WorkflowStage.VALIDATE,
+    ):
+        engine.transition(run, stage)
+
+    stage_input = coordinator.build_stage_input(
+        run,
+        instruction="Validate only the technical result.",
+    )
+    assert stage_input.workflow_control is not None
+    assert stage_input.workflow_control.retry_available is False
+    assert stage_input.workflow_control.retry_transition_targets == ()
+    assert stage_input.workflow_control.request_user_input_available is False
+
+    retry = RuntimeStageResult(
+        stage_id=WorkflowStage.VALIDATE,
+        summary="Technical validation passed.",
+        body=ValidateStageBody(
+            technical_status="PASSED",
+            runtime_assessment="Current execution is technically complete.",
+        ),
+        next_action=NextActionProposal(
+            action=NextAction.RETRY,
+            target_stage=WorkflowStage.EXECUTE,
+            reason="Retry despite disabled policy.",
+        ),
+    )
+    with pytest.raises(RuntimeResultValidationError):
+        coordinator.accept_trusted_stage_result(run, retry, uuid4())
+
+    request_input = retry.model_copy(
+        update={
+            "next_action": NextActionProposal(
+                action=NextAction.REQUEST_USER_INPUT,
+                user_prompt="Confirm whether to continue.",
+            )
+        }
+    )
+    with pytest.raises(RuntimeResultValidationError):
+        coordinator.accept_trusted_stage_result(run, request_input, uuid4())
 
 
 @pytest.mark.asyncio

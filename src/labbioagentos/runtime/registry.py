@@ -44,8 +44,14 @@ class StageRuntimeSpec:
     prompt_template_key: str
     capability_allowlist: tuple[str, ...]
     invoker: StageRuntimeInvoker | RuntimeInvokerCallable
+    retry_enabled: bool = True
+    user_input_enabled: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.retry_enabled, bool):
+            raise TypeError("retry_enabled must be a boolean")
+        if not isinstance(self.user_input_enabled, bool):
+            raise TypeError("user_input_enabled must be a boolean")
         if self.stage_id in {
             WorkflowStage.USER_GATE,
             WorkflowStage.SEARCH,

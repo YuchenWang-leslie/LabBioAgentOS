@@ -62,8 +62,14 @@ class RuntimeStageAssemblySpec:
     required_capabilities: tuple[str, ...] = ()
     max_capability_turns: int = 24
     max_no_progress_seconds: int = 300
+    retry_enabled: bool = True
+    user_input_enabled: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.retry_enabled, bool):
+            raise TypeError("retry_enabled must be a boolean")
+        if not isinstance(self.user_input_enabled, bool):
+            raise TypeError("user_input_enabled must be a boolean")
         if self.stage_id in {
             WorkflowStage.USER_GATE,
             WorkflowStage.SEARCH,
@@ -142,6 +148,8 @@ class PerInvocationPantheonStageInvoker:
             or spec.profile_key != expected.root_profile_key
             or spec.prompt_template_key != expected.prompt_template_key
             or tuple(spec.capability_allowlist) != expected.capability_allowlist
+            or spec.retry_enabled is not expected.retry_enabled
+            or spec.user_input_enabled is not expected.user_input_enabled
         ):
             raise RuntimeProfileConfigurationError(
                 "Stage registry and Pantheon assembly bindings do not match"
@@ -304,7 +312,7 @@ class PerInvocationPantheonStageInvoker:
         expected_execution_capability = (
             self.execution_capability
             if self.assembly.stage_id
-            in {WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}
+            in {WorkflowStage.PLAN, WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}
             else None
         )
         if stage_input.execution_capability != expected_execution_capability:

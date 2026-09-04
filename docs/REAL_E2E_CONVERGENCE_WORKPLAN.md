@@ -819,7 +819,7 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   retry target. Accepted commits are `6650f6f`, `a782297`, `e9b9bd7`,
   `90161f4`, and `9b62e1f`.
 - Pantheon remains external and is required at
-  `381146326e58720db2fcaf5f47419ae271a5d058`; in addition to preserving
+  `93ec465c2f4cbbf44d594c4e142971de017ab232`; in addition to preserving
   canonical parsed tool-call arguments and omitting empty reasoning-only
   replay, it now preserves reusable provider parameters and emits bounded,
   content-free provider-turn progress observations.
@@ -850,3 +850,25 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   while reasoning-only turns had no content-free LabBio observation. This
   leaves a complete fresh PBMC report lifecycle unproven pending one post-fix
   run, while preserving the successful real sandbox result above.
+- The post-fix diagnosis then closed four generic authority/recovery gaps. A
+  configured batch stage can remove retry or user-input actions from both the
+  provider-visible result schema and the independent local validator. PLAN now
+  receives the same trusted script-free execution capability as
+  PREFLIGHT/EXECUTE. Immutable image module inventory is structured control
+  state. A host may require a minimum number of queryable execution outputs;
+  RAW-only success then fails with `QUERYABLE_OUTPUT_REQUIRED` rather than
+  leaving downstream stages unable to validate evidence. Non-zero Python exits
+  expose only exception type, Agent-script line numbers, and a syntactically
+  safe missing-module name; raw streams and source remain unavailable.
+- Fresh batch run `54102b8e-8d5d-4394-93c7-fb0f401aba5e`, retained under
+  `.local/c12-pbmc-external-evaluation/69d8e8b3-513b-41d7-ab05-9651c2084fa8`,
+  completed the full path through LEARN. The Agent independently selected its
+  analysis, authored and revised its own program, made six governed offline
+  Docker submissions within the unchanged per-stage retry limit, and released
+  156 bounded records as DERIVED Artifact
+  `17e7b744-4755-4aa8-aebc-672a6182daac`. VALIDATE, INTERPRET, and REPORT
+  queried that Artifact; report Artifact
+  `39f6dd16-8679-4b2a-a0b0-ad05e9e223f4` was persisted and exported as
+  `REPORT.md`. No scientific result was self-scored. Final regression is
+  `443 passed, 12 skipped`; the opt-in real-Docker hostile suite is `1 passed`.
+  No source release or service deployment was performed.

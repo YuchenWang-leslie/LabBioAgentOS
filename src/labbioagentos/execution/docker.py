@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import math
 import os
@@ -30,11 +31,14 @@ from .errors import (
 )
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .models import (
+    ExecutionDiagnostic,
+    ExecutionDiagnosticCode,
     ExecutionFailureClass,
     ExecutionIssue,
     ExecutionPlan,
     ExecutionResult,
     ExecutionStatus,
+    OutputContractFailureCode,
 )
 from .mounts import (
     ExecutionWorkspace,
@@ -273,6 +277,7 @@ class DockerExecutor:
         process_runner: DockerProcessRunner | None = None,
         command_builder: DockerCommandBuilder | None = None,
         trace_recorder: RunTraceRecorder | None = None,
+        minimum_queryable_output_count: int = 0,
     ):
         self.store = store
         self.image_registry = image_registry
@@ -283,6 +288,13 @@ class DockerExecutor:
         self.process_runner = process_runner or SubprocessDockerRunner()
         self.command_builder = command_builder or DockerCommandBuilder()
         self.trace_recorder = trace_recorder
+        if type(minimum_queryable_output_count) is not int:
+            raise TypeError("minimum_queryable_output_count must be an integer")
+        if not 0 <= minimum_queryable_output_count <= 128:
+            raise ValueError(
+                "minimum_queryable_output_count must be between 0 and 128"
+            )
+        self.minimum_queryable_output_count = minimum_queryable_output_count
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """Prepare the workspace and return deterministic argv without launching."""
@@ -452,6 +464,10 @@ class DockerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.NON_ZERO_EXIT,
                 error_message=message,
+                diagnostics=self._safe_python_diagnostics(
+                    outcome.stderr,
+                    script_content=plan.script_content,
+                ),
             )
 
         try:
@@ -476,6 +492,24 @@ class DockerExecutor:
 
         output_refs = tuple(item.ref for item in collected)
         issues = tuple(item.issue for item in collected if item.issue is not None)
+        queryable_output_count = sum(
+            ref.exposure_class is not ArtifactExposureClass.RAW
+            for ref in output_refs
+        )
+        if queryable_output_count < self.minimum_queryable_output_count:
+            issues = (
+                *issues,
+                ExecutionIssue(
+                    error_class=ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                    detail_code=(
+                        OutputContractFailureCode.QUERYABLE_OUTPUT_REQUIRED
+                    ),
+                    message=(
+                        "The configured execution requires at least "
+                        f"{self.minimum_queryable_output_count} queryable output(s)."
+                    ),
+                ),
+            )
         if issues:
             error_class = ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
             message = "One or more declared output contracts failed validation."
@@ -585,6 +619,7 @@ class DockerExecutor:
         stderr_ref: ArtifactRef | None = None,
         output_refs: tuple[ArtifactRef, ...] = (),
         issues: tuple[ExecutionIssue, ...] = (),
+        diagnostics: tuple[ExecutionDiagnostic, ...] = (),
         error_class: ExecutionFailureClass | None = None,
         error_message: str | None = None,
     ) -> ExecutionResult:
@@ -608,6 +643,108 @@ class DockerExecutor:
             error_class=error_class,
             error_message=error_message,
             issues=issues,
+            diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _safe_python_diagnostics(
+        stderr: bytes,
+        *,
+        script_content: str = "",
+    ) -> tuple[ExecutionDiagnostic, ...]:
+        """Extract identifiers and Agent-script line numbers, never raw stderr."""
+
+        text = stderr[-32_768:].decode("utf-8", errors="replace")
+        if "Traceback (most recent call last):" not in text:
+            return ()
+        line_numbers = tuple(
+            dict.fromkeys(
+                int(match)
+                for match in re.findall(
+                    r'^\s*File "/labbio/script\.py", line ([0-9]{1,9}),',
+                    text,
+                    flags=re.MULTILINE,
+                )
+            )
+        )[-16:]
+        missing_module = re.search(
+            r"^ModuleNotFoundError: No module named "
+            r"'([A-Za-z_][A-Za-z0-9_.]{0,127})'\s*$",
+            text,
+            flags=re.MULTILINE,
+        )
+        if missing_module is not None:
+            imported_modules: set[str] = set()
+            try:
+                tree = ast.parse(script_content)
+            except SyntaxError:
+                tree = None
+            if tree is not None:
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        imported_modules.update(alias.name for alias in node.names)
+                    elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                        imported_modules.add(node.module)
+            module_name = missing_module.group(1)
+            if any(
+                module_name == imported
+                or module_name.startswith(imported + ".")
+                or imported.startswith(module_name + ".")
+                for imported in imported_modules
+            ):
+                return (
+                    ExecutionDiagnostic(
+                        code=ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND,
+                        exception_type="ModuleNotFoundError",
+                        script_line_numbers=line_numbers,
+                        missing_module=module_name,
+                    ),
+                )
+        exception_lines = re.findall(
+            r"^([A-Za-z_][A-Za-z0-9_.]{0,127})(?::.*)?$",
+            text,
+            flags=re.MULTILINE,
+        )
+        safe_exception_types = {
+            "ArithmeticError",
+            "AssertionError",
+            "AttributeError",
+            "EOFError",
+            "Exception",
+            "ImportError",
+            "IndexError",
+            "KeyError",
+            "LookupError",
+            "MemoryError",
+            "ModuleNotFoundError",
+            "NameError",
+            "NotImplementedError",
+            "OSError",
+            "OverflowError",
+            "RuntimeError",
+            "StopIteration",
+            "SyntaxError",
+            "TypeError",
+            "UnicodeError",
+            "ValueError",
+            "ZeroDivisionError",
+        }
+        exception_type = next(
+            (
+                candidate
+                for candidate in reversed(exception_lines)
+                if candidate in safe_exception_types
+            ),
+            None,
+        )
+        if exception_type is None:
+            return ()
+        return (
+            ExecutionDiagnostic(
+                code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
+                exception_type=exception_type,
+                script_line_numbers=line_numbers,
+            ),
         )
 
     def _emit_failure(

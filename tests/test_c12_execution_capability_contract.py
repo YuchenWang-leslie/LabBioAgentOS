@@ -358,6 +358,7 @@ def _trusted_view() -> RuntimeExecutionCapabilityView:
                 key="python-c12",
                 reference="sha256:" + "a" * 64,
                 runtime=ExecutionRuntime.PYTHON,
+                available_python_modules=("h5py", "numpy"),
             ),
         )
     )
@@ -369,6 +370,7 @@ def _trusted_view() -> RuntimeExecutionCapabilityView:
         ),
         network_required=False,
         output_contract_ids=("scalar.v1",),
+        minimum_queryable_output_count=1,
         image_registry=image_registry,
         execution_policy=ExecutionPolicy(),
         registration_policy=ArtifactRegistrationPolicy((contract,)),
@@ -410,6 +412,13 @@ def test_ec4_approved_output_contracts_are_present():
     )
     assert contract.document_type == "JSON_RECORDS"
     assert contract.document_required_keys == ("schema_id", "records")
+
+
+def test_ec4a_image_modules_and_output_requirement_are_structured_control_state():
+    view = _trusted_view()
+
+    assert view.available_python_modules == ("h5py", "numpy")
+    assert view.minimum_queryable_output_count == 1
 
 
 def test_ec5_allowed_and_required_fields_are_bounded_and_deterministic():
@@ -464,11 +473,12 @@ def test_ec8_untrusted_stage_body_cannot_override_capability_view():
     assert coordinator._execution_capability_for_stage(WorkflowStage.EXECUTE) == view
 
 
-def test_ec9_preflight_and_execute_receive_consistent_capability_state():
+def test_ec9_plan_preflight_and_execute_receive_consistent_capability_state():
     view = _trusted_view()
     coordinator = RuntimeCoordinatorService.__new__(RuntimeCoordinatorService)
     coordinator.execution_capability = view
 
+    assert coordinator._execution_capability_for_stage(WorkflowStage.PLAN) == view
     assert coordinator._execution_capability_for_stage(WorkflowStage.PREFLIGHT) == view
     assert coordinator._execution_capability_for_stage(WorkflowStage.EXECUTE) == view
 

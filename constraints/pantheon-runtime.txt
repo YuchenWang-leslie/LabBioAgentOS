@@ -1,2 +1,2 @@
 # Reproducible LabBio development/runtime checkout; not an upstream release pin.
-pantheon-agents @ git+https://github.com/YuchenWang-leslie/PantheonOS.git@381146326e58720db2fcaf5f47419ae271a5d058
+pantheon-agents @ git+https://github.com/YuchenWang-leslie/PantheonOS.git@93ec465c2f4cbbf44d594c4e142971de017ab232

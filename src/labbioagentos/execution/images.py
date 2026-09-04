@@ -32,6 +32,14 @@ class ApprovedImage(BaseModel):
     runtime: ExecutionRuntime
     executable: tuple[StrictStr, ...] = ("python",)
     network_allowed: bool = False
+    available_python_modules: tuple[StrictStr, ...] = Field(
+        default=(),
+        max_length=256,
+        description=(
+            "Trusted import-module inventory for this immutable image; an empty "
+            "tuple means the inventory is unspecified."
+        ),
+    )
 
     @field_validator("reference")
     @classmethod
@@ -58,6 +66,15 @@ class ApprovedImage(BaseModel):
         if pinned_reference is not None and self.digest is not None:
             if pinned_reference.group(1) != self.digest:
                 raise ValueError("Approved image reference and digest do not match")
+        if len(set(self.available_python_modules)) != len(
+            self.available_python_modules
+        ):
+            raise ValueError("Available Python module names must be unique")
+        if any(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", name) is None
+            for name in self.available_python_modules
+        ):
+            raise ValueError("Available Python module names must be import names")
         return self
 
     @property

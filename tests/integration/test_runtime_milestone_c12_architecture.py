@@ -317,6 +317,8 @@ def _assemblies() -> tuple[RuntimeStageAssemblySpec, ...]:
             capability_phase_enabled=bool(CAPABILITIES[stage]),
             required_capabilities=REQUIRED_CAPABILITIES.get(stage, ()),
             max_capability_turns=16,
+            retry_enabled=stage is not WorkflowStage.VALIDATE,
+            user_input_enabled=False,
         )
         for stage in MAIN_PATH
     )
@@ -417,6 +419,7 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
                     reference=REAL_PYTHON_IMAGE_ID,
                     runtime=ExecutionRuntime.PYTHON,
                     network_allowed=False,
+                    available_python_modules=("json",),
                 ),
             ),
             output_contracts=(_contract(),),
@@ -433,6 +436,7 @@ async def test_one_full_provider_run_closes_c12(tmp_path):
                 resources=RESOURCES,
                 network_required=False,
                 output_contract_ids=(CONTRACT_ID,),
+                minimum_queryable_output_count=1,
             ),
             bioformat_inspectors=(RepresentativeBioJsonInspector(),),
             trace_sink=JsonlTraceSink(run_root / "run-trace.jsonl"),

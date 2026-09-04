@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from labbioagentos.contracts import (
     AgentStageResult,
     GateUserDecision,
+    NextAction,
     RunStatus,
     WorkflowRun,
     WorkflowStage,
@@ -110,6 +111,21 @@ class RuntimeCoordinatorService:
             for record in run.gate_decisions[-32:]
             if record.source_stage is stage
         )
+        workflow_control = RuntimeWorkflowControlView.from_run(
+            self.engine.definition,
+            run,
+        )
+        if not spec.retry_enabled:
+            workflow_control = workflow_control.model_copy(
+                update={
+                    "retry_available": False,
+                    "retry_transition_targets": (),
+                }
+            )
+        if not spec.user_input_enabled:
+            workflow_control = workflow_control.model_copy(
+                update={"request_user_input_available": False}
+            )
         return RuntimeStageInput(
             run_id=run.run_id,
             stage_id=stage,
@@ -128,10 +144,7 @@ class RuntimeCoordinatorService:
             gold_candidate_references=gold_candidate_references,
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
-            workflow_control=RuntimeWorkflowControlView.from_run(
-                self.engine.definition,
-                run,
-            ),
+            workflow_control=workflow_control,
             execution_capability=self._execution_capability_for_stage(stage),
             body=body or RuntimeInputBody(),
         )
@@ -139,7 +152,11 @@ class RuntimeCoordinatorService:
     def _execution_capability_for_stage(
         self, stage: WorkflowStage
     ) -> RuntimeExecutionCapabilityView | None:
-        if stage in {WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}:
+        if stage in {
+            WorkflowStage.PLAN,
+            WorkflowStage.PREFLIGHT,
+            WorkflowStage.EXECUTE,
+        }:
             return self.execution_capability
         return None
 
@@ -192,8 +209,19 @@ class RuntimeCoordinatorService:
                 "Trusted stage result requires a running run with a current stage"
             )
         stage = run.current_stage
-        self.registry.get(stage)
+        spec = self.registry.get(stage)
         result = self._validate_result(raw_result, stage)
+        if result.next_action.action is NextAction.RETRY and not spec.retry_enabled:
+            raise RuntimeResultValidationError(
+                f"Retry is disabled for configured stage {stage.value}"
+            )
+        if (
+            result.next_action.action is NextAction.REQUEST_USER_INPUT
+            and not spec.user_input_enabled
+        ):
+            raise RuntimeResultValidationError(
+                f"User input is disabled for configured stage {stage.value}"
+            )
         # Validate before recording so an illegal proposal cannot partially
         # update workflow results or trace. No action is inferred or applied.
         self.engine.validate_proposal(run, result.next_action)

@@ -255,6 +255,23 @@ class RuntimeExecutionCapabilityView(BaseModel):
     image_key: StrictStr = Field(min_length=1, max_length=128)
     resources: RequestedResources
     network_required: bool
+    available_python_modules: tuple[StrictStr, ...] = Field(
+        default=(),
+        max_length=256,
+        description=(
+            "Trusted import-module inventory for the approved immutable image; "
+            "empty means unspecified."
+        ),
+    )
+    minimum_queryable_output_count: int = Field(
+        default=0,
+        ge=0,
+        le=128,
+        description=(
+            "Minimum outputs that must pass an approved release contract so "
+            "downstream runtime stages can query execution evidence."
+        ),
+    )
     mountable_input_artifact_ids: tuple[UUID, ...] = Field(
         default=(),
         max_length=128,
@@ -276,6 +293,7 @@ class RuntimeExecutionCapabilityView(BaseModel):
         resources: RequestedResources,
         network_required: bool,
         output_contract_ids: tuple[str, ...],
+        minimum_queryable_output_count: int = 0,
         image_registry: ApprovedImageRegistry,
         execution_policy: ExecutionPolicy,
         registration_policy: ArtifactRegistrationPolicy,
@@ -298,6 +316,8 @@ class RuntimeExecutionCapabilityView(BaseModel):
             image_key=image_key,
             resources=resources,
             network_required=network_required,
+            available_python_modules=image.available_python_modules,
+            minimum_queryable_output_count=minimum_queryable_output_count,
             approved_output_contracts=tuple(
                 RuntimeApprovedOutputContractView(
                     contract_id=contract.contract_id,
@@ -714,11 +734,12 @@ class RuntimeStageInput(BaseModel):
         if len(prior_json.encode("utf-8")) > 256_000:
             raise ValueError("Prior result context exceeds 256000 bytes")
         if self.execution_capability is not None and self.stage_id not in {
+            WorkflowStage.PLAN,
             WorkflowStage.PREFLIGHT,
             WorkflowStage.EXECUTE,
         }:
             raise ValueError(
-                "Execution capability state is limited to PREFLIGHT and EXECUTE"
+                "Execution capability state is limited to PLAN, PREFLIGHT, and EXECUTE"
             )
         return self
 

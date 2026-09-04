@@ -15,9 +15,10 @@ adapter, prompt, or monkey patch. The required source identities are:
 | Canonical tool-call history replay patch | `0ebbb8bac68b8fa88e2d16439ed9ecae2a746815` |
 | Reasoning-only replay omission patch | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
 | Provider-turn progress and parameter reuse patch | `381146326e58720db2fcaf5f47419ae271a5d058` |
-| Required LabBio Pantheon revision | `381146326e58720db2fcaf5f47419ae271a5d058` |
+| Compatible-provider thinking transport patch | `93ec465c2f4cbbf44d594c4e142971de017ab232` |
+| Required LabBio Pantheon revision | `93ec465c2f4cbbf44d594c4e142971de017ab232` |
 
-The six required patch commits form one linear history:
+The seven required patch commits form one linear history:
 
 ```text
 5d3d459ac5752ed9d39432232d76ad1581296012
@@ -27,6 +28,7 @@ The six required patch commits form one linear history:
   -> 0ebbb8bac68b8fa88e2d16439ed9ecae2a746815
   -> e2db6289a3daa0b42814c2ab02ad12c038e4428f
   -> 381146326e58720db2fcaf5f47419ae271a5d058
+  -> 93ec465c2f4cbbf44d594c4e142971de017ab232
 ```
 
 `ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
@@ -45,14 +47,17 @@ provider parameters before translating Pantheon's thinking shorthand, exposes
 a content-free provider-turn observation, and accepts a caller-bounded
 no-progress wall-clock. The observation contains only agent/context identity,
 turn number, progress class, elapsed milliseconds, token count, and tool names;
-it never contains provider bodies, message content, or hidden reasoning. None of the patches
-selects scientific methods, routes a LabBio
-stage, repairs model output, or contains a provider/PBMC special case.
+it never contains provider bodies, message content, or hidden reasoning.
+`93ec465c` sends an explicitly configured structured thinking extension through
+the OpenAI SDK's `extra_body` for compatible base URLs; direct/native provider
+behavior remains unchanged. None of the patches selects scientific methods,
+routes a LabBio stage, repairs model output, or contains a provider/PBMC special
+case.
 
 The integration source is the user-controlled fork
 `https://github.com/YuchenWang-leslie/PantheonOS`, branch
-`fix/provider-turn-observability`. The earlier focused branches remain available. The
-fork remains traceable to upstream
+`fix/provider-turn-observability`. The earlier focused branches remain
+available. The fork remains traceable to upstream
 `https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
 part of an official Pantheon release. Do not copy their source into LabBio or
 monkey-patch Pantheon at LabBio import time.
@@ -99,7 +104,7 @@ and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension ->
-adapter/plugin/provider/subclass -> PantheonOS. The six current generic patches
+adapter/plugin/provider/subclass -> PantheonOS. The seven current generic patches
 above are the documented exceptions. The following is a deliberately small
 conditional watchlist, not a request to edit additional files now.
 

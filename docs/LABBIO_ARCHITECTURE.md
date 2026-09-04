@@ -22,7 +22,7 @@ bioinformatics methods, runtime scientific reasoning, or production services.
 The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
 Pantheon revision is
-`381146326e58720db2fcaf5f47419ae271a5d058`.
+`93ec465c2f4cbbf44d594c4e142971de017ab232`.
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
 PantheonOS. PantheonOS remains an external runtime dependency; LabBio code is not
@@ -229,6 +229,22 @@ observability without modifying Pantheon core.
 ### Execution and artifact plane
 
 Raw biological data remains local and must not be inserted into agent prompts, tool-result `content`, arbitrary dataframe previews, or unrestricted file reads. A Docker execution capability will consume artifact references and an LLM-generated execution plan, apply deterministic command/path/resource restrictions, and return execution records plus artifact references.
+
+PLAN, PREFLIGHT, and EXECUTE receive the same host-authored, script-free
+execution capability. It may include an immutable-image Python module inventory
+and an explicit minimum queryable-output count. The latter defaults to zero;
+when enabled for a downstream model workflow, a RAW-only process success is an
+`OUTPUT_CONTRACT_FAILURE` until an approved contract releases enough bounded
+outputs. Non-zero Python exits project only an exception identifier, line
+numbers in the Agent-authored `/labbio/script.py`, and a safe missing-module
+identifier when applicable. RAW stdout/stderr IDs and content remain outside
+the model-visible receipt and stay available only to trusted local audit.
+
+Runtime stage assemblies independently configure whether retry and interactive
+user input are available. Those booleans narrow both the graph-derived action
+schema shown to the provider and the local result validator; they never infer
+or rewrite an action. Batch evaluation disables user input, while interactive
+assemblies retain the default availability.
 
 `ArtifactStore` owns artifact bytes and metadata. `ExposurePolicy` produces an explicit LLM-visible view. Examples of potentially exposable derived results include aggregate QC, top DEGs, enrichment tables, marker summaries, ligand-receptor results, and trajectory-associated genes, subject to artifact policy and user approval.
 

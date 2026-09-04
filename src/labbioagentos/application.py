@@ -397,6 +397,7 @@ class ApplicationExecutionProfile(BaseModel):
     resources: RequestedResources = Field(default_factory=RequestedResources)
     network_required: bool = False
     output_contract_ids: tuple[StrictStr, ...] = Field(default=(), max_length=128)
+    minimum_queryable_output_count: int = Field(default=0, ge=0, le=128)
 
     @model_validator(mode="after")
     def reject_duplicate_contracts(self) -> "ApplicationExecutionProfile":
@@ -667,6 +668,9 @@ class LabBioApplication:
                 resources=profile.resources,
                 network_required=profile.network_required,
                 output_contract_ids=profile.output_contract_ids,
+                minimum_queryable_output_count=(
+                    profile.minimum_queryable_output_count
+                ),
                 image_registry=self.image_registry,
                 execution_policy=self.execution_policy,
                 registration_policy=self.registration_policy,
@@ -699,6 +703,9 @@ class LabBioApplication:
                 max_output_file_bytes=self.execution_policy.max_output_file_bytes
             ),
             trace_recorder=self.trace_recorder,
+            minimum_queryable_output_count=(
+                profile.minimum_queryable_output_count if profile is not None else 0
+            ),
         )
         self.execution_submission = ExecutionSubmissionService(
             artifact_store=self.artifact_store,
@@ -1410,6 +1417,8 @@ class LabBioApplication:
                     prompt_template_key=assembly.prompt_template_key,
                     capability_allowlist=assembly.capability_allowlist,
                     invoker=invoker,
+                    retry_enabled=assembly.retry_enabled,
+                    user_input_enabled=assembly.user_input_enabled,
                 )
             )
         return RuntimeCoordinatorService(
