@@ -1,0 +1,44 @@
+{
+  "version": "local-v1",
+  "capability_common": "CAPABILITY MODE for exact stage {stage}. Use only exposed LabBio capabilities. RAW Artifacts are executable inputs, never model-visible evidence. Do not reproduce raw entries, observation rows, complete feature lists, paths, scripts after submission, process streams, provider bodies, credentials, or hidden reasoning. Do not emit a RuntimeStageResult during capability mode.",
+  "finalization_protocol": "FINALIZE MODE for exact stage {stage}. Capabilities are unavailable. Obey the supplied typed response schema and evidence_grounding control. Treat prior model prose as MODEL_CONTEXT and capability results only at their typed item-level authority. Return exactly one bounded RuntimeStageResult for this stage. Choose a NextActionProposal from the graph-derived workflow_control: targets are valid only when listed for that action, and retry, user input, or finish is available only when its corresponding flag is true. Do not grade overall scientific quality or invent missing evidence. Preserve useful opaque references and explicit limitations. Do not include RAW values, paths, scripts, process streams, provider bodies, credentials, or hidden reasoning.",
+  "stages": [
+    {
+      "stage": "INTAKE", "root": "coordinator",
+      "capabilities": ["artifact_list"], "required_capabilities": ["artifact_list"],
+      "capability_protocol": "List the governed artifacts and establish which opaque RAW inputs and optional inspection companions are available. A RAW input alone is valid input and has no remotely readable view."
+    },
+    {
+      "stage": "UNDERSTAND", "root": "coordinator",
+      "capabilities": ["artifact_list", "artifact_query"],
+      "capability_protocol": "Use available governed facts and optional trusted STRUCTURAL or AGGREGATE companions. No inspection companion is required. When only RAW input exists, its contents remain unavailable to remote views and can be inspected only by an Agent-owned execution program. Establish only facts actually available."
+    },
+    {"stage": "PLAN", "root": "coordinator"},
+    {"stage": "PREFLIGHT", "root": "coordinator"},
+    {
+      "stage": "EXECUTE", "root": "execution",
+      "capabilities": ["artifact_query", "execution_submit"], "required_capabilities": ["execution_submit"],
+      "capability_protocol": "Use the trusted execution_capability state and provider-visible tool schema. Choose the scientific question, method, parameters, program, and output intent yourself. Treat available_python_modules and minimum_queryable_output_count as authoritative. When the minimum is nonzero, satisfy it through an approved output contract so downstream stages can inspect the result. Explicitly select needed UUIDs from execution_capability.mountable_input_artifact_ids, then read their UUID-to-path mappings from LABBIO_INPUT_MANIFEST_PATH without assuming filenames or suffixes. Write only declared files beneath LABBIO_OUTPUT_DIR. Do not treat an exposure request as release authority."
+    },
+    {
+      "stage": "VALIDATE", "root": "reviewer", "capabilities": ["artifact_query"],
+      "capability_protocol": "Inspect governed current execution evidence that is actually queryable. Record technical status and limitations without assigning an overall scientific quality score; scientific evaluation is external."
+    },
+    {
+      "stage": "INTERPRET", "root": "coordinator", "capabilities": ["artifact_query"],
+      "capability_protocol": "Inspect governed evidence as needed and form a cautious interpretation bounded by what is accessible. Preserve uncertainty and limitations."
+    },
+    {
+      "stage": "REPORT", "root": "coordinator", "capabilities": ["artifact_query", "report_submit"],
+      "required_capabilities": ["report_submit"],
+      "capability_protocol": "Inspect governed evidence as needed, write a clear evidence-bounded report of the Agent's chosen analysis, and submit it through report_submit. If evidence is unavailable, state that limitation rather than inventing it."
+    },
+    {"stage": "LEARN", "root": "coordinator"}
+  ],
+  "output_contract": {
+    "contract_id": "local-flat-records-v1", "schema_id": "labbio.local.flat-records.v1",
+    "allowed_fields": ["record_type", "metric", "value", "count", "minimum", "maximum", "mean", "median", "q05", "q25", "q75", "q95", "unit", "label", "group", "comparison", "estimate", "statistic", "p_value", "adjusted_p_value", "effect_size", "explanation"],
+    "required_fields": ["record_type"], "max_records": 256, "max_file_bytes": 1048576,
+    "declassification_mode": "BOUNDED_SCALARS"
+  }
+}

@@ -1137,3 +1137,34 @@ raw-program/process-stream, provider-body, or hidden-reasoning leakage. Explicit
 next-action reasons remain distinct from hidden reasoning. Exported report bytes
 exactly match the persisted model-authored Artifact. No Gold/Skill/Memory events
 or calls occurred. Delivery index links resolve to the original unchanged files.
+
+## Local natural-language task entrypoint (2026-09-07)
+
+The user authorized packaging the working model composition, not a core rewrite,
+and one new simple task through the resulting entrypoint. Changes are isolated
+on `feat/local-task-entrypoint`; main/V0.1 and Pantheon remain unchanged.
+The verified Git top-level is `WYC/projects/LabBioAgentOS` in this checkout.
+
+`labbio run/status/export` wraps existing application APIs. User task/preferences
+remain text; explicit selected data become RAW inputs, with optional explicit
+H5AD inspection. A trusted external TOML binds local scope, allowed roots,
+existing immutable image/resources, external provider credentials and model.
+The packaged external JSON profile preserves existing stage/capability controls
+without hard-coding scientific choices. SQLite and JSONL persist each independent
+run, with exact effective-config/profile/source revision checks for reconstruction.
+Local delivery copies registered output bytes and model-authored report content;
+it does not create scientific output or change remote exposure authority.
+
+This is a local foreground entrypoint, not authenticated user/project service,
+chat clarification, background scheduling, crash replay or new Gold integration.
+See `LOCAL_TASK_ENTRYPOINT.md` for usage and limitations. New deterministic
+wrapper tests and full regression passed: 559 passed, 14 skipped, one existing
+Uvicorn warning. The separate real-Docker suite passed all three tests. The
+installed console command works; a fresh small-table live run is next. No live
+acceptance is claimed at this preparation point.
+
+Wrapper review corrected input-symlink resolution and canonical delivery-path
+containment before acceptance; regression preserves rejection of adjacent unsafe
+states. CLI stderr reduces unstructured provider diagnostics to severity-only
+events, while typed failures and in-flight markers remain in the governed
+evidence. No provider body is printed to make the command seem more observable.

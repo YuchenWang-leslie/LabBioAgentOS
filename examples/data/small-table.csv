@@ -1,0 +1,7 @@
+record_id,group,measurement,duration_minutes
+sample-a,alpha,12.5,4
+sample-b,alpha,14.0,6
+sample-c,beta,9.5,3
+sample-d,beta,11.0,5
+sample-e,alpha,15.5,7
+sample-f,beta,10.0,4

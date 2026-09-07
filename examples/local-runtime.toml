@@ -1,0 +1,30 @@
+# Copy outside the repository and configure once. Relative paths use this file's directory.
+# Credentials belong only in the external provider env file, never this TOML.
+result_root = "../result"
+input_roots = ["../data"]
+default_format = "raw"
+# profile = "./local-profile.json"  # Optional explicit external protocol profile.
+
+[identity]
+user_id = "local-user"
+project_id = "local-project"
+lab_id = "local-lab"
+
+[provider]
+env_file = "~/.config/labbioagent/provider.env"
+api_key_env = "MIMO_API_KEY"
+base_url_env = "MIMO_BASE_URL"
+model_identifier = "mimo-v2.5-pro"
+max_output_tokens = 16384
+
+[execution]
+image_key = "scientific-python"
+# Replace with the exact immutable identity of an already available image.
+image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []  # Enter the actual approved image inventory; no installation occurs.
+
+[execution.resources]
+cpus = 4.0
+memory_mb = 4096
+pids_limit = 128
+timeout_seconds = 900.0

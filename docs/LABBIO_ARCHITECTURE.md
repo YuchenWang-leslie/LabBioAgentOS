@@ -31,6 +31,14 @@ placed inside or moved into the PantheonOS repository.
 
 ## Approved architecture
 
+The optional [local task entrypoint](LOCAL_TASK_ENTRYPOINT.md) composes the
+existing application as `labbio run/status/export`. It accepts explicit input
+files, natural-language task text and preferences, with trusted deployment
+configuration outside the repository. SQLite persists each independent run;
+local delivery copies registered output bytes without writing analysis or
+reports. This adapter does not change the approved core below, add scientific
+routing, or implement authenticated multi-user services.
+
 ```text
 User / API
     |
