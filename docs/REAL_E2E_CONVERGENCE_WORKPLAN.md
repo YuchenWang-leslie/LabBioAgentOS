@@ -1510,7 +1510,7 @@ production web multi-tenancy. No GitHub push or production deployment is request
 
 Final pre-live regression is 668 passed, 15 skipped, one existing warning;
 separate real-Docker security regression is 3 passed. TEST1 and PRJ1 are now
-registered, external credential is0600, project input is a separate 7503527-byte
+registered, external credential is 0600, project input is a separate 7503527-byte
 copy with matching SHA256
 `14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
 The source file remains unchanged. Personal Gold catalog is empty as intended.
@@ -1519,3 +1519,66 @@ from the original runtime config; it reuses the existing provider and immutable
 image without modifying either. Freeze code/config now for one fresh PBMC
 overview through authenticated TEST1/PRJ1, without scientific instructions beyond
 the unchanged previous user task and preference.
+
+### Managed TEST1/PRJ1 real verification completed
+
+Frozen implementation `02f15488455c45e9733a046e4f1cae464e358910` on
+`feat/user-project-workspaces` completed the fresh real run
+`d194f98a-8dee-4a9f-a47a-5285292097b3` at
+`WYC/projects/test/TEST1/projects/PRJ1/runs/pbmc-overview-20260907`.
+It reached COMPLETED/LEARN/STABLE with all nine workflow stages, no pending or
+inflight state and no workflow retry. PREFLIGHT remained host-owned; eight actual
+model-stage identities and all nine registered Artifacts are TEST1/PRJ1/local-lab.
+The exact same TEST1 credential attempting the old repository input path was
+denied before provider/run creation; its requested output directory does not exist.
+
+There was one actual Docker execution,
+`daa9cb49-af6f-454e-bf06-a9acc1e59577`, exit 0/SUCCEEDED in 1.2431 seconds.
+Script SHA256
+`ca330c1504a84d4f82b0e0229c2b472f26c4e6d447cae398bc5df926b2747671`
+matches submitted/stored evidence. Mechanical dataflow reads exact RAW input
+`532d8aa1-db51-4fc2-abf7-21cf0c7db32a` from the runtime input manifest into
+`ad.read_h5ad`. No scientific method, value, code or report was supplied by Codex.
+
+Read-only Docker inspection captured the real container: exactly five mounts,
+all host sources within this run (read-only script, parameters, manifest and one
+selected CAS input; writable task output directory). There was no Gold, registry,
+credential or user-directory mount; network=none and container root read-only.
+The Docker observer exited and no task container remains.
+
+DERIVED summary `b31f7520-6876-49e0-83d1-156e0c838c96` is 1320 bytes,
+SHA256 `7bc637ac717ad5cca9a77033e17a4beade291da802e2ab9a3873f0e0ae74aae0`.
+The separate 1053-byte script-produced report remains RAW. Final Agent submission
+`09f72a82-d1ac-4ca9-ab37-b6972d9a2612` is MODEL_AUTHORED_REPORT and exports to
+`delivery/REPORT.md`, 1727 bytes,
+SHA256 `3575dda690c689cd1f34b62a69196a23a32801bd9e7d9a17def18ea123d9d323`.
+Its REPORT invocation, trace receipt and current DERIVED evidence reference match;
+the report and both execution-output copies match exact registered content.
+Separate-process status and repeated export pass under the frozen configuration.
+
+The 23 model-boundary entries contain no TEST1 credential, credential-file path
+or host paths. REQUEST/RUNTIME intentionally preserve local data/root paths,
+but contain no user token or credential-file path. Personal Gold owner is TEST1;
+catalog, candidates, approvals and usage remain empty. Four empty catalog
+searches and an invalid use request did not authorize a Skill or block final
+completion. This live run proves empty-Gold behavior and scoped execution, not
+real Gold selection/curation/reuse; those new outer paths have deterministic
+service/CLI/restart/gate coverage only. No user approval was fabricated.
+
+Failures are retained: five ARTIFACT_EXPOSURE_DENIED, six INVALID_QUERY_SHAPE,
+and one INVALID_REQUEST (the safe audit records proposed Skill version 0; missing
+arguments are not inferred). No failed call was repaired, hidden or replayed by
+Codex. Provider stream teardown printed an async-generator shutdown warning
+(`generator didn't stop after athrow()`) after finished/export; process exit was 0,
+durable state and subsequent reads were correct. This provider HTTP-client
+shutdown diagnostic is not suppressed; its root cause remains unresolved in this
+outer-layer task.
+
+Final regression is 668 passed/15 skipped plus the existing Uvicorn warning; real
+Docker security suite 3 passed. Main/V0.1 stay at `8d6b24ff`, Pantheon remains clean
+at `7b02bcba`, no production service/profile/Gold promotion or GitHub push occurred.
+Docker/containerd/docker.socket are active. Credentials, database, data and runs
+stay outside the source Git repository; the original PBMC input remains intact.
+No historical failed/interrupted run was deleted or repaired. Stop at user review
+of the managed report; next entry is an explicit task or Gold curation/approval
+request using this same authenticated project, not another automatic live run.

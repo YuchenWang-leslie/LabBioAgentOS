@@ -124,3 +124,11 @@ Gold 版本。完整来源和流程可跨进程恢复，但仍须匹配源运行
 重启、旧入口回归、个人 Gold 的跨项目可见与跨用户拒绝，以及工具/审批/阶段
 交接。确定性模型 fixture 只验证协议，不代表真实模型会选对 Gold 或科学分析
 必然成功。具体 live 和测试结果记录在 `REAL_E2E_CONVERGENCE_WORKPLAN.md`。
+
+本次验收：668项通过、15项跳过，另有3项真实 Docker 安全测试通过。
+TEST1/PRJ1 的真实 PBMC 概览在源码`02f1548`上完成九阶段，一次 Docker 成功，
+无工作流重试，新进程 status/export 通过。报告位于
+`WYC/projects/test/TEST1/projects/PRJ1/runs/pbmc-overview-20260907/delivery/REPORT.md`。
+程序与报告均由 Agent 产生。Gold 仍为空；本轮没有真实生成/批准/复用 Gold，
+不能把确定性审批测试当成真实模型复用验收。被拒绝的工具请求仍保留，退出时
+的 provider 异步流关闭警告也未隐藏；没有改内核来消除该诊断。
