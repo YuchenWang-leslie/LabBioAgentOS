@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 import hashlib
 import json
 import os
@@ -63,6 +64,8 @@ class LocalSettings(_SettingsModel):
     execution: LocalExecutionSettings
     default_format: Literal["raw", "h5ad"] = "raw"
     profile: Path | None = None
+    managed_root: Path | None = None
+    gold_root: Path | None = None
 
     @property
     def principal(self) -> Principal:
@@ -79,6 +82,7 @@ class _StageProfile(_SettingsModel):
     capabilities: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
     capability_protocol: str = ""
+    user_input_enabled: bool = False
 
 
 class _LocalProfile(_SettingsModel):
@@ -99,10 +103,16 @@ def load_settings(path: Path) -> LocalSettings:
         value = value.expanduser()
         return (value if value.is_absolute() else path.parent / value).resolve()
 
+    managed_root = settings.managed_root
+    if managed_root is not None:
+        managed_root = managed_root.expanduser()
+        managed_root = (managed_root if managed_root.is_absolute() else path.parent / managed_root).absolute()
     return settings.model_copy(update={
         "result_root": absolute(settings.result_root),
         "input_roots": tuple(absolute(value) for value in settings.input_roots),
         "profile": absolute(settings.profile) if settings.profile else None,
+        "managed_root": managed_root,
+        "gold_root": absolute(settings.gold_root) if settings.gold_root else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
     })
 
@@ -126,6 +136,17 @@ def runtime_manifest(settings: LocalSettings) -> dict:
 
     profile_bytes = _profile_bytes(settings)
     profile = _LocalProfile.model_validate_json(profile_bytes)
+    if settings.gold_root is not None:
+        # Local composition only: expose existing governed Gold tools, never
+        # select a Skill or authorize its use on the Agent's behalf.
+        profile = profile.model_copy(update={"stages": tuple(
+            stage.model_copy(update={
+                "capabilities": tuple(dict.fromkeys((*stage.capabilities,
+                    "skill_search", "skill_propose_use", "skill_view"))),
+                "user_input_enabled": True,
+            }) if stage.stage is WorkflowStage.PLAN else stage
+            for stage in profile.stages
+        )})
     effective_profile = profile.model_dump(mode="json")
     # Set iteration order must not change the revision across process restarts.
     for field in ("allowed_fields", "required_fields"):
@@ -219,7 +240,7 @@ def build_application(
         capability_phase_enabled=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
         max_capability_turns=16, retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
-        user_input_enabled=False,
+        user_input_enabled=stage.user_input_enabled,
     ) for stage in profile.stages)
 
     def observe(kind: str, value: object) -> None:
@@ -228,23 +249,38 @@ def build_application(
             handle.write(json.dumps({"kind": kind, "payload": payload}, sort_keys=True) + "\n")
 
     resources = settings.execution.resources
-    return LabBioApplication(ApplicationRuntimeConfiguration(
-        artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
-        runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
-        projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
-                          owner_user_id=settings.principal.user_id),),
-        profile_catalog=catalog, stage_assemblies=assemblies,
-        approved_images=(settings.execution.approved_image(),), output_contracts=(profile.output_contract,),
-        execution_policy=ExecutionPolicy(
-            allow_network=False, max_cpus=resources.cpus, max_memory_mb=resources.memory_mb,
-            max_pids=resources.pids_limit, max_timeout_seconds=resources.timeout_seconds,
-        ),
-        execution_profile=ApplicationExecutionProfile(
-            runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.image_key, resources=resources,
-            network_required=False, output_contract_ids=(profile.output_contract.contract_id,),
-            minimum_queryable_output_count=1,
-        ),
-        trace_sink=JsonlTraceSink(run_root / "run-trace.jsonl"),
-        run_state_store=SQLiteRunStateStore(run_root / "state.sqlite"),
-        boundary_observer=observe, retry_limit=1,
-    ))
+    with ExitStack() as cleanup:
+        skill_service = None
+        handlers = ()
+        if settings.gold_root is not None:
+            from .application import SkillDomainDecisionHandler
+            from .local_gold import build_personal_gold_service, close_personal_gold
+
+            skill_service = build_personal_gold_service(settings.gold_root, settings.principal.user_id)
+            cleanup.callback(close_personal_gold, skill_service)
+            handlers = (SkillDomainDecisionHandler(skill_service),)
+        run_store = SQLiteRunStateStore(run_root / "state.sqlite")
+        cleanup.callback(run_store.close)
+        application = LabBioApplication(ApplicationRuntimeConfiguration(
+            artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
+            runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
+            projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
+                              owner_user_id=settings.principal.user_id),),
+            profile_catalog=catalog, stage_assemblies=assemblies,
+            approved_images=(settings.execution.approved_image(),), output_contracts=(profile.output_contract,),
+            execution_policy=ExecutionPolicy(
+                allow_network=False, max_cpus=resources.cpus, max_memory_mb=resources.memory_mb,
+                max_pids=resources.pids_limit, max_timeout_seconds=resources.timeout_seconds,
+            ),
+            execution_profile=ApplicationExecutionProfile(
+                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.image_key, resources=resources,
+                network_required=False, output_contract_ids=(profile.output_contract.contract_id,),
+                minimum_queryable_output_count=1,
+            ),
+            trace_sink=JsonlTraceSink(run_root / "run-trace.jsonl"),
+            run_state_store=run_store,
+            boundary_observer=observe, retry_limit=1,
+            skill_service=skill_service, domain_decision_handlers=handlers,
+        ))
+        cleanup.pop_all()  # The caller now owns both stores, including failure cleanup.
+        return application

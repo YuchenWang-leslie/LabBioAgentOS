@@ -39,6 +39,13 @@ local delivery copies registered output bytes without writing analysis or
 reports. This adapter does not change the approved core below, add scientific
 routing, or implement authenticated multi-user services.
 
+The optional [managed local workspace adapter](LOCAL_WORKSPACES.md) adds SQLite
+account/project registration and per-user token authentication before that
+entrypoint. It derives exact project data/run roots and a user-level PERSONAL
+Gold store, then composes the existing scope, Skill tools and USER_GATE handler.
+It is not a remote authentication service or isolation between hostile processes
+sharing the same Unix account. No core workflow/scientific behavior changes.
+
 ```text
 User / API
     |

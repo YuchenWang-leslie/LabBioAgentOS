@@ -1463,3 +1463,59 @@ multi-user operation or Gold reuse for this entrypoint. The earlier unsupported
 model claims and operator supervision error are not erased by these successes.
 Stop here. The only next entry is user review of the two delivered reports and
 an explicit next request; do not launch further live work or expand architecture.
+
+## 2026-09-07 — Authorized local user/project and personal Gold adapter
+
+The user now explicitly requests user/project management under `WYC/projects/test`,
+TEST1/PRJ1 with PBMC input, personal-path confinement and user-level GoldSkills.
+Scope is outer composition only; no WorkflowEngine, application core, Pantheon,
+scientific method/program, exposure-policy, retry/budget or default-profile rewrite.
+
+New local SQLite registration authenticates random per-user credentials (hash
+only in the registry), derives exact current-project `data`/`runs` directories,
+and binds canonical Principal/WorkspaceContext before provider, input admission,
+run readback or governance operations. PERSONAL Gold uses the existing immutable
+SQLiteSkillStore lifecycle under each user's `GoldSkills`, with an explicit owner
+binding; no existing user's Gold is reassigned and no Markdown is auto-imported.
+
+Managed PLAN receives optional existing Skill search/propose/view capabilities
+and the existing USER_GATE protocol. Exact user decisions persist through the
+unchanged domain handler before resumed Agent context access. CLI curation uses
+the accepted Agent draft/audit/revision protocol and only a successful owned
+source run; candidates remain pending until explicitly reviewed and decided.
+There is no automatic Gold selection, use-mode selection, approval, procedure
+execution or current-task scientific fact inference.
+
+Tests include two users/two projects, hash-only credentials, path/symlink/hardlink
+denial, exact stage identity, SQLite/new-process reconstruction, source/version
+checks, PERSONAL cross-project discovery, foreign-user exclusion, candidate/gate
+approval and resumed PLAN context reaching later stages. The first full pass is
+667 passed, 15 skipped, one existing Uvicorn warning; final CLI coverage is being
+completed before the frozen live verification. Deterministic governance fixtures
+are not real-model Gold adoption or scientific acceptance.
+
+Review also isolated and closed three outer-layer neighboring failures: generic
+gates with no domain reference remain decidable, managed-root symlink evidence
+is preserved until registry checks, and failed application construction closes
+both owned SQLite stores. Waiting gates no longer export a conflicting temporary
+delivery snapshot. Core persistence/authority boundaries are unchanged.
+
+Actual TEST1/PRJ1 setup and one fresh same-task PBMC overview verification are
+pending completion. The original PBMC file will be retained for historical test
+reproduction; only a byte-verified new project copy is authorized to TEST1. Gold
+starts empty, not filled with Codex-authored procedural material. Local managed
+configuration is separate from the existing single-user config and credentials.
+This mode is application/session isolation, not hostile same-Unix-account or
+production web multi-tenancy. No GitHub push or production deployment is requested.
+
+Final pre-live regression is 668 passed, 15 skipped, one existing warning;
+separate real-Docker security regression is 3 passed. TEST1 and PRJ1 are now
+registered, external credential is0600, project input is a separate 7503527-byte
+copy with matching SHA256
+`14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+The source file remains unchanged. Personal Gold catalog is empty as intended.
+The actual managed config is `~/.config/labbioagent/managed-runtime.toml`, separate
+from the original runtime config; it reuses the existing provider and immutable
+image without modifying either. Freeze code/config now for one fresh PBMC
+overview through authenticated TEST1/PRJ1, without scientific instructions beyond
+the unchanged previous user task and preference.

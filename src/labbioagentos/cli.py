@@ -29,6 +29,8 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("status", "export"):
         command = commands.add_parser(name, help=f"Read persisted run {name} without a model call")
         command.add_argument("--run-dir", type=Path, required=True)
+    from .local_workspace_cli import add_commands
+    add_commands(commands)
     for command in commands.choices.values():
         command.add_argument("--config", type=Path,
                              default=Path("~/.config/labbioagent/runtime.toml"))
@@ -92,7 +94,12 @@ def _task_text(task: str, preferences: list[str]) -> str:
 
 
 def _close(application) -> None:
-    application.run_state_store.close()
+    try:
+        application.run_state_store.close()
+    finally:
+        if application.configuration.skill_service is not None:
+            from .local_gold import close_personal_gold
+            close_personal_gold(application.configuration.skill_service)
 
 
 async def _run(args: argparse.Namespace, settings) -> int:
@@ -146,8 +153,10 @@ async def _run(args: argparse.Namespace, settings) -> int:
         _emit({"event": "started", "run_id": str(handle.run_id),
                "run_directory": str(directory)})
         result = await application.run(handle)
-        delivery = export_run(application, handle, directory / "delivery",
-                              principal=settings.principal, workspace=settings.workspace)
+        delivery = None if result.status.value == "WAITING_FOR_USER" else export_run(
+            application, handle, directory / "delivery",
+            principal=settings.principal, workspace=settings.workspace,
+        )
         _emit({"event": "finished", **result.model_dump(mode="json"),
                "run_directory": str(directory), "delivery": delivery})
         return 0 if result.status.value == "COMPLETED" else 2
@@ -169,6 +178,8 @@ def _read(args: argparse.Namespace, settings) -> int:
         handle = application.recover_run(
             run_id, principal=settings.principal, workspace=settings.workspace
         )
+        if application.result(handle).status.value == "WAITING_FOR_USER":
+            raise ValueError("A pending user gate must be resolved before delivery export")
         result = export_run(application, handle, directory / "delivery",
                             principal=settings.principal, workspace=settings.workspace)
         _emit(result)
@@ -177,12 +188,98 @@ def _read(args: argparse.Namespace, settings) -> int:
         _close(application)
 
 
+async def _governance(args: argparse.Namespace, settings) -> int:
+    from .contracts import GateUserDecision
+    from .local_config import _load_provider
+    from .local_workspace_cli import configured_curator
+    from .local_gold import decide_personal_gold, propose_from_run
+
+    if settings.gold_root is None:
+        raise ValueError("Gold governance requires an authenticated managed workspace")
+    directory = _run_directory(settings.result_root, args.run_dir, create=False)
+    run_id = _open_run_id(directory)
+    application = build_application(settings, directory, load_provider=False)
+    try:
+        handle = application.recover_run(run_id, principal=settings.principal,
+                                         workspace=settings.workspace)
+        result = application.result(handle)
+        service = application.configuration.skill_service
+        if args.command == "gold-propose":
+            if result.status.value != "COMPLETED":
+                raise ValueError("Only a completed run can be a Gold curation source")
+            _load_provider(settings.provider)
+            proposal = await propose_from_run(
+                application, handle, principal=settings.principal, workspace=settings.workspace,
+                curator=configured_curator(application),
+            )
+            _emit({"event": "gold_proposed", "proposal": proposal.model_dump(mode="json")})
+            return 0
+        if args.command in {"gold-review", "gold-decide"}:
+            proposal = service.pending_proposal(args.proposal_id)
+            if (proposal.source_run_id != run_id
+                    or proposal.owner_user_id != settings.principal.user_id
+                    or proposal.lab_id != settings.principal.lab_id):
+                raise PermissionError("Proposal does not belong to this source run and user")
+            if args.command == "gold-review":
+                _emit({"proposal": proposal.model_dump(mode="json")})
+            else:
+                gold = decide_personal_gold(
+                    service, args.proposal_id, args.gate_id, args.decision == "approve",
+                    settings.principal,
+                )
+                _emit({"event": "gold_decided", "approved": gold is not None,
+                       "skill_id": str(gold.skill_id) if gold else None,
+                       "version": gold.version if gold else None})
+            return 0
+        pending = result.pending_user_gate
+        if pending is None:
+            raise ValueError("Run has no pending user gate")
+        if args.command == "gate":
+            view = {"pending_user_gate": pending.model_dump(mode="json")}
+            if (pending.domain_reference_id or "").startswith("skill-use:"):
+                proposal = service.pending_use_proposal(UUID(pending.domain_reference_id.split(":", 1)[1]))
+                if (proposal.run_id != run_id or proposal.requesting_user_id != settings.principal.user_id
+                        or proposal.project_id != settings.workspace.project_id):
+                    raise PermissionError("Skill use proposal does not belong to this run")
+                skill = service.get_gold(proposal.skill_id, proposal.skill_version,
+                                         principal=settings.principal)
+                view.update(use_proposal=proposal.model_dump(mode="json"),
+                            skill=skill.model_dump(mode="json"))
+            _emit(view)
+            return 0
+        if (args.gate_id != pending.gate_id or args.domain_reference_id != pending.domain_reference_id):
+            raise ValueError("Decision must name the exact current gate and domain reference")
+        _load_provider(settings.provider)
+        result = await application.resume_run(handle, GateUserDecision(
+            gate_id=args.gate_id, domain_reference_id=args.domain_reference_id,
+            approved=args.decision == "approve", decided_by=settings.principal.user_id,
+        ))
+        delivery = None if result.status.value == "WAITING_FOR_USER" else export_run(
+            application, handle, directory / "delivery", principal=settings.principal,
+            workspace=settings.workspace,
+        )
+        _emit({"event": "resumed", **result.model_dump(mode="json"), "delivery": delivery})
+        return 0 if result.status.value == "COMPLETED" else 2
+    finally:
+        _close(application)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        from .local_workspace_cli import ADMIN_COMMANDS, administer, gold_catalog, scoped_settings
+        if args.command in ADMIN_COMMANDS:
+            _emit(administer(args))
+            return 0
         settings = load_settings(args.config.expanduser())
+        settings = scoped_settings(args, settings)
         if args.command == "run":
             return asyncio.run(_run(args, settings))
+        if args.command == "gold-list":
+            _emit(gold_catalog(args, settings))
+            return 0
+        if args.command in {"gate", "decide", "gold-propose", "gold-review", "gold-decide"}:
+            return asyncio.run(_governance(args, settings))
         return _read(args, settings)
     except KeyboardInterrupt:
         _emit({"error": "LOCAL_COMMAND_INTERRUPTED",
