@@ -1095,3 +1095,45 @@ attempt. This is a budget-only change in the saved host driver, not a scientific
 prompt or code modification. Input, task, image, tool turns, workflow retries,
 exposure, and execution resource policy remain unchanged. No automatic budget
 growth, hidden retry, or malformed history repair is added to production.
+
+Fresh a6 run `bfc811f2-29aa-4d5f-8a21-41fca6be0c16` completed all nine
+workflow stages through LEARN with no workflow retry or pending gate. Evidence
+and user-facing links are under `WYC/result/pbmc-auto-annotation-20260907-a6`.
+Actual source HEAD was `4af7adb` (production correction `17d0dea`), Pantheon
+remained `7b02bcba`, and only the saved host's output-token budget differed from
+a5. The Agent independently corrected one syntax-rejected program: complete
+9882- and 11335-token requests demonstrate the former 8192 limit was insufficient.
+No scientific program, input choice, method, parameter, or report was supplied
+or repaired by Codex.
+
+Exactly one Docker execution, `a431009f-fa12-4e74-8be6-41d8f1231ead`, exited
+zero after 261.38 seconds. Its selected input matches the trusted mountable
+snapshot. Four declared outputs were registered, with governed summary
+`c088569d-854a-47ac-b1fb-1b85b404a2a3`; validation/interpretation/reporting
+queried governed evidence, and Agent-authored Report Artifact
+`efe12409-f43b-4e77-b627-9f04856b9bd6` was persisted and exported as
+`REPORT.md`. Five exposure denials and one syntax rejection remain visible;
+neither was hidden or auto-corrected. Final host exit is zero.
+
+Mechanical delivery checks find 2699 unique input cell identities in the CSV;
+Agent metadata records 2700 original and 2699 post-QC cells. There is a retained
+Agent-output caveat: `original_index` denotes output row order rather than the
+original input row index (1422 mismatches); `cell_id` remains valid for identity
+association. This was not rewritten or fed back as an answer to the Agent.
+Annotation correctness and scientific conclusions still require external review.
+
+Full regression is 523 passed, 14 skipped, with one existing Uvicorn warning;
+the separate real-Docker suite is 3 passed. No production deployment, skill/Gold/
+Memory promotion, or additional generic live was performed. Docker/containerd/
+docker.socket remain active and no task process or container remains. Source
+commits are local on the repair branch, main/V0.1 is unchanged, and remote
+reconstruction of the already-required Pantheon revision remains pending push.
+The requested real-task convergence is complete; next entry is user review of
+the linked deliverables, not an automatic new task or hidden result correction.
+
+Final read-only boundary/trace/stage-result/report audit searched all 2700 raw
+cell identities with zero matches and found no checked host-path, credential,
+raw-program/process-stream, provider-body, or hidden-reasoning leakage. Explicit
+next-action reasons remain distinct from hidden reasoning. Exported report bytes
+exactly match the persisted model-authored Artifact. No Gold/Skill/Memory events
+or calls occurred. Delivery index links resolve to the original unchanged files.
