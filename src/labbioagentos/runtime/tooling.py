@@ -38,7 +38,10 @@ from labbioagentos.execution import (
     ExecutionSubmissionService,
     RequestedResources,
 )
-from labbioagentos.execution.errors import ExecutionOutputDeclarationError
+from labbioagentos.execution.errors import (
+    ExecutionInputSelectionError,
+    ExecutionOutputDeclarationError,
+)
 from labbioagentos.execution.models import (
     ExecutionImageKey,
     ExecutionInputArtifactIds,
@@ -342,6 +345,7 @@ class RuntimeCapabilityContext:
     actor_agent_name: str
     capability_allowlist: tuple[str, ...]
     consumer: ArtifactConsumer = ArtifactConsumer.REMOTE_LLM
+    mountable_input_artifact_ids: tuple[UUID, ...] | None = None
 
     @classmethod
     def from_stage_spec(
@@ -685,6 +689,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 run_id=self.binding.run_id,
                 stage_id=self.binding.stage_id,
                 invocation_id=self.binding.invocation_id,
+                mountable_input_artifact_ids=self.binding.mountable_input_artifact_ids,
             )
         return await self._call(
             "execution_submit",
@@ -1261,6 +1266,15 @@ class LabBioRuntimeToolSet(ToolSet):
                     "Eligible declarations request DERIVED exposure with an approved "
                     "output contract that authorizes remote release. Actual output "
                     "files must still pass all collection and release checks."
+                ),
+            )
+        if isinstance(exc, ExecutionInputSelectionError):
+            return ToolError(
+                error_code="INVALID_EXECUTION_INPUT",
+                safe_message=(
+                    "No execution started. Selected input Artifact IDs must be a subset "
+                    "of the current execution capability's mountable_input_artifact_ids. "
+                    "Workspace visibility alone does not authorize execution input use."
                 ),
             )
         if isinstance(exc, ValidationError):

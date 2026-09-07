@@ -33,6 +33,13 @@ class ExecutionOutputDeclarationError(ExecutionPlanRejected):
         self.declared_queryable_output_count = declared_queryable_output_count
 
 
+class ExecutionInputSelectionError(ExecutionPlanRejected):
+    """Selected inputs exceed the trusted run's advertised input scope."""
+
+    def __init__(self):
+        super().__init__("Selected inputs are outside the current mountable input scope")
+
+
 class ExecutionScriptValidationError(ExecutionBoundaryError):
     """The submitted runtime program is not syntactically valid."""
 

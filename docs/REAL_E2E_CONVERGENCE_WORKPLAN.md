@@ -1045,3 +1045,36 @@ and no output files or Report Artifact exist. No container remains; Docker,
 containerd, and docker.socket remain active. No production deployment or skill
 promotion occurred. Next entry is deterministic diagnosis of this new boundary,
 not another live rerun. Repair commits remain local and unpushed.
+
+### Authorized input-contract and diagnostic repair — 2026-09-07
+
+The user authorized underlying correction of the a4 blocker and continued real
+task validation without scientific substitutions or prompt-based answers.
+Inspection found the trusted run-input snapshot was lost when constructing tool
+bindings, so the submitter could not enforce the exact model-visible input
+contract. The constructor-owned snapshot now flows through root/delegated
+bindings into the submission service; out-of-snapshot IDs fail before lookup or
+execution with `INVALID_EXECUTION_INPUT`. Workspace authorization remains intact.
+No input is selected, converted, implicitly mounted, or added based on exposure
+class, filename, current output identity, or task text. Explicit empty scope and
+legacy direct callers without a projected scope remain distinct.
+
+The incomplete Python exception-name list is replaced by a closed vocabulary of
+host-builtin Exception types. Only terminal identity is classified; preceding
+labels cannot disguise an unknown terminal failure. File/permission/Unicode
+subclasses now retain safe type and script location, not message/path/data.
+All four a4 logs independently reproject to FileNotFoundError at line 10 and
+source-verified columns [8,32), without editing historical evidence.
+Tests cover real assembly/delegation authority, forged snapshots, authorized
+DERIVED neighbors, empty/no-snapshot semantics, access isolation, unknown
+exception names, chained failures, and privacy. No prompt, scientific program,
+package, budget, Pantheon revision, production deployment, main/V0.1, or skill
+activation change is included. A fresh original-task run follows regression;
+code tests alone do not establish annotation success.
+
+Pre-live validation: full regression `523 passed, 14 skipped`, separate real
+Docker checks `3 passed`, with the existing Uvicorn warning only. A first version
+of the new Docker test incorrectly required optional caret columns for a
+full-line expression; the assertion was corrected to the existing optional
+coordinate contract, without changing production diagnostics. The mandatory
+exception type, line, privacy, and valid manifest-read checks pass.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
@@ -515,6 +516,92 @@ async def test_execution_host_injects_scope_authorizes_inputs_and_returns_receip
     assert (output.owner_user_id, output.project_id, output.lab_id, output.run_id) == (
         "user-a", "project-a", "lab-a", run_id
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("selection,advertised,exposure,success", [
+    (True, True, ArtifactExposureClass.RAW, True),
+    (True, True, ArtifactExposureClass.DERIVED, True),
+    (True, False, ArtifactExposureClass.STRUCTURAL, False),
+    (True, False, ArtifactExposureClass.DERIVED, False),
+    (True, "different", ArtifactExposureClass.STRUCTURAL, False),
+    (True, None, ArtifactExposureClass.RAW, True),
+    (False, False, ArtifactExposureClass.RAW, True),
+    (False, True, ArtifactExposureClass.RAW, True),
+])
+async def test_execution_input_snapshot_controls_selection_not_exposure(
+    boundary, selection, advertised, exposure, success
+):
+    sink, recorder, access, _, _, store, _ = boundary
+    ref = store.register(
+        artifact_type="synthetic-input", exposure_class=exposure,
+        representation=ArtifactRepresentation(), owner_user_id="user-a",
+        project_id="project-a", lab_id="lab-a",
+    )
+    executor = MockExecutor(store)
+    toolset = _toolset(
+        boundary, WorkflowStage.EXECUTE, ("execution_submit",),
+        execution_submission=ExecutionSubmissionService(
+            artifact_store=store, access_service=access, executor=executor,
+            trace_recorder=recorder,
+        ),
+    )
+    toolset = LabBioRuntimeToolSet(replace(
+        toolset.binding,
+        mountable_input_artifact_ids=(
+            None if advertised is None else (
+                (uuid4(),) if advertised == "different"
+                else ((ref.artifact_id,) if advertised else ())
+            )
+        ),
+    ), toolset.services)
+    result = await toolset.execution_submit(
+        image_key="approved", script_content="print('PRIVATE_PROGRAM')",
+        input_artifact_ids=[str(ref.artifact_id)] if selection else [],
+        parameters={"private": "/private/credential"},
+    )
+    assert result["success"] is success
+    assert len(executor.plans) == int(success)
+    if success:
+        assert executor.plans[0].input_artifact_ids == ((ref.artifact_id,) if selection else ())
+    else:
+        assert result["error"]["error_code"] == "INVALID_EXECUTION_INPUT"
+        assert "No execution started" in result["error"]["safe_message"]
+        events = recorder.events(toolset.binding.run_id)
+        started = next(e for e in events if e.event_type is TraceEventType.CAPABILITY_INVOKED)
+        failed = next(e for e in events if e.event_type is TraceEventType.CAPABILITY_FAILED)
+        assert started.payload["capability_invocation_id"] == failed.payload["capability_invocation_id"]
+        assert failed.payload["error_code"] == "INVALID_EXECUTION_INPUT"
+        assert not any(e.event_type is TraceEventType.EXECUTION_PLANNED for e in events)
+        assert toolset.evidence_items()[0].error_code == "INVALID_EXECUTION_INPUT"
+        encoded = json.dumps(result) + json.dumps([e.model_dump(mode="json") for e in events])
+        assert "PRIVATE_PROGRAM" not in encoded and "/private/credential" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_execution_input_snapshot_does_not_bypass_workspace_authority(boundary):
+    _, recorder, access, principal, workspace, store, _ = boundary
+    from labbioagentos.governance import AuthorizationDenied
+
+    foreign = store.register(
+        artifact_type="synthetic-input", exposure_class=ArtifactExposureClass.RAW,
+        representation=ArtifactRepresentation(), owner_user_id="user-b",
+        project_id="project-b", lab_id="lab-a",
+    )
+    executor = MockExecutor(store)
+    service = ExecutionSubmissionService(
+        artifact_store=store, access_service=access, executor=executor,
+        trace_recorder=recorder,
+    )
+    with pytest.raises(AuthorizationDenied):
+        await service.submit(
+            ExecutionPlanDraft(image_key="approved", script_content="pass",
+                               input_artifact_ids=(foreign.artifact_id,)),
+            principal=principal, workspace=workspace, run_id=uuid4(),
+            stage_id=WorkflowStage.EXECUTE, invocation_id=uuid4(),
+            mountable_input_artifact_ids=(foreign.artifact_id,),
+        )
+    assert executor.plans == []
 
 
 @pytest.mark.asyncio

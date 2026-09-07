@@ -94,6 +94,49 @@ def test_real_docker_failure_locations_and_matching_key_neighbor(tmp_path):
     assert valid.diagnostics == ()
 
 
+def test_real_docker_missing_input_diagnostic_and_manifest_neighbor(tmp_path):
+    store, executor = _executor(tmp_path)
+    source_file = tmp_path / "input.txt"
+    source_file.write_text(PRIVATE_SENTINEL, encoding="utf-8")
+    input_ref = store.register_file(
+        source_file, artifact_type="synthetic-input",
+        exposure_class=ArtifactExposureClass.RAW,
+        representation=ArtifactRepresentation(),
+    )
+    source = "from pathlib import Path\nPath('/unmounted/PRIVATE_INPUT').read_text()\n"
+    failed = executor.execute(ExecutionPlan(
+        run_id=uuid4(), stage_id=WorkflowStage.EXECUTE,
+        runtime=ExecutionRuntime.PYTHON, image_key="python-c12-real",
+        input_artifact_ids=(input_ref.artifact_id,), script_content=source,
+        resources=RequestedResources(timeout_seconds=30),
+    ))
+    receipt = ExecutionReceipt.from_result(failed)
+    assert receipt.status is ExecutionStatus.FAILED
+    diagnostic = receipt.diagnostics[0]
+    assert diagnostic.exception_type == "FileNotFoundError"
+    assert diagnostic.script_line_numbers == (2,)
+    # CPython can omit carets for an expression spanning the whole source line.
+    assert all(location.line_number == 2 for location in diagnostic.script_error_locations)
+    assert all(value not in receipt.model_dump_json() for value in (
+        "PRIVATE_INPUT", PRIVATE_SENTINEL, "/unmounted", "No such file",
+    ))
+
+    valid = executor.execute(ExecutionPlan(
+        run_id=uuid4(), stage_id=WorkflowStage.EXECUTE,
+        runtime=ExecutionRuntime.PYTHON, image_key="python-c12-real",
+        input_artifact_ids=(input_ref.artifact_id,),
+        script_content=(
+            "import json, os\nfrom pathlib import Path\n"
+            "manifest = json.loads(Path(os.environ['LABBIO_INPUT_MANIFEST_PATH']).read_text())\n"
+            "value = Path(next(iter(manifest.values()))).read_text()\n"
+            f"assert value == {PRIVATE_SENTINEL!r}\n"
+        ),
+        resources=RequestedResources(timeout_seconds=30),
+    ))
+    assert valid.status is ExecutionStatus.SUCCEEDED
+    assert valid.diagnostics == ()
+
+
 def test_real_docker_hostile_input_mount_rootfs_socket_and_output_boundaries(tmp_path):
     store, executor = _executor(tmp_path)
     source = tmp_path / "private-input.txt"

@@ -332,6 +332,17 @@ output cannot contain raw Docker args, host paths, `privileged`, socket mounts,
 or arbitrary image references. The approved in-memory registry resolves a key
 to a trusted image reference/runtime and does not pull or build images.
 
+The run's constructor-owned `mountable_input_artifact_ids` snapshot is carried
+through root and delegated tool bindings into submission validation. Selected
+IDs must be a subset before Artifact lookup or execution allocation, followed
+by unchanged exact-workspace/read authorization. An invalid selection returns
+`INVALID_EXECUTION_INPUT` without choosing replacements. Empty selection is
+valid; an explicit empty snapshot permits no inputs. Direct local callers with
+no advertised snapshot retain their existing workspace-scoped behavior. The
+snapshot is currently static run-request input IDs: current outputs or context
+Artifacts are not silently added. Any later scope expansion must be explicitly
+authorized and visibly projected, regardless of exposure class.
+
 `ExecutionPolicy` enforces host-configured CPU, memory, pids, timeout, and network
 limits. Network is `none` by default. Enabling the Docker `bridge` network
 requires the plan flag, host policy, and image registry entry all to allow it.
@@ -368,6 +379,14 @@ artifacts. `ExecutionResult` contains their references and bounded process
 metadata, never stream content. Non-zero exit, timeout, container-start failure,
 output-contract failure, and registration failure remain structural technical
 outcomes; no DebugAgent or scientific diagnosis is performed.
+
+Python failure diagnostics recognize only the closed host-builtin `Exception`
+name vocabulary and the final traceback's terminal identity, never arbitrary
+exception names or messages. This includes standard file/permission/Unicode
+subclasses without losing them behind an incomplete hand-maintained list.
+Source-verified numeric line/column information remains bounded; ambiguous
+multiline/annotated terminal forms are conservatively omitted. No path, raw
+stream, source excerpt, or automatic program repair is returned to the model.
 
 `OutputCollector` visits declared paths only and rejects traversal, missing
 files, directories, and symlinks. `requested_exposure` is an untrusted proposal.

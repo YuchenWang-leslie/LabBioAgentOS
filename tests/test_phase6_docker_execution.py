@@ -797,6 +797,72 @@ def _synthetic_traceback(source, monkeypatch):
     raise AssertionError("Synthetic failure did not raise")
 
 
+@pytest.mark.parametrize("exception_type", (
+    "FileNotFoundError", "PermissionError", "IsADirectoryError", "NotADirectoryError",
+    "ConnectionRefusedError", "TimeoutError", "UnicodeDecodeError", "UnicodeEncodeError",
+    "UnicodeTranslateError", "RecursionError", "OSError", "ValueError",
+))
+def test_builtin_exception_subclasses_keep_safe_identity_and_location(exception_type):
+    source = "result = operation()\n"
+    stderr = (
+        'Traceback (most recent call last):\n'
+        '  File "/labbio/script.py", line 1, in <module>\n'
+        '    result = operation()\n'
+        '             ^^^^^^^^^^^\n'
+        f"{exception_type}: PRIVATE_VALUE /private/data credential=PRIVATE_SECRET\n"
+    ).encode()
+    diagnostics = DockerExecutor._safe_python_diagnostics(stderr, script_content=source)
+    assert len(diagnostics) == 1
+    diagnostic = diagnostics[0]
+    assert diagnostic.exception_type == exception_type
+    assert diagnostic.script_line_numbers == (1,)
+    location = diagnostic.script_error_locations[0]
+    assert source.splitlines()[0][location.start_column:location.end_column] == "operation()"
+    encoded = diagnostic.model_dump_json()
+    assert all(value not in encoded for value in ("PRIVATE", "/private", "operation", "/labbio"))
+
+
+@pytest.mark.parametrize("terminal", (
+    "PRIVATE_EXCEPTION: secret", "custom.FileNotFoundError: /private/data",
+    "FileNotFoundErrorPRIVATE: secret", "str: secret", "KeyboardInterrupt",
+))
+def test_unknown_terminal_exception_does_not_inherit_prior_safe_label(terminal):
+    stderr = (
+        'Traceback (most recent call last):\n'
+        '  File "/labbio/script.py", line 1, in <module>\n'
+        'ValueError: misleading earlier text\n'
+        f'{terminal}\n'
+    ).encode()
+    assert DockerExecutor._safe_python_diagnostics(stderr, script_content="pass\n") == ()
+
+
+def test_module_identity_and_key_type_come_only_from_terminal_exception():
+    source = "import unavailable_module\n"
+    stderr = (
+        'Traceback (most recent call last):\n'
+        '  File "/labbio/script.py", line 1, in <module>\n'
+        "ModuleNotFoundError: No module named 'unavailable_module'\n"
+        "KeyError: 'misleading'\n"
+        'KeyError: 17\n'
+    ).encode()
+    diagnostic = DockerExecutor._safe_python_diagnostics(stderr, script_content=source)[0]
+    assert diagnostic.exception_type == "KeyError"
+    assert diagnostic.missing_module is None
+    assert diagnostic.missing_key_type == "int"
+
+
+def test_chained_builtin_subclass_keeps_only_terminal_script_locations(monkeypatch):
+    source = "try:\n    {}['old']\nexcept KeyError:\n    raise FileNotFoundError('PRIVATE_PATH')\n"
+    diagnostics = DockerExecutor._safe_python_diagnostics(
+        _synthetic_traceback(source, monkeypatch), script_content=source
+    )
+    assert len(diagnostics) == 1
+    assert diagnostics[0].exception_type == "FileNotFoundError"
+    assert diagnostics[0].script_line_numbers == (4,)
+    assert diagnostics[0].missing_key_type is None
+    assert "PRIVATE_PATH" not in diagnostics[0].model_dump_json()
+
+
 def test_key_error_location_disambiguates_multiple_subscripts(tmp_path, monkeypatch):
     source = 'lookup = {7: "ok"}\nother = {"ok": 1}\nresult = [lookup["7"], other["ok"]]\n'
     stderr = _synthetic_traceback(source, monkeypatch)

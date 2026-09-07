@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import math
 import os
@@ -49,6 +50,15 @@ from .mounts import (
     ResolvedMount,
 )
 from .registration import OutputCollector
+
+
+_SAFE_PYTHON_EXCEPTION_TYPES = frozenset(
+    value.__name__
+    for value in vars(builtins).values()
+    if isinstance(value, type)
+    and issubclass(value, Exception)
+    and value.__module__ == "builtins"
+)
 
 
 @dataclass(frozen=True)
@@ -680,6 +690,19 @@ class DockerExecutor:
             return ()
         # Chained exceptions can have different locations and argument types.
         text = text.rsplit("Traceback (most recent call last):", 1)[1]
+        lines = text.rstrip().splitlines()
+        if not lines:
+            return ()
+        terminal_line = lines[-1]
+        terminal_exception = re.fullmatch(
+            r"([A-Za-z_][A-Za-z0-9_]{0,127})(?::.*)?", terminal_line
+        )
+        if (
+            terminal_exception is None
+            or terminal_exception.group(1) not in _SAFE_PYTHON_EXCEPTION_TYPES
+        ):
+            return ()
+        exception_type = terminal_exception.group(1)
         line_numbers = tuple(
             dict.fromkeys(
                 int(match)
@@ -690,11 +713,10 @@ class DockerExecutor:
                 )
             )
         )[-16:]
-        missing_module = re.search(
-            r"^ModuleNotFoundError: No module named "
-            r"'([A-Za-z_][A-Za-z0-9_.]{0,127})'\s*$",
-            text,
-            flags=re.MULTILINE,
+        missing_module = re.fullmatch(
+            r"ModuleNotFoundError: No module named "
+            r"'([A-Za-z_][A-Za-z0-9_.]{0,127})'",
+            terminal_line,
         )
         if missing_module is not None:
             imported_modules: set[str] = set()
@@ -723,48 +745,9 @@ class DockerExecutor:
                         missing_module=module_name,
                     ),
                 )
-        exception_lines = re.findall(
-            r"^([A-Za-z_][A-Za-z0-9_.]{0,127})(?::.*)?$",
-            text,
-            flags=re.MULTILINE,
-        )
-        safe_exception_types = {
-            "ArithmeticError",
-            "AssertionError",
-            "AttributeError",
-            "EOFError",
-            "Exception",
-            "ImportError",
-            "IndexError",
-            "KeyError",
-            "LookupError",
-            "MemoryError",
-            "ModuleNotFoundError",
-            "NameError",
-            "NotImplementedError",
-            "OSError",
-            "OverflowError",
-            "RuntimeError",
-            "StopIteration",
-            "SyntaxError",
-            "TypeError",
-            "UnicodeError",
-            "ValueError",
-            "ZeroDivisionError",
-        }
-        exception_type = next(
-            (
-                candidate
-                for candidate in reversed(exception_lines)
-                if candidate in safe_exception_types
-            ),
-            None,
-        )
-        if exception_type is None:
-            return ()
         missing_key_type = None
         if exception_type == "KeyError":
-            match = re.search(r"^KeyError: (.{1,512})$", text, flags=re.MULTILINE)
+            match = re.fullmatch(r"KeyError: (.{1,512})", terminal_line)
             if match is not None:
                 try:
                     argument = ast.literal_eval(match.group(1))

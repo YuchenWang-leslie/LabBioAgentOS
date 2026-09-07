@@ -205,6 +205,10 @@ class PerInvocationPantheonStageInvoker:
                 actor_profile_key=profile.profile_key,
                 actor_agent_name=profile.agent_name,
                 capability_allowlist=spec.capability_allowlist,
+                mountable_input_artifact_ids=(
+                    self.execution_capability.mountable_input_artifact_ids
+                    if self.execution_capability is not None else None
+                ),
             )
             toolsets[spec.profile_key] = self.toolset_factory(binding, self.services)
         capability_team, capability_prompts = await self.factory.create_team(

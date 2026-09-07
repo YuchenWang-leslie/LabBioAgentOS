@@ -19,7 +19,7 @@ from labbioagentos.governance import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import ExecutionPlan, ExecutionPlanDraft, ExecutionReceipt, ExecutionResult
-from .errors import ExecutionScriptValidationError
+from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 
 
 class ExecutorPort(Protocol):
@@ -53,8 +53,15 @@ class ExecutionSubmissionService:
         run_id: UUID,
         stage_id: WorkflowStage,
         invocation_id: UUID,
+        mountable_input_artifact_ids: tuple[UUID, ...] | None = None,
     ) -> ExecutionReceipt:
         self._authorize_binding(principal, workspace, run_id)
+        # None preserves direct callers without an advertised run-input contract;
+        # an explicit empty tuple permits no inputs. Never widen or infer the set.
+        if mountable_input_artifact_ids is not None and not set(
+            draft.input_artifact_ids
+        ).issubset(mountable_input_artifact_ids):
+            raise ExecutionInputSelectionError()
         try:
             ast.parse(draft.script_content)
         except SyntaxError as exc:
