@@ -313,6 +313,9 @@ async def test_capability_mode_persists_content_free_provider_turn_observation(t
         "elapsed_ms": 1234,
         "total_tokens": 321,
         "tool_names": [],
+        "finish_reason": None,
+        "completion_tokens": None,
+        "tool_argument_observations": [],
     }
     encoded = event.model_dump_json()
     for forbidden in (
@@ -324,6 +327,106 @@ async def test_capability_mode_persists_content_free_provider_turn_observation(t
         "stdout",
     ):
         assert forbidden not in encoded
+
+
+@pytest.mark.asyncio
+async def test_governed_capability_agents_require_strict_tool_arguments():
+    factory = PantheonRuntimeFactory(_catalog())
+    agent, _ = await factory.create_agent(
+        "coordinator", invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+    assert agent.strict_tool_arguments is True
+
+
+@pytest.mark.asyncio
+async def test_provider_integrity_projection_is_bounded_and_pre_dispatch(tmp_path):
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    stage_input = _stage_input()
+    team, rendered = await PantheonRuntimeFactory(_catalog()).create_team(
+        ("coordinator",), invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+    invoker = PantheonCapabilityStageInvoker(
+        team, profile=_profile(), prompt=rendered["coordinator"], trace_recorder=recorder
+    )
+    observation = SimpleNamespace(
+        agent_name="CoordinatorAgent", execution_context_id=None, turn_index=1,
+        progress_kind="TOOL_CALL", observable_progress=True, elapsed_ms=10,
+        total_tokens=100, tool_names=("execution_submit",),
+        finish_reason="length", completion_tokens=64,
+        tool_argument_observations=(SimpleNamespace(
+            tool_call_id="call-1", tool_name="execution_submit", parse_mode="REJECTED",
+            rejection_reason="RESPONSE_TRUNCATED", arguments="PRIVATE_PROGRAM_CONTENT",
+        ),),
+        provider_body="PRIVATE_PROVIDER_BODY",
+    )
+    invoker._record_provider_turn(stage_input, observation)
+    event = sink.read(stage_input.run_id)[-1]
+    assert event.payload["finish_reason"] == "length"
+    assert event.payload["completion_tokens"] == 64
+    assert event.payload["tool_argument_observations"] == [{
+        "tool_call_id": "call-1", "tool_name": "execution_submit",
+        "parse_mode": "REJECTED", "rejection_reason": "RESPONSE_TRUNCATED",
+    }]
+    assert "PRIVATE" not in event.model_dump_json()
+    assert event.invocation_id == stage_input.invocation_id
+    observation.finish_reason = "PRIVATE_UNRECOGNIZED_VALUE"
+    with pytest.raises(RuntimeProfileConfigurationError):
+        invoker._record_provider_turn(stage_input, observation)
+    observation.finish_reason = "stop"
+    observation.completion_tokens = True
+    with pytest.raises(RuntimeProfileConfigurationError):
+        invoker._record_provider_turn(stage_input, observation)
+    observation.completion_tokens = 10
+    observation.tool_argument_observations[0].parse_mode = "PRIVATE_PARSE_VALUE"
+    with pytest.raises(RuntimeProfileConfigurationError):
+        invoker._record_provider_turn(stage_input, observation)
+
+
+@pytest.mark.asyncio
+async def test_strict_provider_rejection_then_agent_selected_valid_tool_reaches_trace(tmp_path, monkeypatch):
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    stage_input = _stage_input()
+    toolset = _toolset(tmp_path, stage_input, recorder)
+    factory = PantheonRuntimeFactory(_catalog())
+    agent, prompt = await factory.create_agent(
+        "coordinator", toolset=toolset, invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+    tools = await agent.get_tools_for_llm()
+    name = next(item["function"]["name"] for item in tools if item["function"]["name"].endswith("__artifact_list"))
+    team, _ = await factory.create_team(
+        ("coordinator",), invocation_mode=RuntimeInvocationMode.CAPABILITY
+    )
+    invoker = PantheonCapabilityStageInvoker(
+        team, profile=_profile(), prompt=prompt, trace_recorder=recorder
+    )
+    messages = iter([
+        {"role": "assistant", "content": None, "_metadata": {"finish_reason": "length", "completion_tokens": 64}, "tool_calls": [{
+            "id": "incomplete-call", "type": "function", "function": {"name": name, "arguments": '{"limit":'}
+        }]},
+        {"role": "assistant", "content": None, "_metadata": {"finish_reason": "tool_calls", "completion_tokens": 12}, "tool_calls": [{
+            "id": "valid-call", "type": "function", "function": {"name": name, "arguments": '{"limit": 1}'}
+        }]},
+        {"role": "assistant", "content": "complete", "_metadata": {"finish_reason": "stop", "completion_tokens": 1}},
+    ])
+
+    async def completion(*_args, **_kwargs):
+        return next(messages)
+
+    monkeypatch.setattr(agent, "_acompletion_with_models", completion)
+    await agent._run_stream(
+        [{"role": "user", "content": "Inspect synthetic inventory."}],
+        process_turn_observation=lambda item: invoker._record_provider_turn(stage_input, item),
+        max_turns=8,
+    )
+    events = sink.read(stage_input.run_id)
+    observed = [item for item in events if item.event_type is TraceEventType.PROVIDER_TURN_OBSERVED]
+    assert observed[0].payload["tool_argument_observations"][0]["rejection_reason"] == "RESPONSE_TRUNCATED"
+    assert observed[1].payload["tool_argument_observations"][0]["parse_mode"] == "STRICT_JSON"
+    assert sum(item.event_type is TraceEventType.CAPABILITY_INVOKED for item in events) == 1
+    assert len(toolset.evidence_items()) == 1
+    assert toolset.evidence_items()[0].status is CapabilityEvidenceStatus.COMPLETED
 
 
 @pytest.mark.asyncio

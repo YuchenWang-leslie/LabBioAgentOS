@@ -23,7 +23,7 @@ from labbioagentos.model_safety import (
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
-from .errors import OutputCollectionError
+from .errors import ExecutionOutputDeclarationError, OutputCollectionError
 from .models import (
     ExecutionFailureClass,
     ExecutionIssue,
@@ -96,6 +96,29 @@ class ArtifactRegistrationPolicy:
             raise ValueError(
                 f"Output contract {contract_id!r} is not approved"
             ) from exc
+
+    def validate_output_declarations(
+        self, specs: tuple[OutputArtifactSpec, ...], minimum_queryable_output_count: int
+    ) -> None:
+        """Reject impossible output intent; actual files still require full assessment."""
+
+        if minimum_queryable_output_count == 0:
+            return
+        count = 0
+        for spec in specs:
+            if (
+                spec.requested_exposure is not ArtifactExposureClass.DERIVED
+                or spec.output_contract_id is None
+            ):
+                continue
+            contract = self._contracts.get(spec.output_contract_id)
+            if (
+                contract is not None
+                and contract.declassification_mode is OutputDeclassificationMode.BOUNDED_SCALARS
+            ):
+                count += 1
+        if count < minimum_queryable_output_count:
+            raise ExecutionOutputDeclarationError(minimum_queryable_output_count, count)
 
     def assess(
         self,

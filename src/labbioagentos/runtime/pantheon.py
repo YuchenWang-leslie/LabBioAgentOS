@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from uuid import UUID, uuid4
 
@@ -205,6 +206,7 @@ class PantheonRuntimeFactory:
                 else schema.response_format(finalization_stage, workflow_control)
             ),
             use_memory=False,
+            strict_tool_arguments=(invocation_mode is RuntimeInvocationMode.CAPABILITY),
         )
         if toolset is not None:
             await agent.toolset(toolset)
@@ -543,6 +545,49 @@ class PantheonCapabilityStageInvoker:
             raise RuntimeProfileConfigurationError(
                 "Pantheon provider-turn observation is outside safe bounds"
             )
+        if (
+            observation.finish_reason not in {
+                None, "stop", "length", "tool_calls", "content_filter", "function_call", "OTHER"
+            }
+            or (
+                observation.completion_tokens is not None
+                and (
+                    type(observation.completion_tokens) is not int
+                    or not 0 <= observation.completion_tokens <= 100_000_000
+                )
+            )
+            or len(observation.tool_argument_observations) > 64
+        ):
+            raise RuntimeProfileConfigurationError(
+                "Pantheon generation-integrity observation is outside safe bounds"
+            )
+        argument_observations = []
+        for item in observation.tool_argument_observations:
+            if (
+                any(
+                    value is not None and (
+                        not isinstance(value, str)
+                        or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) is None
+                    )
+                    for value in (item.tool_call_id, item.tool_name)
+                )
+                or item.parse_mode not in {
+                    "STRICT_JSON", "CONTROL_CHAR_OR_TRAILING", "TERMINATOR_REPAIR",
+                    "JSON_REPAIR", "REJECTED",
+                }
+                or item.rejection_reason not in {
+                    None, "RESPONSE_TRUNCATED", "RESPONSE_FILTERED", "INVALID_JSON_OBJECT"
+                }
+            ):
+                raise RuntimeProfileConfigurationError(
+                    "Pantheon tool-argument observation is outside safe bounds"
+                )
+            argument_observations.append({
+                "tool_call_id": item.tool_call_id,
+                "tool_name": item.tool_name,
+                "parse_mode": item.parse_mode,
+                "rejection_reason": item.rejection_reason,
+            })
         self.trace_recorder.emit(
             stage_input.run_id,
             TraceEventType.PROVIDER_TURN_OBSERVED,
@@ -563,6 +608,9 @@ class PantheonCapabilityStageInvoker:
                 "elapsed_ms": observation.elapsed_ms,
                 "total_tokens": observation.total_tokens,
                 "tool_names": list(observation.tool_names),
+                "finish_reason": observation.finish_reason,
+                "completion_tokens": observation.completion_tokens,
+                "tool_argument_observations": argument_observations,
             },
         )
 

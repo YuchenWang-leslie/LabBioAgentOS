@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from hashlib import sha256
 from datetime import datetime, timezone
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
@@ -57,6 +58,7 @@ from labbioagentos import (
     PantheonRuntimeIntegrationError,
     PantheonTypedStageInvoker,
     OutputCollector,
+    OutputDeclassificationMode,
     Principal,
     ProcessOutcome,
     Project,
@@ -82,6 +84,7 @@ from labbioagentos import (
     SkillSourceProjector,
     SkillUserDecision,
     StageRuntimeSpec,
+    StructuredOutputContract,
     TraceEventType,
     WorkflowStage,
     WorkspaceContext,
@@ -512,6 +515,112 @@ async def test_execution_host_injects_scope_authorizes_inputs_and_returns_receip
     assert (output.owner_user_id, output.project_id, output.lab_id, output.run_id) == (
         "user-a", "project-a", "lab-a", run_id
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("declaration", ("empty", "raw", "one_of_two"))
+async def test_impossible_output_declaration_reaches_tool_evidence_and_trace(
+    boundary, tmp_path, declaration
+):
+    sink, recorder, access, _, _, store, _ = boundary
+    contract = StructuredOutputContract(
+        contract_id="safe-output", schema_id="synthetic.v1",
+        allowed_fields=frozenset({"value"}),
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
+    )
+
+    class SyntheticRunner(DockerProcessRunner):
+        calls = 0
+
+        def run(self, argv, *, timeout_seconds):
+            self.calls += 1
+            for index, argument in enumerate(argv[:-1]):
+                if argument != "--mount":
+                    continue
+                fields = dict(part.split("=", 1) for part in argv[index + 1].split(",") if "=" in part)
+                if fields.get("target") == "/workspace/outputs":
+                    (Path(fields["source"]) / "result.json").write_text(
+                        '{"schema_id":"synthetic.v1","records":[{"value":1}]}'
+                    )
+            return ProcessOutcome(exit_code=0, stdout=b"", stderr=b"", duration_seconds=0.01)
+
+    runner = SyntheticRunner()
+    minimum = 2 if declaration == "one_of_two" else 1
+    executor = DockerExecutor(
+        store=store,
+        image_registry=ApprovedImageRegistry((ApprovedImage(
+            key="python-fixture", reference="local/python-fixture:3.11",
+            digest="sha256:" + "1" * 64, runtime=ExecutionRuntime.PYTHON,
+            executable=("python",),
+        ),)),
+        execution_policy=ExecutionPolicy(),
+        mount_resolver=MountResolver(store, approved_input_roots=(store.root,)),
+        workspace_manager=ExecutionWorkspaceManager(tmp_path / "executions"),
+        output_collector=OutputCollector(store, ArtifactRegistrationPolicy((contract,))),
+        process_runner=runner, trace_recorder=recorder,
+        minimum_queryable_output_count=minimum,
+    )
+    toolset = _toolset(
+        boundary, WorkflowStage.EXECUTE, ("execution_submit",),
+        execution_submission=ExecutionSubmissionService(
+            artifact_store=store, access_service=access, executor=executor,
+            trace_recorder=recorder,
+        ),
+    )
+    outputs = [] if declaration == "empty" else [{
+        "relative_path": "PRIVATE_OUTPUT.json", "artifact_type": "local-result",
+        "requested_exposure": "RAW" if declaration == "raw" else "DERIVED",
+        "output_contract_id": contract.contract_id,
+    }]
+    result = await toolset.execution_submit(
+        image_key="python-fixture", script_content="print('PRIVATE_PROGRAM')",
+        parameters={"credential": "PRIVATE_CREDENTIAL", "path": "/private/input"},
+        requested_outputs=outputs,
+    )
+    expected = {
+        "minimum_queryable_output_count": minimum,
+        "declared_queryable_output_count": int(declaration == "one_of_two"),
+    }
+    assert result["success"] is False
+    assert result["data"] is None
+    assert result["error"]["error_code"] == "INVALID_OUTPUT_DECLARATION"
+    assert "No execution started" in result["error"]["safe_message"]
+    assert f"at least {minimum}" in result["error"]["safe_message"]
+    assert runner.calls == 0
+    assert store.list_refs() == ()
+    evidence = toolset.evidence_items()[-1]
+    assert evidence.status.value == "FAILED"
+    assert evidence.safe_result == {"execution_output_declaration": expected}
+    assert evidence.execution_submit_request.requested_output_count == len(outputs)
+    events = [event for event in sink.read() if event.event_id in evidence.trace_event_ids]
+    assert [event.event_type for event in events] == [
+        TraceEventType.CAPABILITY_INVOKED, TraceEventType.CAPABILITY_FAILED,
+    ]
+    assert events[-1].payload["execution_output_declaration"] == expected
+    assert events[-1].payload["correlation_id"] == result["error"]["correlation_id"]
+    assert all(event.run_id == toolset.binding.run_id for event in events)
+    assert all(event.invocation_id == toolset.binding.invocation_id for event in events)
+    assert all(event.payload["capability_invocation_id"] == str(evidence.capability_invocation_id) for event in events)
+    encoded = json.dumps({
+        "result": result, "evidence": evidence.model_dump(mode="json"),
+        "trace": [event.model_dump(mode="json") for event in sink.read()],
+    })
+    for forbidden in ("PRIVATE_OUTPUT", "PRIVATE_PROGRAM", "PRIVATE_CREDENTIAL", "/private/input"):
+        assert forbidden not in encoded
+
+    executor.minimum_queryable_output_count = 1
+    valid = await toolset.execution_submit(
+        image_key="python-fixture", script_content="print('synthetic')",
+        requested_outputs=[{
+            "relative_path": "result.json", "artifact_type": "synthetic-result",
+            "requested_exposure": "DERIVED", "output_contract_id": contract.contract_id,
+        }],
+    )
+    assert valid["success"] is True
+    assert valid["data"]["status"] == "SUCCEEDED"
+    assert runner.calls == 1
+    assert len(valid["data"]["output_artifact_ids"]) == 1
+    assert len(toolset.evidence_items()) == 2
 
 
 @pytest.mark.asyncio

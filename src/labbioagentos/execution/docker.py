@@ -27,6 +27,7 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 from .errors import (
     ContainerStartError,
     ExecutionBoundaryError,
+    ExecutionOutputDeclarationError,
     OutputCollectionError,
 )
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
@@ -302,6 +303,9 @@ class DockerExecutor:
 
         image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
         self.execution_policy.validate_plan(plan, image)
+        self.output_collector.registration_policy.validate_output_declarations(
+            plan.requested_outputs, self.minimum_queryable_output_count
+        )
         mounts = self.mount_resolver.resolve_inputs(plan.input_artifact_ids)
         workspace = self.workspace_manager.prepare(plan, mounts)
         return self.command_builder.build(plan, image, workspace, mounts)
@@ -311,6 +315,9 @@ class DockerExecutor:
         try:
             image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
             self.execution_policy.validate_plan(plan, image)
+            self.output_collector.registration_policy.validate_output_declarations(
+                plan.requested_outputs, self.minimum_queryable_output_count
+            )
             input_mounts = self.mount_resolver.resolve_inputs(
                 plan.input_artifact_ids
             )
@@ -331,7 +338,20 @@ class DockerExecutor:
                 input_mounts,
             )
         except ExecutionBoundaryError as exc:
-            self._emit_failure(plan, exc.error_class, str(exc))
+            if isinstance(exc, ExecutionOutputDeclarationError):
+                self._emit(
+                    plan, TraceEventType.EXECUTION_FAILED, "FAILED",
+                    {
+                        "error_class": exc.error_class.value,
+                        "error_code": "INVALID_OUTPUT_DECLARATION",
+                        "execution_output_declaration": {
+                            "minimum_queryable_output_count": exc.minimum_queryable_output_count,
+                            "declared_queryable_output_count": exc.declared_queryable_output_count,
+                        },
+                    },
+                )
+            else:
+                self._emit_failure(plan, exc.error_class, str(exc))
             raise
         except (ArtifactStoreError, OSError, ValueError) as exc:
             error = OutputCollectionError(

@@ -16,9 +16,10 @@ adapter, prompt, or monkey patch. The required source identities are:
 | Reasoning-only replay omission patch | `e2db6289a3daa0b42814c2ab02ad12c038e4428f` |
 | Provider-turn progress and parameter reuse patch | `381146326e58720db2fcaf5f47419ae271a5d058` |
 | Compatible-provider thinking transport patch | `93ec465c2f4cbbf44d594c4e142971de017ab232` |
-| Required LabBio Pantheon revision | `93ec465c2f4cbbf44d594c4e142971de017ab232` |
+| Governed tool-request integrity patch | `7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` |
+| Required LabBio Pantheon revision | `7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` |
 
-The seven required patch commits form one linear history:
+The eight required patch commits form one linear history:
 
 ```text
 5d3d459ac5752ed9d39432232d76ad1581296012
@@ -29,6 +30,7 @@ The seven required patch commits form one linear history:
   -> e2db6289a3daa0b42814c2ab02ad12c038e4428f
   -> 381146326e58720db2fcaf5f47419ae271a5d058
   -> 93ec465c2f4cbbf44d594c4e142971de017ab232
+  -> 7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7
 ```
 
 `ba7f0e4b` bounds reasoning-only idle convergence in Pantheon's generic Agent
@@ -54,9 +56,28 @@ behavior remains unchanged. None of the patches selects scientific methods,
 routes a LabBio stage, repairs model output, or contains a provider/PBMC special
 case.
 
+`7b02bcba` preserves Chat Completions finish reason and completion-token usage
+through extraction/statistics cleanup. Before tool dispatch it observes only
+finite finish/parse/rejection categories and bounded tool identities. An opt-in
+`strict_tool_arguments` mode rejects known truncated/filtered responses and
+non-object, duplicate-key, non-finite or otherwise malformed JSON without repair,
+before capability hooks or tool execution. LabBio enables it for capability
+agents. Default Pantheon parsing/replay remains compatible for other callers;
+strict callers retain the original failed request in conversation history.
+
+A LabBio-only hook is insufficient: provider metadata was dropped, and argument
+repair occurred, before that hook could run. The narrow upstream changes are in
+`pantheon/agent.py`, `pantheon/utils/llm.py`, and
+`pantheon/utils/llm_providers.py`. Compatibility risk is confined to opted-in
+callers rejecting inputs previously repaired. This is syntax/transport integrity,
+not proof that a syntactically valid program is complete or correct. Missing or
+unknown finish reasons remain unknown. The separate Responses API terminal
+status is not normalized by this patch, so its truncation detection is not claimed.
+No provider bodies, arguments, source, raw streams, or reasoning enter the audit.
+
 The integration source is the user-controlled fork
 `https://github.com/YuchenWang-leslie/PantheonOS`, branch
-`fix/provider-turn-observability`. The earlier focused branches remain
+`fix/governed-tool-request-integrity`. The earlier focused branches remain
 available. The fork remains traceable to upstream
 `https://github.com/aristoteleo/PantheonOS`. These commits are not claimed to be
 part of an official Pantheon release. Do not copy their source into LabBio or
@@ -66,13 +87,21 @@ LabBio's public package declaration remains `pantheon-agents>=0.6.4,<0.7` so a
 future official compatible release can replace the fork deliberately. That
 range alone currently resolves vanilla 0.6.4 and is insufficient for current
 runtime acceptance. For a reproducible development or acceptance environment,
-install with the repository-owned constraint:
+install with the repository-owned constraint after the required commit is pushed:
 
 ```bash
 python -m pip install \
   -c constraints/pantheon-runtime.txt \
   -e '.[test]'
 ```
+
+Current checkpoint: `7b02bcba` is committed locally but not pushed. The remote
+development pin is prepared, not yet remotely reconstructible. Until an
+authorized fork push, use the existing sibling checkout at that exact SHA with
+`python -m pip install -e ../PantheonOS`, then install LabBio without the remote
+constraint. Do not silently fall back to vanilla 0.6.4 or the earlier `93ec465c`:
+neither supplies the required strict-mode API. No Git credential or proxy setting
+was changed by this repair, and no official release is claimed.
 
 Then verify both source identity and import location; a `0.6.4` version string
 alone is not sufficient:
@@ -104,7 +133,7 @@ and append-only sinks provide workflow/agent correlation without changing
 `pantheon/agent.py`, `pantheon/team/pantheon.py`, memory, or plugin contracts.
 
 The default implementation strategy remains LabBio extension ->
-adapter/plugin/provider/subclass -> PantheonOS. The seven current generic patches
+adapter/plugin/provider/subclass -> PantheonOS. The eight current generic patches
 above are the documented exceptions. The following is a deliberately small
 conditional watchlist, not a request to edit additional files now.
 

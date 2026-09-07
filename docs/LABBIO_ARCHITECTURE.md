@@ -22,7 +22,8 @@ bioinformatics methods, runtime scientific reasoning, or production services.
 The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
 Pantheon revision is
-`93ec465c2f4cbbf44d594c4e142971de017ab232`.
+`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` (local repair; fork push pending as
+recorded in `UPSTREAM_MODIFICATIONS.md`).
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
 PantheonOS. PantheonOS remains an external runtime dependency; LabBio code is not
@@ -314,6 +315,7 @@ The implemented execution path is:
 ```text
 runtime-generated ExecutionPlan
   -> ApprovedImageRegistry + ExecutionPolicy
+  -> required queryable-output declaration feasibility
   -> MountResolver + ExecutionWorkspaceManager
   -> deterministic Docker argv
   -> host-enforced process timeout
@@ -337,6 +339,22 @@ The Docker command is an argument tuple executed with `shell=False` and always
 includes `cap-drop ALL`, `no-new-privileges`, read-only container root, fixed
 work directory, controlled bind mounts, resource limits, and a host timeout.
 Neither privileged mode nor host networking is expressible.
+
+When the trusted runtime requires queryable outputs, the same registration
+policy checks declaration feasibility before mounts, workspace allocation, or
+Docker. Insufficient DERIVED declarations with approved release-authorizing
+contracts fail with `INVALID_OUTPUT_DECLARATION`; only required/declared counts
+are returned and audited. Default minimum zero remains valid. Declarations are
+not generated, repaired, or inferred from files; actual output collection,
+content validation, and release authorization remain mandatory after execution.
+
+Capability agents opt into Pantheon's strict JSON-object tool parsing. Known
+truncated/filtered Chat Completions responses fail before tool execution and
+hooks; malformed arguments are not repaired in execution or history. Bounded
+provider-turn evidence records finish reason, completion-token count, parse mode,
+and rejection code, including pre-function failures. It contains no arguments,
+source, raw streams, or provider bodies. Unknown termination is not proof of
+completeness, and syntactically valid Agent programs remain Agent-owned.
 
 `MountResolver` accepts artifact UUIDs only, reloads the canonical `ArtifactRef`
 from `ArtifactStore`, resolves its internal locator, and requires a regular,

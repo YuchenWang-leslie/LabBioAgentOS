@@ -20,6 +20,19 @@ class ExecutionPlanRejected(ExecutionBoundaryError):
         super().__init__(message, ExecutionFailureClass.PLAN_REJECTED)
 
 
+class ExecutionOutputDeclarationError(ExecutionPlanRejected):
+    """Declared output intent cannot meet the trusted queryable-output minimum."""
+
+    def __init__(
+        self, minimum_queryable_output_count: int, declared_queryable_output_count: int
+    ):
+        super().__init__(
+            "Declared outputs cannot satisfy the configured queryable-output minimum"
+        )
+        self.minimum_queryable_output_count = minimum_queryable_output_count
+        self.declared_queryable_output_count = declared_queryable_output_count
+
+
 class ExecutionScriptValidationError(ExecutionBoundaryError):
     """The submitted runtime program is not syntactically valid."""
 

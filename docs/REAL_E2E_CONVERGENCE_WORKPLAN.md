@@ -995,3 +995,30 @@ call can be asserted from the saved normalized source. The next diagnostic must
 capture finite finish reason, completion-token count, and parse-mode metadata
 before dispatch without persisting raw arguments or provider bodies. No upstream
 change or additional live attempt was made in this checkpoint.
+
+### Authorized two-boundary repair — 2026-09-07
+
+The two isolated repairs are implemented without changing the annotation task,
+Agent scientific programs, package inventory, exposure policy, or retry/turn
+budgets. Queryable-output declaration feasibility is checked before execution
+allocation; minimum zero remains valid and post-execution content validation is
+unchanged. `INVALID_OUTPUT_DECLARATION` returns and immediately persists only the
+trusted required count and eligible declared count. It does not infer outputs.
+
+Pantheon patch `7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` retains Chat
+Completions finish reason and output-token usage and offers strict opt-in JSON
+tool parsing. LabBio capability agents reject known truncated/filtered responses
+and malformed arguments before hooks or tool dispatch, without repairing history.
+Finite parse/rejection observations are persisted before the LabBio function
+boundary. Provider bodies, source, arguments, and hidden reasoning are excluded.
+Unknown termination remains unknown; Responses API terminal-status normalization
+is outside this patch. Scientific program correctness is not inferred.
+
+Deterministic validation passes: LabBio `489 passed, 13 skipped`, Pantheon focused
+`59 passed`, separate non-live provider adapters `23 passed`, real Docker hostile
+and diagnostic checks `2 passed`; only the existing Uvicorn warning remains.
+The new Pantheon SHA is local on `fix/governed-tool-request-integrity`; the exact
+development pin is updated but remote reconstruction is pending a fork push.
+No credential/proxy settings, main/V0.1, production release, or activated skill
+was changed. One fresh original-task annotation run is the next verification;
+no successful annotation workflow is claimed by these code tests.

@@ -56,6 +56,7 @@ from labbioagentos import (
     WorkflowStage,
 )
 from labbioagentos.artifacts import ArtifactRef
+from labbioagentos.execution.errors import ExecutionOutputDeclarationError
 
 
 class FakeDockerRunner(DockerProcessRunner):
@@ -897,33 +898,90 @@ def test_ambiguous_display_columns_are_omitted(prefix, monkeypatch):
     assert diagnostic.script_error_locations == ()
 
 
-def test_required_queryable_output_rejects_raw_only_success(tmp_path):
-    def write_output(root):
-        (root / "result.txt").write_text("PRIVATE_RAW_RESULT", encoding="utf-8")
-
-    _, executor, _ = _environment(
+@pytest.mark.parametrize("declaration", ("empty", "raw", "no_contract", "unknown", "no_release"))
+@pytest.mark.parametrize("operation", ("execute", "build_command"))
+def test_required_queryable_output_rejects_impossible_declarations_before_work(
+    tmp_path, declaration, operation
+):
+    contract = StructuredOutputContract(
+        contract_id="no-release", schema_id="synthetic.v1",
+        allowed_fields=frozenset({"value"}),
+    )
+    specs = () if declaration == "empty" else (
+        OutputArtifactSpec(
+            relative_path="PRIVATE_OUTPUT.json", artifact_type="local-result",
+            requested_exposure=(
+                ArtifactExposureClass.RAW if declaration == "raw"
+                else ArtifactExposureClass.DERIVED
+            ),
+            output_contract_id={
+                "raw": None, "no_contract": None,
+                "unknown": "PRIVATE_CONTRACT", "no_release": contract.contract_id,
+            }[declaration],
+        ),
+    )
+    runner = FakeDockerRunner()
+    store, executor, sink = _environment(
         tmp_path,
-        FakeDockerRunner(output_writer=write_output),
+        runner,
+        contracts=(contract,), traced=True,
         minimum_queryable_output_count=1,
     )
-    result = executor.execute(
-        _plan(
-            requested_outputs=(
-                OutputArtifactSpec(
-                    relative_path="result.txt",
-                    artifact_type="text-result",
-                ),
-            )
-        )
-    )
-    receipt = ExecutionReceipt.from_result(result)
+    plan = _plan(requested_outputs=specs)
+    with pytest.raises(ExecutionOutputDeclarationError) as raised:
+        getattr(executor, operation)(plan)
+    assert raised.value.minimum_queryable_output_count == 1
+    assert raised.value.declared_queryable_output_count == 0
+    assert raised.value.error_class is ExecutionFailureClass.PLAN_REJECTED
+    assert runner.calls == []
+    assert not (tmp_path / "executions" / str(plan.execution_id)).exists()
+    assert store.list_refs() == ()
+    assert not any(event.event_type is TraceEventType.EXECUTION_STARTED for event in sink.read())
+    if operation == "execute":
+        failed = next(event for event in sink.read() if event.event_type is TraceEventType.EXECUTION_FAILED)
+        assert failed.payload["execution_output_declaration"] == {
+            "minimum_queryable_output_count": 1, "declared_queryable_output_count": 0,
+        }
+    encoded = json.dumps([event.model_dump(mode="json") for event in sink.read()])
+    assert "PRIVATE_OUTPUT" not in encoded
+    assert "PRIVATE_CONTRACT" not in encoded
 
+
+@pytest.mark.parametrize("raw_output", (False, True))
+def test_zero_required_queryable_outputs_preserves_empty_and_raw_runs(tmp_path, raw_output):
+    runner = FakeDockerRunner(output_writer=lambda root: (root / "local.txt").write_text("local"))
+    _, executor, _ = _environment(tmp_path, runner)
+    result = executor.execute(_plan(requested_outputs=(
+        (OutputArtifactSpec(relative_path="local.txt", artifact_type="text-result"),)
+        if raw_output else ()
+    )))
+    assert result.status is ExecutionStatus.SUCCEEDED
+    assert len(runner.calls) == 1
+    assert len(result.output_artifact_refs) == int(raw_output)
+
+
+@pytest.mark.parametrize("invalid_document", ("not json", '{"schema_id":"synthetic.v1","records":[{"value":{"nested":1}}]}'))
+def test_declaration_precheck_does_not_replace_actual_output_validation(tmp_path, invalid_document):
+    contract = StructuredOutputContract(
+        contract_id="safe-output", schema_id="synthetic.v1",
+        allowed_fields=frozenset({"value"}),
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
+    )
+    runner = FakeDockerRunner(output_writer=lambda root: (root / "result.json").write_text(invalid_document))
+    _, executor, _ = _environment(
+        tmp_path, runner, contracts=(contract,), minimum_queryable_output_count=1,
+    )
+    result = executor.execute(_plan(requested_outputs=(OutputArtifactSpec(
+        relative_path="result.json", artifact_type="synthetic-result",
+        requested_exposure=ArtifactExposureClass.DERIVED,
+        output_contract_id=contract.contract_id,
+    ),)))
+    receipt = ExecutionReceipt.from_result(result)
+    assert len(runner.calls) == 1
     assert result.status is ExecutionStatus.FAILED
     assert result.output_artifact_refs[0].exposure_class is ArtifactExposureClass.RAW
-    assert receipt.issue_detail_codes == (
-        OutputContractFailureCode.QUERYABLE_OUTPUT_REQUIRED,
-    )
-    assert "PRIVATE_RAW_RESULT" not in receipt.model_dump_json()
+    assert OutputContractFailureCode.INVALID_DOCUMENT in receipt.issue_detail_codes
+    assert OutputContractFailureCode.QUERYABLE_OUTPUT_REQUIRED in receipt.issue_detail_codes
 
 
 def test_container_start_failure_is_structured(tmp_path):

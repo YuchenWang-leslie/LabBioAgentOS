@@ -38,6 +38,7 @@ from labbioagentos.execution import (
     ExecutionSubmissionService,
     RequestedResources,
 )
+from labbioagentos.execution.errors import ExecutionOutputDeclarationError
 from labbioagentos.execution.models import (
     ExecutionImageKey,
     ExecutionInputArtifactIds,
@@ -484,6 +485,16 @@ class LabBioRuntimeToolSet(ToolSet):
             )
         except Exception as exc:
             error = self._safe_error(exc)
+            failure_details = None
+            if capability == "execution_submit" and isinstance(
+                exc, ExecutionOutputDeclarationError
+            ):
+                failure_details = {
+                    "execution_output_declaration": {
+                        "minimum_queryable_output_count": exc.minimum_queryable_output_count,
+                        "declared_queryable_output_count": exc.declared_queryable_output_count,
+                    },
+                }
             event = self._emit(
                 TraceEventType.CAPABILITY_FAILED,
                 capability,
@@ -492,6 +503,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     "capability_invocation_id": str(capability_invocation_id),
                     "error_code": error.error_code,
                     "correlation_id": str(error.correlation_id),
+                    **(failure_details or {}),
                     **bounded_ids,
                     **request_audit_payload,
                 },
@@ -509,6 +521,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     trace_event_ids=tuple(trace_event_ids),
                     error_code=error.error_code,
                     correlation_id=error.correlation_id,
+                    safe_result=failure_details,
                     artifact_query_request=artifact_query_request,
                     skill_search_request=skill_search_request,
                     execution_submit_request=execution_submit_request,
@@ -1237,6 +1250,18 @@ class LabBioRuntimeToolSet(ToolSet):
             return ToolError(
                 error_code="INVALID_EXECUTION_SCRIPT",
                 safe_message="The submitted Python script is not syntactically valid.",
+            )
+        if isinstance(exc, ExecutionOutputDeclarationError):
+            return ToolError(
+                error_code="INVALID_OUTPUT_DECLARATION",
+                safe_message=(
+                    "No execution started. The configured execution requires at least "
+                    f"{exc.minimum_queryable_output_count} queryable output(s), but "
+                    f"{exc.declared_queryable_output_count} declaration(s) are eligible. "
+                    "Eligible declarations request DERIVED exposure with an approved "
+                    "output contract that authorizes remote release. Actual output "
+                    "files must still pass all collection and release checks."
+                ),
             )
         if isinstance(exc, ValidationError):
             summaries: list[str] = []
