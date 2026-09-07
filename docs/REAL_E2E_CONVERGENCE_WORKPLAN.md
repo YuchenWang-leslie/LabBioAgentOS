@@ -956,3 +956,42 @@ real-Docker tests pass independently. The same user request will be submitted
 from a fresh lineage using the unchanged existing image, not by editing or
 resuming either failed Agent program. This infrastructure check does not claim
 successful annotation or scientific acceptance.
+
+The fresh run `6ba25d93-fdaf-4b3d-8ad4-2a90e4de43d1` is retained in
+`WYC/result/pbmc-auto-annotation-20260907-a3`, with engineering status in
+`SUPERVISOR_STATUS.md` and a local-file index in `README.md`. The first real
+Docker process exited zero and independently generated a 2,700-row annotation
+table with exact input identity coverage, a readable local report, and two valid
+JSON files. These are local preview deliverables, not a completed workflow:
+the Agent declared no outputs, so `QUERYABLE_OUTPUT_REQUIRED` correctly
+prevented governed result acceptance.
+
+The Agent used its one existing workflow retry. A new program failed with an
+array-shape `ValueError`; the enriched diagnostic was immediately persisted and
+returned with script hash and exact line/column range. Its self-authored revision
+passed that location, generated three partial local files, then raised
+`NameError` at a standalone final source identifier. Generation truncation is
+suspected but unproven because provider finish reason is not in the current
+bounded observation. A fourth execution had started when the supervisor stopped
+the host; its exact task container was stopped, giving operator-caused exit 137.
+No Docker services were stopped; no containers remain. All scripts/results/logs
+are preserved. No terminal WorkflowRun event or final Report Artifact is claimed.
+
+Read-only schema audit found no lost `requested_outputs` type/description in
+Pantheon's final provider schema. Current model inputs already expose the
+minimum queryable-output count and approved contract; empty declarations are
+nevertheless allowed past submission and rejected only after computation.
+The next separately bounded entry is generation-completeness observability and
+early enforcement of that existing output contract, not automatic declarations,
+unrestricted logs, Agent-program repair, another blind rerun, or environment
+installation. Source fix `60bc315` is local on the repair branch, not deployed or
+pushed. Final regression remains 470 passed, 13 skipped; real Docker 2 passed.
+
+The frozen Pantheon parser has existing lenient/terminator-repair/optional JSON
+repair paths (`pantheon/agent.py:94`), but no per-call parse-mode evidence was
+recorded. Its response extraction also drops provider finish reason before the
+current bounded turn observation. Neither truncation nor actual repair of this
+call can be asserted from the saved normalized source. The next diagnostic must
+capture finite finish reason, completion-token count, and parse-mode metadata
+before dispatch without persisting raw arguments or provider bodies. No upstream
+change or additional live attempt was made in this checkpoint.
