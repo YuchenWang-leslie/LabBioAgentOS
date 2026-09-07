@@ -1194,3 +1194,70 @@ the correction; a selected-profile mutation test checks the catalog is not stati
 Full regression now passes: 562 passed, 14 skipped, one existing Uvicorn warning.
 One fresh same-task CLI verification follows; this is not automatic replay of
 the retained failed run.
+
+Fresh same-request CSV run `4923f66f-8dda-47d6-89ae-9c497cc6ef32`, retained
+under `WYC/result/local-entrypoint-small-table-20260907-r2`, also ended
+FAILED/UNDERSTAND. It has one retry, eight exposure denials, zero execution
+submissions/Docker runs/reports. Independent audit confirms the exact shared
+deployment facts and actual capability-owner catalog reached both model modes
+on both attempts, yet the model still demanded a remote-readable view. Thus the
+context correction is technically verified but insufficient for RAW-CSV behavior.
+No further prompt layer, RAW release, scientific workaround or CSV replay is
+authorized by this checkpoint's implementation plan.
+
+New-process `python -m labbioagentos status` and `labbio export` correctly read
+and reproduce r2's stable FAILED snapshot without provider access or continuation.
+No six synthetic raw row identifiers appear in its nine model-boundary records.
+One existing provider-client async-generator shutdown error was printed after
+r2 exited; it did not change the persisted failure. This is not claimed repaired
+by the CLI's bounded loguru diagnostic sink.
+
+The user was explicitly told that a separate supported-contract check is next:
+existing PBMC H5AD, explicit `--format h5ad`, a simple data-overview request
+rather than annotation, unchanged source `5db8029`, image, budgets and core.
+Run `31d0a0cf-4211-4cb0-abc8-01522a7b09ab` is under
+`WYC/result/local-entrypoint-h5ad-overview-20260907`. This does not replace the
+failed CSV task or constitute arbitrary-RAW acceptance. No new launch script,
+scientific program, environment rescue, service change or third schema layer
+was added for this separate check; its outcome remains pending.
+
+H5AD check final outcome is FAILED/VALIDATE, not end-to-end accepted. One
+Agent-owned Docker execution `591ee66d-de88-4a16-a0ca-30697edd508f` exited zero
+in 1.242 seconds and registered three outputs (two RAW, one DERIVED), with no
+capability failures or workflow retry. Script SHA256
+`0f0e9467a1c839b28022785be48ab06325e042eb29af0bd5b0c55745abf0177d`
+matches execution evidence; independent audit confirms all output hashes, sizes
+and scope/invocation lineage. None of the 2700 input cell identifiers appears
+in the 14 model-boundary records.
+
+The exact VALIDATE result states `runtime_assessment=PASS`,
+`technical_status=COMPLETED`, and describes successful verification, but submits
+`next_action.action=fail` with a reason saying it wants to finish directly.
+WorkflowEngine honors that valid control action and persists FAILED. No host
+changes the action, invents a report-stage result or interprets prose as success.
+This is a newly observed model control-semantics problem, separate from the RAW
+view/prerequisite problem; further changes or live attempts stop here.
+
+All declared H5AD outputs were delivered under
+`WYC/result/local-entrypoint-h5ad-overview-20260907/delivery/outputs/`.
+Human-readable `pbmc_overview_report.md` belongs to Artifact
+`46ff7c23-deb4-4df4-a1cd-a0f208131838`; it is an Agent-program-produced RAW
+local output, not a `MODEL_AUTHORED_REPORT` submission. `delivery/RESULT.json`
+honestly says FAILED and `reports=[]`; no `delivery/REPORT.md` is fabricated.
+
+Final checkpoint: thin local CLI/config/persistence/delivery implementation and
+562-test regression pass (14 skipped, one existing Uvicorn warning); separate
+real-Docker regression is 3 passed. Actual H5AD execution and local-file delivery
+pass; RAW-CSV behavior, final workflow completion and final report submission
+do not pass. The required final Pantheon revision remains `7b02bcba`, untouched;
+main/V0.1 remain `8d6b24f`. Local CLI is installed in the existing labbioagent
+environment, using external `~/.config/labbioagent/runtime.toml`; no production
+service was deployed and no Gold/Memory/skill was promoted. Docker/containerd/
+docker.socket remain active; no task container remains. Failed runs and all
+execution/output evidence are retained. Changes remain local on
+`feat/local-task-entrypoint`, with no GitHub push in this request.
+
+The only next entry is explicit user review of these results and authorization
+for the newly isolated model control/RAW-input issue. Do not reopen core
+architecture, broaden exposure, supply an analysis answer, silently choose a
+different action, or launch another test to make this checkpoint appear accepted.

@@ -37,8 +37,8 @@ python -m pip install -e . --no-deps --no-build-isolation
 
 ```bash
 labbio run \
-  --data /path/to/table.csv \
-  --task "请概览这个表格，实际计算数值列的基本统计量，并保存汇总和中文报告。" \
+  --data /path/to/data.h5ad --format h5ad \
+  --task "请对这份数据做一个简洁概览，实际检查基本情况，保存汇总和中文报告。" \
   --preference "简洁说明，保留数据局限，不需要复杂分析。" \
   --output /configured/result/root/my-new-task
 ```
@@ -52,6 +52,8 @@ labbio run \
 文件名后缀不会选择分析方法，也不会自动启动检查器。H5AD 的既有安全结构检查
 可以通过 `--format h5ad` 显式启用，或在可信配置设置 `default_format`。
 未启用检查器的输入仍可由 Agent 自己编写程序读取；CLI 不代它解析和概括原始数据。
+但 RAW 登记能力不等于任意格式的模型行为已获验证：本轮小表格 CSV 两次 live
+均停在 UNDERSTAND，没有执行或报告。该缺口尚未解决，不能用 H5AD 的结果替代验收。
 
 任务和偏好作为用户原文进入既有 `task_text`；其中的身份、镜像或工具声明
 不能覆盖可信配置。每次运行只绑定用户明确提交的输入，不扫描同目录的其他文件。
@@ -109,8 +111,22 @@ RAW 输出可交给本地用户，但不会因此获得远程模型可读权限�
 
 命令退出码：`0` 表示 `run` 完成或只读命令成功，`2` 表示运行返回了非完成
 的稳定结果，`1` 表示命令失败，`130` 表示用户中断。
-异常仅输出安全类型，不打印可能含有凭据、原始数据或 provider 正文的异常消息。
+入口捕获的异常仅输出安全类型，不打印可能含有凭据、原始数据或 provider 正文的异常消息。
 失败目录保留，不自动纠错、增加预算或另起隐藏任务。
 
 注册输出的原始文件名依赖保留的 JSONL 收集审计；审计缺失时导出明确失败。
 权威流程状态始终来自 SQLite，而不是根据日志推测。
+
+## 本轮实际测试状态（2026-09-07）
+
+入口与持久化/导出测试已通过，但新的端到端任务验收未通过：
+
+- RAW CSV：两次任务都在 UNDERSTAND 失败，未执行计算。
+- 显式 H5AD：Agent 自行提交程序，Docker 退出码 0，三个结果文件成功导出；
+  VALIDATE 文本称验证通过，却选择 `next_action.action=fail`，因此真实流程
+  为 FAILED，没有进入最终 REPORT 阶段。
+
+H5AD 的 `pbmc_overview_report.md` 是 Agent 程序产生的本地输出，不是
+`report_submit` 注册的最终报告。入口没有将其冒充为 `delivery/REPORT.md`，
+也没有把 FAILED 重写为 COMPLETED。现有内核/Pantheon 未修改。
+不要把本命令的安装成功或文件已生成解释为任意自然语言任务都已可靠完成。
