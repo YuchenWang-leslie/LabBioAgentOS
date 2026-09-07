@@ -897,3 +897,20 @@ not a new milestone and not a reopening of C12 scientific self-evaluation.
   reconstruction checks pass. Final non-live regression is `449 passed, 12
   skipped`; the opt-in real-Docker hostile suite is `1 passed`. No production
   deployment was performed.
+
+## Supervised automatic annotation task — 2026-09-07
+
+The user requested a fresh PBMC automatic cell-type annotation task with local
+deliverables under `WYC/result`, while Codex only supervises and adjusts the
+framework. Run `d104ffa8-1304-4755-b16d-f6dc69db5237` reached EXECUTE but
+repeated denied RAW view requests without new evidence. The supervisor stopped
+it before any Docker submission; all evidence remains under
+`result/pbmc-auto-annotation-20260907-a1` (relative to WYC).
+
+The exposure policy correctly denied the calls. The tool adapter failed to map
+`ArtifactExposureDenied` and returned `CAPABILITY_FAILED`, losing the actionable
+denial category. A deterministic reproduction and neighboring allowed queries
+cover the focused fix: `ARTIFACT_EXPOSURE_DENIED` with fixed safe text, without
+exception text, content disclosure, automatic query correction, or policy change.
+Fresh live validation remains pending. No scientific program, method, environment,
+budget, Pantheon code, or production deployment was changed for this correction.

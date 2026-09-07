@@ -20,6 +20,7 @@ from pydantic import (
 
 from labbioagentos.artifacts import (
     ArtifactConsumer,
+    ArtifactExposureDenied,
     ArtifactExposureService,
     ArtifactQuery,
     ArtifactSchema,
@@ -1144,6 +1145,14 @@ class LabBioRuntimeToolSet(ToolSet):
     def _safe_error(exc: Exception) -> ToolError:
         if isinstance(exc, AuthorizationDenied):
             return ToolError(error_code="AUTHORIZATION_DENIED", safe_message="Access denied by policy.")
+        if isinstance(exc, ArtifactExposureDenied):
+            return ToolError(
+                error_code="ARTIFACT_EXPOSURE_DENIED",
+                safe_message=(
+                    "Remote exposure policy denies this Artifact/view combination. "
+                    "RAW Artifacts have no remote-readable views."
+                ),
+            )
         if isinstance(exc, ArtifactIdentifierError):
             return ToolError(
                 error_code="INVALID_IDENTIFIER",

@@ -456,7 +456,7 @@ async def test_delegated_specialist_owns_tools_and_evidence_is_attributed_and_ag
         denied_raw = await toolset.artifact_query(str(raw.artifact_id), "SUMMARY")
         assert not denied_raw["success"]
         raw_error_codes.append(denied_raw["error"]["error_code"])
-    assert raw_error_codes == ["CAPABILITY_FAILED", "CAPABILITY_FAILED"]
+    assert raw_error_codes == ["ARTIFACT_EXPOSURE_DENIED", "ARTIFACT_EXPOSURE_DENIED"]
     encoded = "".join(item.model_dump_json() for item in bundle.items)
     for forbidden in (
         "storage_locator",

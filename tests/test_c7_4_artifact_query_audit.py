@@ -10,6 +10,7 @@ from pantheon.providers import LocalProvider
 
 from labbioagentos import (
     ArtifactExposureClass,
+    ArtifactExposureDenied,
     ArtifactExposureService,
     ArtifactRepresentation,
     ArtifactReleaseBasis,
@@ -105,6 +106,71 @@ def _assert_correlated_audit(sink, binding, item, expected, terminal_type):
     assert started.payload["artifact_query_request"] == expected
     assert terminal.payload["artifact_query_request"] == expected
     assert item.artifact_query_request.model_dump(mode="json") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view_type", ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"])
+async def test_raw_exposure_denial_is_explicit_and_preserves_request_audit(
+    artifact_query_boundary, view_type,
+):
+    sink, binding, allowed, toolset = artifact_query_boundary
+    raw = toolset.services.artifact_store.register(
+        artifact_type="private-input",
+        exposure_class=ArtifactExposureClass.RAW,
+        representation=ArtifactRepresentation(stored_content="PRIVATE_SENTINEL"),
+        owner_user_id=binding.principal.user_id,
+        project_id=binding.workspace.project_id,
+        lab_id=binding.workspace.lab_id,
+        run_id=binding.run_id,
+    )
+    limit = 10 if view_type == "TOP_N" else None
+    response = await toolset.artifact_query(str(raw.artifact_id), view_type, limit)
+
+    assert response["success"] is False
+    assert response["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    assert "PRIVATE_SENTINEL" not in json.dumps(response)
+    _assert_correlated_audit(
+        sink, binding, toolset.evidence_items()[-1],
+        {
+            "artifact_id": str(raw.artifact_id), "view_type": view_type,
+            "limit": limit, "limit_type": "INTEGER" if limit else "NULL",
+            "normalization_applied": False,
+        },
+        TraceEventType.CAPABILITY_FAILED,
+    )
+    assert toolset.evidence_items()[-1].error_code == "ARTIFACT_EXPOSURE_DENIED"
+    permitted = await toolset.artifact_query(str(allowed.artifact_id), "TOP_N", 10)
+    assert permitted["success"] is True
+
+
+def test_exposure_denial_never_echoes_exception_text():
+    result = LabBioRuntimeToolSet._safe_error(
+        ArtifactExposureDenied("PRIVATE_SENTINEL /private/input token=secret")
+    )
+    assert result.error_code == "ARTIFACT_EXPOSURE_DENIED"
+    assert "PRIVATE_SENTINEL" not in result.model_dump_json()
+    assert "/private" not in result.model_dump_json()
+    assert "token=secret" not in result.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_structural_denied_records_can_still_be_queried_as_schema(
+    artifact_query_boundary,
+):
+    _, binding, _, toolset = artifact_query_boundary
+    ref = toolset.services.artifact_store.register(
+        artifact_type="structural-input",
+        exposure_class=ArtifactExposureClass.STRUCTURAL,
+        release_basis=ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR,
+        representation=ArtifactRepresentation(),
+        owner_user_id=binding.principal.user_id,
+        project_id=binding.workspace.project_id,
+        lab_id=binding.workspace.lab_id,
+    )
+    denied = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", 10)
+    assert denied["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    permitted = await toolset.artifact_query(str(ref.artifact_id), "SCHEMA")
+    assert permitted["success"] is True
 
 
 @pytest.mark.asyncio
