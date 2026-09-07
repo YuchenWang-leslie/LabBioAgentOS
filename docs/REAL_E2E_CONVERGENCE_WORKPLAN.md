@@ -912,5 +912,21 @@ The exposure policy correctly denied the calls. The tool adapter failed to map
 denial category. A deterministic reproduction and neighboring allowed queries
 cover the focused fix: `ARTIFACT_EXPOSURE_DENIED` with fixed safe text, without
 exception text, content disclosure, automatic query correction, or policy change.
-Fresh live validation remains pending. No scientific program, method, environment,
-budget, Pantheon code, or production deployment was changed for this correction.
+Commit `dfa3775` contains the fix and full regression passes with `455 passed,
+12 skipped` plus the existing Uvicorn warning. Fresh run
+`1ed8af1a-b904-439e-b65e-96b180ff34bc` confirmed the explicit denial code on
+the live capability surface and progressed to five Agent-authored Docker
+executions. All five exited nonzero: one unavailable-package requirement, two
+sparse-storage-format errors, and two dictionary-key errors while exporting the
+cell annotations. One further script was rejected before Docker for syntax.
+The Agent resolved the earlier dependency and sparse-format issues itself but
+did not resolve the repeated final `KeyError`. The supervisor interrupted the
+host process after that repeated failure. No successful annotation table or
+final report exists, and no workflow terminal event is claimed.
+
+Evidence is retained under `result/pbmc-auto-annotation-20260907-a2`, with the
+operator report at `result/PBMC_自动注释_监督记录.md` (relative to WYC).
+No Agent scientific program, method, environment, budget, Pantheon code, or
+production deployment was changed by Codex. The only implemented infrastructure
+change is the exposure-error mapping. The next entry is the persisted failure
+and existing safe Python diagnostic contract; no automatic rerun is pending.
