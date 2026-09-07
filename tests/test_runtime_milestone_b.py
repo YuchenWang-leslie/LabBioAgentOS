@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from datetime import datetime, timezone
 from types import MethodType, SimpleNamespace
 from uuid import uuid4
@@ -15,20 +16,27 @@ from labbioagentos import (
     AccessService,
     CAPABILITY_CEILINGS,
     AgentProfile,
+    ApprovedImage,
+    ApprovedImageRegistry,
     ArtifactConsumer,
     ArtifactExposureClass,
     ArtifactExposureService,
+    ArtifactRegistrationPolicy,
     ArtifactRepresentation,
     ArtifactReleaseBasis,
     AuthorizationPolicy,
     CapabilityProfile,
+    DockerExecutor,
+    DockerProcessRunner,
     ExecutionPlanDraft,
+    ExecutionPolicy,
     ExecutionReceipt,
     ExecutionScriptValidationError,
     ExecutionResult,
     ExecutionRuntime,
     ExecutionStatus,
     ExecutionSubmissionService,
+    ExecutionWorkspaceManager,
     GoldSkillService,
     InMemoryMemoryStore,
     InMemoryProjectStore,
@@ -42,12 +50,15 @@ from labbioagentos import (
     MemoryKind,
     MemoryScope,
     ModelProfile,
+    MountResolver,
     NextAction,
     NextActionProposal,
     PantheonRuntimeFactory,
     PantheonRuntimeIntegrationError,
     PantheonTypedStageInvoker,
+    OutputCollector,
     Principal,
+    ProcessOutcome,
     Project,
     PromptProfile,
     ProviderConfigRef,
@@ -501,6 +512,112 @@ async def test_execution_host_injects_scope_authorizes_inputs_and_returns_receip
     assert (output.owner_user_id, output.project_id, output.lab_id, output.run_id) == (
         "user-a", "project-a", "lab-a", run_id
     )
+
+
+@pytest.mark.asyncio
+async def test_execution_failure_diagnostics_reach_tool_evidence_and_immediate_trace(
+    boundary, tmp_path
+):
+    sink, recorder, access, _, _, store, _ = boundary
+    secret = "PRIVATE_PROCESS_VALUE_MUST_NOT_ESCAPE"
+    script = "mapping = {7: 'local value'}\nrequested_key = str(7)\nresult = mapping[requested_key]\n"
+    failing_line = script.splitlines()[2]
+    start_column = len("result = ")
+    stderr = (
+        f"{secret}\nTraceback (most recent call last):\n"
+        '  File "/labbio/script.py", line 3, in <module>\n'
+        f"    {failing_line}\n"
+        f"{' ' * (4 + start_column)}{'^' * (len(failing_line) - start_column)}\n"
+        "KeyError: '7'\n"
+    ).encode()
+
+    class SyntheticRunner(DockerProcessRunner):
+        exit_code = 1
+
+        def run(self, argv, *, timeout_seconds):
+            return ProcessOutcome(
+                exit_code=self.exit_code,
+                stdout=secret.encode(),
+                stderr=stderr if self.exit_code else b"",
+                duration_seconds=0.01,
+            )
+
+    runner = SyntheticRunner()
+    executor = DockerExecutor(
+        store=store,
+        image_registry=ApprovedImageRegistry((ApprovedImage(
+            key="python-diagnostics",
+            reference="local/python-fixture:3.11",
+            digest="sha256:" + "1" * 64,
+            runtime=ExecutionRuntime.PYTHON,
+            executable=("python",),
+        ),)),
+        execution_policy=ExecutionPolicy(),
+        mount_resolver=MountResolver(store, approved_input_roots=(store.root,)),
+        workspace_manager=ExecutionWorkspaceManager(tmp_path / "executions"),
+        output_collector=OutputCollector(store, ArtifactRegistrationPolicy()),
+        process_runner=runner,
+        trace_recorder=recorder,
+    )
+    service = ExecutionSubmissionService(
+        artifact_store=store, access_service=access, executor=executor,
+        trace_recorder=recorder,
+    )
+    toolset = _toolset(
+        boundary, WorkflowStage.EXECUTE, ("execution_submit",),
+        execution_submission=service,
+    )
+    result = await toolset.execution_submit(
+        image_key="python-diagnostics", script_content=script
+    )
+
+    assert result["success"] is True
+    receipt = result["data"]
+    assert receipt["status"] == "FAILED"
+    assert receipt["script_hash"] == sha256(script.encode()).hexdigest()
+    diagnostic = receipt["diagnostics"][0]
+    assert diagnostic["exception_type"] == "KeyError"
+    assert diagnostic["missing_key_type"] == "str"
+    assert diagnostic["script_error_locations"] == [{
+        "line_number": 3,
+        "start_column": start_column,
+        "end_column": len(failing_line),
+    }]
+    evidence = toolset.evidence_items()[-1]
+    assert evidence.status.value == "COMPLETED"
+    assert evidence.safe_result == receipt
+    event = next(
+        event for event in sink.read()
+        if event.event_type is TraceEventType.EXECUTION_FAILED
+        and "diagnostics" in event.payload
+    )
+    assert event.payload["execution_id"] == receipt["execution_id"]
+    assert event.run_id == toolset.binding.run_id
+    assert event.invocation_id == toolset.binding.invocation_id
+    assert event.payload["script_hash"] == receipt["script_hash"]
+    assert event.payload["diagnostics"] == receipt["diagnostics"]
+    encoded = json.dumps({
+        "tool_result": result,
+        "evidence": evidence.model_dump(mode="json"),
+        "trace": [event.model_dump(mode="json") for event in sink.read()],
+    })
+    assert secret not in encoded
+    assert script not in encoded
+    assert "requested_key" not in encoded
+    assert "local value" not in encoded
+    assert "/labbio/script.py" not in encoded
+    assert "KeyError: '7'" not in encoded
+
+    runner.exit_code = 0
+    valid_script = "mapping = {7: 'local value'}\nrequested_key = 7\nresult = mapping[requested_key]\n"
+    valid = await toolset.execution_submit(
+        image_key="python-diagnostics", script_content=valid_script
+    )
+    assert valid["success"] is True
+    assert valid["data"]["status"] == "SUCCEEDED"
+    assert valid["data"]["diagnostics"] == []
+    assert valid["data"]["script_hash"] == sha256(valid_script.encode()).hexdigest()
+    assert len(toolset.evidence_items()) == 2
 
 
 @pytest.mark.asyncio

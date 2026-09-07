@@ -930,3 +930,29 @@ No Agent scientific program, method, environment, budget, Pantheon code, or
 production deployment was changed by Codex. The only implemented infrastructure
 change is the exposure-error mapping. The next entry is the persisted failure
 and existing safe Python diagnostic contract; no automatic rerun is pending.
+
+### Authorized failure-feedback repair — 2026-09-07
+
+The user authorized diagnosis and repair using the same annotation task. Local
+inspection confirmed numeric dictionary keys versus string lookup arguments in
+both final Agent programs; LabBio performed no key conversion. The old receipt
+retained only `KeyError` and a line number, losing the traceback highlight that
+distinguishes multiple subscripts on that line. Since EXECUTE was interrupted,
+the old receipt is reconstructible from code/logs but was not independently
+persisted as a completed model-boundary bundle.
+
+The generic repair adds source-verified numeric script column ranges and a finite
+literal missing-key type, never a key value, mapping contents, exception text,
+source excerpt, or raw stream. Ambiguous display columns are omitted. The
+submission trace immediately persists the exact safe diagnostics and script
+hash returned to the tool, independent of stage completion. Tool documentation
+defines the coordinates without prescribing a repair. No scientific method,
+Agent program, package inventory, retry/turn budget, or Pantheon code changes.
+
+Synthetic numeric/string failure, matching-key success, leak, chaining,
+source-mismatch, display-width, full tool/evidence/trace, and real-Docker checks
+cover the boundary. Full regression passes with 470 tests; the two opt-in
+real-Docker tests pass independently. The same user request will be submitted
+from a fresh lineage using the unchanged existing image, not by editing or
+resuming either failed Agent program. This infrastructure check does not claim
+successful annotation or scientific acceptance.

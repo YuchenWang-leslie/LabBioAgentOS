@@ -611,6 +611,11 @@ class LabBioRuntimeToolSet(ToolSet):
         path. The offline script writes declared relative outputs beneath the
         directory named by ``LABBIO_OUTPUT_DIR``.
 
+        The receipt status is the process outcome. Failure diagnostics refer to
+        that receipt's script_hash; script_error_locations use one-based lines
+        and zero-based, end-exclusive columns. missing_key_type describes only
+        the failed lookup argument, not the mapping's key types or any values.
+
         Args:
             image_key: Approved key from the current execution capability.
             script_content: Complete program to execute in the approved runtime.

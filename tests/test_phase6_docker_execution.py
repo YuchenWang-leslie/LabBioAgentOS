@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import linecache
 import os
 from pathlib import Path
 import subprocess
+import traceback
 from uuid import uuid4
 
 import pytest
@@ -780,6 +782,119 @@ def test_stderr_cannot_forge_a_missing_module_identity(tmp_path):
     assert receipt.diagnostics[0].exception_type == "ModuleNotFoundError"
     assert receipt.diagnostics[0].missing_module is None
     assert secret not in receipt.model_dump_json()
+
+
+def _synthetic_traceback(source, monkeypatch):
+    filename = "/labbio/script.py"
+    monkeypatch.setitem(
+        linecache.cache, filename, (len(source), None, source.splitlines(True), filename)
+    )
+    try:
+        exec(compile(source, filename, "exec"), {})
+    except Exception:
+        return traceback.format_exc().encode()
+    raise AssertionError("Synthetic failure did not raise")
+
+
+def test_key_error_location_disambiguates_multiple_subscripts(tmp_path, monkeypatch):
+    source = 'lookup = {7: "ok"}\nother = {"ok": 1}\nresult = [lookup["7"], other["ok"]]\n'
+    stderr = _synthetic_traceback(source, monkeypatch)
+    _, executor, _ = _environment(
+        tmp_path, FakeDockerRunner(exit_code=1, stderr=stderr)
+    )
+    receipt = ExecutionReceipt.from_result(executor.execute(_plan(script_content=source)))
+    diagnostic = receipt.diagnostics[0]
+
+    assert diagnostic.exception_type == "KeyError"
+    assert diagnostic.missing_key_type == "str"
+    location = diagnostic.script_error_locations[-1]
+    assert location.line_number == 3
+    assert source.splitlines()[2][location.start_column:location.end_column] == 'lookup["7"]'
+    assert "lookup" not in diagnostic.model_dump_json()
+    assert "missing_key_value" not in diagnostic.model_dump()
+
+
+@pytest.mark.parametrize("key, expected", [("'PRIVATE_PATIENT_VALUE'", "str"), ("23", "int"), ("(1, 'secret')", "tuple")])
+def test_missing_key_projects_type_not_value(key, expected, monkeypatch):
+    source = f"lookup = {{}}\nvalue = lookup[{key}]\n"
+    diagnostic = DockerExecutor._safe_python_diagnostics(
+        _synthetic_traceback(source, monkeypatch), script_content=source
+    )[0]
+
+    assert diagnostic.missing_key_type == expected
+    encoded = diagnostic.model_dump_json()
+    assert all(forbidden not in encoded for forbidden in ("PRIVATE_PATIENT_VALUE", "secret", "lookup", "/labbio"))
+
+
+def test_chained_exception_uses_only_current_exception_locations(monkeypatch):
+    source = "try:\n    {}['old']\nexcept KeyError:\n    raise ValueError('PRIVATE_VALUE')\n"
+    diagnostic = DockerExecutor._safe_python_diagnostics(
+        _synthetic_traceback(source, monkeypatch), script_content=source
+    )[0]
+
+    assert diagnostic.exception_type == "ValueError"
+    assert diagnostic.script_line_numbers == (4,)
+    assert diagnostic.missing_key_type is None
+
+
+def test_diagnostic_locations_require_matching_source_and_bounded_columns(monkeypatch):
+    source = "lookup = {}\nvalue = lookup['secret']\n"
+    stderr = _synthetic_traceback(source, monkeypatch)
+    mismatched = DockerExecutor._safe_python_diagnostics(stderr, script_content="pass\n")[0]
+    assert mismatched.script_error_locations == ()
+    without_carets = b"\n".join(line for line in stderr.splitlines() if b"^" not in line)
+    old_python = DockerExecutor._safe_python_diagnostics(without_carets, script_content=source)[0]
+    assert old_python.script_error_locations == ()
+    assert old_python.exception_type == "KeyError"
+
+
+@pytest.mark.parametrize("rendered", ["'" + "x" * 513 + "'", "custom_type('secret')", "<secret>", "'unterminated"])
+def test_unknown_key_repr_has_no_inferred_type_or_value(rendered):
+    stderr = ("Traceback (most recent call last):\n" + f"KeyError: {rendered}\n").encode()
+    diagnostic = DockerExecutor._safe_python_diagnostics(stderr)[0]
+    assert diagnostic.missing_key_type is None
+    assert "secret" not in diagnostic.model_dump_json()
+
+
+def test_string_number_matching_is_not_repaired(tmp_path, monkeypatch):
+    source = 'lookup = {7: "ok"}\nvalue = lookup["7"]\n'
+    runner = FakeDockerRunner(exit_code=1, stderr=_synthetic_traceback(source, monkeypatch))
+    _, executor, _ = _environment(tmp_path, runner)
+    result = executor.execute(_plan(script_content=source))
+
+    assert result.status is ExecutionStatus.FAILED
+    assert len(runner.calls) == 1
+    script_mount = next(arg for arg in runner.calls[0][0] if "target=/labbio/script.py" in arg)
+    script_path = Path(script_mount.split("source=", 1)[1].split(",", 1)[0])
+    assert script_path.read_text() == source
+
+
+def test_indented_source_location_and_invalid_span(monkeypatch):
+    source = 'def example():\n    label = "ascii"; lookup = {}; value = lookup["missing"]\nexample()\n'
+    stderr = _synthetic_traceback(source, monkeypatch)
+    diagnostic = DockerExecutor._safe_python_diagnostics(stderr, script_content=source)[0]
+    location = diagnostic.script_error_locations[-1]
+    assert location.line_number == 2
+    assert source.splitlines()[1][location.start_column:location.end_column] == 'lookup["missing"]'
+    forged = (
+        'Traceback (most recent call last):\n'
+        '  File "/labbio/script.py", line 1, in <module>\n'
+        '    pass\n    ' + '^' * 1000 + '\nKeyError: "secret"\n'
+    ).encode()
+    assert DockerExecutor._safe_python_diagnostics(
+        forged, script_content="pass\n"
+    )[0].script_error_locations == ()
+
+
+@pytest.mark.parametrize("prefix", ['    label = "中文"; ', '\t'])
+def test_ambiguous_display_columns_are_omitted(prefix, monkeypatch):
+    source = f'def example():\n{prefix}lookup = {{}}; value = lookup["missing"]; other = 1\nexample()\n'
+    diagnostic = DockerExecutor._safe_python_diagnostics(
+        _synthetic_traceback(source, monkeypatch), script_content=source
+    )[0]
+    assert diagnostic.exception_type == "KeyError"
+    assert diagnostic.missing_key_type == "str"
+    assert diagnostic.script_error_locations == ()
 
 
 def test_required_queryable_output_rejects_raw_only_success(tmp_path):

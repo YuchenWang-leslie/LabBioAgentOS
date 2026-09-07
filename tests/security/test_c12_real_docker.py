@@ -24,6 +24,7 @@ from labbioagentos import (
     ExecutionPlan,
     ExecutionPlanRejected,
     ExecutionPolicy,
+    ExecutionReceipt,
     ExecutionRuntime,
     ExecutionStatus,
     ExecutionWorkspaceManager,
@@ -66,6 +67,31 @@ def _executor(tmp_path):
         workspace_manager=ExecutionWorkspaceManager(tmp_path / "executions"),
         output_collector=OutputCollector(store, ArtifactRegistrationPolicy()),
     )
+
+
+def test_real_docker_failure_locations_and_matching_key_neighbor(tmp_path):
+    _, executor = _executor(tmp_path)
+    source = "mapping = {7: 'local'}\nresult = mapping['7']\n"
+    failed = executor.execute(ExecutionPlan(
+        run_id=uuid4(), stage_id=WorkflowStage.EXECUTE,
+        runtime=ExecutionRuntime.PYTHON, image_key="python-c12-real",
+        script_content=source,
+    ))
+    receipt = ExecutionReceipt.from_result(failed)
+    assert receipt.status is ExecutionStatus.FAILED
+    diagnostic = receipt.diagnostics[0]
+    assert diagnostic.missing_key_type == "str"
+    location = diagnostic.script_error_locations[-1]
+    assert location.line_number == 2
+    assert source.splitlines()[1][location.start_column:location.end_column] == "mapping['7']"
+    assert "local" not in diagnostic.model_dump_json()
+    valid = executor.execute(ExecutionPlan(
+        run_id=uuid4(), stage_id=WorkflowStage.EXECUTE,
+        runtime=ExecutionRuntime.PYTHON, image_key="python-c12-real",
+        script_content="mapping = {7: 'local'}\nresult = mapping[7]\n",
+    ))
+    assert valid.status is ExecutionStatus.SUCCEEDED
+    assert valid.diagnostics == ()
 
 
 def test_real_docker_hostile_input_mount_rootfs_socket_and_output_boundaries(tmp_path):

@@ -237,8 +237,15 @@ when enabled for a downstream model workflow, a RAW-only process success is an
 `OUTPUT_CONTRACT_FAILURE` until an approved contract releases enough bounded
 outputs. Non-zero Python exits project only an exception identifier, line
 numbers in the Agent-authored `/labbio/script.py`, and a safe missing-module
-identifier when applicable. RAW stdout/stderr IDs and content remain outside
-the model-visible receipt and stay available only to trusted local audit.
+identifier when applicable. Source-verified traceback highlights additionally
+provide numeric column ranges (zero-based, end-exclusive); ambiguous display
+widths, absent carets, or mismatched source omit the range. A literal KeyError
+argument may expose its finite type name, never its value or mapping contents.
+Only the final chained exception is projected. The submission trace persists
+the same bounded diagnostics and script hash as the model-visible receipt,
+independently of stage completion. RAW stdout/stderr IDs and content remain
+outside that receipt and stay available only to trusted local audit. These
+diagnostics never rewrite or retry the Agent's program.
 
 Runtime stage assemblies independently configure whether retry and interactive
 user input are available. Those booleans narrow both the graph-derived action

@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -226,6 +226,22 @@ class ExecutionIssue(BaseModel):
     output_path: StrictStr | None = Field(default=None, min_length=1)
 
 
+class ExecutionScriptLocation(BaseModel):
+    """Location in the submitted script; columns are zero-based, end-exclusive."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    line_number: int = Field(ge=1)
+    start_column: int = Field(ge=0, le=262_144)
+    end_column: int = Field(ge=1, le=262_144)
+
+    @model_validator(mode="after")
+    def require_nonempty_span(self) -> "ExecutionScriptLocation":
+        if self.end_column <= self.start_column:
+            raise ValueError("Script location must have a nonempty column span")
+        return self
+
+
 class ExecutionDiagnostic(BaseModel):
     """Bounded process-failure evidence without raw stream or source content."""
 
@@ -238,6 +254,14 @@ class ExecutionDiagnostic(BaseModel):
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
     )
     script_line_numbers: tuple[int, ...] = Field(default=(), max_length=16)
+    script_error_locations: tuple[ExecutionScriptLocation, ...] = Field(
+        default=(), max_length=16,
+        description="Source-verified traceback highlights in the submitted script.",
+    )
+    missing_key_type: Literal["str", "bytes", "int", "float", "bool", "NoneType", "tuple"] | None = Field(
+        default=None,
+        description="Type of a literal KeyError argument, never its value or mapping contents.",
+    )
     missing_module: StrictStr | None = Field(
         default=None,
         min_length=1,
@@ -256,6 +280,8 @@ class ExecutionDiagnostic(BaseModel):
 
     @model_validator(mode="after")
     def require_module_only_for_module_error(self) -> "ExecutionDiagnostic":
+        if self.missing_key_type is not None and self.exception_type != "KeyError":
+            raise ValueError("Only KeyError diagnostics may include a missing key type")
         if self.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND:
             if self.missing_module is None:
                 raise ValueError("Missing-module diagnostics require a module name")

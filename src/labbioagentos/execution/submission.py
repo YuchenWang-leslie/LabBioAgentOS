@@ -105,6 +105,10 @@ class ExecutionSubmissionService:
             receipt.status.value,
             {
                 "execution_id": str(receipt.execution_id),
+                "script_hash": receipt.script_hash,
+                "diagnostics": [
+                    item.model_dump(mode="json") for item in receipt.diagnostics
+                ],
                 "output_artifact_ids": [str(item) for item in receipt.output_artifact_ids],
                 "issue_codes": [item.value for item in receipt.issue_codes],
                 "issue_detail_codes": [

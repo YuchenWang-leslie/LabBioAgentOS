@@ -37,6 +37,7 @@ from .models import (
     ExecutionIssue,
     ExecutionPlan,
     ExecutionResult,
+    ExecutionScriptLocation,
     ExecutionStatus,
     OutputContractFailureCode,
 )
@@ -657,6 +658,8 @@ class DockerExecutor:
         text = stderr[-32_768:].decode("utf-8", errors="replace")
         if "Traceback (most recent call last):" not in text:
             return ()
+        # Chained exceptions can have different locations and argument types.
+        text = text.rsplit("Traceback (most recent call last):", 1)[1]
         line_numbers = tuple(
             dict.fromkeys(
                 int(match)
@@ -739,13 +742,65 @@ class DockerExecutor:
         )
         if exception_type is None:
             return ()
+        missing_key_type = None
+        if exception_type == "KeyError":
+            match = re.search(r"^KeyError: (.{1,512})$", text, flags=re.MULTILINE)
+            if match is not None:
+                try:
+                    argument = ast.literal_eval(match.group(1))
+                except (ValueError, SyntaxError, RecursionError):
+                    pass
+                else:
+                    # Finite technical type vocabulary only; never serialize values.
+                    if type(argument) in (str, bytes, int, float, bool, type(None), tuple):
+                        missing_key_type = type(argument).__name__
         return (
             ExecutionDiagnostic(
                 code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
                 exception_type=exception_type,
                 script_line_numbers=line_numbers,
+                script_error_locations=DockerExecutor._script_error_locations(
+                    text, script_content
+                ),
+                missing_key_type=missing_key_type,
             ),
         )
+
+    @staticmethod
+    def _script_error_locations(
+        text: str, script_content: str
+    ) -> tuple[ExecutionScriptLocation, ...]:
+        """Keep caret coordinates only when the displayed source matches the script."""
+
+        source_lines = script_content.splitlines()
+        locations: list[ExecutionScriptLocation] = []
+        for match in re.finditer(
+            r'^\s*File "/labbio/script\.py", line ([0-9]{1,9}),[^\n]*\n'
+            r'    ([^\n]*)\n    ([ ~^]*\^[ ~^]*)$',
+            text,
+            flags=re.MULTILINE,
+        ):
+            line_number = int(match.group(1))
+            if not 1 <= line_number <= len(source_lines):
+                continue
+            source = source_lines[line_number - 1]
+            if match.group(2) != source.strip():
+                continue
+            # Display-width and tab expansion are not character coordinates.
+            if not source.isascii() or "\t" in source:
+                continue
+            markers = match.group(3).rstrip()
+            indent = len(source) - len(source.lstrip())
+            start = indent + len(markers) - len(markers.lstrip())
+            end = indent + len(markers)
+            if not 0 <= start < end <= min(len(source), 262_144):
+                continue
+            location = ExecutionScriptLocation(
+                line_number=line_number, start_column=start, end_column=end
+            )
+            if location not in locations:
+                locations.append(location)
+        return tuple(locations[-16:])
 
     def _emit_failure(
         self,
