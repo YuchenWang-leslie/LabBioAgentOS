@@ -276,7 +276,7 @@ class ArtifactRegistrationPolicy:
                 )
             if not fields.issubset(contract.allowed_fields):
                 raise _OutputContractValidationError(
-                    OutputContractFailureCode.INVALID_DOCUMENT
+                    OutputContractFailureCode.UNDECLARED_RECORD_FIELDS
                 )
             for value in record.values():
                 if isinstance(value, (dict, list)):
