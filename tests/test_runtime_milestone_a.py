@@ -283,8 +283,10 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "gate_decisions",
         "workflow_control",
         "execution_capability",
+        "input_artifact_usage",
         "body",
     }
+    assert dumped["input_artifact_usage"] == []
     assert dumped["workflow_control"] == {
         "authority": "CONTROL_STATE",
         "current_stage": "INTAKE",

@@ -13,6 +13,7 @@ from .contracts import (
     CapabilityEvidenceBundle,
     CapabilityEvidenceStatus,
     RuntimeExecutionCapabilityView,
+    RuntimeInputArtifactUsage,
     RuntimeStageInput,
     RuntimeStageResult,
 )
@@ -123,6 +124,7 @@ class PerInvocationPantheonStageInvoker:
         services: RuntimeCapabilityServices,
         trace_recorder: RunTraceRecorder | None = None,
         execution_capability: RuntimeExecutionCapabilityView | None = None,
+        input_usage_provider: Callable[[], tuple[RuntimeInputArtifactUsage, ...]] | None = None,
         plugin_factory: PluginFactory | None = None,
         toolset_factory: ToolSetFactory = LabBioRuntimeToolSet,
         boundary_observer: BoundaryObserver | None = None,
@@ -134,6 +136,7 @@ class PerInvocationPantheonStageInvoker:
         self.services = services
         self.trace_recorder = trace_recorder
         self.execution_capability = execution_capability
+        self.input_usage_provider = input_usage_provider
         self.plugin_factory = plugin_factory
         self.toolset_factory = toolset_factory
         self.boundary_observer = boundary_observer
@@ -322,6 +325,11 @@ class PerInvocationPantheonStageInvoker:
         if stage_input.execution_capability != expected_execution_capability:
             raise RuntimeProfileConfigurationError(
                 "Runtime input execution capability does not match trusted configuration"
+            )
+        expected_usage = self.input_usage_provider() if self.input_usage_provider else ()
+        if stage_input.input_artifact_usage != expected_usage:
+            raise RuntimeProfileConfigurationError(
+                "Runtime input Artifact usage does not match trusted configuration"
             )
         expected_workspace = (
             self.workspace.user_id,

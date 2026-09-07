@@ -79,6 +79,7 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 from .contracts import (
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
+    CapabilityErrorDetails,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
     ExecutionAuditWireType,
@@ -167,12 +168,9 @@ class _InvalidExecutionDraft(ValueError):
     """execution_submit received a draft rejected by its canonical model."""
 
 
-class ToolError(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+class ToolError(CapabilityErrorDetails):
     error_code: StrictStr = Field(min_length=1, max_length=128)
-    safe_message: StrictStr = Field(min_length=1, max_length=1000)
     correlation_id: UUID = Field(default_factory=uuid4)
-    retryable: bool = False
 
 
 class ToolResult(BaseModel):
@@ -489,6 +487,11 @@ class LabBioRuntimeToolSet(ToolSet):
             )
         except Exception as exc:
             error = self._safe_error(exc)
+            error_details = CapabilityErrorDetails(
+                safe_message=error.safe_message,
+                retryable=error.retryable,
+                denied_operation=error.denied_operation,
+            )
             failure_details = None
             if capability == "execution_submit" and isinstance(
                 exc, ExecutionOutputDeclarationError
@@ -507,6 +510,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     "capability_invocation_id": str(capability_invocation_id),
                     "error_code": error.error_code,
                     "correlation_id": str(error.correlation_id),
+                    "error_details": error_details.model_dump(mode="json"),
                     **(failure_details or {}),
                     **bounded_ids,
                     **request_audit_payload,
@@ -525,6 +529,7 @@ class LabBioRuntimeToolSet(ToolSet):
                     trace_event_ids=tuple(trace_event_ids),
                     error_code=error.error_code,
                     correlation_id=error.correlation_id,
+                    error_details=error_details,
                     safe_result=failure_details,
                     artifact_query_request=artifact_query_request,
                     skill_search_request=skill_search_request,
@@ -1173,8 +1178,10 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="ARTIFACT_EXPOSURE_DENIED",
                 safe_message=(
                     "Remote exposure policy denies this Artifact/view combination. "
-                    "RAW Artifacts have no remote-readable views."
+                    "RAW Artifacts have no remote-readable views. This is not an "
+                    "execution input eligibility or preflight decision."
                 ),
+                denied_operation="REMOTE_ARTIFACT_VIEW",
             )
         if isinstance(exc, ArtifactIdentifierError):
             return ToolError(
@@ -1278,39 +1285,11 @@ class LabBioRuntimeToolSet(ToolSet):
                 ),
             )
         if isinstance(exc, ValidationError):
-            summaries: list[str] = []
-            for issue in exc.errors(include_url=False, include_input=False)[:8]:
-                location = ".".join(str(item) for item in issue.get("loc", ()))
-                location = location or "<request>"
-                issue_type = str(issue.get("type", "invalid"))
-                if issue_type == "enum":
-                    expected = issue.get("ctx", {}).get("expected")
-                    if (
-                        isinstance(expected, str)
-                        and len(expected) <= 128
-                        and "\n" not in expected
-                        and "\r" not in expected
-                    ):
-                        description = f"expected {expected}"
-                    else:
-                        description = "invalid enum value"
-                elif issue_type == "missing":
-                    description = "field required"
-                elif issue_type == "extra_forbidden":
-                    description = "field not allowed"
-                elif issue_type in {"dict_type", "model_type"}:
-                    description = "expected object"
-                else:
-                    description = issue_type.replace("_", " ")[:128]
-                summaries.append(f"{location} ({description})")
-            detail = "; ".join(summaries)
             return ToolError(
                 error_code="INVALID_REQUEST",
-                safe_message=(
-                    f"Invalid request fields: {detail}."
-                    if detail
-                    else "The capability request is invalid."
-                )[:1000],
+                # Validation locations can contain untrusted dictionary keys.
+                # Capability-specific request audits own safe field diagnostics.
+                safe_message="The capability request does not match its schema.",
             )
         if isinstance(exc, ValueError):
             return ToolError(error_code="INVALID_REQUEST", safe_message="The capability request is invalid.")

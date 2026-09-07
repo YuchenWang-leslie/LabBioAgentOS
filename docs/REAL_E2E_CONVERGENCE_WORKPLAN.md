@@ -1261,3 +1261,34 @@ The only next entry is explicit user review of these results and authorization
 for the newly isolated model control/RAW-input issue. Do not reopen core
 architecture, broaden exposure, supply an analysis answer, silently choose a
 different action, or launch another test to make this checkpoint appear accepted.
+
+## 2026-09-07 — Authorized stage-protocol compatibility repair
+
+The user has now authorized the two isolated generic repairs and fresh
+verification. The preserved failures above remain evidence, not resumable test
+fixtures to rewrite. Scope is action semantics in the actual provider schema,
+per-input admission/exposure facts shared by model phases, and bounded controlled
+tool-error meaning retained in finalization evidence. Scientific decisions,
+programs, tool ordering, workflow graph, exposure checks, budgets and Pantheon
+remain unchanged. A passing assessment does not override an explicit `fail`.
+
+Regression first reproduced missing schema descriptions and dropped failure
+details. It also demonstrated that a generic Pydantic validation location may
+contain an untrusted dictionary key; those strings must not become persisted
+error feedback. Capability-specific safe request audits remain available.
+
+Verification order is deterministic regressions, isolated finalization-only
+probes of the saved safe failure packets, then fresh same-task CLI runs if the
+corresponding decision probes pass. A probe neither resumes an old run nor
+executes analysis or applies its proposed transition. No source/profile edits
+are allowed while a fresh task is using its pinned runtime revision.
+
+The deterministic repair now passes the full suite: 592 passed, 15 skipped,
+one existing Uvicorn warning; the additional skip is the explicitly opt-in
+decision-only probe. Separate real-Docker regression is 3 passed. New coverage
+checks actual provider schema serialization, explicit fail remaining authoritative,
+18 model-phase inputs across nine stages, exact source/context membership,
+current exposure approval, recovery isolation, no execution configuration,
+forged/unauthorized input facts, controlled error transfer and leak boundaries.
+The default local profile, workflow engine, retry/capability budgets and Pantheon
+are unchanged. These results are infrastructure evidence, not live acceptance.

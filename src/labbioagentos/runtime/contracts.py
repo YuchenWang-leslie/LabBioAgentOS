@@ -20,6 +20,10 @@ from pydantic import (
     model_validator,
 )
 
+from labbioagentos.artifacts import (
+    ArtifactConsumer, ArtifactExposureClass, ArtifactQuery, ArtifactRef,
+    ArtifactViewType, ExposurePolicy,
+)
 from labbioagentos.contracts import (
     GateDecisionRecord,
     InformationAuthority,
@@ -343,6 +347,58 @@ class RuntimeExecutionCapabilityView(BaseModel):
         return self.model_copy(update={"mountable_input_artifact_ids": artifact_ids})
 
 
+class RuntimeInputArtifactUsage(BaseModel):
+    """Trusted exposure permissions and separate run-input admission, without data."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
+    artifact_id: UUID
+    source: Literal["RUN_INPUT", "RUN_CONTEXT"]
+    exposure_class: ArtifactExposureClass
+    remote_view_types: tuple[ArtifactViewType, ...] = Field(
+        default=(), max_length=4,
+        description="Views permitted by remote exposure policy; stage capability and query validation still apply.",
+    )
+    execution_input_eligible: bool = Field(
+        description="Exact run-input admission only, not a mount operation or a guarantee of preflight/execution success.",
+    )
+
+    @classmethod
+    def from_authorized_artifact(
+        cls,
+        ref: ArtifactRef,
+        *,
+        source: Literal["RUN_INPUT", "RUN_CONTEXT"],
+        exposure_policy: ExposurePolicy,
+        mountable_input_artifact_ids: tuple[UUID, ...],
+    ) -> "RuntimeInputArtifactUsage":
+        """Project a caller-authorized reference without querying its content."""
+
+        return cls(
+            artifact_id=ref.artifact_id,
+            source=source,
+            exposure_class=ref.exposure_class,
+            remote_view_types=tuple(
+                view for view in ArtifactViewType
+                if exposure_policy.decide(
+                    ref, ArtifactQuery(view_type=view), ArtifactConsumer.REMOTE_LLM
+                ).allowed
+            ),
+            execution_input_eligible=ref.artifact_id in mountable_input_artifact_ids,
+        )
+
+
+class CapabilityErrorDetails(BaseModel):
+    """Bounded controlled error feedback retained alongside capability evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    safe_message: StrictStr = Field(min_length=1, max_length=1000)
+    retryable: bool = False
+    denied_operation: Literal["REMOTE_ARTIFACT_VIEW"] | None = None
+
+
 class CapabilityEvidenceItem(BaseModel):
     """One bounded governed-tool outcome, never a provider conversation."""
 
@@ -358,6 +414,7 @@ class CapabilityEvidenceItem(BaseModel):
     reference_ids: tuple[SafeIdentifier, ...] = Field(default=(), max_length=128)
     safe_result: JsonValue | None = None
     error_code: SafeIdentifier | None = None
+    error_details: CapabilityErrorDetails | None = None
     correlation_id: UUID | None = None
     artifact_query_request: ArtifactQueryRequestAudit | None = None
     skill_search_request: SkillSearchRequestAudit | None = None
@@ -372,7 +429,9 @@ class CapabilityEvidenceItem(BaseModel):
 
     @model_validator(mode="after")
     def status_matches_fields(self) -> "CapabilityEvidenceItem":
-        if self.status is CapabilityEvidenceStatus.COMPLETED and self.error_code is not None:
+        if self.status is CapabilityEvidenceStatus.COMPLETED and (
+            self.error_code is not None or self.error_details is not None
+        ):
             raise ValueError("Completed capability evidence cannot contain an error")
         if self.status is CapabilityEvidenceStatus.FAILED and self.error_code is None:
             raise ValueError("Failed capability evidence requires an error code")
@@ -715,6 +774,9 @@ class RuntimeStageInput(BaseModel):
     )
     workflow_control: RuntimeWorkflowControlView | None = None
     execution_capability: RuntimeExecutionCapabilityView | None = None
+    input_artifact_usage: tuple[RuntimeInputArtifactUsage, ...] = Field(
+        default=(), max_length=256,
+    )
     body: RuntimeInputBody = Field(default_factory=RuntimeInputBody)
 
     @model_validator(mode="after")

@@ -201,17 +201,34 @@ class _ActionProposalBase(BaseModel):
 
 
 class _TransitionActionProposal(_ActionProposalBase):
-    action: Literal[NextAction.TRANSITION]
+    action: Literal[NextAction.TRANSITION] = Field(
+        description=(
+            "Leave the current stage and enter the chosen legal target_stage, "
+            "keeping the workflow RUNNING. Completing a stage does not complete "
+            "the whole workflow."
+        )
+    )
     target_stage: WorkflowStage
 
 
 class _RetryActionProposal(_ActionProposalBase):
-    action: Literal[NextAction.RETRY]
+    action: Literal[NextAction.RETRY] = Field(
+        description=(
+            "Consume the current stage's retry allowance and keep the workflow "
+            "RUNNING. Omit target_stage or choose the current stage to retry in "
+            "place; an allowed outgoing target retries then transitions there."
+        )
+    )
     target_stage: WorkflowStage | None = None
 
 
 class _RequestUserInputActionProposal(_ActionProposalBase):
-    action: Literal[NextAction.REQUEST_USER_INPUT]
+    action: Literal[NextAction.REQUEST_USER_INPUT] = Field(
+        description=(
+            "Pause the workflow as WAITING_FOR_USER at a governed user gate. "
+            "The required user_prompt describes the decision needed to resume."
+        )
+    )
     user_prompt: StrictStr = Field(min_length=1, max_length=4000)
     domain_reference_id: StrictStr | None = Field(
         default=None,
@@ -221,12 +238,28 @@ class _RequestUserInputActionProposal(_ActionProposalBase):
 
 
 class _FinishActionProposal(_ActionProposalBase):
-    action: Literal[NextAction.FINISH]
+    action: Literal[NextAction.FINISH] = Field(
+        description=(
+            "End the whole workflow successfully as COMPLETED. Available only "
+            "at a terminal stage when workflow_control.finish_available is true; "
+            "not an action for merely completing the current nonterminal stage."
+        )
+    )
 
 
 class _FailActionProposal(_ActionProposalBase):
-    action: Literal[NextAction.FAIL]
-    reason: StrictStr = Field(min_length=1, max_length=4000)
+    action: Literal[NextAction.FAIL] = Field(
+        description=(
+            "End the whole workflow unsuccessfully as FAILED. This is failure "
+            "termination, not successful completion or continuation to another "
+            "stage; the reason does not change this action's effect."
+        )
+    )
+    reason: StrictStr = Field(
+        min_length=1,
+        max_length=4000,
+        description="Explain the failure that requires ending the workflow unsuccessfully.",
+    )
 
 
 _NextActionVariant: TypeAlias = Annotated[

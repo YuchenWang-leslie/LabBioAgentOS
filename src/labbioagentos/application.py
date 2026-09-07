@@ -105,6 +105,7 @@ from .runtime import (
 )
 from .runtime.assembly import BoundaryObserver, PluginFactory
 from .runtime.coordinator import RuntimeCoordinatorService
+from .runtime.contracts import RuntimeInputArtifactUsage
 from .skills import GoldSkillService, SkillUserDecision
 from .trace import InMemoryTraceSink, RunTraceRecorder, TraceEvent, TraceSink
 from .workflow import WorkflowEngine, runtime_workflow_definition
@@ -922,6 +923,7 @@ class LabBioApplication:
             principal=request.principal,
             workspace=request.workspace,
             execution_input_artifact_ids=request.input_artifact_ids,
+            context_artifact_ids=request.context_artifact_ids,
         )
         run = coordinator.create_run(
             principal=request.principal,
@@ -1017,6 +1019,7 @@ class LabBioApplication:
             principal=principal,
             workspace=workspace,
             execution_input_artifact_ids=record.input_artifact_ids,
+            context_artifact_ids=record.context_artifact_ids,
         )
         coordinator.attach_recovered_results(run_id, record.runtime_results)
         run = self.workflow_engine.attach_recovered_run(record.workflow_run)
@@ -1389,6 +1392,7 @@ class LabBioApplication:
         principal: Principal,
         workspace: WorkspaceContext,
         execution_input_artifact_ids: tuple[UUID, ...] = (),
+        context_artifact_ids: tuple[UUID, ...] = (),
     ) -> RuntimeCoordinatorService:
         execution_capability = (
             self.execution_capability.with_mountable_inputs(
@@ -1397,6 +1401,27 @@ class LabBioApplication:
             if self.execution_capability is not None
             else None
         )
+
+        def input_usage_provider() -> tuple[RuntimeInputArtifactUsage, ...]:
+            usage = []
+            for source, artifact_ids in (
+                ("RUN_INPUT", execution_input_artifact_ids),
+                ("RUN_CONTEXT", context_artifact_ids),
+            ):
+                for artifact_id in artifact_ids:
+                    ref = self.artifact_store.get_ref(artifact_id)
+                    if ref.project_id != workspace.project_id or ref.lab_id != workspace.lab_id:
+                        raise AuthorizationDenied("Run Artifact is outside the bound workspace")
+                    self.access_service.require_artifact(principal, ref, AccessAction.READ_ARTIFACT)
+                    usage.append(RuntimeInputArtifactUsage.from_authorized_artifact(
+                        ref, source=source, exposure_policy=self.artifact_exposure.policy,
+                        mountable_input_artifact_ids=(
+                            execution_capability.mountable_input_artifact_ids
+                            if execution_capability is not None else ()
+                        ),
+                    ))
+            return tuple(usage)
+
         specs = []
         for assembly in self.configuration.stage_assemblies:
             invoker = PerInvocationPantheonStageInvoker(
@@ -1407,6 +1432,7 @@ class LabBioApplication:
                 services=self.capability_services,
                 trace_recorder=self.trace_recorder,
                 execution_capability=execution_capability,
+                input_usage_provider=input_usage_provider,
                 plugin_factory=self._plugin_factories.get(assembly.stage_id),
                 boundary_observer=self.configuration.boundary_observer,
             )
@@ -1425,6 +1451,7 @@ class LabBioApplication:
             self.workflow_engine,
             StageRuntimeRegistry(specs),
             execution_capability=execution_capability,
+            input_usage_provider=input_usage_provider,
         )
 
     def _authorized_runtime_reference(

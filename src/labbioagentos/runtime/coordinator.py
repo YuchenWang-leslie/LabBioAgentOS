@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -24,6 +24,7 @@ from .contracts import (
     RuntimeExecutionCapabilityView,
     RuntimeGateDecisionView,
     RuntimeInputBody,
+    RuntimeInputArtifactUsage,
     RuntimePriorResultView,
     RuntimeReference,
     RuntimeReferenceKind,
@@ -51,10 +52,12 @@ class RuntimeCoordinatorService:
         engine: WorkflowEngine,
         registry: StageRuntimeRegistry,
         execution_capability: RuntimeExecutionCapabilityView | None = None,
+        input_usage_provider: Callable[[], tuple[RuntimeInputArtifactUsage, ...]] | None = None,
     ):
         self.engine = engine
         self.registry = registry
         self.execution_capability = execution_capability
+        self.input_usage_provider = input_usage_provider
         self._results: dict[UUID, tuple[RuntimeStageResult, ...]] = {}
 
     def create_run(
@@ -160,6 +163,7 @@ class RuntimeCoordinatorService:
             gate_decisions=gate_decisions,
             workflow_control=workflow_control,
             execution_capability=self._execution_capability_for_stage(stage),
+            input_artifact_usage=(self.input_usage_provider() if self.input_usage_provider else ()),
             body=body or RuntimeInputBody(),
         )
 
