@@ -1078,3 +1078,20 @@ of the new Docker test incorrectly required optional caret columns for a
 full-line expression; the assertion was corrected to the existing optional
 coordinate contract, without changing production diagnostics. The mandatory
 exception type, line, privacy, and valid manifest-read checks pass.
+
+Fresh a5 run `420e1692-4150-4acb-92e9-47a47a1df590`, retained under
+`WYC/result/pbmc-auto-annotation-20260907-a5`, reached EXECUTE but never Docker.
+Its generated execution tool request ended with provider `finish_reason=length`
+and `completion_tokens=8192`; strict mode persisted `RESPONSE_TRUNCATED` and
+did not execute it. The subsequent provider call returned HTTP 400 with generic
+invalid-parameters text; the server did not identify the exact rejected field.
+No request repair, fabricated execution, final report, or scientific success is
+claimed. This is direct evidence of insufficient generation space, not evidence
+that the input-contract fix failed or a confirmed network fault.
+
+Under the user's continuing authorization, the existing local runtime model
+configuration is adjusted from 8192 to 16384 output tokens for one fresh a6
+attempt. This is a budget-only change in the saved host driver, not a scientific
+prompt or code modification. Input, task, image, tool turns, workflow retries,
+exposure, and execution resource policy remain unchanged. No automatic budget
+growth, hidden retry, or malformed history repair is added to production.
