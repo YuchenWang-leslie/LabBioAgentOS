@@ -1292,3 +1292,174 @@ current exposure approval, recovery isolation, no execution configuration,
 forged/unauthorized input facts, controlled error transfer and leak boundaries.
 The default local profile, workflow engine, retry/capability budgets and Pantheon
 are unchanged. These results are infrastructure evidence, not live acceptance.
+
+The completed probe harness adds one more deterministic case; full regression
+is now 593 passed, 15 skipped, one existing warning. Repair commit is `3a30e55`;
+the isolated probe harness is `f0ca989`. Both remain local feature-branch commits.
+
+Two individually bounded real finalization probes were run under
+`WYC/result/protocol-stage-probes-20260907/`, with no tools, new workflow,
+execution or application of a proposed action. `h5ad-validate` reuses exact
+input/evidence lines 12/13 and now proposes `transition -> INTERPRET`.
+`csv-understand` reuses exact lines 7/8 from the preserved r2 CSV failure and
+still proposes `fail`; the harness's passing test means the diagnostic completed,
+not that this model decision passed acceptance. Four recorded exposure errors
+receive an explicitly attributed current error-catalog projection; unknown errors
+are not inferred. Original captured evidence remains separately preserved.
+
+Read-only follow-up locates an important limit of the CSV replay: its old INTAKE
+MODEL_CONTEXT already says RAW must be queried before use, and its old UNDERSTAND
+result says it must wait for an exposure-policy change. These statements are not
+framework requirements. The new probe acknowledges local availability but still
+treats early remote statistics as a prerequisite. This demonstrates persistence
+of the old false premise, not that a fresh INTAKE with current input facts must
+fail. No third prompt/schema layer is justified by this replay alone. The user
+has been informed that, after the H5AD check, the appropriate CSV verification
+is one fresh same-task CLI run on unchanged frozen code, not another replay.
+
+Fresh H5AD run `fcd2463d-fe49-4dbc-997f-1f7441c4ceef` is active under
+`WYC/result/local-entrypoint-h5ad-overview-20260907-r2`, submitted with the exact
+prior task, preference, explicit H5AD format, image and budgets through `labbio run`.
+No scientific launcher/program, environment change or model correction is supplied
+by Codex. Its completion remains pending.
+
+### Operator interruption and corrected acceptance interpretation
+
+Run `fcd2463d-fe49-4dbc-997f-1f7441c4ceef` successfully accepted INTAKE through
+VALIDATE, with no workflow retry. Agent execution
+`960cfc30-50b7-42f6-935b-bdb0b78e8b7b` exited zero in 1.337 seconds and
+registered two outputs. Their bytes, hashes, sizes and provenance match the
+execution. Two denied TOP_N requests against inspection companions remain visible;
+their controlled errors reached finalization without blocking the later execution.
+
+The supervision audit found five complete input observation identifiers in one
+released bounded string field. Codex initially misclassified this as a privacy
+violation and interrupted the exact CLI process with SIGINT (exit 130). That
+classification was incorrect under the active, frozen C12 contract: ordinary
+bounded scientific/sample/barcode strings are explicitly permitted (C12 closeout
+items 3/5/9 and deterministic DS4/DS5). Zero input-identifier matches was a previous
+run's observation, not the current acceptance rule. No forbidden unrestricted
+document/row/matrix or RAW-query bypass was demonstrated by this identifier match.
+This is an operator error, not a model/runtime failure or authority to tighten
+the accepted declassification policy. The user was explicitly informed.
+
+The interrupted run remains honestly RUNNING/INTERPRET/STAGE_IN_FLIGHT with six
+accepted results, no final report submission and no delivery. Its state/evidence
+are retained unchanged; it must not be blindly resumed or marked stable. Docker,
+containerd and docker.socket remain active, with no remaining task container.
+
+Verification continues on the same frozen code/profile/config using fresh isolated
+directories `local-entrypoint-h5ad-overview-20260907-r3` and
+`local-entrypoint-small-table-20260907-r3`. Both use their respective unchanged
+original request. There is no new schema/prompt, barcode filter, scientific code,
+permission change, environment rescue, stage retry or old-state reconciliation.
+The H5AD replacement is due to Codex's interruption; the fresh CSV tests current
+INTAKE facts without carrying the old false query prerequisite. Final results
+remain pending.
+
+### Fresh H5AD closure and CSV structural-error follow-up
+
+H5AD r3 run `10c85b0f-bfe8-4148-a831-a1d59e4fc804` completed all nine stages
+on frozen code `f0ca989`, with no workflow retry. Exactly two Docker executions
+occurred: `8b34ba5c-ba49-4c68-b357-9cf8edcbf4a2` exited zero but its output
+contract failed; `65e2c034-76b4-40da-9b2d-539d5353f333` exited zero and
+registered valid DERIVED evidence. A further `PLAN_REJECTED` request did not
+start Docker. These failures remain recorded and were not hidden or relabeled.
+
+The final `MODEL_AUTHORED_REPORT` is Artifact
+`d84eb759-b931-4bee-b5c7-03461d27028c`, exported unchanged to
+`WYC/result/local-entrypoint-h5ad-overview-20260907-r3/delivery/REPORT.md`
+(2597 bytes, SHA256
+`b351816300721ce271ff681c439071d63b45f6a0129cb6b5ec59d0cee5619638`).
+All three historical/current output copies match registered bytes and provenance.
+The successful summary Artifact is `d420d9fe-21ef-48ba-854e-8feeca1a122c`.
+Independent checks pass under the actual C12 contract, without a new zero-label
+rule. New-process status and idempotent export confirmed COMPLETED/STABLE before
+the subsequent code change. This is real lifecycle/execution/report delivery
+evidence, not an assessment of scientific quality or universal model reliability.
+
+Fresh CSV r3 run `cd560f5a-d570-4ebe-8bf0-fa4b27d23908` did progress through
+UNDERSTAND, but that alone is not grounded understanding: it invented an unrelated
+filename, 40000-by-44 dimensions and field names unsupported by any query.
+These first appear in the model's UNDERSTAND result, not host context; subsequent
+PLAN sees them only as MODEL_CONTEXT. Source inspection shows fresh per-invocation
+Agents/Teams with model memory disabled, not a loaded prior dataset. Codex did not
+supply corrections or rewrite those claims.
+
+CSV execution then repeatedly exited zero but produced disallowed record fields.
+The approved field list was already visible; the rejecting field-subset branch
+collapsed the reason into INVALID_DOCUMENT. The last two audited completed
+attempts have identical scripts and outputs, so Codex stopped the exact CLI
+process with SIGINT (exit 130) under the no-progress rule. The interrupted
+RUNNING/EXECUTE/STAGE_IN_FLIGHT record and failed RAW outputs remain intact.
+
+Commit `e07ee49` adds only `UNDECLARED_RECORD_FIELDS` and emits it at that one
+existing rejection branch. It never exposes untrusted field names/values, drops
+fields, changes the allowlist, repairs an Agent program or retries a request.
+The red-first collector/executor/tool/evidence/trace test proves both the specific
+failure and a separately submitted valid neighbor; other invalid documents retain
+their existing code. Full regression: 598 passed, 15 skipped, one existing warning;
+separate real-Docker regression: 3 passed.
+
+One fresh CSV verification is now active under
+`WYC/result/local-entrypoint-small-table-20260907-r4`, using the exact original
+request, unchanged profile/image/budgets and frozen `e07ee49`. H5AD is not rerun.
+
+### Final stage-compatibility checkpoint
+
+CSV r4 run `2b141b96-e2c0-47be-a600-1b167340ce38` now completed all nine
+stages on `e07ee495acc0a1d4de7bb4603016c8086c3f8c73`, with no workflow retry.
+Its UNDERSTAND result keeps unread RAW content unknown instead of inventing
+statistics. Exactly one real Docker execution,
+`732546bb-2642-45f9-8bdf-b1ff3074a3d0`, exited zero and satisfied the approved
+output contract. Agent program SHA256 is
+`d85c69880222f386324ada902c9fc5ac6a5c872db745564fc5e9d53d2fae8767`.
+The DERIVED summary is Artifact `34f48ada-2735-42b8-aa44-7b17fb6a8a57`
+(3528 bytes, SHA256
+`be099e0c30fc81616bb42a6b0297a11a1b5db34fe90b58fe5d91491d7d1ba2f4`).
+A 499-byte script-produced text report remains a separate RAW output.
+
+Final `MODEL_AUTHORED_REPORT` Artifact
+`b541cdfb-f02a-4772-a950-b3c04c98d75c` is exported unchanged to
+`WYC/result/local-entrypoint-small-table-20260907-r4/delivery/REPORT.md`
+(909 bytes, SHA256
+`a7a53061fb29b4d27074939ef449b84c6aaa76f642ae6b961164a23c1096f5c2`).
+Independent audit confirms the report submission/REPORT invocation lineage,
+exact report/output copy hashes, and 22 model-boundary records under the current
+safety rules. Mechanical inspection of both successful CSV and H5AD programs
+confirms they use the runtime input manifest and exact selected Artifact identity
+to read their respective mounted input. Codex did not author or repair those
+programs, supply statistics, choose methods or write report text.
+
+Separate CLI processes now confirm CSV COMPLETED/LEARN/STABLE, no inflight
+operation, no automatic continuation, and idempotent export. Six remote-view
+denials and one unknown-Artifact error remain in the successful run's evidence.
+This was not zero-error behavior. Its first execution was valid and did not
+exercise the new structural error code live; that branch is covered by the
+red-first deterministic regression, not a claimed causal live comparison.
+
+Final regression remains 598 passed, 15 skipped and one existing Uvicorn warning;
+separate real-Docker regression is 3 passed. No package source/profile changed
+during either successful frozen run. H5AD's repeated export was checked on its
+matching `f0ca989` revision before `e07ee49`; later recovery/export must still
+honor the exact runtime pin. Existing delivered files remain directly readable.
+
+Final local source branch is `feat/local-task-entrypoint`; main/V0.1 remain
+`8d6b24ffdfce520ef64855aec1e9a59f7d05ea73`. Pantheon is clean and unchanged at
+`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7`. No GitHub push, production service
+deployment, profile/skill/Gold/Memory promotion, dependency installation, proxy
+change or Docker service change was performed in this checkpoint. This is the
+installed local CLI, not a production API/worker/database deployment; no production
+health claim is inferred. Docker, containerd and docker.socket are active and no
+running task container remains. Historical failed and operator-interrupted runs
+are retained, including their honest STAGE_IN_FLIGHT states; no recovery bypass
+or cleanup was applied.
+
+Acceptance is bounded: the natural-language local entrypoint now has real CSV
+and PBMC H5AD descriptive-task execution, nine-stage completion, Agent-authored
+final reports and user-visible delivery. It does not establish universal task
+reliability, scientific correctness, cell-annotation acceptance, production
+multi-user operation or Gold reuse for this entrypoint. The earlier unsupported
+model claims and operator supervision error are not erased by these successes.
+Stop here. The only next entry is user review of the two delivered reports and
+an explicit next request; do not launch further live work or expand architecture.

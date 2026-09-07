@@ -32,6 +32,9 @@ python -m pip install -e . --no-deps --no-build-isolation
 不能在 CLI 中根据任务关键词选方法。此入口没有额外接入 Gold/Memory 服务。
 共享部署上下文由实际配置生成工具归属目录，并同时进入工具调用和阶段决策
 两种模型模式。它只描述平台能力，不新增当前阶段权限或要求某个动作顺序。
+各阶段还接收逐个输入的 `input_artifact_usage`：来源是本次输入还是上下文、
+允许哪些远程视图、是否在本次执行输入名单内。远程可读与执行准入分别判断，
+准入不代表预检已通过。工具的受控错误含义同时保存在执行记录和最终决策证据中。
 
 ## 提交任务
 
@@ -52,8 +55,8 @@ labbio run \
 文件名后缀不会选择分析方法，也不会自动启动检查器。H5AD 的既有安全结构检查
 可以通过 `--format h5ad` 显式启用，或在可信配置设置 `default_format`。
 未启用检查器的输入仍可由 Agent 自己编写程序读取；CLI 不代它解析和概括原始数据。
-但 RAW 登记能力不等于任意格式的模型行为已获验证：本轮小表格 CSV 两次 live
-均停在 UNDERSTAND，没有执行或报告。该缺口尚未解决，不能用 H5AD 的结果替代验收。
+但 RAW 登记能力不等于任意格式的模型行为已获验证；显式 H5AD 与无检查器的
+CSV 分别测试，不能用其中一项的成功替代另一项验收，具体状态见文末。
 
 任务和偏好作为用户原文进入既有 `task_text`；其中的身份、镜像或工具声明
 不能覆盖可信配置。每次运行只绑定用户明确提交的输入，不扫描同目录的其他文件。
@@ -119,14 +122,32 @@ RAW 输出可交给本地用户，但不会因此获得远程模型可读权限�
 
 ## 本轮实际测试状态（2026-09-07）
 
-入口与持久化/导出测试已通过，但新的端到端任务验收未通过：
+通用修复明确了 action schema 的真实效果，并补齐逐输入权限和错误交接。
+`transition` 保持流程运行，`finish` 仅在终点成功结束，`fail` 始终失败终止；
+不会因模型写了 PASS 而覆盖其动作。输出字段越出批准合同现在返回
+`UNDECLARED_RECORD_FIELDS`，仍然拒绝释放，且不回显任意字段名或值。
 
-- RAW CSV：两次任务都在 UNDERSTAND 失败，未执行计算。
-- 显式 H5AD：Agent 自行提交程序，Docker 退出码 0，三个结果文件成功导出；
-  VALIDATE 文本称验证通过，却选择 `next_action.action=fail`，因此真实流程
-  为 FAILED，没有进入最终 REPORT 阶段。
+全量回归为 598 passed、15 skipped；另有 3 项真实 Docker 回归通过。
 
-H5AD 的 `pbmc_overview_report.md` 是 Agent 程序产生的本地输出，不是
-`report_submit` 注册的最终报告。入口没有将其冒充为 `delivery/REPORT.md`，
-也没有把 FAILED 重写为 COMPLETED。现有内核/Pantheon 未修改。
-不要把本命令的安装成功或文件已生成解释为任意自然语言任务都已可靠完成。
+- 显式 H5AD r3：真实九阶段完成，COMPLETED/STABLE，无工作流重试。
+  两次 Docker 执行中，Agent 自行修订首次被合同拒绝的输出，随后完成最终
+  `report_submit`。人类可读结果在
+  `WYC/result/local-entrypoint-h5ad-overview-20260907-r3/delivery/REPORT.md`。
+- RAW CSV r4：真实九阶段完成，COMPLETED/STABLE，无工作流重试。
+  一次 Docker 执行成功，汇总被合同接受，Agent 提交最终报告至
+  `WYC/result/local-entrypoint-small-table-20260907-r4/delivery/REPORT.md`。
+  新进程状态检查和重复导出通过。6 次远程视图拒绝、1 次未知 Artifact 错误
+  仍保留；旧任务的错误前提、编造内容与重复失败也未删除或改写。
+
+H5AD 在 `f0ca989` 上完成，CSV r4 在错误码修复 `e07ee49` 上完成。两者的新进程
+状态/重复导出均在对应冻结版本验证通过；以后恢复旧运行仍需匹配版本，已导出的
+文件可直接阅读。CSV r4 首次执行就符合合同，未触发新错误码；错误反馈分支由
+确定性回归覆盖，不能把单次 live 成功归因于该错误码，也不代表模型永不编造。
+中途曾有一次因 Codex 误读 C12 的有界字符串许可而提前中断，记录完整保留，
+未因此改动既定释放策略。普通有界科学/样本/条码标签不因类型本身被禁止。
+
+分析程序和最终报告均由运行中的 Agent 产生，科学质量仍由外部评价。
+WorkflowEngine、Pantheon、阶段图、默认 profile 和预算未因本轮修复改变。
+本地 CLI 已使用新源码；未部署生产服务、晋升 Gold/Memory 或推送 GitHub。
+Docker、containerd、docker.socket 均为 active，没有遗留运行中的任务容器。
+本检查点到此停止，下一入口是用户查看上述报告；不自动启动另一个任务或扩大功能。
