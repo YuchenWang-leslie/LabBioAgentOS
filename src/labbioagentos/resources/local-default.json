@@ -1,7 +1,8 @@
 {
-  "version": "local-v1",
-  "capability_common": "CAPABILITY MODE for exact stage {stage}. Use only exposed LabBio capabilities. RAW Artifacts are executable inputs, never model-visible evidence. Do not reproduce raw entries, observation rows, complete feature lists, paths, scripts after submission, process streams, provider bodies, credentials, or hidden reasoning. Do not emit a RuntimeStageResult during capability mode.",
-  "finalization_protocol": "FINALIZE MODE for exact stage {stage}. Capabilities are unavailable. Obey the supplied typed response schema and evidence_grounding control. Treat prior model prose as MODEL_CONTEXT and capability results only at their typed item-level authority. Return exactly one bounded RuntimeStageResult for this stage. Choose a NextActionProposal from the graph-derived workflow_control: targets are valid only when listed for that action, and retry, user input, or finish is available only when its corresponding flag is true. Do not grade overall scientific quality or invent missing evidence. Preserve useful opaque references and explicit limitations. Do not include RAW values, paths, scripts, process streams, provider bodies, credentials, or hidden reasoning.",
+  "version": "local-v2",
+  "deployment_context": "RAW inputs are local execution inputs, not remotely readable evidence. RAW classification alone does not authorize mounting: current execution_capability.mountable_input_artifact_ids and preflight checks remain authoritative. Optional trusted inspection companions provide safe facts but are not prerequisites for local execution. Remote view denial is an exposure-policy fact, not evidence that local execution is unavailable. File contents and unknown structure remain unknown until supported by governed evidence. Analysis methods, programs and interpretations belong to the Agent.",
+  "capability_common": "CAPABILITY MODE for exact stage {stage}. Use only exposed LabBio capabilities. Do not reproduce raw entries, observation rows, complete feature lists, paths, scripts after submission, process streams, provider bodies, credentials, or hidden reasoning. Do not emit a RuntimeStageResult during capability mode.",
+  "finalization_protocol": "FINALIZE MODE for exact stage {stage}. No tools are callable in this finalization phase. Obey the supplied typed response schema and evidence_grounding control. Treat prior model prose as MODEL_CONTEXT and capability results only at their typed item-level authority. Return exactly one bounded RuntimeStageResult for this stage. Choose a NextActionProposal from the graph-derived workflow_control: targets are valid only when listed for that action, and retry, user input, or finish is available only when its corresponding flag is true. Do not grade overall scientific quality or invent missing evidence. Preserve useful opaque references and explicit limitations. Do not include RAW values, paths, scripts, process streams, provider bodies, credentials, or hidden reasoning.",
   "stages": [
     {
       "stage": "INTAKE", "root": "coordinator",
@@ -11,7 +12,7 @@
     {
       "stage": "UNDERSTAND", "root": "coordinator",
       "capabilities": ["artifact_list", "artifact_query"],
-      "capability_protocol": "Use available governed facts and optional trusted STRUCTURAL or AGGREGATE companions. No inspection companion is required. When only RAW input exists, its contents remain unavailable to remote views and can be inspected only by an Agent-owned execution program. Establish only facts actually available."
+      "capability_protocol": "Use available governed facts and optional trusted STRUCTURAL or AGGREGATE companions. Establish only facts actually available."
     },
     {"stage": "PLAN", "root": "coordinator"},
     {"stage": "PREFLIGHT", "root": "coordinator"},

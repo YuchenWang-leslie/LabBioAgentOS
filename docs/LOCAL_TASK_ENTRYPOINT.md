@@ -30,6 +30,8 @@ python -m pip install -e . --no-deps --no-build-isolation
 默认协议保存在包内 `resources/local-default.json`，也可由可信配置中的
 `profile` 显式选择一个外部 JSON 文件。领域经验应进入外部 profile/skill，
 不能在 CLI 中根据任务关键词选方法。此入口没有额外接入 Gold/Memory 服务。
+共享部署上下文由实际配置生成工具归属目录，并同时进入工具调用和阶段决策
+两种模型模式。它只描述平台能力，不新增当前阶段权限或要求某个动作顺序。
 
 ## 提交任务
 

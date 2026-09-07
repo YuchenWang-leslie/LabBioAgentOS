@@ -1168,3 +1168,29 @@ containment before acceptance; regression preserves rejection of adjacent unsafe
 states. CLI stderr reduces unstructured provider diagnostics to severity-only
 events, while typed failures and in-flight markers remain in the governed
 evidence. No provider body is printed to make the command seem more observable.
+
+First CLI live run `d2e43000-fb73-4513-aa9b-c3f00f60aa08`, retained under
+`WYC/result/local-entrypoint-small-table-20260907`, honestly ended FAILED at
+UNDERSTAND with no Docker execution or report. Its exact natural-language task
+requested a small CSV overview; one RAW input was bound with no automatic
+inspection. Seven exposure-denied queries across the initial and retried
+UNDERSTAND stage remained visible. No raw data was released or fallback run made.
+
+Earliest demonstrated fault is incomplete deployment context in the new wrapper,
+not a Docker failure: the separate finalizer had `execution_capability=null`,
+only its current artifact tools, and no instruction describing future local
+execution ownership. Capability-mode RAW instructions are not carried into the
+independent finalizer, and no capability completion was preserved. The finalizer
+invented remote readability as a prerequisite, requested its allowed retry, and
+then failed. Existing wrapper tests stopped before this model reasoning boundary.
+
+The minimal correction is confined to the new config/profile: derive a
+descriptive capability-owner catalog from actual profile bindings and supply the
+same deployment/RAW facts to both modes. No lifecycle sequence, transition choice,
+scientific code, expected statistic, new permission, hidden inspection, automatic
+repair or budget increase is supplied. Current mountable inputs and preflight
+remain authoritative. Both raw and explicit-H5AD prompt regressions failed before
+the correction; a selected-profile mutation test checks the catalog is not static.
+Full regression now passes: 562 passed, 14 skipped, one existing Uvicorn warning.
+One fresh same-task CLI verification follows; this is not automatic replay of
+the retained failed run.

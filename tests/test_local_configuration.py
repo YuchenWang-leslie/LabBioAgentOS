@@ -177,3 +177,59 @@ def test_raw_only_input_can_create_a_run_without_inspection_or_provider(settings
         assert stored.runtime_revision == reopened.configuration.runtime_revision
     finally:
         reopened.run_state_store.close()
+
+
+@pytest.mark.parametrize("selected_format", ["raw", "h5ad"])
+def test_both_model_phases_see_the_configured_capability_owners(settings_file, selected_format):
+    settings = load_settings(settings_file).model_copy(update={"default_format": selected_format})
+    application = build_application(settings, settings.result_root / "context", load_provider=False)
+    try:
+        config = application.configuration
+        expected = {}
+        for spec in config.stage_assemblies:
+            for capability in spec.capability_allowlist:
+                expected.setdefault(capability, []).append(spec.stage_id.value)
+        for spec in config.stage_assemblies:
+            values = [spec.finalization_prompt_values]
+            if spec.capability_phase_enabled:
+                values.append(spec.capability_prompt_values)
+            for prompt_values in values:
+                rendered = config.profile_catalog.prompts[spec.prompt_template_key].render(prompt_values)
+                text = rendered.sanitized_text
+                assert "CONFIGURED_CAPABILITY_OWNERS=" in text
+                catalog_line = next(line for line in text.splitlines()
+                                    if line.startswith("CONFIGURED_CAPABILITY_OWNERS="))
+                assert json.loads(catalog_line.split("=", 1)[1]) == expected
+                assert "RAW inputs are local execution inputs" in text
+                assert "does not grant tools in the current phase" in text
+        assert expected["execution_submit"] == ["EXECUTE"]
+        # This is a description of configured ownership, never additional grants.
+        understand = next(s for s in config.stage_assemblies if s.stage_id is WorkflowStage.UNDERSTAND)
+        assert "execution_submit" not in understand.capability_allowlist
+    finally:
+        application.run_state_store.close()
+
+
+def test_capability_catalog_is_derived_from_selected_profile(settings_file):
+    settings = load_settings(settings_file)
+    selected = json.loads(local_config._profile_bytes(settings))
+    understand = next(stage for stage in selected["stages"] if stage["stage"] == "UNDERSTAND")
+    understand["capabilities"] = ["artifact_list"]
+    path = settings_file.parent / "changed-profile.json"
+    path.write_text(json.dumps(selected), encoding="utf-8")
+    settings = settings.model_copy(update={"profile": path})
+    application = build_application(settings, settings.result_root / "changed", load_provider=False)
+    try:
+        spec = next(stage for stage in application.configuration.stage_assemblies
+                    if stage.stage_id is WorkflowStage.UNDERSTAND)
+        rendered = application.configuration.profile_catalog.prompts[spec.prompt_template_key].render(
+            spec.finalization_prompt_values
+        )
+        line = next(line for line in rendered.sanitized_text.splitlines()
+                    if line.startswith("CONFIGURED_CAPABILITY_OWNERS="))
+        owners = json.loads(line.split("=", 1)[1])
+        assert "UNDERSTAND" not in owners["artifact_query"]
+        assert "UNDERSTAND" in owners["artifact_list"]
+        assert "mountable_input_artifact_ids" in rendered.sanitized_text
+    finally:
+        application.run_state_store.close()

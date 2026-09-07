@@ -83,6 +83,7 @@ class _StageProfile(_SettingsModel):
 
 class _LocalProfile(_SettingsModel):
     version: str
+    deployment_context: str
     capability_common: str
     finalization_protocol: str
     stages: tuple[_StageProfile, ...]
@@ -194,13 +195,27 @@ def build_application(
             capability_allowlist=capabilities[agent.profile_key],
         ) for agent in profiles),
     )
+    owners = {}
+    for stage in profile.stages:
+        for capability in stage.capabilities:
+            owners.setdefault(capability, []).append(stage.stage.value)
+    shared_context = (
+        profile.deployment_context
+        + "\nThis catalog describes configured ownership, does not grant tools in the current phase, "
+        "and is not a required action sequence. Current typed control remains authoritative.\n"
+        + "CONFIGURED_CAPABILITY_OWNERS=" + json.dumps(owners, sort_keys=True)
+        + "\n"
+    )
     assemblies = tuple(RuntimeStageAssemblySpec(
         stage_id=stage.stage, root_profile_key=stage.root,
         prompt_template_key="runtime-generic", capability_allowlist=stage.capabilities,
         capability_prompt_values={"protocol": (
-            profile.capability_common.format(stage=stage.stage.value) + " " + stage.capability_protocol
+            shared_context + profile.capability_common.format(stage=stage.stage.value)
+            + " " + stage.capability_protocol
         )} if stage.capabilities else {},
-        finalization_prompt_values={"protocol": profile.finalization_protocol.format(stage=stage.stage.value)},
+        finalization_prompt_values={"protocol": (
+            shared_context + profile.finalization_protocol.format(stage=stage.stage.value)
+        )},
         capability_phase_enabled=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
         max_capability_turns=16, retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
