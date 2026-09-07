@@ -1022,3 +1022,26 @@ development pin is updated but remote reconstruction is pending a fork push.
 No credential/proxy settings, main/V0.1, production release, or activated skill
 was changed. One fresh original-task annotation run is the next verification;
 no successful annotation workflow is claimed by these code tests.
+
+Fresh original-task run `75204e43-68b0-4121-97ee-a79d81075dec` used LabBio
+`eac1a4365baec619703459ae8ab2f5c6883ae052` and the exact new Pantheon SHA.
+Evidence is retained under `WYC/result/pbmc-auto-annotation-20260907-a4`, with
+`README.md` and `SUPERVISOR_STATUS.md`. The 12 observed provider turns retain
+finite completion metadata; all 15 tool calls used strict JSON, and four real
+Docker submissions each declared three outputs. No truncation or declaration
+failure occurred in live; the invalid neighbors are covered deterministically.
+
+The annotation workflow remains uncompleted. All four programs failed reading
+input with `FileNotFoundError`, but the current diagnostic allowlist omits that
+class, returning empty diagnostics and `NON_ZERO_EXIT`. The Agent selected a
+STRUCTURAL summary rather than the RAW UUID in the persisted mountable-input
+control list and guessed a path instead of using the documented manifest. The
+submission service checks workspace/access but not membership in that advertised
+list. This is a separate input-contract/diagnostic root-cause cluster; no automatic
+reference conversion, path repair, program edit, prompt patch, or new retry was
+introduced. The supervisor interrupted repeated failure; four executions had
+completed by SIGINT, host exit was 130, no workflow terminal event is claimed,
+and no output files or Report Artifact exist. No container remains; Docker,
+containerd, and docker.socket remain active. No production deployment or skill
+promotion occurred. Next entry is deterministic diagnosis of this new boundary,
+not another live rerun. Repair commits remain local and unpushed.
