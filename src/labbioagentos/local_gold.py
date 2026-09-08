@@ -147,9 +147,15 @@ async def propose_from_run(application, handle, principal, workspace,
     )
     if result.status is not RunStatus.COMPLETED:
         raise SkillStoreError("Only a completed run can be proposed as local Gold")
+    from .local_gold_source import source_artifact_views, stage_context_from_results
+
+    events = application.trace_events(handle)
+    stage_context = stage_context_from_results(record.runtime_results, events, result.run_id)
+    views = source_artifact_views(application, result.run_id, principal, workspace)
     service.source_projector = SkillSourceProjector(application.artifact_store)
     bundle = service.create_source_bundle(
-        application.trace_events(handle), run_id=result.run_id,
+        events, run_id=result.run_id, stage_context=stage_context,
+        artifact_evidence_views=views,
     )
     return await service.curate_proposal(
         bundle.bundle_id, curator,

@@ -24,6 +24,10 @@ from labbioagentos.artifacts import (
     ArtifactConsumer, ArtifactExposureClass, ArtifactQuery, ArtifactRef,
     ArtifactViewType, ExposurePolicy,
 )
+from labbioagentos.artifacts.models import (
+    ARTIFACT_QUERY_LIMIT_MINIMUM,
+    ArtifactQueryLimit,
+)
 from labbioagentos.contracts import (
     GateDecisionRecord,
     InformationAuthority,
@@ -389,6 +393,42 @@ class RuntimeInputArtifactUsage(BaseModel):
         )
 
 
+class ArtifactQueryConstraints(BaseModel):
+    """Current authorized query rules, not artifact content or execution advice."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
+    artifact_id: UUID
+    exposure_class: ArtifactExposureClass
+    allowed_view_types: tuple[ArtifactViewType, ...] = Field(max_length=4)
+    limit_allowed_view_type: Literal[ArtifactViewType.TOP_N] = ArtifactQuery.LIMIT_ALLOWED_VIEW_TYPE
+    limit_minimum: Literal[1] = ARTIFACT_QUERY_LIMIT_MINIMUM
+    top_n_default_limit: ArtifactQueryLimit
+    top_n_max_returned: ArtifactQueryLimit = Field(
+        description="Policy cap on returned records, not a maximum allowed request limit."
+    )
+
+    @classmethod
+    def from_authorized_artifact(
+        cls, ref: ArtifactRef, *, exposure_policy: ExposurePolicy,
+    ) -> "ArtifactQueryConstraints":
+        """Caller must authorize the Artifact and its workspace before projection."""
+
+        return cls(
+            artifact_id=ref.artifact_id,
+            exposure_class=ref.exposure_class,
+            allowed_view_types=tuple(
+                view for view in ArtifactViewType
+                if exposure_policy.decide(
+                    ref, ArtifactQuery(view_type=view), ArtifactConsumer.REMOTE_LLM
+                ).allowed
+            ),
+            top_n_default_limit=exposure_policy.default_top_n,
+            top_n_max_returned=exposure_policy.max_top_n,
+        )
+
+
 class CapabilityErrorDetails(BaseModel):
     """Bounded controlled error feedback retained alongside capability evidence."""
 
@@ -397,6 +437,7 @@ class CapabilityErrorDetails(BaseModel):
     safe_message: StrictStr = Field(min_length=1, max_length=1000)
     retryable: bool = False
     denied_operation: Literal["REMOTE_ARTIFACT_VIEW"] | None = None
+    query_constraints: ArtifactQueryConstraints | None = None
 
 
 class CapabilityEvidenceItem(BaseModel):
@@ -826,6 +867,31 @@ class UnderstandStageBody(_StageBody):
     evidence_references: tuple[RuntimeReference, ...] = Field(default=(), max_length=64)
 
 
+class SkillAssessment(_StageBody):
+    """Model judgment about candidates actually returned in this invocation."""
+
+    status: Literal[
+        "NOT_ASSESSED", "NO_SUITABLE_RETURNED_CANDIDATE", "USE_PROPOSED"
+    ]
+    search_capability_invocation_ids: tuple[UUID, ...] = Field(default=(), max_length=32)
+    proposal_id: UUID | None = None
+    reason: ShortText
+
+    @model_validator(mode="after")
+    def assessment_shape_matches_status(self) -> "SkillAssessment":
+        if self.status == "NOT_ASSESSED" and (
+            self.search_capability_invocation_ids or self.proposal_id is not None
+        ):
+            raise ValueError("Unassessed Skill state cannot claim search or proposal evidence")
+        if self.status == "NO_SUITABLE_RETURNED_CANDIDATE" and (
+            not self.search_capability_invocation_ids or self.proposal_id is not None
+        ):
+            raise ValueError("Returned-candidate judgment requires search evidence only")
+        if self.status == "USE_PROPOSED" and self.proposal_id is None:
+            raise ValueError("Proposed Skill use requires a proposal identifier")
+        return self
+
+
 class PlanStageBody(_StageBody):
     kind: Literal["PLAN"] = "PLAN"
     procedure_steps: tuple[LongText, ...] = Field(min_length=1, max_length=128)
@@ -841,6 +907,7 @@ class PlanStageBody(_StageBody):
         default=(),
         max_length=64,
     )
+    skill_assessment: SkillAssessment | None = None
 
 
 class PreflightStageBody(_StageBody):

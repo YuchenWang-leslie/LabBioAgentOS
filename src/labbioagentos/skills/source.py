@@ -152,6 +152,7 @@ class SkillSourceProjector:
             task_reference=bundle.task_reference,
             final_status=bundle.final_status,
             workflow_stage_path=bundle.workflow_stage_path,
+            stage_context=bundle.stage_context,
             invocations=tuple(
                 SkillInvocationSummary(
                     invocation_id=item.invocation_id,
@@ -205,6 +206,7 @@ class SkillSourceProjector:
             retry_refs=bundle.retry_refs,
             validation_refs=bundle.validation_refs,
             capability_usage_refs=bundle.capability_usage_refs,
+            artifact_evidence_views=bundle.artifact_evidence_views,
         )
 
     @staticmethod

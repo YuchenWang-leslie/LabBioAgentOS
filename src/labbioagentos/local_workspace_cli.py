@@ -10,7 +10,7 @@ from .local_workspace import WorkspaceRegistry
 
 
 ADMIN_COMMANDS = {"workspace-init", "user-create", "project-create"}
-GOLD_COMMANDS = {"gold-list", "gold-propose", "gold-review", "gold-decide"}
+GOLD_COMMANDS = {"gold-list", "gold-export", "gold-propose", "gold-review", "gold-decide"}
 
 
 def add_commands(commands) -> None:
@@ -25,7 +25,7 @@ def add_commands(commands) -> None:
             command.add_argument("--project", required=True)
     for name in ("gate", "decide", *sorted(GOLD_COMMANDS)):
         command = commands.add_parser(name, help="Inspect or explicitly authorize governed state")
-        if name != "gold-list":
+        if name not in {"gold-list", "gold-export"}:
             command.add_argument("--run-dir", type=Path, required=True)
         if name in {"gold-review", "gold-decide"}:
             command.add_argument("--proposal-id", type=UUID, required=True)
@@ -37,6 +37,12 @@ def add_commands(commands) -> None:
         if name == "gold-list":
             command.add_argument("--offset", type=int, default=0)
             command.add_argument("--limit", type=int, default=20)
+            command.add_argument("--tag", action="append", default=[],
+                                 help="Exact tag; repeated filters must all match")
+            command.add_argument("--artifact-type", action="append", default=[],
+                                 help="Exact artifact type; repeated filters must all match")
+            command.add_argument("--all-versions", action="store_true",
+                                 help="Include approved history, not just each Skill's latest version")
     for name, command in commands.choices.items():
         if name not in ADMIN_COMMANDS:
             command.add_argument("--workspace-root", type=Path)
@@ -90,28 +96,28 @@ def scoped_settings(args, settings):
 
 def gold_catalog(args, settings) -> dict:
     from .local_gold import build_personal_gold_service, close_personal_gold
-    from .skills import SkillSearchContext
+    from .local_gold_library import list_gold_library
 
-    if settings.gold_root is None or not 0 <= args.offset or not 1 <= args.limit <= 100:
-        raise ValueError("Invalid personal Gold catalog request")
+    if settings.gold_root is None:
+        raise ValueError("Gold catalog requires an authenticated managed workspace")
     service = build_personal_gold_service(settings.gold_root, settings.principal.user_id)
     try:
-        skills = service.search(SkillSearchContext(
-            user_id=settings.principal.user_id, project_id=settings.workspace.project_id,
-            lab_id=settings.principal.lab_id, include_lab=False,
-        ), principal=settings.principal)
-        latest = {}
-        for skill in skills:
-            if skill.skill_id not in latest or latest[skill.skill_id].version < skill.version:
-                latest[skill.skill_id] = skill
-        active = sorted(latest.values(), key=lambda item: str(item.skill_id))
-        selected = active[args.offset:args.offset + args.limit]
-        return {"user_id": settings.principal.user_id, "available_count": len(active),
-                "offset": args.offset, "returned_count": len(selected),
-                "truncated": args.offset + len(selected) < len(active),
-                "items": [{"skill_id": str(item.skill_id), "version": item.version,
-                           "name": item.name, "description": item.description,
-                           "scope": item.scope.value} for item in selected]}
+        return list_gold_library(service, settings.principal,
+            project_id=settings.workspace.project_id, offset=args.offset, limit=args.limit,
+            tags=args.tag, artifact_types=args.artifact_type, all_versions=args.all_versions)
+    finally:
+        close_personal_gold(service)
+
+
+def gold_export(settings) -> dict:
+    from .local_gold import build_personal_gold_service, close_personal_gold
+    from .local_gold_library import export_gold_library
+
+    if settings.gold_root is None:
+        raise ValueError("Gold export requires an authenticated managed workspace")
+    service = build_personal_gold_service(settings.gold_root, settings.principal.user_id)
+    try:
+        return export_gold_library(service, settings.principal)
     finally:
         close_personal_gold(service)
 

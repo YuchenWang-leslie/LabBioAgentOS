@@ -234,7 +234,8 @@ async def test_propose_from_run_uses_safe_source_and_agent_draft(service, princi
         configuration=SimpleNamespace(skill_service=service),
         result=lambda handle: SimpleNamespace(run_id=run_id, status=RunStatus.COMPLETED),
         run_state_store=SimpleNamespace(get=lambda identifier: SimpleNamespace(
-            owner_user_id=principal.user_id, project_id="PRJ1", lab_id=principal.lab_id)),
+            owner_user_id=principal.user_id, project_id="PRJ1", lab_id=principal.lab_id,
+            runtime_results=())),
         access_service=service.access_service,
         artifact_store=LocalArtifactStore(tmp_path / "artifacts"),
         trace_events=lambda handle: recorder.events(run_id),

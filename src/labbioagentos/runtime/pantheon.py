@@ -47,6 +47,12 @@ from .profiles import (
     RuntimeInvocationMode,
 )
 from .tooling import LabBioRuntimeToolSet
+from .skill_grounding import (
+    requires_skill_assessment,
+    skill_assessment_response_format,
+    skill_retrieval_control,
+    validate_skill_assessment,
+)
 
 
 class RuntimeProfileConfigurationError(ValueError):
@@ -731,6 +737,8 @@ class PantheonTypedStageInvoker:
             effective_stage_input.stage_id,
             effective_stage_input.workflow_control,
         )
+        if requires_skill_assessment(effective_stage_input):
+            response_format = skill_assessment_response_format(response_format)
         for agent in self.team.team_agents:
             agent.response_format = response_format
         self._emit(
@@ -775,14 +783,15 @@ class PantheonTypedStageInvoker:
         )
         active_session = None
         message = effective_stage_input.model_dump_json()
-        if capability_evidence is not None:
-            message = json.dumps(
-                {
-                    "stage_input": effective_stage_input.model_dump(mode="json"),
-                    "capability_evidence": capability_evidence.model_dump(mode="json"),
-                },
-                separators=(",", ":"),
-            )
+        if capability_evidence is not None or requires_skill_assessment(effective_stage_input):
+            payload = {"stage_input": effective_stage_input.model_dump(mode="json")}
+            if capability_evidence is not None:
+                payload["capability_evidence"] = capability_evidence.model_dump(mode="json")
+            if requires_skill_assessment(effective_stage_input):
+                payload["skill_retrieval_control"] = skill_retrieval_control(
+                    effective_stage_input, capability_evidence,
+                )
+            message = json.dumps(payload, separators=(",", ":"))
         try:
             if plugin is None:
                 response = await self.team.run(message)
@@ -847,6 +856,7 @@ class PantheonTypedStageInvoker:
             )
             if result.stage_id is not stage_input.stage_id:
                 raise ValueError("Runtime result stage does not match the requested stage")
+            validate_skill_assessment(result, effective_stage_input, capability_evidence)
         except ValidationError as exc:
             field_paths, error_types = _runtime_result_validation_projection(
                 exc,

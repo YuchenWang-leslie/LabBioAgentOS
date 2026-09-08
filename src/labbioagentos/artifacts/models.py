@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -173,18 +173,26 @@ class ArtifactRepresentation(BaseModel):
         return self
 
 
+ARTIFACT_QUERY_LIMIT_MINIMUM = 1
+ArtifactQueryLimit = Annotated[int, Field(ge=ARTIFACT_QUERY_LIMIT_MINIMUM)]
+
+
 class ArtifactQuery(BaseModel):
     """Bounded declarative request; it cannot express code, filters, or paths."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
+    LIMIT_ALLOWED_VIEW_TYPE: ClassVar[ArtifactViewType] = ArtifactViewType.TOP_N
+
     view_type: ArtifactViewType
-    limit: int | None = Field(default=None, ge=1)
+    limit: ArtifactQueryLimit | None = None
 
     @model_validator(mode="after")
     def validate_query_shape(self) -> "ArtifactQuery":
-        if self.view_type is not ArtifactViewType.TOP_N and self.limit is not None:
-            raise ValueError("limit is only valid for TOP_N queries")
+        if self.view_type is not self.LIMIT_ALLOWED_VIEW_TYPE and self.limit is not None:
+            raise ValueError(
+                f"limit is only valid for {self.LIMIT_ALLOWED_VIEW_TYPE.value} queries"
+            )
         return self
 
 

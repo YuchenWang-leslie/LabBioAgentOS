@@ -87,7 +87,7 @@ LabBio's public package declaration remains `pantheon-agents>=0.6.4,<0.7` so a
 future official compatible release can replace the fork deliberately. That
 range alone currently resolves vanilla 0.6.4 and is insufficient for current
 runtime acceptance. For a reproducible development or acceptance environment,
-install with the repository-owned constraint after the required commit is pushed:
+install with the repository-owned constraint:
 
 ```bash
 python -m pip install \
@@ -95,13 +95,15 @@ python -m pip install \
   -e '.[test]'
 ```
 
-Current checkpoint: `7b02bcba` is committed locally but not pushed. The remote
-development pin is prepared, not yet remotely reconstructible. Until an
-authorized fork push, use the existing sibling checkout at that exact SHA with
-`python -m pip install -e ../PantheonOS`, then install LabBio without the remote
-constraint. Do not silently fall back to vanilla 0.6.4 or the earlier `93ec465c`:
-neither supplies the required strict-mode API. No Git credential or proxy setting
-was changed by this repair, and no official release is claimed.
+On 2026-09-08, the authorized fork push published `7b02bcba` on
+`fix/governed-tool-request-integrity`; the remote branch was verified at the
+exact required SHA. The remote development constraint now identifies published
+source. Pantheon fork `main` remains the upstream baseline. An existing sibling
+checkout at that exact SHA can alternatively be installed with
+`python -m pip install -e ../PantheonOS`. Do not silently fall back to vanilla
+0.6.4 or the earlier `93ec465c`: neither supplies the required strict-mode API.
+No Git credential or proxy setting was changed, and no official Pantheon release
+is claimed.
 
 Then verify both source identity and import location; a `0.6.4` version string
 alone is not sufficient:

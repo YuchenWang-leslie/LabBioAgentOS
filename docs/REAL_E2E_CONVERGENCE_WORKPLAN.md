@@ -1582,3 +1582,378 @@ stay outside the source Git repository; the original PBMC input remains intact.
 No historical failed/interrupted run was deleted or repaired. Stop at user review
 of the managed report; next entry is an explicit task or Gold curation/approval
 request using this same authenticated project, not another automatic live run.
+
+## 2026-09-08 — Authorized Gold guidance and personal multi-Skill library
+
+User authorized a small improvement to Agent-authored reference workflows and
+the previously discussed per-user multi-Skill catalog/Markdown view. Work is on
+`feat/gold-library-guidance`, based on `9d22c2a`. The actual checkout has its own
+`.git`; scope is additionally compared against an explicit pre-edit source/test
+copy. No main, Pantheon, Codex proxy, Docker daemon or production change.
+
+The reproduced defect is at the curation boundary: source material omitted
+persisted Agent plans, the adaptive schema dropped separate execution guidance,
+and audit instructions rejected concrete reference order even when presented as
+adaptable guidance. This is not proof of model inability and is not fixed by
+Codex writing a scientific Skill. The new source includes bounded same-run typed
+historical stage context as MODEL_CONTEXT and governed non-RAW views, never
+programs, raw data, provider bodies, process streams or hidden reasoning. Agent
+draft/audit/revision may retain supported conditional reference steps; current
+task choices and approval remain independent.
+
+The owner-bound SQLite library remains the only authority. Agent name/tags/
+applicability metadata supports multiple IDs, immutable versions, exact filters
+and latest-version browsing. Filters run after latest selection, including the
+Agent tool, so old tags cannot revive a superseded version. Approved records
+render to UUID/version Markdown and a catalog without scientific rewriting.
+Export conflicts never overwrite edits or undo durable approval; ordinary MD
+is not imported. Full context still requires exact run authorization; additional
+stored guidance fields are now projected and partial views explicitly marked.
+
+Final full non-live regression: **718 passed, 16 skipped**, one existing Uvicorn
+warning. Independent read-only review found two adjacent contract issues that
+are now covered: historical summaries retain the existing 8000-character limit,
+and Skill views enforce the existing 64000-byte UTF-8 envelope by removing whole
+list items with explicit partial-field markers. Historical runtime result UUIDs
+are not globally unique; curation binds each result to its persistent invocation
+using the authoritative ordered result sequence, including retry attempts. The
+real historical source exposed this before a provider call; an ordered-identity
+regression now covers it. No scientific content is rewritten.
+
+The authenticated TEST1/PRJ1 fresh overview run is **not a successful analysis**:
+`290d2992-5394-492c-b24a-0afdfc874705`, preserved under
+`/media/desk16/iy1982/WYC/projects/test/TEST1/projects/PRJ1/runs/gold-guidance-overview-20260908`.
+It used the exact prior user-authored descriptive overview task and preferences,
+without added methods, parameters, tools or scientific code. The first stages
+completed, but EXECUTE made 18 failed Artifact queries (13 INVALID_QUERY_SHAPE and 5
+ARTIFACT_EXPOSURE_DENIED) and no execution_submit. The required capability
+check raised RuntimeProfileConfigurationError; no sandbox result or final report
+was produced. The process exited 1, while durable state remains
+RUNNING / STAGE_IN_FLIGHT / EXECUTE. This interrupted state is not called a
+terminal FAILED run or used as successful Gold source. No resume, extra budget
+or new analysis attempt follows; this distinct execution failure cluster remains
+outside the current curation/library change.
+
+Separate live curation uses preserved safe evidence from the already successful
+run `54102b8e-8d5d-4394-93c7-fb0f401aba5e`, not this failed run. It exercises only
+Agent draft/audit/revision, not scientific analysis or user approval. No historical
+Skill is reassigned to TEST1. The personal library still has zero approved Golds;
+its authenticated gold-export produced a private empty INDEX.md successfully.
+Multi-Skill/version/filter/restart/export/conflict behavior has deterministic
+coverage; this is not a claim that live selection among multiple approved Skills
+has been demonstrated. Final standalone curation outcome is recorded below.
+
+Standalone live curation completed: **1 passed**, 1277.51 seconds, the existing
+Uvicorn warning only. This assertion covers source identity and typed
+draft/audit/revision output, **not semantic approval**. Source has five historical
+stage contexts and three governed views; canonical source SHA256 is
+`fb41d64ab603b505d9526f7a2ac62362cd4344cac884939b5998e2fc2b8fe840`.
+The runtime revision was
+`local-065e4640d0b653aaf1d2b2bb2022e07ca29bae487d1df6e8be0471b663dc98cd`.
+Outputs are preserved in `.local/gold-guidance-20260908/`: `candidate.json`,
+`verification.json`, and `runtime/model-boundaries.jsonl` (source, initial draft,
+16-finding audit, revised draft). The Agent named the revised draft
+"PBMC Scanpy-Free Unsupervised Clustering and Marker Gene Characterization";
+it retains ten reference workflow steps, seven modifiable adaptation points,
+eight tags, and separate execution/parameter/debug guidance. Codex did not author
+or revise any of that procedural content.
+
+The live result demonstrates greater procedural detail, **not an acceptable new
+Gold**. The revised draft still recommends reading execution stdout/stderr, which
+conflicts with the current RAW-content model-access boundary; the independent
+audit did not catch/remove that conflict. Some audited implementation claims
+also remain, so completion of the revision call is not proof that every finding
+was resolved. No keyword repair, scientific rewrite, additional curation call or
+automatic approval is performed. `candidate.json` is an unregistered draft for
+inspection, not a persisted approval-pending proposal or an approved library
+version. Both the initial and revised Agent outputs remain unmodified. The
+existing human approval boundary is still required; this draft is not recommended
+for approval. Deterministic library tests do not stand in for live multi-Skill
+selection, approval or reuse.
+
+Final local status: source edits remain on `feat/gold-library-guidance`, no commit
+or GitHub push, main and Pantheon unchanged (Pantheon clean at
+`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7`). No production release/service/profile
+or approved Skill was deployed/activated. Local CLI tests used this checkout.
+Docker/containerd/docker.socket remain active, no analysis containers or provider
+test process remain. The failed overview's durable inflight state is preserved,
+not silently repaired; its data hash is unchanged. Work stops at review of this
+engineering change and unapproved Agent draft. The next Gold-specific entry is
+the recorded review/source-permission mismatch, not an automatic analysis rerun,
+approval or extra-budget resume.
+
+## 2026-09-08 — Authorized EXECUTE query-feedback repair
+
+The user prioritizes the failed overview's missing execution and authorizes
+root-cause repair. Work continues on `fix/execute-query-feedback`; the prior
+uncommitted Gold/library work is preserved, with a separate pre-edit comparison
+copy at `/tmp/labbio-execute-baseline.w8x1iZ`. No main or Pantheon changes.
+
+Read-only reconstruction of run `290d2992-5394-492c-b24a-0afdfc874705` confirms
+that the RAW input was mountable, remote-view permissions were explicit, and
+PREFLIGHT completed. The first EXECUTE query used an authorized AGGREGATE
+SUMMARY with a canonical decimal-string limit; numeric compatibility already
+worked, but a non-null SUMMARY limit is invalid. Across seven tool-bearing model
+turns, 13 query-shape failures and five view-policy denials replaced execution.
+Four of those five denials concern non-RAW Artifacts. Error feedback only named
+an invalid combination or a generic exposure denial, without its exact query
+constraints. The prior successful managed run has the same profile and EXECUTE
+template, ruling out a newly missing execution capability or environment setup
+as an evidenced cause. Prior-stage safe views are not forwarded verbatim, but
+that observation does not establish the cause of this request-shape loop.
+
+The bounded repair is provider schema fidelity plus authorized structured error
+facts from the existing query contract and ExposurePolicy. Positive integer
+limits are supported only by TOP_N; other views require omission or JSON null.
+Policy maximum is a returned-record ceiling, not an invalid-request threshold.
+No automatic query correction, tool selection, extra query, RAW release,
+scientific instruction, budget increase or workflow change is authorized.
+Regression must retain denied calls, unknown/foreign-ID non-disclosure, large
+TOP_N requests' existing capped behavior, and both trace and model-visible
+feedback. Only after deterministic checks pass will the unchanged user task run
+once in a fresh managed directory; the old inflight run is not resumed/repaired.
+
+Red-first coverage reproduced 19 missing-feedback/schema failures; after the
+three production-file repair, related tests pass 57/57. Full regression passes
+**744 passed, 16 skipped**, one existing Uvicorn warning; two historical schema
+snapshots were updated only for the limit contract. Independent read-only review
+found no authorization bypass, query repair, hidden call, or budget change.
+
+One fresh unchanged-task run was launched: `3b14f855-397f-4498-8df2-b165aaa9fa24`,
+`WYC/projects/test/TEST1/projects/PRJ1/runs/execute-query-feedback-20260908`.
+Frozen runtime revision:
+`local-d5174fd7903f8cd161781672552473acfd698ad768286ea274e99f8f03392939`;
+source SHA256 `1da653f0b37c32b44326ba115cf15a78345156f5e42732f61b21c16b38187a17`.
+The profile SHA256 remains
+`0e17e06ed940890659d9a2097920b778e062c2a05481218d21c0dd5c1cba5ea0`.
+No source, profile, Skill or runtime configuration changes during this run.
+
+### Fresh managed overview completed and handed off
+
+Run `3b14f855-397f-4498-8df2-b165aaa9fa24` completed all nine stages at
+2026-09-08T04:41:38Z, with `COMPLETED / LEARN / STABLE`, no pending gate or
+inflight operation, empty workflow retry counts and unchanged `retry_limit=1`.
+The CLI exited 0. Independent-process authenticated status and idempotent export
+both pass under the frozen runtime revision; there is no automatic continuation.
+
+The live trace exercised the repair, not just a zero-error path. In EXECUTE,
+two invalid string-limit requests received the new constraints. The model then
+issued a legal SCHEMA query with JSON null and succeeded. A RAW METADATA query
+remained denied. Instead of the earlier 18 failed-query loop, the model proceeded
+to two execution submissions. No code selected the next tool or replaced an
+argument. Across the whole run, five INVALID_QUERY_SHAPE, four exposure denials,
+and two invalid Skill-use requests remain visible. The PERSONAL library remains
+empty; no proposal, Gold version or approval was manufactured.
+
+First execution `73a73adf-11ec-480a-9df0-2842ecd51f6b` exited zero but failed the
+output contract: three of fourteen records lacked required `record_type`.
+Its script SHA256 is
+`4b1d2e243e407c0afe47a89425851da31e688d5e4bda67c74db186e2bb2ce026`.
+The Agent submitted a different program itself; all fourteen records in the
+second output include the required field. Second execution
+`d1395180-289b-44e9-b6fb-37b67f2f9c51` exited zero / SUCCEEDED without issues;
+script SHA256 is
+`635df3f45cb7f7cadb1b9bd77eaf90e2f0a8c4edb8098f39e2605cc929753cbb`.
+Both programs read the exact current RAW UUID through LABBIO_INPUT_MANIFEST_PATH
+and anndata.read_h5ad. The mounted blob matches the original project H5AD hash.
+Both executions used the unchanged approved image, offline network policy,
+4 CPUs / 4096 MB / 128 PIDs / 900 seconds. Codex supplied no scientific code,
+parameters, analysis sequence or report text.
+
+Current result Artifact `0fde22fd-48b3-492b-9f56-ae2cc75b3658` is
+DERIVED / TRUSTED_EXECUTION_DECLASSIFICATION, TEST1/PRJ1/current run, 2306 bytes;
+SHA256 `b42636749d0e93e66a7a671fb8875ba72f266e41bd1f65530657c3d59c8eadcb`.
+Actual execution bytes, registered blob and exported JSON match. The previous
+invalid output remains RAW/INTERNAL_ONLY, not promoted or erased.
+
+Agent-authored report `7ca6d3ce-4165-435e-8772-f331b7f7d65a` has
+MODEL_AUTHORED_REPORT release basis and the current REPORT invocation. Its
+registered evidence reference is exclusively the current DERIVED result, queried
+successfully by REPORT before submission. It is delivered unchanged at
+`WYC/projects/test/TEST1/projects/PRJ1/runs/execute-query-feedback-20260908/delivery/REPORT.md`,
+1755 bytes, SHA256
+`14afdaeb618b287c72de4c1de05af5bd7b788553c8107aedfc9c353e12665c81`.
+Independent byte comparison with the registered report passes. This is execution,
+lineage and delivery acceptance for this task, not scientific-quality certification
+or a guarantee that future model calls will be error-free.
+
+Final regression remains 744 passed/16 skipped with the existing Uvicorn warning.
+The model-boundary file has no detected host-path/credential markers; query
+feedback leak and foreign-scope tests pass. Docker/containerd/docker.socket are
+active, no task container or provider process remains. No production API/worker
+release, main/Pantheon/proxy change, Git commit/push, or Skill promotion occurred.
+This checkpoint is the installed local CLI on `fix/execute-query-feedback`, with
+the preceding Gold edits preserved. Historical failed/inflight runs are retained
+without recovery bypass. Stop at user review of the delivered report; no further
+live run or Gold-curation expansion follows automatically.
+
+## 2026-09-08 — Authorized multi-Skill selection test
+
+The user requests testing selection among several Skills, not another analysis
+or a production repair. An opt-in test now uses the existing runtime factory,
+managed PLAN capability prompt, real `mimo-v2.5-pro`, and production Skill tools
+with three isolated synthetic metadata candidates. Synthetic source/approval
+fixtures are explicitly not real Agent-curated Gold and never enter TEST1.
+Expected matches remain host-side; no candidate UUID, forced tool choice, method,
+or answer is injected into the model request. Each case has fresh identities,
+SQLite and an Agent with conversation memory disabled. This is selection-only,
+not full PLAN finalization/WorkflowEngine or contextual-use acceptance.
+
+The existing smoke budget of six history messages truncated the first diagnostic
+after a full catalog tool response, before selection. That inconclusive record
+is preserved in `.local/gold-selection-20260908/fit-first`. The final test reads
+the unchanged managed assembly limit of 16; no production budget was increased.
+It additionally requires a final assistant message without tool calls and a
+provider `stop`, not just a nonempty last tool response.
+
+The five-case result is **4 passed, 1 failed; live selection reliability is NOT
+accepted**. With the validation candidate first, middle and last, the Agent
+selected the correct exact v1 identity and persisted one pending use proposal
+each (REUSE/REFERENCE/REFERENCE). It also correctly browsed and declined all
+three candidates for an unrelated poetry-translation request. However, the
+presentation-only task produced one content-only provider turn, no search and
+no use proposal, while claiming full browsing and inventing a nonexistent
+`retrieval-smoke-echo` candidate. The three real fixture records were present.
+The earliest evidenced divergence is an ungrounded catalog-result assertion,
+not a search permission/shape error. Local input/source checks do not establish
+remote provider cache or context contamination; do not infer that cause.
+
+The matrix stopped on that failure; the previously unrun no-match case was then
+executed independently once. The failed presentation task was not retried or
+prompt-repaired. Empty filtered searches in the three positive cases (1/6/5)
+remain visible as successful empty pages, not INVALID_REQUEST. Every isolated
+store has zero use authorization, context access and usage. No actual task
+analysis, approval, Skill view or scientific report was performed.
+
+Evidence and human-readable report:
+`.local/gold-selection-current-budget-20260908/REPORT.md`, with per-case exact
+requests, synthetic catalog, safe tool evidence, provider-turn observations,
+final Agent text and SQLite. New test:
+`tests/integration/test_gold_selection_live.py`. Final non-live regression is
+744 passed / 21 skipped with the existing Uvicorn warning; this does not override
+the real selection failure. TEST1 remains zero Gold/zero proposals. Source/profile,
+Pantheon, main, proxy and tunnel behavior are unchanged by this test. No commit,
+push, release, API/worker deployment or Skill promotion occurred; existing dirty
+work is preserved on `fix/execute-query-feedback`. Docker/containerd/socket remain
+active, no running containers or live test processes remain. Stop at the test
+report. The sole next investigation entry is `different-task/selection-result.json`
+for catalog-claim/tool-evidence consistency, not hard-coded Skill routing.
+
+## 2026-09-08 — Minimal Skill retrieval-claim grounding repair
+
+The user authorizes a minimal repair of retrieval claims without tool evidence.
+Production changes are limited to `runtime/contracts.py`, new
+`runtime/skill_grounding.py`, and the typed finalizer in `runtime/pantheon.py`.
+Gold-enabled PLAN now requires `skill_assessment`: NOT_ASSESSED remains legal
+without a query; NO_SUITABLE_RETURNED_CANDIDATE requires current completed search
+receipts and speaks only about returned candidates; USE_PROPOSED must match a
+current completed proposal ID. Before model assessment, the finalizer projects
+the exact receipt identities as CONTROL_STATE, without promoting Skill content.
+It rejects malformed or unsupported assessments before completion events.
+
+No keyword interpretation, ranking, automatic query, correction, approval,
+budget/retry increase, prompt edit or scientific change was added. Old PLAN
+JSON may omit the field; frozen runtime revision checks remain authoritative.
+Approval-resumed invocations do not have to repeat old search/proposal work.
+Capability free text remains unverified MODEL_CONTEXT; this is not a detector
+for every untrue sentence or an assessment of scientific relevance.
+
+Red tests showed 9 failures/6 passes; the completed new suite has 21 passes.
+Full non-live regression: **765 passed, 24 skipped**, existing Uvicorn warning.
+Coverage includes actual empty/filtered/partial pages, no-search/unassessed,
+failed/forged/foreign/wrong-tool receipts, actual proposal persistence, legacy
+payloads, provider schema, and non-promotion of candidate text.
+
+Three fresh real two-mode PLAN cases are preserved in
+`.local/gold-grounding-20260908/`, using the same selection request texts and
+unchanged capability/finalization prompts. These are synthetic metadata tests,
+not real Gold curation, full WorkflowEngine runs or bioinformatics execution.
+
+- Original presentation-only failure now searches and selects the correct Skill,
+  grounds its assessment in four actual search receipts and proposal
+  `71497a5f-0543-4917-bc04-645f3324e3c9`, and requests user input with the exact
+  domain reference. The case passes.
+- Unrelated poetry translation grounds NO_SUITABLE_RETURNED_CANDIDATE in four
+  actual search receipts including the full three-item page. Its next action is
+  `fail`, not the test's expected transition: the full case **fails**, even
+  though retrieval grounding passes. The selection-only request versus a PLAN
+  envelope without finish must be reconciled before calling this a proven
+  general business-workflow defect.
+- The previously unrun adjacent table-check case runs independently once and
+  passes: correct Skill, four real searches, proposal
+  `a5c4bae1-4464-495e-9a99-ea7bc186ea28`, exact user-gate domain reference.
+  One unsuccessful skill_view/SKILL_NOT_FOUND is retained, with no context access.
+
+Real pytest totals **2 passed / 1 failed**; do not call the entire live matrix
+accepted. No failed case was rerun, rewritten or given an answer. The original
+failure's query/proposal truth boundary is verified independently. Free prose
+still contains an incorrect output-contract existence claim, and generic
+reference kinds are sometimes wrong. These are preserved, not certified by the
+new exact-ID assessment guard or silently patched into this scoped change.
+
+Read-only SQLite reconstruction confirms only two pending use proposals across
+the three synthetic stores, zero authorizations/decisions/context accesses/usage.
+TEST1 remains zero Gold/zero proposals. No source promotion, execution, biological
+interpretation, scientific report or approval occurred. All details and exact
+identities are in `.local/gold-grounding-20260908/REPORT.md`.
+
+Loaded LabBio source SHA256 is
+`4075a09179785f33c48995e3890b0995697bd85ca18b56cdb4d6498a09a9f300`;
+profile SHA256 remains
+`0e17e06ed940890659d9a2097920b778e062c2a05481218d21c0dd5c1cba5ea0`.
+Pantheon remains clean at `7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7`.
+Changes are used by fresh local CLI/runtime construction; no production release,
+API/worker deployment or Skill activation/promotion occurred. Existing dirty
+work remains on `fix/execute-query-feedback`, no commit/push/main/proxy/tunnel
+changes. Docker/containerd/socket active, no running containers/live tests remain.
+Stop at the report. The sole next entry is the no-match result and its test
+context, to clarify the legal selection-test terminal boundary before any
+control-semantic expansion; no automatic analysis, resume or extra budget.
+
+## 2026-09-08 — Source snapshot for GitHub main and tag 0908
+
+The user authorizes publishing the recent local changes, merging directly into
+LabBioAgentOS `main`, and creating tag `0908`. This entry records the validated
+source snapshot selected for that publication. The prior `main` is
+`8d6b24ffdfce520ef64855aec1e9a59f7d05ea73`; it is an ancestor of the local work,
+and remote inspection found no existing `0908` tag. Publication uses a
+fast-forward merge and an annotated tag, pushed atomically without rewriting
+history.
+
+The snapshot includes the already committed execution/input/output feedback,
+local task entrypoint and managed user/project work, plus the current bounded
+Gold curation source, personal library export/search, Skill guidance views,
+Artifact query feedback and retrieval-assessment grounding changes. Existing
+source, tests and historical evidence notes are retained. Local datasets,
+credentials, SQLite stores, run outputs and presentation deliverables remain
+outside this source publication.
+
+The required Pantheon commit
+`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` has been pushed and its exact remote
+identity verified on fork branch `fix/governed-tool-request-integrity`.
+`constraints/pantheon-runtime.txt` keeps that exact pin. Pantheon fork `main`
+remains the upstream baseline; no upstream repository is modified.
+
+Fresh publication checks used the existing `labbioagent` Python 3.11 environment
+with bytecode and pytest cache writing disabled:
+
+- LabBio: `python -B -m pytest -q -p no:cacheprovider` — **765 passed,
+  24 skipped**, one existing Uvicorn deprecation warning.
+- Pantheon: the strict-tool-arguments and tool-schema-constraints suites —
+  **36 passed**, the same existing warning.
+- LabBio diff whitespace checks passed; the release file set contains source,
+  documentation, tests and small generic examples, with no binary data or
+  credential-pattern findings in the checked files.
+
+No live provider or Docker acceptance was rerun for this Git publication. The
+latest Gold grounding matrix remains **2 passed / 1 failed**, with the no-match
+terminal-action discrepancy and free-prose limitations preserved above. No new
+scientific acceptance, report, approval or Skill promotion is inferred from
+these regression results. Production services/releases were neither inspected
+for health nor deployed by this publication; no profile activation, runtime
+cleanup, proxy or tunnel change was performed.
+
+Stop after verifying remote LabBio `main` and dereferenced `0908` identify the
+same commit. Any later runtime investigation resumes from
+`.local/gold-grounding-20260908/REPORT.md` and the no-match test context under
+separate task scope; this source publication does not start that work.

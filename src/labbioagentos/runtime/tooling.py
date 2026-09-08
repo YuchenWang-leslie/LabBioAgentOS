@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any, Callable, Literal
 from uuid import UUID, uuid4
@@ -30,6 +31,7 @@ from labbioagentos.artifacts import (
     ArtifactViewType,
 )
 from labbioagentos.artifacts.store import coerce_artifact_id
+from labbioagentos.artifacts.models import ArtifactQueryLimit
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.execution import (
     ExecutionRuntime,
@@ -77,6 +79,7 @@ from labbioagentos.skills import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .contracts import (
+    ArtifactQueryConstraints,
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
     CapabilityErrorDetails,
@@ -156,12 +159,19 @@ def _normalize_canonical_integer_wire_value(value: Any) -> tuple[Any, bool]:
     return value, False
 
 
-class _InvalidArtifactQueryView(ValueError):
-    """artifact_query received a value outside ArtifactViewType."""
+class _ArtifactQueryFailure(ValueError):
+    """An authorized query failed, with only bounded mechanical feedback."""
 
-
-class _InvalidArtifactQueryShape(ValueError):
-    """artifact_query received an invalid view/limit combination."""
+    def __init__(
+        self,
+        error_code: Literal[
+            "INVALID_ENUM_VALUE", "INVALID_QUERY_SHAPE", "ARTIFACT_EXPOSURE_DENIED"
+        ],
+        query_constraints: ArtifactQueryConstraints,
+    ):
+        super().__init__(error_code)
+        self.error_code = error_code
+        self.query_constraints = query_constraints
 
 
 class _InvalidExecutionDraft(ValueError):
@@ -273,10 +283,14 @@ class SkillDetailView(SkillCandidateView):
     workflow_outline: tuple[StrictStr, ...]
     collaboration_guidance: tuple[StrictStr, ...] = ()
     execution_guidance: tuple[StrictStr, ...] = ()
+    parameter_guidance: tuple[StrictStr, ...] = ()
+    known_failure_modes: tuple[StrictStr, ...] = ()
+    debug_lessons: tuple[StrictStr, ...] = ()
     validation_expectations: tuple[StrictStr, ...] = ()
     limitations: tuple[StrictStr, ...] = ()
     reusable_principles: tuple[StrictStr, ...] = ()
     adaptation_points: tuple[SkillAdaptationPoint, ...] = ()
+    truncated_fields: tuple[StrictStr, ...] = ()
 
 
 class MemoryCandidateView(BaseModel):
@@ -491,6 +505,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 safe_message=error.safe_message,
                 retryable=error.retryable,
                 denied_operation=error.denied_operation,
+                query_constraints=error.query_constraints,
             )
             failure_details = None
             if capability == "execution_submit" and isinstance(
@@ -586,7 +601,7 @@ class LabBioRuntimeToolSet(ToolSet):
         self,
         artifact_id: str,
         view_type: Literal["METADATA", "SCHEMA", "SUMMARY", "TOP_N"],
-        limit: int | None = None,
+        limit: ArtifactQueryLimit | None = None,
     ) -> dict:
         """Request one policy-controlled view of a governed Artifact.
 
@@ -594,8 +609,10 @@ class LabBioRuntimeToolSet(ToolSet):
             artifact_id: UUID from a RuntimeReference whose kind is ARTIFACT;
                 an EXECUTION reference UUID is not an Artifact identifier.
             view_type: One of METADATA, SCHEMA, SUMMARY, or TOP_N.
-            limit: Maximum number of records to return for TOP_N; use a positive
-                integer.
+            limit: Optional positive integer for TOP_N only. For every other
+                view, omit limit or use JSON null, not a string. For TOP_N,
+                omitting limit or using null selects the policy default; policy
+                may cap the number returned below the requested limit.
         """
         canonical_limit, normalization_applied = (
             _normalize_canonical_integer_wire_value(limit)
@@ -746,7 +763,11 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @tool
     async def skill_view(self, authorization_id: str) -> dict:
-        """View the exact Skill version bound to an approved run authorization."""
+        """View the exact Skill version bound to an approved run authorization.
+
+        Guidance is reference context, not a mandatory procedure or current-task
+        evidence. truncated_fields explicitly names any partially returned fields.
+        """
         return await self._call(
             "skill_view",
             lambda: self._skill_view(UUID(authorization_id)),
@@ -926,20 +947,26 @@ class LabBioRuntimeToolSet(ToolSet):
             or ref.lab_id != self.binding.workspace.lab_id
         ):
             raise AuthorizationDenied("Artifact is outside the bound workspace")
+        constraints = ArtifactQueryConstraints.from_authorized_artifact(
+            ref, exposure_policy=self.services.artifact_exposure.policy
+        )
         try:
             typed_view = ArtifactViewType(view_type)
         except ValueError as exc:
-            raise _InvalidArtifactQueryView from exc
+            raise _ArtifactQueryFailure("INVALID_ENUM_VALUE", constraints) from exc
         try:
             query = ArtifactQuery(view_type=typed_view, limit=limit)
         except ValidationError as exc:
-            raise _InvalidArtifactQueryShape from exc
-        return self.services.artifact_exposure.artifact_query(
-            identifier,
-            query,
-            self.binding.consumer,
-            principal=self.binding.principal,
-        )
+            raise _ArtifactQueryFailure("INVALID_QUERY_SHAPE", constraints) from exc
+        try:
+            return self.services.artifact_exposure.artifact_query(
+                identifier,
+                query,
+                self.binding.consumer,
+                principal=self.binding.principal,
+            )
+        except ArtifactExposureDenied as exc:
+            raise _ArtifactQueryFailure("ARTIFACT_EXPOSURE_DENIED", constraints) from exc
 
     def _skill_search(self, offset, limit, tags, artifact_types, include_lab):
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
@@ -958,8 +985,6 @@ class LabBioRuntimeToolSet(ToolSet):
                 project_id=self.binding.workspace.project_id,
                 lab_id=self.binding.workspace.lab_id,
                 include_lab=include_lab,
-                required_tags=frozenset(tags),
-                artifact_types=frozenset(artifact_types),
             ),
             principal=self.binding.principal,
         )
@@ -970,7 +995,9 @@ class LabBioRuntimeToolSet(ToolSet):
                 latest_by_skill[skill.skill_id] = skill
         active = tuple(
             sorted(
-                latest_by_skill.values(),
+                (skill for skill in latest_by_skill.values()
+                 if frozenset(tags).issubset(skill.procedure.tags)
+                 and frozenset(artifact_types).issubset(skill.procedure.artifact_types)),
                 key=lambda skill: (
                     skill.name.casefold(),
                     str(skill.skill_id),
@@ -1002,20 +1029,57 @@ class LabBioRuntimeToolSet(ToolSet):
             project_id=self.binding.workspace.project_id,
             principal=self.binding.principal,
         )
-        return SkillDetailView(
-            **self._skill_candidate(skill).model_dump(),
+        procedure = skill.procedure
+        # Keep the established per-field bounds; expose partialness rather than
+        # implying that a bounded view contains the entire stored Skill.
+        fields = {
+            "workflow_outline": (procedure.workflow_outline, 32),
+            "collaboration_guidance": (procedure.agent_collaboration_guidance, 16),
+            "execution_guidance": (procedure.execution_guidance, 16),
+            "parameter_guidance": (procedure.parameter_guidance, 16),
+            "known_failure_modes": (procedure.known_failure_modes, 16),
+            "debug_lessons": (procedure.debug_lessons, 16),
+            "validation_expectations": (procedure.validation_expectations, 16),
+            "limitations": (procedure.known_limitations, 16),
+            "reusable_principles": (procedure.reusable_principles, 16),
+            "adaptation_points": (procedure.adaptation_points, 16),
+        }
+        candidate = self._skill_candidate(skill).model_dump()
+        partial = [name for name, (values, limit) in fields.items() if len(values) > limit]
+        for name, values in (
+            ("description", skill.description), ("tags", procedure.tags),
+            ("artifact_types", procedure.artifact_types),
+            ("input_contract_ids", procedure.input_contract_ids),
+            ("output_contract_ids", procedure.output_contract_ids),
+            ("applicability_preview", procedure.applicability),
+            ("limitation_preview", procedure.known_limitations),
+        ):
+            if len(values) > len(candidate[name]):
+                partial.append(name)
+        detail = SkillDetailView(
+            **candidate,
             source_run_id=skill.source_run_id,
             parent_skill_id=skill.parent_skill_id,
             parent_version=skill.parent_version,
-            applicability=skill.procedure.applicability[:4000],
-            workflow_outline=tuple(skill.procedure.workflow_outline[:32]),
-            collaboration_guidance=tuple(skill.procedure.agent_collaboration_guidance[:16]),
-            execution_guidance=tuple(skill.procedure.execution_guidance[:16]),
-            validation_expectations=tuple(skill.procedure.validation_expectations[:16]),
-            limitations=tuple(skill.procedure.known_limitations[:16]),
-            reusable_principles=tuple(skill.procedure.reusable_principles[:16]),
-            adaptation_points=tuple(skill.procedure.adaptation_points[:16]),
+            applicability=procedure.applicability,
+            **{name: tuple(values[:limit]) for name, (values, limit) in fields.items()},
+            truncated_fields=tuple(partial),
         )
+        # Per-field bounds alone do not bound UTF-8 bytes across all fields.
+        # Remove whole trailing items from the largest list, without assigning
+        # scientific relevance or rewriting any retained Agent statement.
+        data = detail.model_dump(mode="json")
+        def encoded_size(value):
+            return len(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                  separators=(",", ":")).encode("utf-8"))
+        while encoded_size(data) > 64_000:
+            name = max((name for name, value in data.items()
+                        if isinstance(value, list) and value and name != "truncated_fields"),
+                       key=lambda name: encoded_size(data[name]))
+            data[name].pop()
+            if name not in data["truncated_fields"]:
+                data["truncated_fields"].append(name)
+        return SkillDetailView.model_validate_json(json.dumps(data))
 
     def _skill_propose_use(self, skill_id, version, mode, reason, deviations):
         if len(deviations) > 32:
@@ -1171,6 +1235,33 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @staticmethod
     def _safe_error(exc: Exception) -> ToolError:
+        if isinstance(exc, _ArtifactQueryFailure):
+            messages = {
+                "INVALID_ENUM_VALUE": (
+                    "The artifact view type is not supported. See query_constraints "
+                    "for the permitted views of this Artifact."
+                ),
+                "INVALID_QUERY_SHAPE": (
+                    "The artifact view and limit combination is invalid. A non-null "
+                    "limit is allowed only for query_constraints.limit_allowed_view_type "
+                    "and must be an integer at least query_constraints.limit_minimum. "
+                    "Other views require an omitted limit or JSON null, not a string."
+                ),
+                "ARTIFACT_EXPOSURE_DENIED": (
+                    "Remote exposure policy denies this Artifact/view combination. "
+                    "See query_constraints for its current permitted remote views. "
+                    "This is not an execution input eligibility or preflight decision."
+                ),
+            }
+            return ToolError(
+                error_code=exc.error_code,
+                safe_message=messages[exc.error_code],
+                denied_operation=(
+                    "REMOTE_ARTIFACT_VIEW"
+                    if exc.error_code == "ARTIFACT_EXPOSURE_DENIED" else None
+                ),
+                query_constraints=exc.query_constraints,
+            )
         if isinstance(exc, AuthorizationDenied):
             return ToolError(error_code="AUTHORIZATION_DENIED", safe_message="Access denied by policy.")
         if isinstance(exc, ArtifactExposureDenied):
@@ -1242,16 +1333,6 @@ class LabBioRuntimeToolSet(ToolSet):
             return ToolError(
                 error_code="MEMORY_OPERATION_FAILED",
                 safe_message="The governed Memory operation could not complete.",
-            )
-        if isinstance(exc, _InvalidArtifactQueryView):
-            return ToolError(
-                error_code="INVALID_ENUM_VALUE",
-                safe_message="The artifact view type is not supported.",
-            )
-        if isinstance(exc, _InvalidArtifactQueryShape):
-            return ToolError(
-                error_code="INVALID_QUERY_SHAPE",
-                safe_message="The artifact view and limit combination is invalid.",
             )
         if isinstance(exc, _InvalidExecutionDraft):
             return ToolError(

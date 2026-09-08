@@ -19,19 +19,28 @@ from .models import (
 
 SKILL_CURATOR_INSTRUCTIONS = """\
 Abstract reusable procedural guidance from the supplied safe successful-run
-evidence, including any bounded governed Artifact views. Describe applicability,
-workflow structure, collaboration guidance,
-execution considerations, validation expectations, failure lessons, and
-limitations. Do not summarize a transcript, reproduce scripts, claim that prior
+evidence, including any bounded governed Artifact views and historical Agent
+stage context. Give a short task-oriented name, a distinguishing description,
+and a few readable reusable tags; identify the applicable input/artifact types
+without inventing a fixed task taxonomy. Describe applicability, a useful
+reference workflow, collaboration, execution and parameter guidance, validation
+expectations, failure lessons, and limitations. Retain specific reference steps,
+methods, tools, inputs, outputs and source parameter choices when the supplied
+source supports them, with conditions and adaptation points for a future task.
+Historical Agent plans and statements are MODEL_CONTEXT, not execution proof;
+distinguish proposed steps from actions supported by execution refs or governed
+Artifact views. Do not summarize a transcript, reproduce scripts, claim that prior
 scientific facts apply to a future task, or invent identifiers, scope,
 ownership, approval, or lineage. Treat Artifact and execution identifiers as
 source lineage, never reusable contract identifiers. RAW script, stdout, and
 stderr descriptors prove provenance only and must not be recommended for model
-content access. Preserve methods, parameters, code, and tool order as decisions
-for the future task; record reusable constraints and decision considerations,
-not fixed task answers. If no exact contract identifier is explicitly present in
-the safe source view, leave the corresponding contract-ID list empty. When a
-governed artifact-query capability is exposed, use it as needed to ground
+content access. A reference workflow does not prescribe the future Agent's
+methods, parameters, code, delegation or tool order. Current-task evidence and
+user requirements take precedence; do not turn source values into unconditional
+defaults or fill missing procedural details by guessing. If no exact contract
+identifier is explicitly present in the safe source view, leave the corresponding
+contract-ID list empty. When a governed artifact-query capability is exposed,
+use it as needed to ground
 procedural lessons in queryable source evidence; it does not authorize access to
 RAW content. Return only the required SkillCuratorDraft.
 """
@@ -41,12 +50,18 @@ SKILL_CURATOR_AUDIT_INSTRUCTIONS = """\
 Audit the supplied safe successful-run evidence and untrusted
 SkillCuratorDraft. Return only SkillCuratorAudit findings. Classify every draft
 statement that is unsupported by the safe source, turns a source-run fact into
-a future default, prescribes a future scientific method, parameter, code, agent,
-or tool order, misuses an Artifact or execution UUID as a contract identifier,
-recommends RAW content access, adds a hidden fallback, or invents a failure
-cause. Exact source-run observations may be described as historical evidence
-but do not authorize future defaults. Do not propose replacement scientific
-content and do not infer facts absent from the supplied evidence.
+an unconditional future default, makes a future method, parameter, code, agent,
+or tool order mandatory regardless of current evidence, misuses an Artifact or
+execution UUID as a contract identifier, recommends RAW content access, adds a
+hidden fallback, or invents a failure cause. Source-grounded reference steps,
+methods, tools and parameter choices
+with applicability conditions and adaptation points are allowed: specificity or
+an ordered reference workflow alone is not PRESCRIPTIVE_FUTURE_CHOICE. Historical
+Agent stage context proves what was proposed or stated, not what executed;
+cross-check claimed executed procedures with execution refs and governed views.
+Do not mistake an unexecuted plan for an established successful procedure.
+Exact source observations do not authorize unconditional future defaults. Do
+not propose replacement scientific content or infer facts absent from the source.
 """
 
 
@@ -54,26 +69,40 @@ SKILL_CURATOR_REVISION_INSTRUCTIONS = """\
 Produce one corrected draft in the required response schema from the supplied
 safe successful-run evidence, untrusted draft, and independent
 SkillCuratorAudit. Resolve every finding without inventing replacement science.
-Retain reusable safety, evidence, validation, and decision considerations,
-while leaving future methods, parameters, code, specialists, and tool order as
-decisions for the current task. Artifact and execution UUIDs remain source
-lineage, not contract identifiers. RAW content is not model-readable. Return
-only the required draft.
+Preserve supported, conditional reference steps and guidance; do not erase a
+useful workflow merely because it names a method, tool or source parameter.
+Correct unsupported claims and unconditional defaults while keeping current-task
+methods, parameters, code, specialists and tool order open to the future Agent.
+Distinguish historical Agent plans from execution evidence; do not fill missing
+steps or failure causes by guessing. Keep a short task-oriented name and readable
+tags that distinguish this Skill from other tasks. Artifact and execution UUIDs
+remain source lineage, not contract identifiers. RAW content is not model-readable.
+Return only the required draft.
 """
 
 
 SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS = """\
 Create adaptable procedural guidance from the supplied safe successful-run
-evidence. Separate reusable principles from adaptation points that the future
-Agent must decide from current-task evidence. Every adaptation point must state
-the evidence, selection considerations, and revalidation needed, without fixing
-a scientific method, parameter value, code, specialist, or tool order. Do not
-copy source-run values as defaults, invent failure causes, recommend RAW model
-access, or copy source identifiers into the procedure. The resulting procedure
-will guide a future Agent solving a new compatible task; it is not a procedure
-for curating, reviewing, or editing the completed source run. Express workflow
-guidance as reusable objectives, not a numbered source-run replay. Return only
-SkillAdaptiveCuratorDraft.
+evidence. Give a short task-oriented name, a distinguishing description, and a
+few readable reusable tags; describe the applicable inputs without inventing a
+fixed task taxonomy. Include a useful reference task workflow: preserve source-
+supported steps, methods, tools, inputs, outputs, checks and parameter choices
+with their conditions, not just general safety reminders. Omit unsupported
+details rather than inventing them. Historical Agent stage context is
+MODEL_CONTEXT: label proposed or stated procedures as such, and corroborate
+claims about executed steps with execution refs or governed Artifact views.
+Separate reusable principles and reference choices from adaptation points that
+the future Agent must decide from current-task evidence. Every adaptation point
+must state the evidence, selection considerations and revalidation needed. A
+reference sequence is advisory, not a runtime-enforced method, parameter, code,
+specialist or tool order; current user requirements take precedence. Do not
+copy source-run values as unconditional defaults, invent failure causes,
+recommend RAW model access, or copy source identifiers into the procedure. The
+resulting procedure will guide a future Agent solving a new compatible task;
+it is not a procedure
+for curating, reviewing, or editing the completed source run. Retain concrete
+guidance where supported while marking what a new task should reconsider.
+Return only SkillAdaptiveCuratorDraft.
 """
 
 

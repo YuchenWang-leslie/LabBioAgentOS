@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from labbioagentos.artifacts import ArtifactView
 from labbioagentos.governance import (
     AccessAction,
     AccessService,
@@ -24,6 +25,7 @@ from .models import (
     SkillProcedure,
     SkillSearchContext,
     SkillSourceBundle,
+    SkillStageContext,
     SkillUsageOutcome,
     SkillUsageRecord,
     SkillUseAuthorization,
@@ -76,12 +78,23 @@ class GoldSkillService:
         *,
         run_id: UUID | None = None,
         task_reference: str | None = None,
+        stage_context: tuple[SkillStageContext, ...] = (),
+        artifact_evidence_views: tuple[ArtifactView, ...] = (),
     ) -> SkillSourceBundle:
         bundle = self.source_projector.project(
             events,
             run_id=run_id,
             task_reference=task_reference,
         )
+        # These optional fields are assembled by the trusted caller from governed
+        # source records, not authored by the curator or inferred from result prose.
+        bundle = SkillSourceBundle.model_validate({
+            **bundle.model_dump(mode="python"),
+            "stage_context": stage_context,
+            "artifact_evidence_views": artifact_evidence_views,
+        })
+        # Validate the model boundary before persisting an unusable source bundle.
+        self.source_projector.curation_view(bundle)
         self.store.save_source_bundle(bundle)
         self._emit(
             bundle.source_run_id,

@@ -1,3 +1,3 @@
 # Exact development/runtime source; not an upstream release pin.
-# Pending fork push: see docs/UPSTREAM_MODIFICATIONS.md for local reconstruction.
+# Published fork revision: see docs/UPSTREAM_MODIFICATIONS.md for provenance.
 pantheon-agents @ git+https://github.com/YuchenWang-leslie/PantheonOS.git@7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7

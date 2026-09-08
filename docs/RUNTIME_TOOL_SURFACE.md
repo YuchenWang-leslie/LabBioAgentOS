@@ -57,9 +57,23 @@ The signatures below are conceptual and intentionally omit trusted fields.
 | `artifact_list` | optional artifact type, stage, exposure/view availability, bounded page token/limit | IDs, types, schemas, bounded metadata, provenance IDs; never locators/content |
 | `artifact_query` | artifact ID, allowed view type, bounded query/limit | existing `ArtifactView` after scope, approval, exposure, and size checks |
 
-`PantheonArtifactQueryAdapter` already proves the query boundary and pins the
-consumer/principal, but it is not yet a Pantheon ToolSet and has no list
-counterpart. The store's `get_ref`, `load_for_view`, and locator are internal.
+`LabBioRuntimeToolSet` binds the remote consumer/principal before list/query.
+The store's `get_ref`, `load_for_view`, and locator remain internal. The query
+tool and internal `ArtifactQuery` share the nullable positive-integer limit type.
+Only TOP_N accepts a non-null limit; other views require omission or JSON null.
+The provider schema carries the positive lower bound; local validation remains
+authoritative for the conditional rule. The exposure policy caps returned rows,
+not the requested limit, and preserves the existing default when it is omitted.
+
+An authorized query's shape, enum or exposure failure returns bounded
+`error.query_constraints`: exact Artifact ID/class, currently permitted remote
+views, the limit-bearing view, minimum, default and returned-record ceiling.
+These are CONTROL_STATE facts derived from the query contract and ExposurePolicy,
+not Artifact content or execution instructions. Identical constraints persist in
+FAILED trace and capability evidence for later model stages. Unknown identifiers,
+failed authorization and foreign workspaces do not expose this projection.
+Requests and failures remain unchanged; the tool does not fix parameters, query
+again, choose the next capability, or treat remote-view denial as execution denial.
 
 ### Execution capabilities
 
@@ -95,6 +109,18 @@ metadata itself, and may explicitly request another page. Internal
 `SkillSearchContext.query_text` remains a separate exact metadata-lookup
 contract for trusted callers; it is not runtime scientific retrieval. The
 framework never paginates automatically or chooses a candidate.
+
+Skill-enabled PLAN finalization requires a structured `skill_assessment`.
+`NOT_ASSESSED` is valid without searching. `NO_SUITABLE_RETURNED_CANDIDATE`
+requires references to completed `skill_search` calls in the current invocation;
+it does not assert absence across an unobserved library. `USE_PROPOSED` requires
+the exact current successful use-proposal ID. The finalizer exposes those receipt
+identities as CONTROL_STATE and validates them before recording completion.
+Candidate guidance and relevance judgments remain MODEL_CONTEXT. This does not
+validate every free-text rationale, require Skill adoption, or perform a search.
+Older stored PLAN bodies may omit the field; their runtime-revision recovery
+checks remain unchanged. After an approval, a new invocation may truthfully have
+no new assessment; earlier approval/context use remains bound by its own records.
 
 ### Persistent Memory capabilities
 

@@ -12,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     StrictStr,
     StringConstraints,
     field_validator,
@@ -19,7 +20,8 @@ from pydantic import (
 )
 
 from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef, ArtifactView
-from labbioagentos.contracts import RunStatus, WorkflowStage
+from labbioagentos.contracts import InformationAuthority, RunStatus, WorkflowStage
+from labbioagentos.model_safety import validate_model_visible_json
 from labbioagentos.trace import DelegationProjection, InvocationProjection, InstructionKind
 
 
@@ -199,6 +201,34 @@ class SkillCapabilityUsageRef(BaseModel):
     reference_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
 
 
+class SkillStageContext(BaseModel):
+    """Historical Agent statements, not proof that a plan was executed."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    result_id: UUID
+    invocation_id: UUID | None = None
+    stage_id: WorkflowStage
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
+        InformationAuthority.MODEL_CONTEXT
+    )
+    model_summary: StrictStr = Field(min_length=1, max_length=8000)
+    model_body: JsonValue
+
+    @model_validator(mode="after")
+    def validate_safe_context(self) -> "SkillStageContext":
+        if not isinstance(self.model_body, dict):
+            raise ValueError("Skill stage context model_body must be an object")
+        validate_model_visible_json(
+            {"model_summary": self.model_summary, "model_body": self.model_body},
+            reject_absolute_paths=True,
+        )
+        _reject_unsafe_remote_text(
+            self.model_dump(mode="python"), label="Skill stage context"
+        )
+        return self
+
+
 class SkillCurationSourceView(BaseModel):
     """The only Skill source representation permitted at a curator boundary."""
 
@@ -209,6 +239,7 @@ class SkillCurationSourceView(BaseModel):
     task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
     final_status: RunStatus
     workflow_stage_path: tuple[WorkflowStage, ...] = Field(max_length=64)
+    stage_context: tuple[SkillStageContext, ...] = Field(default=(), max_length=64)
     invocations: tuple[SkillInvocationSummary, ...] = Field(default=(), max_length=128)
     delegations: tuple[SkillDelegationSummary, ...] = Field(default=(), max_length=128)
     instruction_refs: tuple[SkillInstructionRef, ...] = Field(default=(), max_length=128)
@@ -251,12 +282,16 @@ class SkillSourceBundle(BaseModel):
     task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
     final_status: RunStatus
     workflow_stage_path: tuple[WorkflowStage, ...]
+    stage_context: tuple[SkillStageContext, ...] = Field(default=(), max_length=64)
     invocations: tuple[InvocationProjection, ...] = ()
     delegations: tuple[DelegationProjection, ...] = ()
     instruction_refs: tuple[SkillInstructionRef, ...] = ()
     execution_refs: tuple[SkillExecutionRef, ...] = ()
     artifact_ids: tuple[UUID, ...] = ()
     artifact_refs: tuple[ArtifactRef, ...] = ()
+    artifact_evidence_views: tuple[ArtifactView, ...] = Field(
+        default=(), max_length=32
+    )
     failure_refs: tuple[SkillTraceRef, ...] = ()
     retry_refs: tuple[SkillTraceRef, ...] = ()
     validation_refs: tuple[SkillTraceRef, ...] = ()
@@ -288,7 +323,10 @@ class SkillAdaptationPoint(BaseModel):
     selection_considerations: tuple[BoundedText, ...] = Field(
         min_length=1,
         max_length=16,
-        description="Criteria for the future Agent, without a prescribed choice.",
+        description=(
+            "Criteria and source-grounded options for the future Agent to evaluate; "
+            "a reference choice is not a required choice."
+        ),
     )
     revalidation_requirements: tuple[BoundedText, ...] = Field(
         min_length=1,
@@ -317,8 +355,9 @@ class SkillProcedureDraft(BaseModel):
         default_factory=tuple,
         max_length=100,
         description=(
-            "Future-task decision considerations; never fixed scientific methods, "
-            "parameter values, code, or tool order."
+            "Future-task decision considerations, including source-grounded parameter "
+            "choices with conditions and revalidation; historical values are not "
+            "unconditional future defaults."
         ),
     )
     input_contract_ids: tuple[ShortText, ...] = Field(
@@ -399,7 +438,27 @@ class SkillAdaptiveProcedureDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     applicability: BoundedText
-    workflow_guidance: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
+    workflow_guidance: tuple[BoundedText, ...] = Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            "Source-grounded reference steps, including supported methods, tools, "
+            "inputs, outputs and checks where available. State applicability; "
+            "the future Agent may adapt the sequence."
+        ),
+    )
+    agent_collaboration_guidance: tuple[BoundedText, ...] = Field(
+        default=(), max_length=32
+    )
+    execution_guidance: tuple[BoundedText, ...] = Field(default=(), max_length=32)
+    parameter_guidance: tuple[BoundedText, ...] = Field(
+        default=(),
+        max_length=32,
+        description=(
+            "Source-grounded reference choices and conditions, never unconditional "
+            "defaults; identify what current evidence would justify adaptation."
+        ),
+    )
     reusable_principles: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
     adaptation_points: tuple[SkillAdaptationPoint, ...] = Field(
         min_length=1,
@@ -409,6 +468,7 @@ class SkillAdaptiveProcedureDraft(BaseModel):
         default=(), max_length=32
     )
     known_failure_modes: tuple[BoundedText, ...] = Field(default=(), max_length=32)
+    debug_lessons: tuple[BoundedText, ...] = Field(default=(), max_length=32)
     known_limitations: tuple[BoundedText, ...] = Field(default=(), max_length=32)
     tags: frozenset[ShortText] = Field(default_factory=frozenset, max_length=32)
     artifact_types: frozenset[ShortText] = Field(
@@ -443,8 +503,12 @@ class SkillAdaptiveCuratorDraft(BaseModel):
             procedure=SkillProcedureDraft(
                 applicability=procedure.applicability,
                 workflow_outline=procedure.workflow_guidance,
+                agent_collaboration_guidance=procedure.agent_collaboration_guidance,
+                execution_guidance=procedure.execution_guidance,
+                parameter_guidance=procedure.parameter_guidance,
                 validation_expectations=procedure.validation_expectations,
                 known_failure_modes=procedure.known_failure_modes,
+                debug_lessons=procedure.debug_lessons,
                 known_limitations=procedure.known_limitations,
                 tags=procedure.tags,
                 artifact_types=procedure.artifact_types,

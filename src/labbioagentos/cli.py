@@ -227,9 +227,22 @@ async def _governance(args: argparse.Namespace, settings) -> int:
                     service, args.proposal_id, args.gate_id, args.decision == "approve",
                     settings.principal,
                 )
+                export_status = "not_requested"
+                if gold is not None:
+                    from .local_gold_library import GoldExportConflict, export_gold_library
+                    try:
+                        export_gold_library(service, settings.principal)
+                        export_status = "complete"
+                    except GoldExportConflict:
+                        # Approval is already durable. A conflicting read-only
+                        # view must never be reported as a rejected decision.
+                        export_status = "conflict"
+                    except Exception:
+                        export_status = "failed"
                 _emit({"event": "gold_decided", "approved": gold is not None,
                        "skill_id": str(gold.skill_id) if gold else None,
-                       "version": gold.version if gold else None})
+                       "version": gold.version if gold else None,
+                       "export_status": export_status})
             return 0
         pending = result.pending_user_gate
         if pending is None:
@@ -267,7 +280,9 @@ async def _governance(args: argparse.Namespace, settings) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        from .local_workspace_cli import ADMIN_COMMANDS, administer, gold_catalog, scoped_settings
+        from .local_workspace_cli import (
+            ADMIN_COMMANDS, administer, gold_catalog, gold_export, scoped_settings,
+        )
         if args.command in ADMIN_COMMANDS:
             _emit(administer(args))
             return 0
@@ -278,6 +293,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "gold-list":
             _emit(gold_catalog(args, settings))
             return 0
+        if args.command == "gold-export":
+            _emit(gold_export(settings))
+            return 0
         if args.command in {"gate", "decide", "gold-propose", "gold-review", "gold-decide"}:
             return asyncio.run(_governance(args, settings))
         return _read(args, settings)
@@ -287,6 +305,13 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         # Exception messages can contain provider bodies, credentials or raw data.
+        from .local_gold_library import GoldExportConflict
+        if isinstance(exc, GoldExportConflict):
+            _emit({"error": "GOLD_EXPORT_CONFLICT", "detail":
+                   "A generated file was changed or is not exporter-owned; it was not overwritten. "
+                   "Preserve edits separately and remove the conflicting derived file before retrying "
+                   "gold-export. SQLite approval and content are unchanged."})
+            return 1
         _emit({"error": "LOCAL_COMMAND_FAILED", "error_type": type(exc).__name__})
         return 1
 

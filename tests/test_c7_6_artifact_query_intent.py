@@ -286,10 +286,12 @@ async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_bound
                     "description": "One of METADATA, SCHEMA, SUMMARY, or TOP_N.",
                 },
                 "limit": {
-                    "anyOf": [{"type": "integer"}, {"type": "null"}],
+                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
                     "description": (
-                        "Maximum number of records to return for TOP_N; use a positive\n"
-                        "integer."
+                        "Optional positive integer for TOP_N only. For every other\n"
+                        "view, omit limit or use JSON null, not a string. For TOP_N,\n"
+                        "omitting limit or using null selects the policy default; policy\n"
+                        "may cap the number returned below the requested limit."
                     ),
                 },
             },
