@@ -342,7 +342,7 @@ def test_le13_script_syntax_failure_has_a_safe_specific_error():
     assert "script" in error.safe_message.lower()
 
 
-def _trusted_view() -> RuntimeExecutionCapabilityView:
+def _trusted_view(*, max_scalar_string_length=4096) -> RuntimeExecutionCapabilityView:
     contract = StructuredOutputContract(
         contract_id="scalar.v1",
         schema_id="scalar.schema.v1",
@@ -350,6 +350,7 @@ def _trusted_view() -> RuntimeExecutionCapabilityView:
         required_fields=frozenset({"metric", "value"}),
         max_records=8,
         max_file_bytes=4096,
+        max_scalar_string_length=max_scalar_string_length,
         declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
     )
     image_registry = ApprovedImageRegistry(
@@ -443,8 +444,19 @@ def test_ec6_declassification_semantics_are_present():
         "required_fields",
         "max_records",
         "max_file_bytes",
+        "max_scalar_string_length",
+        "reject_absolute_paths",
         "declassification_mode",
     }
+
+
+@pytest.mark.parametrize("limit", [1, 37, 4096, 65536])
+def test_output_string_limit_and_fixed_path_rule_are_authoritative(limit):
+    contract = _trusted_view(max_scalar_string_length=limit).approved_output_contracts[0]
+    assert contract.max_scalar_string_length == limit
+    assert contract.reject_absolute_paths is True
+    with pytest.raises(ValidationError):
+        type(contract).model_validate({**contract.model_dump(), "reject_absolute_paths": False})
 
 
 def test_ec7_view_has_no_host_paths_argv_credentials_or_image_identity():

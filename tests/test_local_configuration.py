@@ -120,7 +120,7 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
         assert len(assemblies) == 9
         assert all(spec.max_capability_turns == 16 for spec in assemblies.values())
         assert assemblies[WorkflowStage.UNDERSTAND].required_capabilities == ()
-        assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ("execution_submit",)
+        assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ()
         assert assemblies[WorkflowStage.REPORT].required_capabilities == ("report_submit",)
         assert not application.execution_policy.allow_network
         assert application.execution_capability.minimum_queryable_output_count == 1

@@ -22,7 +22,7 @@ bioinformatics methods, runtime scientific reasoning, or production services.
 The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
 Pantheon revision is
-`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7` (published fork repair, as
+`07675c45b538f7d27b9b16b1b7d8b72f37365293` (published fork repair, as
 recorded in `UPSTREAM_MODIFICATIONS.md`).
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
@@ -257,11 +257,44 @@ identifier when applicable. Source-verified traceback highlights additionally
 provide numeric column ranges (zero-based, end-exclusive); ambiguous display
 widths, absent carets, or mismatched source omit the range. A literal KeyError
 argument may expose its finite type name, never its value or mapping contents.
+IndexError may additionally expose a finite `reported_index_condition`:
+`OUT_OF_BOUNDS` or `OUT_OF_BOUNDS_EMPTY_AXIS`. The extractor matches complete,
+bounded standard exception forms and discards all index/axis/size numbers.
+Unknown forms remain null. This describes what the process reported, not an
+independent verification of an object's shape or the cause of an empty array;
+it does not select an analysis method or repair the program.
 Only the final chained exception is projected. The submission trace persists
 the same bounded diagnostics and script hash as the model-visible receipt,
 independently of stage completion. RAW stdout/stderr IDs and content remain
 outside that receipt and stay available only to trusted local audit. These
 diagnostics never rewrite or retry the Agent's program.
+
+The visible approved-output contract includes its actual scalar-string limit and
+the fixed absolute-path prohibition. Shape-valid output rejected by model-content
+safety stays RAW and retains `MODEL_CONTENT_REJECTED` through registration,
+execution receipt and capability evidence. This is distinct from schema failure
+and missing queryable output; rejected values and exception messages are not
+projected. A contract that intentionally authorizes no release is not mislabeled
+as a safety rejection.
+
+When EXECUTE exposes execution_submit, finalization receives a bounded projection
+of current authoritative typed receipts. Its response schema binds the selected
+execution identity, canonical technical status and optional output-reference
+subset to one receipt; the Agent may select any current receipt. With none,
+NOT_EXECUTED/null/empty outputs is legal. Local validation enforces the same facts
+and known execution-reference kinds before accepting the stage result. Failed or
+timed-out execution may still transition to VALIDATE. Legacy persisted bodies
+remain readable, and free-text scientific summaries are not interpreted or
+rewritten by this boundary.
+
+REPORT with `report_submit` uses a compact finalization wire: bounded summary,
+nullable selected report Artifact UUID, and the existing governed next action.
+Only successful, authoritative registration receipts from the same invocation
+can authorize a non-null report UUID. Null and explicit failure remain legal;
+the runtime does not select a report or infer success. A validated decision is
+expanded into the existing persisted envelope; report text and citations remain
+in the submitted Artifact, not duplicated in finalization. This reduces output
+overhead but does not implement recovery from an interrupted finalization.
 
 Runtime stage assemblies independently configure whether retry and interactive
 user input are available. Those booleans narrow both the graph-derived action
@@ -403,6 +436,22 @@ Source-verified numeric line/column information remains bounded; ambiguous
 multiline/annotated terminal forms are conservatively omitted. No path, raw
 stream, source excerpt, or automatic program repair is returned to the model.
 
+`execution_inspect` is a separate EXECUTE capability for revisiting the exact
+original program submitted by the Agent and its technical receipt. It accepts
+an EXECUTION identity bound to the same user/project/lab/run in the current
+application session; it can cross stage invocations but cannot discover arbitrary
+RAW Artifacts or recover its registry after restart. Original bytes, stored
+reference and submission hash must agree. Source is paginated MODEL_CONTEXT,
+not scientific evidence; the safe capability evidence and trace retain only the
+receipt and page metadata, never source. It starts no process and performs no
+repair. Revised submissions remain independent executions with distinct hashes.
+The tool checks the actual Pantheon pure text filters on a copy before release.
+Pages that would be modified are rejected explicitly; oversized serialized pages
+require the Agent to request a smaller page. No filtered/truncated text is labeled
+an exact complete program, no alternate encoded fallback is added, and no tool
+body is externalized by this check. Special text unsupported by the existing
+transport remains an explicit limitation; Pantheon itself is not changed.
+
 `OutputCollector` visits declared paths only and rejects traversal, missing
 files, directories, and symlinks. `requested_exposure` is an untrusted proposal.
 Unstructured output is registered RAW even when DERIVED was requested. A file
@@ -411,6 +460,14 @@ known schema ID, bounded record/file sizes, declared flat scalar fields, and no
 arbitrary nesting. Producer record order is preserved. The original output file
 remains store-owned; only its validated representation can reach an
 `ArtifactView`.
+
+Collection failures retain already registered output references and earlier
+contract issues while the execution remains FAILED. The receipt's bounded
+`output_issues` identifies zero-based declared-output and, when known, record
+indices, plus fixed class/detail codes. Missing output, rejected path, collection
+limit and file I/O failures have distinct safe details; no rejected value,
+field name, path or exception text is projected. Collection stops at the failing
+file rather than silently proceeding, repairing output or changing RAW release.
 
 Execution trace events store execution/image IDs, script hash/reference, input
 and output artifact IDs, resource/network settings, exit code, duration, and

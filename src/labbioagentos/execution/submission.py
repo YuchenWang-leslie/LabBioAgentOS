@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
@@ -18,7 +21,10 @@ from labbioagentos.governance import (
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
-from .models import ExecutionPlan, ExecutionPlanDraft, ExecutionReceipt, ExecutionResult
+from .models import (
+    ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
+    ExecutionReceipt, ExecutionResult, ExecutionScriptLocation,
+)
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 
 
@@ -28,6 +34,18 @@ class ExecutorPort(Protocol):
 
 class ExecutionSubmissionError(RuntimeError):
     """A trusted submission or returned result violated its boundary."""
+
+
+class ExecutionInspectionError(ExecutionSubmissionError):
+    """An original submission could not be verified for source inspection."""
+
+
+@dataclass(frozen=True)
+class _SubmittedExecution:
+    script_ref: ArtifactRef
+    source_hash: str
+    source_bytes: int
+    receipt: ExecutionReceipt
 
 
 class ExecutionSubmissionService:
@@ -43,6 +61,9 @@ class ExecutionSubmissionService:
         self.access_service = access_service
         self.executor = executor
         self.trace_recorder = trace_recorder
+        # Exact submissions made through this live service, not discovery of RAW
+        # files by type/metadata. Keep references, not duplicate source bodies.
+        self._submitted_executions: dict[UUID, _SubmittedExecution] = {}
 
     async def submit(
         self,
@@ -65,7 +86,10 @@ class ExecutionSubmissionService:
         try:
             ast.parse(draft.script_content)
         except SyntaxError as exc:
-            raise ExecutionScriptValidationError() from exc
+            raise ExecutionScriptValidationError(
+                script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
+                diagnostics=(self._syntax_diagnostic(exc, draft.script_content),),
+            ) from exc
         for artifact_id in draft.input_artifact_ids:
             ref = self.artifact_store.get_ref(artifact_id)
             self._require_exact_workspace(ref, workspace)
@@ -100,6 +124,13 @@ class ExecutionSubmissionService:
             raise ExecutionSubmissionError("Executor returned an invalid result contract")
         self._validate_result(result, plan, workspace)
         receipt = ExecutionReceipt.from_result(result)
+        source_bytes = plan.script_content.encode("utf-8")
+        self._submitted_executions[result.execution_id] = _SubmittedExecution(
+            script_ref=result.script_ref,
+            source_hash=sha256(source_bytes).hexdigest(),
+            source_bytes=len(source_bytes),
+            receipt=receipt,
+        )
         self._emit(
             run_id,
             stage_id,
@@ -121,9 +152,111 @@ class ExecutionSubmissionService:
                 "issue_detail_codes": [
                     item.value for item in receipt.issue_detail_codes
                 ],
+                "output_issues": [
+                    item.model_dump(mode="json") for item in receipt.output_issues
+                ],
             },
         )
         return receipt
+
+    def inspect(
+        self,
+        execution_id: UUID,
+        *,
+        principal: Principal,
+        workspace: WorkspaceContext,
+        run_id: UUID,
+        source_offset: int = 0,
+        source_limit: int = 12_000,
+    ) -> dict:
+        """Read an exact prior submission in this run, without executing it.
+
+        Only a previously bound original script is readable. Restarts do not
+        reconstruct this registry from Artifact metadata or observational logs.
+        The caller must keep source pages out of trace/finalization projections.
+        """
+        if type(source_offset) is not int or source_offset < 0 or (
+            type(source_limit) is not int or not 1 <= source_limit <= 32_000
+        ):
+            raise ValueError("Invalid original-program pagination")
+        if workspace.user_id != principal.user_id or workspace.lab_id != principal.lab_id:
+            raise AuthorizationDenied("Inspection scope does not match current identity")
+        self.access_service.require_project(
+            principal, workspace.project_id, AccessAction.READ_PROJECT, run_id=run_id,
+        )
+        submission = self._submitted_executions.get(execution_id)
+        if submission is None:
+            raise ExecutionInspectionError("Original submission is unavailable")
+        ref = submission.script_ref
+        if (ref.owner_user_id, ref.project_id, ref.lab_id, ref.run_id) != (
+            workspace.user_id, workspace.project_id, workspace.lab_id, run_id,
+        ):
+            raise AuthorizationDenied("Original submission is outside the bound run")
+        current = self.artifact_store.get_ref(ref.artifact_id)
+        if current != ref:
+            raise ExecutionInspectionError("Original submission identity changed")
+        self.access_service.require_artifact(principal, current, AccessAction.READ_ARTIFACT)
+        source_path = Path(ref.storage_locator)
+        if any(path.is_symlink() for path in (source_path, *source_path.parents)):
+            raise ExecutionInspectionError("Original submission source is unavailable")
+        try:
+            if not source_path.is_file() or source_path.stat().st_size != submission.source_bytes:
+                raise ExecutionInspectionError("Original submission source changed")
+            with source_path.open("rb") as stream:
+                raw = stream.read(submission.source_bytes + 1)
+        except OSError:
+            raise ExecutionInspectionError("Original submission source is unavailable") from None
+        if len(raw) != submission.source_bytes or sha256(raw).hexdigest() != submission.source_hash or (
+            submission.receipt.script_hash != submission.source_hash
+        ):
+            raise ExecutionInspectionError("Original submission source changed")
+        source = raw.decode("utf-8")
+        if source_offset > len(source):
+            raise ValueError("Original-program offset exceeds the source")
+        end = min(source_offset + source_limit, len(source))
+        return {
+            "receipt": submission.receipt.model_dump(mode="json"),
+            "submitted_program": {
+                "authority": "MODEL_CONTEXT", "script_hash": submission.source_hash,
+                "source_offset": source_offset, "source_end": end,
+                "total_characters": len(source), "complete": end == len(source),
+                "source": source[source_offset:end],
+            },
+        }
+
+    @staticmethod
+    def _syntax_diagnostic(error: SyntaxError, source: str) -> ExecutionDiagnostic:
+        """Project parser coordinates against this submission, never error text."""
+
+        # Match Python's universal newlines without treating other Unicode
+        # separators or form feeds as new source lines.
+        lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        line_numbers = ()
+        locations = ()
+        if error.lineno is not None and 1 <= error.lineno <= len(lines):
+            line_numbers = (error.lineno,)
+            line = lines[error.lineno - 1]
+            if (
+                line.isascii() and "\t" not in line
+                and error.end_lineno == error.lineno
+                and error.offset is not None and error.end_offset is not None
+                and 0 <= error.offset - 1 < error.end_offset - 1 <= min(len(line), 262_144)
+            ):
+                locations = (ExecutionScriptLocation(
+                    line_number=error.lineno,
+                    start_column=error.offset - 1,
+                    end_column=error.end_offset - 1,
+                ),)
+        return ExecutionDiagnostic(
+            code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
+            exception_type=(
+                "TabError" if isinstance(error, TabError)
+                else "IndentationError" if isinstance(error, IndentationError)
+                else "SyntaxError"
+            ),
+            script_line_numbers=line_numbers,
+            script_error_locations=locations,
+        )
 
     def _authorize_binding(
         self, principal: Principal, workspace: WorkspaceContext, run_id: UUID

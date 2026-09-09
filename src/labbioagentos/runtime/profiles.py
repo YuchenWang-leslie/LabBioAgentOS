@@ -61,6 +61,8 @@ class ModelProfile(BaseModel):
     provider_config: ProviderConfigRef
     transport: ProviderTransport = ProviderTransport.AUTO
     thinking_enabled: bool = False
+    private_tool_reasoning_continuity: bool = False
+    provider_tool_schema_strict: bool = False
     thinking_wire_format: ProviderThinkingWireFormat = (
         ProviderThinkingWireFormat.PANTHEON_SHORTHAND
     )

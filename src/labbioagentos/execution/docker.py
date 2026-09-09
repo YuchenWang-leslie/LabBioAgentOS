@@ -501,28 +501,15 @@ class DockerExecutor:
                 ),
             )
 
+        collection_error = None
         try:
             collected = self.output_collector.collect(plan, workspace.output_root)
+            output_refs = tuple(item.ref for item in collected)
+            issues = tuple(item.issue for item in collected if item.issue is not None)
         except OutputCollectionError as exc:
-            self._emit_failure(plan, exc.error_class, str(exc), exit_code=0)
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=outcome.duration_seconds,
-                exit_code=0,
-                stdout_ref=stdout_ref,
-                stderr_ref=stderr_ref,
-                error_class=exc.error_class,
-                error_message=str(exc),
-            )
-
-        output_refs = tuple(item.ref for item in collected)
-        issues = tuple(item.issue for item in collected if item.issue is not None)
+            collection_error = exc
+            output_refs = exc.output_artifact_refs
+            issues = exc.issues
         queryable_output_count = sum(
             ref.exposure_class is not ArtifactExposureClass.RAW
             for ref in output_refs
@@ -541,9 +528,15 @@ class DockerExecutor:
                     ),
                 ),
             )
-        if issues:
-            error_class = ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
-            message = "One or more declared output contracts failed validation."
+        if issues or collection_error is not None:
+            error_class = (
+                collection_error.error_class if collection_error is not None
+                else ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
+            )
+            message = (
+                str(collection_error) if collection_error is not None
+                else "One or more declared output contracts failed validation."
+            )
             self._emit_failure(plan, error_class, message, exit_code=0)
             return self._result(
                 plan,
@@ -757,6 +750,27 @@ class DockerExecutor:
                     # Finite technical type vocabulary only; never serialize values.
                     if type(argument) in (str, bytes, int, float, bool, type(None), tuple):
                         missing_key_type = type(argument).__name__
+        reported_index_condition = None
+        if exception_type == "IndexError":
+            # Match a complete bounded message, not task/source keywords. Keep
+            # trailing spaces significant and discard every captured number.
+            index_line = text.rstrip("\r\n").split("\n")[-1]
+            match = re.fullmatch(
+                r"IndexError: index -?(?:0|[1-9][0-9]{0,18}) is out of bounds "
+                r"for axis (?:0|[1-9][0-9]{0,18}) with size (0|[1-9][0-9]{0,18})",
+                index_line,
+            )
+            if match is not None:
+                reported_index_condition = (
+                    "OUT_OF_BOUNDS_EMPTY_AXIS" if match.group(1) == "0"
+                    else "OUT_OF_BOUNDS"
+                )
+            elif index_line in {
+                "IndexError: list index out of range",
+                "IndexError: tuple index out of range",
+                "IndexError: string index out of range",
+            }:
+                reported_index_condition = "OUT_OF_BOUNDS"
         return (
             ExecutionDiagnostic(
                 code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
@@ -766,6 +780,7 @@ class DockerExecutor:
                     text, script_content
                 ),
                 missing_key_type=missing_key_type,
+                reported_index_condition=reported_index_condition,
             ),
         )
 

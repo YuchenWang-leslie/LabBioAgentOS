@@ -8,7 +8,7 @@ not a future architecture roadmap and does not authorize a later milestone.
 The frozen C12 acceptance used Pantheon revision
 `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`. Post-C12 generic execution
 follow-up now requires
-`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7`, which also preserves canonical
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`, which also preserves canonical
 tool-call history, omits empty reasoning-only replay messages, preserves
 reusable provider parameters, and emits content-free provider-turn progress
 observations, and rejects incomplete or malformed governed tool requests before
@@ -18,7 +18,11 @@ the execution draft as bounded root tool fields because the configured provider
 repeatedly encoded a single nested draft as a string. The tool adapter assembles
 those fields once into the unchanged canonical `ExecutionPlanDraft`; typed UUID,
 enum, script/image, resource, and requested-output validation remains
-authoritative and no nested application JSON is decoded or repaired.
+authoritative and no nested application JSON is decoded or repaired. The current
+fork revision also supplies opt-in private tool-reasoning continuity, explicit
+provider tool-schema strictness, invocation-bound foreground completion, and
+structured-response observations before parsing. Publishing these APIs does not
+resolve the latest EXECUTE finalization truncation; see the current workplan.
 
 Two bounded provider-robustness limitations remain. The generic execution
 `parameters` mapping intentionally has field-local arbitrary values, and a

@@ -19,6 +19,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from labbioagentos.artifacts import (
     ArtifactConsumer, ArtifactExposureClass, ArtifactQuery, ArtifactRef,
@@ -39,6 +40,7 @@ from labbioagentos.contracts import (
 )
 from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolicy
 from labbioagentos.execution.models import (
+    ExecutionDiagnostic,
     ExecutionRuntime,
     OutputDeclassificationMode,
     RequestedResources,
@@ -248,6 +250,14 @@ class RuntimeApprovedOutputContractView(BaseModel):
     required_fields: tuple[StrictStr, ...] = Field(default=(), max_length=128)
     max_records: int = Field(ge=1, le=10_000)
     max_file_bytes: int = Field(ge=1, le=16_777_216)
+    max_scalar_string_length: int = Field(default=4096, ge=1, le=65_536)
+    reject_absolute_paths: Literal[True] = Field(
+        default=True,
+        description=(
+            "Fixed output safety rule: string values beginning with a POSIX root "
+            "or a Windows drive-rooted path cannot be released to the model."
+        ),
+    )
     declassification_mode: OutputDeclassificationMode
 
 
@@ -334,6 +344,7 @@ class RuntimeExecutionCapabilityView(BaseModel):
                     required_fields=tuple(sorted(contract.required_fields)),
                     max_records=contract.max_records,
                     max_file_bytes=contract.max_file_bytes,
+                    max_scalar_string_length=contract.max_scalar_string_length,
                     declassification_mode=contract.declassification_mode,
                 )
                 for contract in contracts
@@ -429,6 +440,15 @@ class ArtifactQueryConstraints(BaseModel):
         )
 
 
+class ScriptValidationDetails(BaseModel):
+    """Identity and safe positions from parsing the current submitted program."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    diagnostics: tuple[ExecutionDiagnostic, ...] = Field(min_length=1, max_length=1)
+
+
 class CapabilityErrorDetails(BaseModel):
     """Bounded controlled error feedback retained alongside capability evidence."""
 
@@ -438,6 +458,7 @@ class CapabilityErrorDetails(BaseModel):
     retryable: bool = False
     denied_operation: Literal["REMOTE_ARTIFACT_VIEW"] | None = None
     query_constraints: ArtifactQueryConstraints | None = None
+    script_validation: ScriptValidationDetails | None = None
 
 
 class CapabilityEvidenceItem(BaseModel):
@@ -882,13 +903,16 @@ class SkillAssessment(_StageBody):
         if self.status == "NOT_ASSESSED" and (
             self.search_capability_invocation_ids or self.proposal_id is not None
         ):
-            raise ValueError("Unassessed Skill state cannot claim search or proposal evidence")
+            raise PydanticCustomError("skill_unassessed_has_evidence",
+                "Unassessed Skill state cannot claim search or proposal evidence")
         if self.status == "NO_SUITABLE_RETURNED_CANDIDATE" and (
             not self.search_capability_invocation_ids or self.proposal_id is not None
         ):
-            raise ValueError("Returned-candidate judgment requires search evidence only")
+            raise PydanticCustomError("skill_candidate_judgment_requires_search_only",
+                "Returned-candidate judgment requires search evidence only")
         if self.status == "USE_PROPOSED" and self.proposal_id is None:
-            raise ValueError("Proposed Skill use requires a proposal identifier")
+            raise PydanticCustomError("skill_use_requires_proposal",
+                "Proposed Skill use requires a proposal identifier")
         return self
 
 

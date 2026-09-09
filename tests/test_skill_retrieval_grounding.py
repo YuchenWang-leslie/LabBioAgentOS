@@ -39,7 +39,7 @@ def _bundle(tools):
         items=tools.evidence_items())
 
 
-async def _finalize(boundary, assessment, *, evidence=None, stage_input=None):
+async def _finalize(boundary, assessment, *, evidence=None, stage_input=None, pre_return=False):
     tools, original_input, sink = boundary
     stage_input = stage_input or original_input
     evidence = evidence if evidence is not None else _bundle(tools)
@@ -51,10 +51,16 @@ async def _finalize(boundary, assessment, *, evidence=None, stage_input=None):
         body = {"kind": "PLAN", "procedure_steps": ["Work from current task evidence."]}
         if assessment is not None:
             body["skill_assessment"] = assessment(visible) if callable(assessment) else assessment
-        return SimpleNamespace(content={
+        payload = {
             "stage_id": "PLAN", "summary": "Reference assessment.", "body": body,
             "next_action": {"action": "transition", "target_stage": "PREFLIGHT"},
-        })
+        }
+        if pre_return:
+            from pydantic import create_model
+            response = create_model("Response", result=(_self.team_agents[0].response_format, ...))
+            return SimpleNamespace(content=response.model_validate_json(
+                json.dumps({"result": payload})).result)
+        return SimpleNamespace(content=payload)
 
     team.run = MethodType(run, team)
     return await PantheonTypedStageInvoker(team, profile=_profile(), prompt=prompts["coordinator"],
@@ -190,8 +196,6 @@ def test_provider_schema_requires_assessment_without_widening_next_action():
     ))
     schema = skill_assessment_response_format(base).model_json_schema()
     assert "skill_assessment" in schema["$defs"]["SkillGroundedPlanBody"]["required"]
-    assert schema["$defs"]["SkillAssessment"]["properties"]["status"]["enum"] == [
-        "NOT_ASSESSED", "NO_SUITABLE_RETURNED_CANDIDATE", "USE_PROPOSED"]
     payload = {"stage_id": "PLAN", "summary": "Not assessed.",
         "body": {"kind": "PLAN", "procedure_steps": ["Continue independently."],
                  "skill_assessment": _assessment("NOT_ASSESSED")},
@@ -223,3 +227,117 @@ async def test_authoritative_projection_does_not_promote_candidate_text(boundary
 async def test_inconsistent_or_unbounded_claim_shapes_are_rejected(boundary, assessment):
     with pytest.raises(PantheonRuntimeIntegrationError):
         await _finalize(boundary, assessment)
+
+
+@pytest.mark.parametrize("status", [
+    "NOT_ASSESSED", "NO_SUITABLE_RETURNED_CANDIDATE", "USE_PROPOSED",
+])
+@pytest.mark.parametrize("has_search", [False, True])
+@pytest.mark.parametrize("has_proposal", [False, True])
+def test_actual_provider_assessment_schema_matches_internal_shapes(status, has_search, has_proposal):
+    from jsonschema import Draft202012Validator
+    from openai.lib._parsing._completions import type_to_response_format_param
+    from pantheon.utils.adapters.openai_adapter import _normalize_response_format
+    from pydantic import ValidationError, create_model
+    from labbioagentos import WorkflowStage
+    from labbioagentos.runtime.contracts import SkillAssessment
+    from labbioagentos.runtime.skill_grounding import skill_assessment_response_format
+
+    base = ResponseSchemaRef().response_format(WorkflowStage.PLAN)
+    search_id, proposal_id = uuid4(), uuid4()
+    response = create_model("Response", result=(skill_assessment_response_format(
+        base, (str(search_id),), (str(proposal_id),)), ...))
+    wire_format = _normalize_response_format(response)
+    assert wire_format == type_to_response_format_param(response)
+    schema = wire_format["json_schema"]["schema"]
+    assessment = _assessment(status, (search_id,) if has_search else (), proposal_id if has_proposal else None)
+    try:
+        SkillAssessment.model_validate(assessment)
+        accepted = True
+    except ValidationError:
+        accepted = False
+    # Validate just this nested contract, retaining the actual provider's definitions.
+    body = schema["$defs"]["SkillGroundedPlanBody"]["properties"]["skill_assessment"]
+    validator = Draft202012Validator({**body, "$defs": schema["$defs"]})
+    assert validator.is_valid(assessment) is accepted
+
+
+@pytest.mark.parametrize("assessment,code", [
+    (_assessment("NOT_ASSESSED", (uuid4(),)), "skill_unassessed_has_evidence"),
+    (_assessment("NO_SUITABLE_RETURNED_CANDIDATE"), "skill_candidate_judgment_requires_search_only"),
+    (_assessment("USE_PROPOSED"), "skill_use_requires_proposal"),
+])
+def test_internal_shape_errors_have_fixed_safe_codes(assessment, code):
+    from pydantic import ValidationError
+    from labbioagentos.runtime.contracts import SkillAssessment
+    with pytest.raises(ValidationError) as caught:
+        SkillAssessment.model_validate(assessment)
+    assert caught.value.errors()[0]["type"] == code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_return", [False, True])
+async def test_rejected_assessment_extra_key_is_never_logged(boundary, pre_return):
+    tools, stage_input, sink = boundary
+    secret = "/private/provider-body-credential-sentinel"
+    assessment = {**_assessment("NOT_ASSESSED"), secret: "untrusted-body-sentinel"}
+    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
+        await _finalize(boundary, assessment, pre_return=pre_return)
+    failures = [e for e in sink.read(stage_input.run_id) if e.status == "FAILED"]
+    assert failures
+    serialized = json.dumps([e.model_dump(mode="json") for e in failures])
+    assert secret not in serialized and "untrusted-body-sentinel" not in serialized
+    assert "<extra_field>" in serialized
+    assert "extra_forbidden" in caught.value.validation_error_types
+    assert not any(e.event_type is TraceEventType.AGENT_COMPLETED for e in sink.read(stage_input.run_id))
+    assert tools.evidence_items() == ()
+
+
+@pytest.mark.asyncio
+async def test_real_empty_search_can_transition_through_pantheon_response_validation(boundary):
+    tools, _, _ = boundary
+    assert (await tools.skill_search())["data"]["available_count"] == 0
+    result = await _finalize(boundary, lambda visible: _assessment(
+        "NO_SUITABLE_RETURNED_CANDIDATE",
+        visible["skill_retrieval_control"]["completed_search_capability_invocation_ids"],
+    ), pre_return=True)
+    assert result.next_action.target_stage.value == "PREFLIGHT"
+
+
+@pytest.mark.parametrize("searched,proposed", [(False, False), (True, False), (False, True), (True, True)])
+def test_wire_contract_only_allows_current_receipt_identities(searched, proposed):
+    from jsonschema import Draft202012Validator
+    from pantheon.utils.adapters.openai_adapter import _normalize_response_format
+    from labbioagentos import WorkflowStage
+    from labbioagentos.runtime.skill_grounding import skill_assessment_response_format
+    sid, pid, foreign = uuid4(), uuid4(), uuid4()
+    model = skill_assessment_response_format(ResponseSchemaRef().response_format(WorkflowStage.PLAN),
+        (str(sid),) if searched else (), (str(pid),) if proposed else ())
+    schema = _normalize_response_format(model)["json_schema"]["schema"]
+    field = schema["$defs"]["SkillGroundedPlanBody"]["properties"]["skill_assessment"]
+    validator = Draft202012Validator({**field, "$defs": schema["$defs"]})
+    assert validator.is_valid(_assessment("NOT_ASSESSED"))
+    assert validator.is_valid(_assessment("NO_SUITABLE_RETURNED_CANDIDATE", (sid,))) is searched
+    assert validator.is_valid(_assessment("USE_PROPOSED", proposal_id=pid)) is proposed
+    assert not validator.is_valid(_assessment("NO_SUITABLE_RETURNED_CANDIDATE", (foreign,)))
+    assert not validator.is_valid(_assessment("USE_PROPOSED", proposal_id=foreign))
+    assert validator.is_valid(_assessment("USE_PROPOSED", (sid,), pid)) is (searched and proposed)
+    assert not validator.is_valid(_assessment("USE_PROPOSED", (foreign,), pid))
+    # Preserve the invoker's existing BaseModel/Python UUID path, not just wire strings.
+    if searched:
+        body = model.model_fields["body"].annotation
+        value = body.model_validate({"procedure_steps": ["Fixture."], "skill_assessment": {
+            **_assessment("NO_SUITABLE_RETURNED_CANDIDATE", (sid,)),
+            "search_capability_invocation_ids": (sid,)}})
+        assert value.skill_assessment.search_capability_invocation_ids == (sid,)
+
+
+@pytest.mark.asyncio
+async def test_current_receipt_rejection_has_safe_semantic_diagnostics(boundary):
+    tools, _, _ = boundary
+    await tools.skill_search()
+    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
+        await _finalize(boundary, _assessment("NO_SUITABLE_RETURNED_CANDIDATE", (uuid4(),)),
+                        pre_return=True)
+    assert caught.value.validation_error_types == ("skill_search_receipt_not_current",)
+    assert caught.value.validation_error_field_paths == ("body.skill_assessment",)

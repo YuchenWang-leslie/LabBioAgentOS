@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any, Callable, Literal
+from typing import Annotated, Any, Callable, Literal
 from uuid import UUID, uuid4
 
 from pantheon.toolset import ToolSet, tool
@@ -50,6 +50,7 @@ from labbioagentos.execution.models import (
     ExecutionRequestedOutputs,
     ExecutionScriptContent,
 )
+from labbioagentos.execution.submission import ExecutionInspectionError
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.memory import (
     MemoryConflictError,
@@ -90,6 +91,7 @@ from .contracts import (
     ExecutionSubmitRequestAudit,
     ExecutionSubmitValidationStatus,
     SkillSearchRequestAudit,
+    ScriptValidationDetails,
 )
 from .reporting import ReportSubmissionService
 
@@ -105,7 +107,7 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
         "memory_search", "memory_view",
     ),
     WorkflowStage.PREFLIGHT: ("artifact_query",),
-    WorkflowStage.EXECUTE: ("artifact_query", "execution_submit"),
+    WorkflowStage.EXECUTE: ("artifact_query", "execution_submit", "execution_inspect"),
     WorkflowStage.VALIDATE: ("artifact_query",),
     WorkflowStage.INTERPRET: ("artifact_query",),
     WorkflowStage.REPORT: ("artifact_query", "report_submit"),
@@ -121,6 +123,7 @@ CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
     "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "execution_inspect": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "skill_search": InformationAuthority.MODEL_CONTEXT,
     "skill_view": InformationAuthority.MODEL_CONTEXT,
@@ -176,6 +179,10 @@ class _ArtifactQueryFailure(ValueError):
 
 class _InvalidExecutionDraft(ValueError):
     """execution_submit received a draft rejected by its canonical model."""
+
+
+class _ExecutionSourceTransportError(RuntimeError):
+    """A source page cannot be transported without alteration or truncation."""
 
 
 class ToolError(CapabilityErrorDetails):
@@ -506,6 +513,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 retryable=error.retryable,
                 denied_operation=error.denied_operation,
                 query_constraints=error.query_constraints,
+                script_validation=error.script_validation,
             )
             failure_details = None
             if capability == "execution_submit" and isinstance(
@@ -631,6 +639,69 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
+    async def execution_inspect(
+        self, execution_id: str,
+        source_offset: Annotated[int, Field(strict=True, ge=0)] = 0,
+        source_limit: Annotated[int, Field(strict=True, ge=1, le=32_000)] = 12_000,
+    ) -> dict:
+        """Inspect a prior execution receipt and its original Agent-submitted program.
+
+        Accepts an EXECUTION UUID from this same run and live application session,
+        including an earlier stage invocation. It never reads input data, process
+        streams or arbitrary RAW Artifacts, and never executes or revises code.
+        The receipt retains its original technical outcome; submitted_program is
+        MODEL_CONTEXT, not proof of scientific results. Revisions keep distinct
+        execution identities and hashes. Source is exact UTF-8 text paginated by
+        character offset; source_end is the next offset and complete marks EOF,
+        not a claim that earlier pages were read. Limit must be 1 through 32000.
+        Pages that would be altered by transport are rejected, not rewritten.
+        A page exceeding the serialized transport bound requires a smaller limit.
+        """
+        page = None
+
+        def inspect_submission():
+            nonlocal page
+            service = self._required(self.services.execution_submission, "execution")
+            page = service.inspect(
+                UUID(execution_id), principal=self.binding.principal,
+                workspace=self.binding.workspace, run_id=self.binding.run_id,
+                source_offset=source_offset, source_limit=source_limit,
+            )
+            # Use the actual pure transport filters on a copy. Never invoke the
+            # truncator, which can write full tool bodies to externalized files.
+            from pantheon.settings import get_settings
+            from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
+            from pantheon.utils.token_optimization import get_per_tool_limit
+
+            serialized = json.dumps(page, ensure_ascii=False)
+            transport_limit = get_per_tool_limit(
+                "execution_inspect", get_settings().max_tool_content_length,
+            )
+            if len(serialized) > min(40_000, transport_limit - 2_000):
+                raise _ExecutionSourceTransportError("EXECUTION_SOURCE_PAGE_TOO_LARGE")
+            filtered = json.dumps(
+                filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False,
+            )
+            filtered = filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"]
+            if filtered != serialized:
+                raise _ExecutionSourceTransportError("EXECUTION_SOURCE_TRANSPORT_UNSUPPORTED")
+            # The provider may revisit its own source; durable capability evidence
+            # keeps only the exact receipt and page identity/completeness facts.
+            return {"receipt": page["receipt"], "submitted_program": {
+                key: value for key, value in page["submitted_program"].items()
+                if key != "source"
+            }}
+
+        result = await self._call(
+            "execution_inspect", inspect_submission,
+            request_ids={"execution_id": execution_id},
+        )
+        # Do not mutate the mapping already retained by the evidence bundle.
+        if result["success"]:
+            return {**result, "data": page}
+        return result
+
+    @tool
     async def execution_submit(
         self,
         image_key: ExecutionImageKey,
@@ -654,6 +725,11 @@ class LabBioRuntimeToolSet(ToolSet):
         that receipt's script_hash; script_error_locations use one-based lines
         and zero-based, end-exclusive columns. missing_key_type describes only
         the failed lookup argument, not the mapping's key types or any values.
+        output_issues identify failed requested_outputs by zero-based output_index
+        and, where known, the zero-based JSON record_index. They are mechanical
+        validation facts, not scientific repair instructions. A new complete
+        program may be submitted within the same capability and budget; each
+        execution retains its own receipt and source identity.
 
         Args:
             image_key: Approved key from the current execution capability.
@@ -1339,10 +1415,33 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="INVALID_EXECUTION_DRAFT",
                 safe_message="The execution draft does not match the canonical contract.",
             )
+        if isinstance(exc, ExecutionInspectionError):
+            return ToolError(
+                error_code="EXECUTION_SUBMISSION_UNAVAILABLE",
+                safe_message=(
+                    "The original submission could not be verified in this run and live "
+                    "application session. No source was released and this inspection "
+                    "did not start an execution."
+                ),
+            )
+        if isinstance(exc, _ExecutionSourceTransportError):
+            return ToolError(
+                error_code=exc.args[0],
+                safe_message=(
+                    "No source was released. The serialized page exceeds the transport "
+                    "bound; request a smaller source_limit."
+                    if exc.args[0] == "EXECUTION_SOURCE_PAGE_TOO_LARGE" else
+                    "No source was released. The transport would alter this source page; "
+                    "the original remains unchanged and this inspection started no execution."
+                ),
+            )
         if isinstance(exc, ExecutionScriptValidationError):
             return ToolError(
                 error_code="INVALID_EXECUTION_SCRIPT",
                 safe_message="The submitted Python script is not syntactically valid.",
+                script_validation=(ScriptValidationDetails(
+                    script_hash=exc.script_hash, diagnostics=exc.diagnostics,
+                ) if exc.script_hash is not None and exc.diagnostics else None),
             )
         if isinstance(exc, ExecutionOutputDeclarationError):
             return ToolError(

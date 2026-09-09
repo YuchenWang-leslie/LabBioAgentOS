@@ -56,9 +56,14 @@ class OutputContractFailureCode(StrEnum):
     CONTRACT_NOT_APPROVED = "CONTRACT_NOT_APPROVED"
     REQUESTED_EXPOSURE_UNSUPPORTED = "REQUESTED_EXPOSURE_UNSUPPORTED"
     FILE_TOO_LARGE = "FILE_TOO_LARGE"
+    OUTPUT_NOT_FOUND = "OUTPUT_NOT_FOUND"
+    OUTPUT_PATH_REJECTED = "OUTPUT_PATH_REJECTED"
+    OUTPUT_IO_ERROR = "OUTPUT_IO_ERROR"
+    COLLECTION_LIMIT_EXCEEDED = "COLLECTION_LIMIT_EXCEEDED"
     RECORD_LIMIT_EXCEEDED = "RECORD_LIMIT_EXCEEDED"
     INVALID_DOCUMENT = "INVALID_DOCUMENT"
     UNDECLARED_RECORD_FIELDS = "UNDECLARED_RECORD_FIELDS"
+    MODEL_CONTENT_REJECTED = "MODEL_CONTENT_REJECTED"
     QUERYABLE_OUTPUT_REQUIRED = "QUERYABLE_OUTPUT_REQUIRED"
 
 
@@ -225,6 +230,22 @@ class ExecutionIssue(BaseModel):
     detail_code: OutputContractFailureCode | None = None
     message: StrictStr = Field(min_length=1, max_length=2000)
     output_path: StrictStr | None = Field(default=None, min_length=1)
+    output_index: int | None = Field(default=None, ge=0)
+    record_index: int | None = Field(default=None, ge=0, le=9999)
+
+
+class ExecutionOutputIssue(BaseModel):
+    """Safe position in this submission, never an output path or record value."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    error_class: ExecutionFailureClass
+    detail_code: OutputContractFailureCode | None = None
+    output_index: int = Field(ge=0, description="Zero-based requested_outputs index.")
+    record_index: int | None = Field(
+        default=None, ge=0, le=9999,
+        description="Zero-based records index, only when identified by local validation.",
+    )
 
 
 class ExecutionScriptLocation(BaseModel):
@@ -263,6 +284,13 @@ class ExecutionDiagnostic(BaseModel):
         default=None,
         description="Type of a literal KeyError argument, never its value or mapping contents.",
     )
+    reported_index_condition: Literal["OUT_OF_BOUNDS", "OUT_OF_BOUNDS_EMPTY_AXIS"] | None = Field(
+        default=None,
+        description=(
+            "Finite condition reported by the terminal IndexError; not independent "
+            "verification of any data object's shape or why it became empty."
+        ),
+    )
     missing_module: StrictStr | None = Field(
         default=None,
         min_length=1,
@@ -283,6 +311,8 @@ class ExecutionDiagnostic(BaseModel):
     def require_module_only_for_module_error(self) -> "ExecutionDiagnostic":
         if self.missing_key_type is not None and self.exception_type != "KeyError":
             raise ValueError("Only KeyError diagnostics may include a missing key type")
+        if self.reported_index_condition is not None and self.exception_type != "IndexError":
+            raise ValueError("Only IndexError diagnostics may include an indexing condition")
         if self.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND:
             if self.missing_module is None:
                 raise ValueError("Missing-module diagnostics require a module name")
@@ -350,6 +380,7 @@ class ExecutionReceipt(BaseModel):
     issue_codes: tuple[ExecutionFailureClass, ...] = ()
     issue_detail_codes: tuple[OutputContractFailureCode, ...] = ()
     issue_messages: tuple[StrictStr, ...] = Field(default=(), max_length=32)
+    output_issues: tuple[ExecutionOutputIssue, ...] = Field(default=(), max_length=128)
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
     retryable: bool = False
 
@@ -392,6 +423,16 @@ class ExecutionReceipt(BaseModel):
             issue_codes=codes,
             issue_detail_codes=detail_codes,
             issue_messages=messages,
+            output_issues=tuple(
+                ExecutionOutputIssue(
+                    error_class=issue.error_class,
+                    detail_code=issue.detail_code,
+                    output_index=issue.output_index,
+                    record_index=issue.record_index,
+                )
+                for issue in result.issues
+                if issue.output_index is not None
+            ),
             diagnostics=result.diagnostics,
             retryable=any(code in retryable_classes for code in codes),
         )

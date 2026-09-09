@@ -1513,6 +1513,37 @@ separate real-Docker security regression is 3 passed. TEST1 and PRJ1 are now
 registered, external credential is 0600, project input is a separate 7503527-byte
 copy with matching SHA256
 `14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+
+Fourth expression attempt was stopped with SIGINT / exit 130 after four provider
+turns each made three failed queries against the same RAW input, with no successful
+new evidence or execution submission. Every completed batch preceded the next
+provider turn, so this was not one batch issued before any feedback. The actual
+stage input already exposed the RAW input as locally mountable, remote views as
+empty, companion view permissions, execution_submit, image/modules/resources and
+output contracts. Failure feedback repeated the correct view/limit and exposure
+facts. These known facts were not absent. No new task-specific prompt, automatic
+query repair, or mandatory execution rule is justified by this evidence.
+
+The fixed no-execution boundary behaved truthfully: the accepted result was
+NOT_EXECUTED/null/empty outputs, then the Agent chose an explicit workflow retry.
+The CLI was stopped during that retry; SQLite remains STAGE_IN_FLIGHT rather than
+claiming cancellation or completion. No report or execution was produced.
+
+An independent budget audit found a pre-existing naming limitation:
+max_capability_turns=16 reaches Pantheon as max_turns, which counts newly appended
+history messages, not provider sampling turns. A batch of three tools adds four
+messages including its assistant request. The four rejected batches therefore
+consumed sixteen messages. This is not evidence justifying additional turns for
+an unchanged failed request. The configured/effective budget is not changed here.
+
+Within the user's three-question ceiling, a third independent question now runs
+on the same frozen revision: inspect strictly duplicated and highly similar
+cell expression profiles and the possible influence of low information content
+or overall expression level, without deleting cells or annotating cell types.
+The Agent chooses all methods and programs. Namespace
+`novel-profile-redundancy-20260909`, run `6b2862a8-29e2-405a-9837-6024003d92ad`.
+Its manifest matches the fourth-attempt freeze. The expression failure remains
+in the acceptance denominator; the third question does not replace it.
 The source file remains unchanged. Personal Gold catalog is empty as intended.
 The actual managed config is `~/.config/labbioagent/managed-runtime.toml`, separate
 from the original runtime config; it reuses the existing provider and immutable
@@ -1957,3 +1988,959 @@ Stop after verifying remote LabBio `main` and dereferenced `0908` identify the
 same commit. Any later runtime investigation resumes from
 `.local/gold-grounding-20260908/REPORT.md` and the no-match test context under
 separate task scope; this source publication does not start that work.
+
+## 2026-09-08 — Authorized TEST1 complex PBMC and personal Gold lifecycle test
+
+The user authorizes a more demanding real PBMC task for TEST1/PRJ1, supervision
+of stage coordination, Agent-owned Gold curation after success, Codex acting as
+the human reviewer to approve only after examining the candidate and evidence,
+persistence/restart checks, and a fresh actual reuse task. This is not permission
+to manufacture scientific code, methods, parameters, conclusions or Skill text.
+
+Preflight: clean LabBio `4f5bb62a83818c602140bae871d41c5e061ac1d0`, now isolated
+on `test/pbmc-complex-gold-20260908`; clean Pantheon
+`7b02bcba6402eb67d498101d5ad7ba3ae5ac47d7`. Existing managed CLI configuration,
+profile, provider budget, retry limit and offline Docker image/resources remain
+unchanged. Docker/containerd/socket are active and no task container is running.
+TEST1's authoritative Gold store has zero Gold and zero proposals. Input remains
+`TEST1/projects/PRJ1/data/pbmc3k_raw.h5ad`, SHA256
+`14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+
+The natural-language task is:
+
+> 请对这份 PBMC 单细胞数据完成一次较完整的细胞群解析：识别主要细胞群，
+> 给出有证据支持的细胞类型判断，比较各群的代表性特征，并说明哪些判断可靠、
+> 哪些只能暂定。请实际分析数据，保存可复查的结果表、必要的图和一份中文报告。
+
+Preference: 兼顾分析深度与可读性；不确定时保留未知，不凑结论。方法、参数与
+实现由你根据数据和实际可用能力决定。
+
+Fresh output namespace:
+`WYC/projects/test/TEST1/projects/PRJ1/runs/pbmc-complex-gold-20260908`.
+No successful run, acceptable Gold, approval or reuse is claimed before durable
+evidence exists. Known historical draft-review and selection-test limitations
+remain recorded; no prompt answer, dependency installation, hidden fallback,
+automatic approval or repeated unchanged-failure rerun is authorized by this test.
+
+The fresh test did not reach execution. Run
+`45cda797-ac5d-47bd-9851-48f9ccea56bb` completed INTAKE and UNDERSTAND, then
+failed PLAN finalization with `MALFORMED_RUNTIME_RESULT`, field path
+`result.body.skill_assessment`, type `value_error`. All seven capability calls
+succeeded (one list, four Artifact queries, two Skill searches). Both searches
+returned a genuinely empty full personal catalog. Zero execution submissions,
+Docker analyses or workflow retries occurred. This cannot establish difficult
+scientific-task capability or Gold lifecycle acceptance.
+
+Read-only reconstruction identifies a SkillAssessment status/field-shape
+validator failure, not the later current-receipt membership check. Three
+distinct invariant branches share this error; rejected values are not persisted,
+so the exact malformed combination is unknown. The actual Pantheon Response /
+OpenAI strict JSON schema preserves finite field types but not their conditional
+relationships. Independent deterministic enumeration found 12 combinations
+schema-valid, of which 8 violate the internal model. Existing CONTROL_STATE text
+does explain valid use; the issue is not total absence of model-visible guidance.
+No missing values were inferred, repaired or supplied to the Agent.
+
+Separate CLI reconstruction confirms RUNNING / PLAN / STAGE_IN_FLIGHT with no
+automatic continuation. The process has exited; no container remains. No
+curation, proposal, approval, reuse, report or scientific output occurred. TEST1
+remains zero Gold. Source/profile/provider/Pantheon and Docker services were not
+modified. No commit/push or production deployment occurred. Full regression was
+not rerun for this read-only diagnosis; the preceding published regression is
+not a substitute for this failed live attempt.
+
+Mechanical evidence and next-entry scope are in
+`TEST1/projects/PRJ1/runs/pbmc-complex-gold-20260908/SUPERVISION.md` under the
+managed test root. Stop before guessing a repair or rerunning unchanged input;
+the next work is a bounded generic schema/safe-diagnostic repair, not scientific
+instructions or automatic Gold approval.
+
+### Authorized schema/diagnostic repair and fresh retest
+
+The user explicitly authorizes the minimal protocol repair before retesting.
+Three response-only SkillAssessment subclasses encode the existing status/field
+relationships as nested `anyOf` in the real Pantheon/OpenAI strict provider schema.
+The persistent SkillAssessment model, current-receipt checks, optional Skill use,
+action permissions, prompts, budgets and scientific behavior remain unchanged.
+Internal shape validators now expose three fixed non-sensitive error types;
+pre-return union errors retain bounded branch/field types. Unknown extra-field
+names are replaced with `<extra_field>` before tracing. Rejected raw values and
+provider bodies are still not logged, normalized, corrected or retried.
+
+Red-first regression: 13 failed / 26 passed before implementation; focused suite
+39 passed afterwards. Actual Pantheon adapter schema equals the installed SDK
+schema, and all 12 status/search/proposal combinations agree with the internal
+contract. Tests cover pre-return rejection, extra-key leak prevention, current
+real empty searches, legal continuation, legacy records and unchanged action
+constraints. Full regression: **783 passed, 24 skipped**, existing Uvicorn warning.
+No changed production line depends on PBMC, a run ID, stage-specific science,
+MiMo or the failed task. Pantheon source, provider/config/profile and Docker
+services are unchanged.
+
+The next fresh namespace is
+`TEST1/projects/PRJ1/runs/pbmc-complex-gold-20260908-r2`, using exactly the original
+task and preference. Code is frozen before launching it. No live, curation,
+approval or reuse success is inferred from the deterministic tests.
+
+The r2 first PLAN passed both provider and local validation and referenced its
+two actual empty-catalog search receipts. The authorized reviewer inspected the
+persisted plan and approved the ordinary proceed gate, without editing methods,
+parameters, code or resource permissions. On re-entry, PLAN failed through the
+post-return generic ValueError/TypeError path. Its current capability bundle was
+empty. Rejected values were not retained, so this does **not** establish which
+semantic check failed or prove that old receipts were submitted. No execution,
+scientific output, Gold proposal or approval occurred. The process exited and no
+container remains; r2 is retained as nonrecoverable STAGE_IN_FLIGHT evidence.
+
+A second refinement in the same assessment contract binds the response schema
+to exactly the current search/proposal receipt projection already supplied in
+CONTROL_STATE. It excludes impossible evidence-backed variants when no matching
+receipts exist and constrains UUID fields to current identities. NOT_ASSESSED
+remains available; genuine use proposals do not require a search. UUID Python
+types and authoritative local membership validation remain intact. Membership
+failures now emit fixed safe error types without rejected values. This closes a
+deterministically demonstrated gap, not a reconstruction of missing r2 values.
+
+Focused tests: **44 passed**. Full regression: **788 passed, 24 skipped**, one
+existing Uvicorn warning. Independent review verified all four receipt-availability
+combinations through the actual Pantheon converter, no empty enums, valid Python
+UUID inputs, and unchanged prior-invocation exclusion. No Pantheon, prompt,
+scientific behavior, budget, retry, image or service change was made. The next
+fresh original-task namespace is `pbmc-complex-gold-20260908-r3`. Neither failed
+run will be resumed across source revisions. Gold curation remains gated on real
+successful task evidence; there has been no production deployment or push.
+
+### Fresh r3 result: assessment repaired, complex task still blocked
+
+Run `f7b34cd7-0a89-49ac-90f4-e013b4f980a8` used the exact original REQUEST.json.
+Frozen LabBio source SHA256:
+`4c31c724a40d1c080c037b9d34cbdb95aff68cbafb3ec4be612be5442907b593`;
+runtime `local-baa4cb4b9039a530f7c8f1580f1dddf595b626714a72936fa52bbc2a0592a467`.
+Pantheon, profile and configuration were unchanged. INTAKE, UNDERSTAND and PLAN
+completed. The typed PLAN assessment referenced its three genuine current search
+receipts, then transitioned through PREFLIGHT into EXECUTE. No ordinary gate
+occurred, so the r2 post-gate path remains deterministic-only coverage.
+
+The Agent independently submitted three programs: the first was rejected by the
+host Python parser before execution; the next two each ran in the real offline
+sandbox and exited 1 with IndexError. Execution IDs were
+`a76515b3-470e-423f-ba32-4d043a1b4a3c` and
+`a10a2ae9-bd24-4a17-a620-cad8e82f6b69`. Both saved stderr records report the same
+out-of-range index. Agent-visible diagnostics provided exception type and script
+line/column locations. No Codex code, method, parameter, environment workaround,
+prompt instruction or increased retry/budget was supplied. This is not a Docker
+startup or missing-module failure. There are zero successful executions and zero
+released output Artifacts; no final report or Gold lifecycle acceptance.
+
+After the repeated same-class failure, the sole r3 CLI process was interrupted
+with SIGINT (exit 130), not falsely finalized. A separate status process confirms
+RUNNING / EXECUTE / STAGE_IN_FLIGHT, nonrecoverable and no automatic continuation.
+No task container remains; Docker/containerd/socket remain active. TEST1 Gold is
+still empty. All input, scripts, failed attempts and diagnostics remain intact.
+The local source repair is not committed, pushed or deployed to production.
+
+Stop this atomic schema change here. The unique next entry is read-only diagnosis
+of r3's repeated IndexError and the actual model-visible failure/revision context,
+then a separately bounded generic feedback change if supported. Do not resume the
+interrupted run, rerun unchanged code, repair the Agent's analysis program or
+curate Gold from this unsuccessful attempt. Detailed mechanical evidence is in
+`TEST1/projects/PRJ1/runs/pbmc-complex-gold-20260908-r3/SUPERVISION.md`.
+
+## 2026-09-09 — General execution repair context and held-out tasks
+
+The user authorizes structural diagnosis/repair followed by 2–3 previously unrun
+tasks, not another unchanged annotation rerun or Codex-authored scientific fix.
+Existing uncommitted SkillAssessment changes remain intact on
+`test/pbmc-complex-gold-20260908`; main is not modified. The old interrupted r3
+is not resumed. Input SHA remains `14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+Docker/containerd/socket are active with no live task at preflight. No production
+release/current, API or worker is deployed by this local CLI checkpoint. The
+source has LABBIO_ARCHITECTURE.md but no PRODUCTIONIZATION_DEBUG_GUIDE.md or
+ARCHITECTURE.md; deployment history is not substituted for present code.
+
+Read-only diagnosis distinguishes facts from possible contributors:
+
+- Both actual r3 programs contain an inconsistent index/matrix-column mapping;
+  the Agent's rewrite did not remove it. No Codex correction is fed back.
+- Host syntax rejection loses all safe positions and program identity, while
+  runtime IndexError already includes hash and verified line/column locations.
+  Removing arbitrary exception messages and RAW streams is intentional.
+- Current Pantheon preserves a recent large execution tool call and its short
+  receipt in deterministic view reconstruction. There is no evidence that r3's
+  immediate failure feedback or old program was lost. Separate generic token
+  accounting/pair-truncation issues were reproduced but are not changed here.
+- Local composition hard-codes thinking off. Simply enabling it is unsafe for
+  providers requiring tool-call reasoning continuity because Pantheon strips the
+  private field before the next request. That is a transport contract defect,
+  not proof that thinking mode would have corrected r3.
+
+The scoped implementation retains typed syntax identities/positions across the
+tool/error/evidence/trace path and makes the local reasoning mode explicit. The
+opt-in Pantheon bridge must preserve provider-private tool reasoning only within
+the same run/model's wire exchange, never in public events, callbacks, Memory,
+cache-safe messages, result objects or LabBio audit. No program/source echo,
+traceback message, data value, scientific instruction, tool ordering, retry or
+token increase is authorized. The existing config stays unchanged; a separate
+private `managed-reasoning-runtime-20260909.toml` opts in for this acceptance.
+
+Held-out natural-language tasks, each in a fresh TEST1/PRJ1 run:
+
+1. 请研究这份 PBMC 数据中“平均表达高”和“在多数细胞中都能检测到”是不是
+   一回事。找出这两种特征一致与不一致的代表性基因，比较它们的表达分布，
+   判断结论是否容易被少数高表达细胞主导。请实际计算，保存可复查的结果表、
+   必要图示和中文报告。不要进行细胞类型注释。
+2. 请从这份 PBMC 数据中探索表达共同变化的基因组，比较这些组的主要特征，
+   并检查这些结构是否稳定，还是容易受少量细胞或技术因素影响。请给出证据和
+   不确定性，保存可复查的结果表、必要图示和中文报告。无需进行细胞类型注释，
+   也不要把共变直接解释成因果关系。
+
+Shared preference: 方法、参数和程序由你根据数据与实际能力决定；保留原始数据，
+报告区分已完成的证据与未能完成的部分。
+
+Acceptance requires deterministic regression, real Agent-owned sandbox execution,
+governed result queries, complete stage handoffs, a submitted Chinese report and
+independent-process reconstruction/export. PASS requires the requested substantive
+work, not merely terminal status. No Gold curation/approval is part of these tests.
+The source/config must be frozen while runs are active. Two fresh successful tasks
+meet the requested count; no third is launched merely to inflate acceptance.
+
+Pre-live verification: new bridge/config red tests were 3 failed before changes;
+syntax-only red tests were 10 failed / 3 passed. The completed syntax/tool subset
+passed 25 tests, the combined local/runtime suite passed 59, and full LabBio
+regression passed **812 / 24 skipped**, with the existing Uvicorn warning.
+Pantheon final SDK-wire tests and an independent privacy audit verified private
+reasoning continuity without exposing it to public sinks. The incompatible
+non-strict-argument combination now fails explicitly; no-tool finalizers retain
+the configured thinking mode without enabling tool-history replay.
+
+Frozen source for the upcoming two tests:
+
+- LabBio SHA256 `fc1a17920b90e9d022712184102ed4588c08ca76071fa934447af0d37548dc13`.
+- Pantheon SHA256 `d558f8a16e7676715b82007a61f02ac05d6a3d19abfbf8968b104d2c229976d9`.
+- Actual managed runtime `local-e082bd52f433d1b0103c6148ed0fb7866eb9724272e56dfe139cdf242ede905c` in both persisted RUNTIME.json files.
+- Profile SHA256 `0e17e06ed940890659d9a2097920b778e062c2a05481218d21c0dd5c1cba5ea0` (unchanged).
+
+Namespaces: `novel-expression-breadth-20260909` and
+`novel-coexpression-stability-20260909` under TEST1/PRJ1/runs. The separate private
+configuration differs only by thinking_enabled=true; model, max output tokens
+(16384), offline image, CPU/memory/time limits and workflow retries are unchanged.
+No task completion is claimed before real evidence and independent reconstruction.
+
+The preliminary unscoped manifest had runtime ID
+`local-8ad5f2a9a1fdbeeef676270c570999fe4dcd47ab9557cc06738ade6b87f285ef`.
+The managed CLI binds TEST1/PRJ1 and its gold_root, which changes the effective
+PLAN capability profile. Both live manifests have the frozen source digests
+above; this is managed configuration assembly, not source or profile-file drift.
+Live run IDs are `6a014a95-d3fc-41eb-8b7b-d34c1ac121cf` (expression breadth) and
+`c089f2f0-0b8e-4c12-a62b-2a4feabf6f46` (coexpression stability).
+
+### First held-out attempt: 0 / 2 completed
+
+Both attempts are preserved and are NOT ACCEPTED. Expression breadth submitted
+four programs: missing matplotlib, empty-axis IndexError, a host SyntaxError,
+then the same empty-axis IndexError. The new syntax hash/line diagnostic reached
+the Agent, and it corrected the syntax failure; runtime-error correction did not
+converge. After the semantic repeat, the sole CLI process was interrupted (130).
+Coexpression's first EXECUTE provider response consumed 16384 completion tokens,
+ended with length and REASONING_ONLY, and emitted no tool call. The existing
+no-observable-progress guard stopped it (CLI exit 1). Neither attempt has a
+successful execution, released result or report. Independent status reads both
+as nonrecoverable STAGE_IN_FLIGHT, not cancelled or complete. No container remains;
+Docker/containerd/socket remain active. No Gold action or scientific help occurred.
+
+Further bounded diagnosis identifies a general information-loss point: runtime
+IndexError projection retains the class and program coordinates but drops even
+the distinction between ordinary out-of-bounds and an empty-axis report. The
+next minimal repair adds only a finite, strictly parsed reported-condition label;
+it does not reveal numeric index/axis/size, messages, paths, arrays or methods.
+The label is process-reported, not an independent proof about a biological object.
+Unknown formats remain unknown. It never triggers automatic code repair or retry.
+
+The private reasoning bridge is not promoted as a cure for coding failures. MiMo
+documents no independent thinking sub-budget; Responses effort low/medium/high
+have equivalent behavior. No invented effort parameter, larger token limit or
+hidden mode switching is used. The next explicit configuration experiment uses
+the unchanged original managed-runtime.toml (thinking disabled) on fresh task
+namespaces after deterministic regression. Both prior failed runs remain intact.
+No user task, preference, science profile, module inventory or approval rule is
+changed, and no observed scientific-program correction is supplied to the Agent.
+
+The finite-condition repair passed 31 new tests (red: 29 failed / 2 passed),
+the receipt/evidence/trace bridge passed all three error variants after its
+three-failure red run, and combined execution regressions passed 171 tests.
+Full LabBio regression is now **845 passed / 24 skipped / 1 existing warning**.
+Production additions for the condition itself are 31 lines across two files.
+No scientific program, data, profile or workflow control was changed.
+
+Second-attempt freeze, prior to fresh live launch:
+
+- LabBio SHA256 `dc5a9cb0ea162b69d3bd050ca101e0c995ef413da88565cc837beb91a21d21b7`.
+- Pantheon SHA256 `d558f8a16e7676715b82007a61f02ac05d6a3d19abfbf8968b104d2c229976d9`.
+- Managed runtime `local-273d311e5f285528fca3bf216d359241945ff7e1cb36f7c47315f67b02c28512`.
+- Same profile SHA `0e17e06ed940890659d9a2097920b778e062c2a05481218d21c0dd5c1cba5ea0`.
+- Original managed-runtime.toml, unchanged; thinking=false, max output=16384,
+  capability turns=16, workflow retry_limit=1, same offline immutable image.
+- Fresh namespaces: `novel-expression-breadth-20260909-r2` and
+  `novel-coexpression-stability-20260909-r2`. Task/preference bytes are unchanged.
+
+These are repeat attempts of the two held-out questions, not two additional
+unseen questions. Earlier failed attempts remain in the acceptance denominator;
+any later success must not be described as first-attempt reliability. Source
+must remain frozen while either fresh run is active.
+
+Fresh run IDs: expression `6fff1128-16f6-495c-a795-9b50da1fefc8`, coexpression
+`77388338-00fe-4f42-a060-2d39ff26c7c5`. Both persisted manifests exactly match the
+second-attempt freeze, and each REQUEST.json is equal to its first attempt.
+Independent safety review passed 34 targeted tests with no blocking finding.
+
+### Second held-out attempt: execution progress, still 0 / 2 end to end
+
+Expression submitted six programs: two syntax rejections and four real sandbox
+executions. The last execution `9f6564d3-61e1-444e-a2af-36e2e4ea8d41` succeeded
+and released one bounded DERIVED output. The Agent independently corrected its
+dependency, syntax and mixed output-contract issues. It then twice requested
+SUMMARY using an invalid string limit despite explicit integer/null feedback.
+The audit records STRING/INVALID_VALUE, not the string itself; do not infer it.
+The run was interrupted (130) after this repeat; an independent process found
+it in VALIDATE / STAGE_IN_FLIGHT, nonrecoverable. The local script-generated
+analysis_report.md is partial delivery, not a finalized model report_submit.
+
+Coexpression submitted seven programs, including six real sandbox executions;
+none passed execution/output acceptance. Two substantive programs repeated the
+same sparse-matrix representation ValueError. Environment probes also attempted
+to release absolute paths and were correctly kept RAW. The underlying safety
+rejection is not distinguished in the receipt when shape validation passed:
+registration drops that reason and the receipt only says QUERYABLE_OUTPUT_REQUIRED.
+The run was interrupted (130), also persisted at VALIDATE / STAGE_IN_FLIGHT,
+nonrecoverable. No Gold action, final report, Docker-service change or data change.
+
+This does not establish that all failures arise from missing diagnostics. The
+query schema already advertises integer(minimum=1)|null and the rejection explains
+the rule, yet the model repeated an invalid request. Source inspection identified
+an independent wire-level problem: LocalProvider generates strict=false and the
+OpenAI-compatible path removes strict and top-level additionalProperties. The
+client strict_tool_arguments setting is only local JSON rejection, not provider
+schema-constrained generation. Official MiMo Chat documentation lists
+tools.function.strict=true support with an unspecified JSON Schema subset.
+
+The next bounded verification adds an explicit provider_tool_schema_strict flag,
+off by default, preserving the exact original schema on selected OpenAI Chat
+requests without schema repair/default injection. Unsupported transports reject
+the option before sending tools. Client parsing remains independent. No scientific
+program or prompt change, and no third schema compatibility representation.
+First run deterministic regression and a tiny synthetic Artifact-query protocol
+smoke; do not treat that smoke as biological acceptance. The separate private
+managed-strict-runtime-20260909.toml differs only by this flag; thinking remains
+off and total output budget remains 16384. All real failed runs stay preserved.
+
+The explicit strict option passed LabBio regression (847 passed / 25 skipped /
+1 existing warning) and Pantheon regression (81 passed / 90 skipped / 1 existing
+warning). Independent wire review passed 67 targeted tests. The first synthetic
+smoke completed valid queries but exposed two test-harness defects: the fixture
+retained its constructor-filtered tool list, and the final evidence assertion
+used the wrong attribute. Neither was a provider rejection. The fixture now
+constructs a legally bound EXECUTE ToolSet and has a non-live regression.
+
+`provider-tool-strict-smoke-20260909-r2` passed both tests. Its AUDIT.json captures
+the actual SDK-bound artifact_query and execution_submit schemas, each strict=true
+with original parameters preserved. MiMo accepted that request and all three
+Artifact queries completed with literal null limits. This establishes bounded
+wire compatibility, not a guarantee of provider-wide enforcement or biological
+acceptance. No scientific execution occurred in either synthetic smoke.
+
+Before another real attempt, close the separately verified release-feedback gap:
+shape-valid but model-unsafe output must retain its finite safety failure code
+through registration, collection and capability evidence. The current RAW denial
+is correct and must remain unchanged. Project the actual bounded-string and
+absolute-path rules as contract facts; do not prescribe output values or analysis
+methods. No live run is active during this change.
+
+The release-feedback change passed its red/green sequence (11 failed / 33 passed
+to 44 passed), 178 related tests, and full regression: **859 passed / 25 skipped /
+1 existing warning**. It adds MODEL_CONTENT_REJECTED, preserves shape-valid/RAW
+facts, and projects the real scalar-string limit plus fixed path prohibition.
+
+A pre-live independent reconstruction found a separate mechanical truth gap in
+the second coexpression attempt. Its finalizer labeled the FAILED execution
+`9791b3ff-c7f3-46ec-92ca-44c781c44e52` successful and reused its identity as an
+ARTIFACT. Trace lines 184-186 and SQLite prove this result was recorded and the
+workflow entered VALIDATE. The current response body permits free-text technical
+status and generic references without comparing them to execution receipts.
+This is not the removed scientific self-assessment requirement. Failure followed
+by VALIDATE remains legal; misrepresenting process status or reference kind does
+not. The next bounded repair projects current receipt facts into the response
+schema and validates their consistency, without interpreting summary prose,
+choosing an execution for the Agent, changing scientific criteria, or adding a
+retry. Real retesting remains held until that mechanical boundary is verified.
+
+The repeated library ValueError is also not fully explained by current safe
+diagnostics: the model receives type/position but not the library's type-rejection
+detail. Full stderr and the two Agent-authored programs remain local audit only.
+No third-party-specific message parser or scientific program repair is added.
+
+Execution-result grounding is now implemented without changing legacy persisted
+body types. Its valid red run was 16 failed / 2 passed; all 31 new tests now pass,
+including coordinator state/result acceptance. The success-path fixture reads
+all three mechanical fields from model-visible facts. Five older mock failures
+were corrected in tests only: incomplete accepted=true dictionaries are replaced
+by typed receipts, and mock finalizers read current projected facts. Independent
+review passed 73 tests. Full regression: **891 passed / 26 skipped / 1 existing
+warning**. SQLite crash recovery was not newly tested by this atomic change.
+
+The synthetic `provider-execution-grounding-smoke-20260909` passed both tests.
+The real finalizer returned FAILED, the actual synthetic EXECUTION identity, and
+no invented output. AUDIT.json records the SDK-bound response schema and typed
+result, not provider bodies. This is protocol verification, not a real execution.
+
+Third-attempt freeze before resubmitting the same two natural-language questions:
+
+- LabBio SHA256 `52c1fce1545260546a3b7fd2d3776cac228be3bc591d11b99f930a9f87650869`.
+- Pantheon SHA256 `fd8ce1d20ae10444d76175f75b449711d657b6e678e3c106fcc203f01a343b79`.
+- Managed runtime `local-77f7750d689934f598ef207c66e17586fb701df55e18c36d6dabe16eef218a2e`.
+- Profile SHA `0e17e06ed940890659d9a2097920b778e062c2a05481218d21c0dd5c1cba5ea0`.
+- Explicit managed-strict-runtime-20260909.toml: only provider strict flag differs
+  from the original config; thinking=false, 16384 output tokens, 16 capability
+  turns, retry_limit=1, same offline image/resources. Original config unchanged.
+- Fresh namespaces: novel-expression-breadth-20260909-r3 and
+  novel-coexpression-stability-20260909-r3. Preserve all earlier failures; these
+  are corrected-infrastructure retests, not additional unseen questions.
+
+No source edits while either real run is active. No scientific code/parameter
+help, Gold action, deployment, push, main modification or service/proxy change.
+
+Third-attempt live IDs: expression `03d353df-fe46-47e5-97f2-56544fb64bc5`;
+coexpression `277b1dc0-d438-4db0-aac8-359e6a0bae55`. Both persisted manifests match
+the freeze, and both REQUEST.json files equal the respective first attempt.
+
+### Third held-out attempt: two real executions succeed, still 0 / 2 end to end
+
+Expression submitted three real executions. The Agent independently corrected a
+TypeError and an unavailable dependency; execution
+`5db515ca-9c0b-426f-a13e-aa1792edb053` succeeded with seven registered outputs,
+including DERIVED `8017b47a-ff4f-42de-b438-ab374464a879`. EXECUTE finalization
+preserved its real status and typed identities. VALIDATE and INTERPRET completed.
+REPORT submitted model-authored report `5fa84681-1033-485a-af63-75c81520b367`,
+but its subsequent typed finalization failed with root `json_invalid` at
+03:44:25Z. CLI exited 1. The report explicitly states that figures were not
+generated. This is not a completed workflow or scientific correctness acceptance.
+
+Coexpression had five real executions and one syntax rejection. The Agent's
+execution `78fff879-7b4d-40c8-83d9-f1277d507daf` succeeded with seven registered
+outputs, including DERIVED `86f02602-a2c8-4f08-ab49-b6922805dcce`. Both failed
+and successful EXECUTE finalizations preserved their actual receipt facts.
+VALIDATE subsequently chose ordinary transition back to EXECUTE. It then made
+nine Artifact queries (eight successful), but no new execution submission.
+After capability completion, assembly's required-capability check rejected this
+with RuntimeProfileConfigurationError, before finalization began. CLI exited 1;
+there is no report_submit or final delivery. Both original SQLite snapshots
+remain STAGE_IN_FLIGHT, not recoverable, and must not be silently resumed.
+
+The existing workflow explicitly permits VALIDATE-to-EXECUTE transitions even
+when retry_available=false. retry_limit=1 limits explicit RETRY per stage, not
+all review/rework transitions or sandbox calls. The separate application stage
+invocation bound remains 64. No retry count was reset or bypassed. Model-generated
+result IDs repeated, but independent SQLite and current-evidence reconstruction
+showed append-only results and correct host-invocation lineage; MODEL_CONTEXT
+result-reference ambiguity remains a limitation, not an overwrite finding.
+
+Two narrow handoff issues are now isolated with both CLIs stopped:
+
+- Default local EXECUTE requires a new execution_submit on every entry, even
+  after a legitimate query-only decision. The next correction removes this
+  default action mandate, not an explicitly configured required-capability
+  contract. No receipt must still finalize as NOT_EXECUTED/null/no new outputs;
+  neither stale receipts nor invented success become valid.
+- FINALIZE does not attach the bounded provider-turn observer, and Pantheon
+  parses structured JSON before notifying the observer. Move observation before
+  rejection and use the same safe projection in both modes. No malformed-output
+  repair, hidden reasoning, raw response logging or automatic retry is added.
+
+The original report failure cannot be classified as truncation from existing
+evidence. Its schema requires a bounded summary, not repeated report_text;
+neither prompt length nor configured token budget proves a provider finish
+reason. A new observation can diagnose only its own response, not reconstruct
+the missing original bytes. The real Team-to-SDK strict-flag regression also
+passed two new offline tests; it did not find flag loss through Team assembly.
+
+Both handoff corrections passed red/green regression. Default-profile/reentry
+tests passed 89 related cases; structured-response observation passed 66 LabBio
+and 62 Pantheon related cases. Full LabBio regression passed 902 tests / 27 skips
+/ one existing warning. Two old mock signatures were updated to accept the real
+observer callback; their result and leak assertions remain unchanged.
+
+An isolated diagnostic reused the third expression attempt's last stage-input
+and capability-evidence packet in a fresh no-tool finalizer, without resuming or
+writing the original workflow. The first harness attempt rejected JSON-decoded
+strict models before any provider call; the harness now uses the proper JSON
+roundtrip and has an offline regression. The actual bounded diagnostic passed:
+one provider turn, finish_reason=stop, 752 completion tokens, correct report
+reference, valid REPORT result. Evidence is in
+`TEST1/projects/PRJ1/runs/report-finalization-diagnostic-20260909/AUDIT.json`.
+It is not a fresh workflow or proof of the original malformed response's cause.
+
+Fourth-attempt freeze before reusing the same two natural-language questions:
+
+- LabBio SHA256 `5eee968bd81cc11b23fbd12e62823fe7afebbb750b83c8299a0e7259c5c05214`.
+- Pantheon SHA256 `1046071b1efc83423de25c671d5ecd48fc1681831d9a59fa7a0ce0588317fd3a`.
+- Managed runtime `local-2728bd1620dea329500b80d7258c59863e2a3570dc64fcc8cfc93b512e6dd025`.
+- Profile SHA `b5133ebdd9ac30df2d096336ae6391e39441f0dc3df3e4d6ebe627d0e6848b46`.
+- Same private strict config, thinking=false, max output 16384, capability turns
+  16, retry_limit=1, offline image and resources. The only profile change removes
+  default EXECUTE's mandatory submission; scientific prompt bytes are unchanged.
+- Fresh namespaces `novel-expression-breadth-20260909-r4` and
+  `novel-coexpression-stability-20260909-r4`. These remain fourth attempts of the
+  two held-out questions, not extra questions or first-attempt reliability.
+
+No code changes while either fresh run is active. The original input, all failed
+attempts, and the diagnostic remain preserved. No Gold action, deployment, push,
+main change, environment assistance or scientific program repair is authorized
+as part of this acceptance. Report any missing deliverable separately from
+workflow completion, and do not equate scientific correctness with either.
+
+Final pre-live full regression, including replay JSON-roundtrip regression:
+**903 passed / 27 skipped / one existing Uvicorn warning**. Fourth-attempt live
+IDs: expression `42fb6da8-b45e-4054-a5b9-955f8dd28b25`; coexpression
+`1ed28892-42f4-4a2c-b6d6-b9bd22da3d3e`. Both persisted manifests match this
+freeze; both requests equal their first attempts. Input SHA256 remains
+`14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+
+### Final checkpoint: one of three questions completed; acceptance not achieved
+
+The final frozen implementation above was tested against three independent
+natural-language questions, within the requested two-to-three-question scope.
+Expression breadth and coexpression were fourth attempts of the same requests;
+the third question asked about exact and approximate cell-profile redundancy.
+It used the same TEST1/PRJ1 input, runtime, resources and scientific-autonomy
+preference. No production source changed during these runs. This is not evidence
+of three first-attempt successes or reliable generalization.
+
+- Expression breadth `42fb6da8-b45e-4054-a5b9-955f8dd28b25`: stopped, no execution.
+  Twelve invalid RAW queries occurred in four provider turns. The stage input
+  already exposed mount eligibility, remote exposure restrictions, companion
+  views, execution capability and output contracts; feedback preserved both
+  query-shape and exposure failures. Missing those facts is not an established
+  cause. The grounded finalizer returned NOT_EXECUTED with no invented outputs.
+  The supervisor stopped the subsequent explicit retry by SIGINT to the exact
+  CLI process. Exit 130; persisted EXECUTE/STAGE_IN_FLIGHT is not cancellation
+  or completion and must not be resumed as though it were recoverable.
+- Coexpression `1ed28892-42f4-4a2c-b6d6-b9bd22da3d3e`: COMPLETED/LEARN/STABLE,
+  CLI exit 0. The first execution timed out at the unchanged 900-second limit.
+  The Agent independently revised its program; execution
+  `d1a388d6-ef23-4b4d-abe8-3b4b46f79aa2` succeeded. Its actual DERIVED Artifact
+  `29220630-24cb-4623-bf97-9352f224d767` supports model-authored report
+  `19a9988c-b75a-4cf8-91aa-d3e898b40a53`. After one failed report submission the
+  Agent corrected its own reference and submitted successfully. One explicit
+  REPORT retry targeted LEARN; retry_limit remained 1. Fresh-process status and
+  exported file hashes were verified. Human-readable delivery:
+  `TEST1/projects/PRJ1/runs/novel-coexpression-stability-20260909-r4/delivery/REPORT.md`.
+  No figure file was delivered; the report notes the query's 100-of-115-record
+  truncation. Workflow completion is not scientific-correctness certification.
+- Profile redundancy `6b2862a8-29e2-405a-9837-6024003d92ad`: not completed,
+  CLI exit 1. Three failed executions preceded successful execution
+  `1b71bbb7-dff9-491b-96eb-f7d2a66ae41e` and DERIVED Artifact
+  `f9966646-e54d-4ef0-bbda-932a95749465`. VALIDATE and INTERPRET passed and
+  model-authored report `e0ddd852-f319-4e2e-be6d-eaef590dc244` was submitted.
+  REPORT finalization then produced finish_reason=length, completion_tokens=16384
+  and root json_invalid. The new bounded observer proves truncation for this
+  response only; it does not reconstruct the prior unobserved failure or explain
+  how the response spent its tokens. Persisted REPORT/STAGE_IN_FLIGHT is not
+  recoverable; no final delivery exists. Only the successful execution's JSON
+  output was registered; other local files are not silently promoted to exports.
+
+Remaining issues are explicit: repeated invalid tool choices despite visible
+facts; output-limited structured finalization without completed workflow state;
+and loss of already-collected output diagnostics when a later output collection
+raises. In the third question's second execution, an undeclared-record-field
+failure exists in trace/metadata but the returned collection-failure receipt
+omits it. The later collection exception's exact target was not persisted and
+must not be guessed. These issues are not repaired by task-specific hints,
+scientific program edits, automatic parameter conversion, extra budgets or
+silent retries. No claim is made that the strict flag guarantees provider-side
+enforcement of every actual tool request.
+
+Full non-live regression remains **903 passed / 27 skipped / one existing
+Uvicorn warning**; no Python source changed afterward. Agent-owned program bytes
+were verified against submitted script hashes. Codex did not choose scientific
+methods, parameters or tool order, repair analysis programs, or write reports.
+Skill searches occurred during planning; no Gold candidate approval, persistence
+or promotion was performed. Earlier shorthand “no Gold action” refers to these
+governance mutations, not absence of skill retrieval.
+
+All three CLI processes have exited; Docker has no running containers and
+docker/containerd/docker.socket remain active. Input SHA256 is unchanged.
+Changes remain local and uncommitted on the working branches; no push, main
+change, new published Pantheon pin, deployment, profile activation or service/
+proxy change occurred. Source and production documentation gaps noted above
+remain; this checkpoint is local CLI validation, not a production-health claim.
+All failed attempts are preserved. The requested two-to-three successful unseen
+tasks have **not** been achieved. No further live run is launched at this
+checkpoint. Continue from these exact preserved traces and unresolved boundaries,
+not from a resumed failed context or a claimed overall acceptance.
+
+### 2026-09-09: authorized iterative-correction interface repair
+
+The current authorization is to improve the Agent's ability to see a technical
+failure, diagnose it and submit its own successive revisions. Codex remains the
+platform engineer, not the author of analysis programs or scientific decisions.
+No new budget, retry count, scientific routing rule, output declassification,
+environment installation, Gold approval, service deployment or Git push is part
+of this change. Historical failed contexts remain preserved and are not resumed.
+
+Confirmed boundaries, without claiming inferred model intent:
+
+- A later declared-output collection failure discarded earlier registered refs
+  and diagnostic details. Collection now retains that partial evidence, fixed
+  error codes and zero-based output/record indices while staying FAILED and
+  stopping collection. Related file I/O failures use the same typed boundary;
+  paths, values and exception text are not released.
+- A fresh EXECUTE invocation could not revisit its own earlier complete program.
+  The new `execution_inspect` capability provides only an exact, hash-verified
+  original submission and receipt from the same scoped live application/run.
+  This is not RAW discovery or restart recovery. Source is MODEL_CONTEXT and is
+  excluded from capability evidence and trace. Each revised submission remains
+  an independent execution. Same-invocation library ValueErrors are not falsely
+  attributed to this separate cross-invocation gap.
+- The generic source non-disclosure sentence was ambiguous about authorized
+  resubmission. It now distinguishes ordinary replies/stage results from tool
+  submission of complete original or revised programs. Scientific instructions
+  are unchanged; no correction, argument or method is supplied by Codex.
+- REPORT now has a compact three-field finalization wire bound to actual current
+  registration receipts. The Agent still chooses a nullable report ID and its
+  governed next action. Legacy persisted envelopes remain compatible. This
+  reduces duplication; it neither guarantees provider convergence nor adds a
+  durable finalizer-resume checkpoint.
+
+Deterministic tests cover original failures plus adjacent legal states, source
+access/privacy, and two distinct synthetic failed revisions before a successful
+third receipt through real local dispatch. Simulated outcomes are explicitly
+not model-intelligence or sandbox-computation evidence. Full regression before
+the final source-transport guard: 986 passed / 27 skipped / one existing warning.
+Live verification is pending a final source freeze and regression. Repeated
+invalid choices despite visible facts remain a known behavioral limitation, not
+a solved issue merely because the framework can expose more evidence.
+
+Final frozen regression: **996 passed / 27 skipped / one existing warning**.
+One earlier cross-process recovery test correctly detected a source change made
+while that test suite was running; the complete suite was then rerun with the
+source frozen. Source transport tests first reproduced four unsafe successful
+pages and a missing pagination-schema bound, then passed after explicit bounded
+failures and faithful public integer constraints. No Pantheon code changed in
+this repair.
+
+Fresh local CLI retest freeze:
+
+- LabBio source SHA256
+  `06183bebb69d7832bfff3711f6cdb2f8e963f3fdc429109f9a005f9f6ec17718`.
+- Pantheon source SHA256
+  `1046071b1efc83423de25c671d5ecd48fc1681831d9a59fa7a0ce0588317fd3a`.
+- Profile SHA256
+  `59773751ba1ee8819d69074091f03b35e5fcdb3490f87cea8b76cf2b9cb0b52a`.
+- Managed runtime `local-c807b7e9b03dc1e023660b5acc629c8ef74809ac08dfad3c959d0a8ac0c3fd9d`.
+  Both live manifests match. The preliminary unscoped manifest was
+  `local-d13f4481fe58a033cdb1802e0e90f8eafefa6973fb05fd436808f299dfe7ca2d`;
+  read-only comparison confirms the managed CLI adds only TEST1's existing
+  GoldSkills root and its existing PLAN retrieval/proposal/view gate. Source,
+  raw profile, provider and execution settings are unchanged.
+- Original PBMC SHA256 unchanged:
+  `14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+- Existing approved image `sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb`;
+  existing strict-provider config, model, thinking=false, 16384 output tokens,
+  16 capability messages, retry_limit=1, offline 4 CPU / 4096 MB / 900 seconds.
+- Retest namespaces `correction-expression-breadth-20260909` and
+  `correction-profile-redundancy-20260909`. Same two natural-language questions
+  and autonomy preference as their prior attempts, not new held-out tasks.
+
+No package source edits during either run. Stop unchanged repeated failures for
+diagnosis rather than spending more turns or resuming polluted old contexts.
+
+### Iterative-correction checkpoint: one complete real task, one interrupted retest
+
+Expression breadth run `98694047-9c41-4a62-851f-50747124e0ab` completed under
+the above frozen source, CLI exit 0. A fresh process independently reports
+COMPLETED / LEARN / STABLE, version 20, nine typed results and no in-flight work.
+This is actual Agent-owned failure-to-revision evidence, not only a fixture:
+
+- `408a2bf6-2c92-41d9-8d7c-2a5c2153997a`: ModuleNotFoundError/matplotlib,
+  source line 16. Agent autonomously called execution_inspect (first 500 chars).
+- `0de25c1d-ac7d-4683-acc0-1329b7caa030`: revised program exited 0 but its
+  structured output was rejected. The new safe receipt exposed
+  UNDECLARED_RECORD_FIELDS at output 0, record 0 and QUERYABLE_OUTPUT_REQUIRED.
+  Agent inspected this revision's first 2000 chars and authored another revision.
+- `a96d1e4a-a168-40d8-89ed-8cda10c78a01`: SUCCEEDED, exit 0, no issues,
+  DERIVED `59409c58-066b-4991-9ff8-905d42db72b4`. Agent then inspected its first
+  3000 chars and queried actual governed output. All inspection pages were
+  honestly incomplete; do not claim full-source rereading or live cross-stage
+  inspection. Three separate program hashes match their exact stored originals.
+
+VALIDATE, INTERPRET and REPORT completed. Model-authored report
+`b2ad091a-af5b-4062-af87-529c9b841ade` registered and its compact finalizer
+returned finish_reason=stop, 315 completion tokens. No scientific content was
+written by the runtime expansion. Final report delivery is
+`TEST1/projects/PRJ1/runs/correction-expression-breadth-20260909/delivery/REPORT.md`.
+The successful execution delivered a structured JSON, program-generated text
+and four SVG files; RAW graphics/text remain local-only. The normal export also
+retains six registered files from the failed second execution. Its 13 files
+including the final report all passed size/hash checks; SUPERVISION.md explicitly
+links the successful execution's files to avoid conflating failed-version output.
+
+Profile redundancy run `dd816e24-70fb-4f2c-878f-fcf47919315a` was stopped by
+SIGINT to exact CLI PID 1200335 after two consecutive remote-exposure denials for
+the same RAW identity with no intervening new facts (sequences 34 and 37).
+The Agent had exited capability mode and entered finalization before interruption
+completed; do not call this a demonstrated permanent loop or inevitable failure.
+CLI exit 130; persisted UNDERSTAND/STAGE_IN_FLIGHT, version 5, is neither a
+completed nor a confirmed cancelled/recoverable workflow. No execution occurred.
+The empty permitted-view list and retryable=false were already present. A
+read-only reconstruction of its 763-character safe error through current
+Pantheon filters preserved the object exactly. Actual provider bodies were not
+captured; no field-loss cause was established and model internal intent is unknown.
+
+Final non-live regression: **996 passed / 27 skipped / one existing warning**.
+Source/runtime/input hashes remained unchanged throughout live verification;
+all CLI processes exited, no Docker containers remain running and all three
+Docker-related services remain active. This was local CLI testing, not a
+production API/worker/database health or deployment acceptance. No new profile
+or Gold promotion, Pantheon edit, Git commit/push/main change, dependency
+installation, proxy/tunnel change or cleanup of historical evidence occurred.
+
+The source remains local and uncommitted on
+`test/pbmc-complex-gold-20260908`, HEAD `4f5bb62a83818c602140bae871d41c5e061ac1d0`.
+Codex modified generic platform behavior and engineering records only; the Agent
+owned the scientific programs, revisions, tool choices and final report.
+
+Limits remain explicit: this is a successful retest of one previously attempted
+question, not two-to-three new-task successes or proof that repeat-invalid-query
+behavior is solved. Inspection is live-session only and refuses transport-altered
+pages; unrestricted library exception text stays private. Durable finalizer-only
+recovery is not implemented. Stop here: any next correction starts with the
+preserved repeat-query evidence and exact model-visible protocol, not an old
+in-flight resume, a task-specific tool hint or another unchanged blind rerun.
+
+### 2026-09-09: repeat-query feedback boundary audit and repair
+
+The user authorizes further root-cause repair of repeated illegal queries while
+preserving the framework and Agent autonomy. The source and prior failed runs
+were inspected before new live work. No production release/API/worker instance
+exists at the expected production path; this remains local CLI work. Source
+PRODUCTIONIZATION_DEBUG_GUIDE.md and ARCHITECTURE.md are absent; the current
+source LABBIO_ARCHITECTURE.md was used. The actual Git root is projects/LabBioAgentOS,
+on the existing test branch; previous dirty changes are preserved.
+
+The old failed request shapes are known (RAW METADATA/null then RAW TOP_N/10),
+but their native `_background` choices were never retained. The earlier
+763-character reconstruction proved only the **direct foreground** return path,
+not what the next real provider request consumed. New network-disabled probes
+reproduced another path: native background wrapping returns running/task_id,
+truncates eventual feedback at 500/2000 characters, and can outlive Agent.run.
+It can also invalidate execution_inspect page completeness after LabBio's
+transport check. This is a proven generic feedback/lifecycle defect, not proof
+of the historical model's internal reason for selecting an illegal query.
+
+The minimal correction adds Pantheon Agent.allow_background_tools (default true)
+and selects false in LabBio's factory. Schema and dispatch now share one execution
+contract: no advertised native background tool/parameter, no explicit background
+dispatch or timeout/steering adoption. Invalid explicit controls remain visible
+failures; no argument is silently repaired. Absent/boolean-false control stays
+foreground. Normal await, same wire call identity, parallel calls and cancellation
+remain. Tool-owned deadlines are unchanged; disabling background adoption is not
+a new host hard-timeout mechanism. Existing extension hooks were insufficient;
+UPSTREAM_MODIFICATIONS records why a small generic Pantheon API was necessary.
+
+No new prompt sentence, scientific method/code, fixed query order, query repair,
+static Artifact-ID enum, automatic execution-to-Artifact conversion, repeat guard,
+budget increase or retry was added. Query permissions and validators are unchanged.
+Separate findings remain unmodified: ordinary tool names count as progress before
+their result is known; the RAW evidence label is ambiguous about remote views
+versus execution mounting; trusted inspection source-to-companion associations
+are not explicitly persisted/projected into the run. Arbitrary Artifact metadata
+must not be promoted into authoritative source lineage to fill that gap.
+
+The new schema test first failed on the injected `_background`. SDK-bound tests
+then verify actual next-request feedback for RAW denial and SUMMARY+limit, a
+separately model-selected legal query, immutable failed/completed evidence and
+reopened trace, plus a newly produced DERIVED ID queried in the same invocation.
+These are synthetic model/runner tests, not real model intelligence evidence.
+LabBio full regression with frozen source: **1002 passed / 27 skipped / one
+existing Uvicorn warning**.
+
+Frozen source for subsequent local verification:
+
+- LabBio source SHA256 `006cf578029e806a143490f88243a86adc9288048183568719b83de67140d90f`.
+- Pantheon source SHA256 `ad72e58c0542d273dad9cc2e922f6d60a5b5fe9574b6d72e0a37c384a879672d`.
+- Unchanged raw profile SHA256 `59773751ba1ee8819d69074091f03b35e5fcdb3490f87cea8b76cf2b9cb0b52a`.
+- Unscoped protocol runtime `local-133cada952366de32d846ab0b8602be936721c1a7d101400c18d267e3024e9c7`.
+- Same strict local provider configuration, thinking=false, 16384 output tokens,
+  normal capability budget/retry_limit=1, existing image and sandbox limits.
+
+The existing opt-in synthetic strict-schema smoke is the first live check;
+its assertions now also verify the absence of background controls on actual SDK
+requests. A fresh standard-CLI retest of the unchanged natural-language profile
+redundancy question follows only if it passes. No old in-flight run is resumed.
+At this intermediate record, neither live check is claimed complete. The public
+Pantheon constraint still lacks these unpublished local APIs; no Git push,
+production deployment, Gold approval/promotion or environment change is included.
+
+Pantheon validation: 24 new cases plus adjacent idle/strict/private-reasoning/
+provider/structured-response checks passed (86 total); original background
+tests passed in isolated groups (9 + 43). A combined single-process run retains
+six existing synchronous tests' event-loop-order failures before product code
+is reached; this pre-existing test harness issue was not patched or hidden.
+The current Pantheon production change is only +27/-4 lines in agent.py;
+reverse-diff hashing confirmed all prior dirty source bytes were preserved.
+
+The real protocol smoke passed in 8.94 seconds. Its one provider response chose
+three valid METADATA/SCHEMA/SUMMARY calls, all completed. It validates endpoint
+acceptance and synchronous completion, not consumption of error feedback in a
+later real model turn. Evidence: PRJ1/runs/foreground-query-protocol-20260909/AUDIT.json.
+The fresh real CLI run is `6cf1ac8e-7ec9-4404-9883-a81fd73e6559`, directory
+PRJ1/runs/foreground-profile-redundancy-20260909. Its managed runtime is
+`local-f36a1bf4932e64565b8a8e713bb522bff0603e2a1a75204728d816e2c09450cd`;
+source/profile hashes match the freeze. Task, preferences, format and input match
+the prior interrupted redundancy run exactly; input SHA256 remains
+`14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`.
+
+#### Foreground feedback checkpoint outcome (not whole-task acceptance)
+
+The fresh run ended with CLI exit 1, not success. Its **9 artifact_query calls
+all completed legally**, with no RAW queries, argument repair or background
+management calls. UNDERSTAND/PLAN/PREFLIGHT completed. EXECUTE demonstrated
+Agent-owned successive correction under the unchanged budget:
+
+1. `b0d13721-77c4-4e7c-b423-6e70bb157051`: exit 1,
+   ModuleNotFoundError/matplotlib at source line 328.
+2. `bac2d729-acf4-44cd-9572-e5b3dd79905b`: exit 0, but INVALID_DOCUMENT at
+   outputs 0/1, OUTPUT_NOT_FOUND at output 4, and QUERYABLE_OUTPUT_REQUIRED.
+3. `29edb518-34ff-410d-a316-395ffb690e50`: exit 0, two DERIVED outputs
+   accepted; still FAILED because output 4 was missing. Agent then inspected
+   the complete original program: 0–30000 of 30000 characters, complete=true.
+4. `4bea60e3-3cc0-4539-b547-b4db6694f660`: SUCCEEDED, exit 0, no issues.
+   All six declared outputs registered (two DERIVED and four local-only RAW).
+   Agent queried only this execution's new DERIVED IDs afterward.
+
+All four stored original program hashes match their execution receipts and
+trace. Inspection page metadata matches the original source, and durable
+inspection evidence contains no program text. No dependency was installed,
+program modified by Codex, scientific method supplied, error suppressed, or
+validation relaxed. The failed executions and their files remain preserved.
+
+The next, distinct boundary failed at **EXECUTE FINALIZE**: provider observation
+199 records finish_reason=length and completion_tokens=16384. Events 200/201
+record MALFORMED_RUNTIME_RESULT, root json_invalid, correlation
+`1df084a2-d211-44fe-94de-ac552e746829`. The actual response body is not retained;
+its missing/truncated content is not reconstructed. The process exited before
+VALIDATE/INTERPRET/REPORT/LEARN and before normal delivery export. A fresh read-only
+SQLite check remains version 11, RUNNING/EXECUTE/STAGE_IN_FLIGHT, four typed
+results: this is stale in-flight state, not a completed or confirmed recoverable
+workflow. No resume or second live run was attempted.
+
+The successful execution's `outputs/results/report.md` is an Agent-program
+generated draft, **not** the final REPORT-stage Artifact. Its two JSON tables and
+three SVGs are available alongside it; SUPERVISION.md in the run directory links
+only this successful version. Scientific review, interpretation and final report
+acceptance are not claimed. Source/profile hashes stayed frozen; all CLI processes
+exited, Docker/containerd/socket remained active, and no containers were left
+running. No production deployment, Git commit/push, profile change, Gold approval
+or promotion, proxy/tunnel modification, or historical-evidence cleanup occurred.
+
+Stop this atomic repair here. Complete feedback is now an enforced/tested
+invocation contract, and repeat-invalid-query behavior did not recur in this
+sample; historical missing background choices still prevent a unique causal
+claim or a guarantee for unseen tasks. The next unique engineering entry is
+the captured EXECUTE finalization truncation: inspect its actual generated
+response schema and bounded evidence projection, seeking compact typed control
+with unchanged receipt authority. Do not raise tokens, patch scientific prompts,
+resume this polluted in-flight run, or infer the missing response. The separate
+progress/inspection-lineage findings above remain unmodified limitations.
+
+### 2026-09-09: user-authorized output-budget diagnostic
+
+The user explicitly asked to try a larger token limit after the above failure.
+This supersedes the preceding no-budget-increase stop only for a bounded,
+isolated finalization experiment. It does not authorize a workflow state edit,
+new scientific analysis, or automatic retry policy. No production source or
+default profile/configuration was changed.
+
+An independent config, `managed-finalize-32k-20260909.toml` in the user's private
+LabBio configuration directory (mode 0600), differs from the original strict
+config only in max_output_tokens: 16384 -> 32768. The managed manifest was
+deep-compared with the source run: source/profile/execution/provider settings
+are unchanged except this budget and its derived runtime revision. Both existing
+LabBio configuration models already support 32768. The provider's documented
+max_completion_tokens range includes it; `length` denotes the requested output
+limit ([official MiMo API documentation](https://mimo.mi.com/docs/zh-CN/api/chat/openai-api)).
+
+The existing isolated replay test loaded the exact last RuntimeStageInput and
+matching CapabilityEvidenceBundle from `foreground-profile-redundancy-20260909`.
+All four execution receipts remained available; Codex did not select the successful
+receipt or remove failed evidence. The normal finalization factory, schema and
+grounding validation ran in a new diagnostic directory with no tools. A small
+test-only observer records scalar output limits at the actual SDK call and
+asserts one invocation/no tools; no provider bodies or hidden reasoning are logged.
+
+Result: **1 live test passed in 35.81 seconds**. SDK wire used
+`max_completion_tokens=32768` (max_tokens absent). Provider returned
+`finish_reason=stop`, completion_tokens=514, total_tokens=14021. The Agent's typed
+result chose SUCCEEDED for `4bea60e3-3cc0-4539-b547-b4db6694f660`, with its exact
+two DERIVED references, and proposed transition to VALIDATE. The unchanged local
+validators accepted it. Diagnostic runtime revision:
+`local-87837a8bc8d5e28debbe1df2ed9b68104a81e158a14c273b25fe685bbe0f0e69`.
+Evidence: PRJ1/runs/finalize-32k-diagnostic-20260909/AUDIT.json and its runtime trace.
+
+This establishes that the higher-budget request can complete, **not** that a
+valid finalization requires more than 16384 tokens: this sample needed only 514.
+It is one new stochastic generation, not a controlled proof that budget alone
+caused success. The original response body was not retained; the reason that
+earlier response grew to its limit remains undetermined. No second diagnostic
+or PBMC workflow was run, and no default-budget promotion is claimed.
+
+Source state.sqlite, run-trace.jsonl, model-boundaries.jsonl and RUNTIME.json
+hashes were unchanged after replay. The original workflow remains version 11,
+RUNNING/EXECUTE/STAGE_IN_FLIGHT; the new typed result was **not** written back,
+and VALIDATE/INTERPRET/REPORT/LEARN were not executed. Authentication and existing
+Gold stores were opened through normal composition, but no Gold approval or
+mutation capability was exposed. All processes exited; Docker remained active
+with no running containers. No Git commit/push, production deployment, proxy or
+Codex-tunnel change occurred. Relevant offline tests: 47 passed / 1 live skip;
+full regression: **1002 passed / 27 skipped / one existing Uvicorn warning**.
+Stop at this diagnostic result. A subsequent workflow-continuation decision must
+distinguish isolated success from actual persisted stage completion.
+
+### 2026-09-09: authorized source publication checkpoint
+
+The user requested publication of the recent changes and then explicitly allowed
+merging LabBio into `main`. This checkpoint packages the existing platform
+repairs, tests and engineering evidence; it does not implement the subsequently
+discussed compact EXECUTE handoff or authorize another scientific run. Preserve
+the development branch `test/pbmc-complex-gold-20260908` alongside the fast-forward
+`main` target. No new version tag, production deployment, profile promotion or
+Gold approval is included.
+
+Pantheon commit `07675c45b538f7d27b9b16b1b7d8b72f37365293` was pushed to
+`YuchenWang-leslie/PantheonOS`, branch `fix/private-tool-reasoning-continuity`;
+`git ls-remote` verified that exact SHA. Fork `main` remains at upstream baseline
+`5d3d459ac5752ed9d39432232d76ad1581296012`. The commit includes private tool
+reasoning continuity, explicit provider tool-schema strictness, pre-parse
+structured-response observation and invocation-bound foreground tools. LabBio's
+development constraint and current dependency documentation now pin this
+published revision. Historical "unpublished" entries above remain checkpoint
+history, not current installation instructions; no official upstream release is
+claimed to contain these APIs.
+
+Pre-publication validation: LabBio full offline regression **1002 passed,
+27 skipped**, with the existing Uvicorn warning. Pantheon new/adjacent checks
+passed **86** tests; its original background tests passed in separate groups of
+**9** and **43** (the latter deselects the first group). No live provider was
+called. Review found no credentials, run databases, raw inputs, generated analysis
+programs or result directories in the publication set. Existing repository-scoped
+credentials and command-local proxy settings were used without broadening access
+or changing global Git/Codex tunnel configuration.
+
+The latest real run remains `6cf1ac8e-7ec9-4404-9883-a81fd73e6559`, version 11,
+RUNNING/EXECUTE/STAGE_IN_FLIGHT. Its successful sandbox execution and separate
+514-token finalization replay do not establish final report/workflow completion.
+Read-only follow-up proved that the EXECUTE result contract permits duplicate
+references and large aggregate output, but the missing original response body
+prevents identifying the unique cause of the 16384-token truncation. No response
+was reconstructed or written into the old workflow. The next engineering entry
+remains that finalization boundary, under separate authorization; this source
+publication does not resume the run or resolve that limitation.

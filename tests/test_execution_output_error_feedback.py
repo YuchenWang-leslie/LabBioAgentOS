@@ -26,9 +26,9 @@ from test_phase6_docker_execution import FakeDockerRunner, _image
 from test_runtime_milestone_b import _toolset, boundary
 
 
-def _execution_tools(boundary, tmp_path, document):
+def _execution_tools(boundary, tmp_path, document, *, contract=None, minimum=1):
     _, recorder, access, _, _, store, _ = boundary
-    contract = StructuredOutputContract(
+    contract = contract or StructuredOutputContract(
         contract_id="synthetic-records", schema_id="synthetic.records.v1",
         allowed_fields=frozenset({"record_type", "value"}),
         required_fields=frozenset({"record_type"}),
@@ -48,7 +48,7 @@ def _execution_tools(boundary, tmp_path, document):
             store, ArtifactRegistrationPolicy((contract,)), trace_recorder=recorder,
         ),
         process_runner=runner, trace_recorder=recorder,
-        minimum_queryable_output_count=1,
+        minimum_queryable_output_count=minimum,
     )
     toolset = _toolset(
         boundary, WorkflowStage.EXECUTE, ("execution_submit", "artifact_query"),
@@ -176,3 +176,86 @@ async def test_other_document_failures_keep_existing_code(boundary, tmp_path, do
     assert ref.exposure_class is ArtifactExposureClass.RAW
     assert Path(ref.storage_locator).read_bytes() == document
     assert toolset.evidence_items()[0].safe_result == receipt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("minimum", [0, 1])
+@pytest.mark.parametrize("value", [
+    "/private/PRIVATE_INPUT.h5ad",
+    "C:\\private\\PRIVATE_INPUT.h5ad",
+    "-----BEGIN PRIVATE KEY-----\nPRIVATE_CREDENTIAL\n-----END PRIVATE KEY-----",
+])
+async def test_shape_valid_model_rejection_reaches_receipt_evidence_and_trace(
+    boundary, tmp_path, value, minimum,
+):
+    document = json.dumps({
+        "schema_id": "synthetic.records.v1",
+        "records": [{"record_type": "synthetic", "value": value}],
+    }).encode()
+    toolset, runner, contract = _execution_tools(
+        boundary, tmp_path, document, minimum=minimum,
+    )
+    result = await _submit(toolset, contract)
+    receipt = result["data"]
+    expected = ["MODEL_CONTENT_REJECTED"] + (["QUERYABLE_OUTPUT_REQUIRED"] if minimum else [])
+    assert result["success"] is True
+    assert receipt["status"] == "FAILED" and receipt["exit_code"] == 0
+    assert receipt["issue_detail_codes"] == expected
+    assert receipt["output_artifact_ids"] == []
+    assert len(runner.calls) == 1
+    ref = _output_ref(boundary[5], receipt["execution_id"])
+    assert ref.exposure_class is ArtifactExposureClass.RAW
+    assert ref.metadata["contract_valid"] is True
+    assert ref.metadata["release_authorized"] is False
+    assert ref.metadata["output_contract_failure_code"] == "MODEL_CONTENT_REJECTED"
+    assert Path(ref.storage_locator).read_bytes() == document
+    evidence = toolset.evidence_items()[0]
+    assert evidence.safe_result == receipt and evidence.status.value == "COMPLETED"
+    events = boundary[1].events(toolset.binding.run_id)
+    registered = next(e for e in events if e.event_type is TraceEventType.OUTPUT_REGISTERED)
+    assert registered.payload["contract_valid"] is True
+    assert registered.payload["output_contract_failure_code"] == "MODEL_CONTENT_REJECTED"
+    failed = next(e for e in events if e.event_type is TraceEventType.EXECUTION_FAILED
+                  and "issue_detail_codes" in e.payload)
+    assert failed.payload["issue_detail_codes"] == expected
+    assert failed.payload["execution_id"] == receipt["execution_id"]
+    assert failed.invocation_id == toolset.binding.invocation_id
+    denied = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert denied["success"] is False
+    encoded = json.dumps({"result": result, "denied": denied,
+        "evidence": evidence.model_dump(mode="json"),
+        "trace": [event.model_dump(mode="json") for event in events]})
+    for forbidden in ("PRIVATE", "/private", "storage_locator", str(tmp_path)):
+        assert forbidden not in encoded
+
+    valid_record = {"record_type": "synthetic", "value": "ordinary label"}
+    valid_document = json.dumps({"schema_id": contract.schema_id,
+                                 "records": [valid_record]}).encode()
+    runner.output_writer = lambda root: (root / "result.json").write_bytes(valid_document)
+    valid = await _submit(toolset, contract)
+    assert valid["data"]["status"] == "SUCCEEDED"
+    assert valid["data"]["issue_detail_codes"] == []
+    assert len(runner.calls) == 2
+    assert Path(ref.storage_locator).read_bytes() == document
+    view = await toolset.artifact_query(valid["data"]["output_artifact_ids"][0], "TOP_N", 1)
+    assert view["success"] is True and view["data"]["records"] == [valid_record]
+
+
+@pytest.mark.asyncio
+async def test_shape_valid_no_release_mode_is_not_a_model_content_rejection(boundary, tmp_path):
+    contract = StructuredOutputContract(
+        contract_id="no-release", schema_id="synthetic.records.v1",
+        allowed_fields=frozenset({"record_type", "value"}),
+        required_fields=frozenset({"record_type"}),
+        declassification_mode=OutputDeclassificationMode.NONE,
+    )
+    document = json.dumps({"schema_id": contract.schema_id,
+        "records": [{"record_type": "synthetic", "value": "ordinary label"}]}).encode()
+    toolset, _, _ = _execution_tools(boundary, tmp_path, document, contract=contract, minimum=0)
+    result = await _submit(toolset, contract)
+    assert result["data"]["status"] == "SUCCEEDED"
+    assert result["data"]["issue_detail_codes"] == []
+    ref = _output_ref(boundary[5], result["data"]["execution_id"])
+    assert ref.metadata["contract_valid"] is True
+    assert ref.metadata["release_authorized"] is False
+    assert "output_contract_failure_code" not in ref.metadata

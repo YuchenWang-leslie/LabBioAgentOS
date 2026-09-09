@@ -385,6 +385,7 @@ def test_capability_attribution_delegation_and_authority_are_host_fixed(tmp_path
         "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+        "execution_inspect": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "skill_search": InformationAuthority.MODEL_CONTEXT,
         "skill_view": InformationAuthority.MODEL_CONTEXT,

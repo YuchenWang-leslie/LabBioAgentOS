@@ -34,6 +34,8 @@ class LocalProviderSettings(_SettingsModel):
     api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     base_url_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     model_identifier: str = Field(min_length=1, max_length=256)
+    thinking_enabled: bool = False
+    provider_tool_schema_strict: bool = False
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
 
 
@@ -207,7 +209,10 @@ def build_application(
             model_identifier=settings.provider.model_identifier,
             provider_config=ProviderConfigRef(config_id="local-provider", provider="openai-compatible"),
             transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
-            thinking_enabled=False, thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
+            thinking_enabled=settings.provider.thinking_enabled,
+            private_tool_reasoning_continuity=settings.provider.thinking_enabled,
+            provider_tool_schema_strict=settings.provider.provider_tool_schema_strict,
+            thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
             max_output_tokens=settings.provider.max_output_tokens,
         ),),
         schemas=(ResponseSchemaRef(),),

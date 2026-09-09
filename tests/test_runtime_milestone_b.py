@@ -221,7 +221,8 @@ async def test_typed_invoker_records_prompt_metadata_and_validates_result():
         ),
     )
 
-    async def run(_self, _message):
+    async def run(_self, _message, *, process_turn_observation):
+        assert callable(process_turn_observation)
         return SimpleNamespace(content=result.model_dump(mode="json"))
 
     team.run = MethodType(run, team)
@@ -249,7 +250,8 @@ async def test_malformed_runtime_result_is_bounded_and_raw_body_not_traced():
     )
     secret = "RAW_PROVIDER_BODY_SHOULD_NOT_APPEAR"
 
-    async def run(_self, _message):
+    async def run(_self, _message, *, process_turn_observation):
+        assert callable(process_turn_observation)
         return SimpleNamespace(content={"unexpected": secret})
 
     team.run = MethodType(run, team)
@@ -351,7 +353,7 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
         (WorkflowStage.UNDERSTAND, {"artifact_list", "artifact_query", "skill_search", "skill_view", "memory_search", "memory_view"}),
         (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view"}),
         (WorkflowStage.PREFLIGHT, {"artifact_query"}),
-        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit"}),
+        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_inspect"}),
         (WorkflowStage.VALIDATE, {"artifact_query"}),
         (WorkflowStage.INTERPRET, {"artifact_query"}),
         (WorkflowStage.REPORT, {"artifact_query", "report_submit"}),
@@ -711,8 +713,15 @@ async def test_impossible_output_declaration_reaches_tool_evidence_and_trace(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exception_line, exception_type, key_type, index_condition", [
+    ("KeyError: '7'", "KeyError", "str", None),
+    ("IndexError: index -1 is out of bounds for axis 0 with size 0",
+     "IndexError", None, "OUT_OF_BOUNDS_EMPTY_AXIS"),
+    ("IndexError: index 812345 is out of bounds for axis 0 with size 3",
+     "IndexError", None, "OUT_OF_BOUNDS"),
+])
 async def test_execution_failure_diagnostics_reach_tool_evidence_and_immediate_trace(
-    boundary, tmp_path
+    boundary, tmp_path, exception_line, exception_type, key_type, index_condition
 ):
     sink, recorder, access, _, _, store, _ = boundary
     secret = "PRIVATE_PROCESS_VALUE_MUST_NOT_ESCAPE"
@@ -724,7 +733,7 @@ async def test_execution_failure_diagnostics_reach_tool_evidence_and_immediate_t
         '  File "/labbio/script.py", line 3, in <module>\n'
         f"    {failing_line}\n"
         f"{' ' * (4 + start_column)}{'^' * (len(failing_line) - start_column)}\n"
-        "KeyError: '7'\n"
+        f"{exception_line}\n"
     ).encode()
 
     class SyntheticRunner(DockerProcessRunner):
@@ -772,8 +781,9 @@ async def test_execution_failure_diagnostics_reach_tool_evidence_and_immediate_t
     assert receipt["status"] == "FAILED"
     assert receipt["script_hash"] == sha256(script.encode()).hexdigest()
     diagnostic = receipt["diagnostics"][0]
-    assert diagnostic["exception_type"] == "KeyError"
-    assert diagnostic["missing_key_type"] == "str"
+    assert diagnostic["exception_type"] == exception_type
+    assert diagnostic["missing_key_type"] == key_type
+    assert diagnostic["reported_index_condition"] == index_condition
     assert diagnostic["script_error_locations"] == [{
         "line_number": 3,
         "start_column": start_column,
@@ -802,7 +812,8 @@ async def test_execution_failure_diagnostics_reach_tool_evidence_and_immediate_t
     assert "requested_key" not in encoded
     assert "local value" not in encoded
     assert "/labbio/script.py" not in encoded
-    assert "KeyError: '7'" not in encoded
+    assert exception_line not in encoded
+    assert "812345" not in encoded
 
     runner.exit_code = 0
     valid_script = "mapping = {7: 'local value'}\nrequested_key = 7\nresult = mapping[requested_key]\n"

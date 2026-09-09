@@ -1,6 +1,7 @@
 """Trusted execution input authority survives root and delegated tool assembly."""
 
 from dataclasses import replace
+from hashlib import sha256
 from types import MethodType
 from uuid import uuid4
 
@@ -14,6 +15,11 @@ from labbioagentos import (
     RuntimeInvocationMode,
     RuntimeProfileCatalog,
     RuntimeProfileConfigurationError,
+)
+from labbioagentos.execution.models import (
+    ExecutionFailureClass,
+    ExecutionReceipt,
+    ExecutionStatus,
 )
 from test_c12_execution_capability_contract import (
     _execution_schema,
@@ -35,10 +41,20 @@ from test_c8_scientific_specialists import (
 class _Submission:
     def __init__(self):
         self.calls = []
+        self.receipts = []
 
     async def submit(self, draft, **kwargs):
         self.calls.append((draft, kwargs))
-        return {"accepted": True}
+        receipt = ExecutionReceipt(
+            execution_id=uuid4(),
+            status=ExecutionStatus.FAILED,
+            image_key=draft.image_key,
+            script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
+            exit_code=1,
+            issue_codes=(ExecutionFailureClass.NON_ZERO_EXIT,),
+        )
+        self.receipts.append(receipt)
+        return receipt
 
 
 class _BindingFactory(PantheonRuntimeFactory):
@@ -99,7 +115,7 @@ class _BindingFactory(PantheonRuntimeFactory):
             )
         else:
             async def finalize(_team_self, _message, **_kwargs):
-                return AgentResponse(agent_name="ExecutionAgent", content=_result().model_dump(mode="json"), details=None)
+                return AgentResponse(agent_name="ExecutionAgent", content=_result(_message).model_dump(mode="json"), details=None)
 
             team.run = MethodType(finalize, team)
         return team, prompts
@@ -141,9 +157,12 @@ async def test_constructor_input_authority_reaches_root_and_delegated_submission
     )
     stage_input = _stage_input().model_copy(update={"execution_capability": presented})
 
-    await invoker.invoke(stage_input)
+    result = await invoker.invoke(stage_input)
 
     assert len(submission.calls) == 2
+    assert result.body.execution_status == "FAILED"
+    assert result.body.execution_reference.reference_id == str(submission.receipts[0].execution_id)
+    assert result.body.output_artifact_references == ()
     for key in (ROOT_KEY, SPECIALIST_KEY):
         toolset = factory.toolsets[key]
         assert toolset.binding.mountable_input_artifact_ids == authority

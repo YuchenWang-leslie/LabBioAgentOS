@@ -568,7 +568,8 @@ async def test_finalization_receives_safe_evidence_and_returns_explicit_proposal
     captured = {}
     result = _intake_result()
 
-    async def run(_self, message):
+    async def run(_self, message, **kwargs):
+        assert callable(kwargs["process_turn_observation"])
         captured.update(json.loads(message))
         return SimpleNamespace(content=result.model_dump(mode="json"))
 

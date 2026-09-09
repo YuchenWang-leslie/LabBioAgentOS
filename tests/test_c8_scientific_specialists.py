@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from contextlib import contextmanager
 from types import MethodType
 from uuid import uuid4
@@ -44,6 +45,8 @@ from labbioagentos import (
     RuntimeInvocationMode,
     RuntimeProfileCatalog,
     RuntimeProfileConfigurationError,
+    RuntimeReference,
+    RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
     RuntimeStageInput,
     RuntimeStageResult,
@@ -150,11 +153,27 @@ def _stage_input() -> RuntimeStageInput:
     )
 
 
-def _result() -> RuntimeStageResult:
+def _result(message: str) -> RuntimeStageResult:
+    control = json.loads(message)["execution_result_control"]
+    assert control["authority"] == "CONTROL_STATE"
+    receipts = control["completed_execution_receipts"]
+    receipt = receipts[0] if receipts else None
     return RuntimeStageResult(
         stage_id=WorkflowStage.EXECUTE,
         summary="Synthetic C8 capability exercise completed.",
-        body=ExecuteStageBody(execution_status="NOT_REQUESTED"),
+        body=ExecuteStageBody(
+            execution_status=receipt["status"] if receipt else "NOT_EXECUTED",
+            execution_reference=(
+                RuntimeReference(
+                    kind=RuntimeReferenceKind.EXECUTION,
+                    reference_id=receipt["execution_id"],
+                ) if receipt else None
+            ),
+            output_artifact_references=tuple(
+                RuntimeReference(kind=RuntimeReferenceKind.ARTIFACT, reference_id=value)
+                for value in (receipt["output_artifact_ids"] if receipt else ())
+            ),
+        ),
         next_action=NextActionProposal(
             action=NextAction.TRANSITION,
             target_stage=WorkflowStage.VALIDATE,
@@ -265,7 +284,7 @@ class _C8Factory(PantheonRuntimeFactory):
             async def finalize(_team_self, _message, **_kwargs):
                 return AgentResponse(
                     agent_name="ExecutionAgent",
-                    content=_result().model_dump(mode="json"),
+                    content=_result(_message).model_dump(mode="json"),
                     details=None,
                 )
 
@@ -384,6 +403,9 @@ async def test_delegated_specialist_owns_tools_and_evidence_is_attributed_and_ag
     result = await invoker.invoke(stage_input)
 
     assert result.stage_id is WorkflowStage.EXECUTE
+    assert result.body.execution_status == "NOT_EXECUTED"
+    assert result.body.execution_reference is None
+    assert result.body.output_artifact_references == ()
     assert set(factory.toolsets) == {ROOT_KEY, SPECIALIST_KEY, REVIEWER_KEY}
     root = factory.toolsets[ROOT_KEY]
     specialist = factory.toolsets[SPECIALIST_KEY]
@@ -505,7 +527,11 @@ async def test_configured_specialists_are_optional_for_unknown_task(
         boundary_observer=lambda kind, value: observed.setdefault(kind, value),
     )
 
-    assert (await invoker.invoke(stage_input)).stage_id is WorkflowStage.EXECUTE
+    result = await invoker.invoke(stage_input)
+    assert result.stage_id is WorkflowStage.EXECUTE
+    assert result.body.execution_status == "NOT_EXECUTED"
+    assert result.body.execution_reference is None
+    assert result.body.output_artifact_references == ()
     bundle = observed["capability_evidence"]
     assert [item.actor_profile_key for item in bundle.items] == [ROOT_KEY]
     assert not any(

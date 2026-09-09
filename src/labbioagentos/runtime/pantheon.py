@@ -13,6 +13,7 @@ from pantheon.agent import Agent, NoObservableProgressError, ProviderTurnObserva
 from pantheon.team import PantheonTeam
 from pantheon.toolset import ToolSet
 from pydantic import BaseModel, ValidationError
+from pydantic_core import PydanticCustomError
 
 from labbioagentos.trace import (
     InstructionKind,
@@ -47,11 +48,25 @@ from .profiles import (
     RuntimeInvocationMode,
 )
 from .tooling import LabBioRuntimeToolSet
+from .execution_grounding import (
+    ExecutionGroundingError,
+    execution_result_control,
+    execution_result_response_format,
+    requires_execution_grounding,
+    validate_execution_result,
+)
 from .skill_grounding import (
     requires_skill_assessment,
     skill_assessment_response_format,
     skill_retrieval_control,
     validate_skill_assessment,
+)
+from .report_grounding import (
+    ReportGroundingError,
+    expand_report_result,
+    report_result_control,
+    report_result_response_format,
+    requires_report_grounding,
 )
 
 
@@ -79,6 +94,130 @@ class PantheonRuntimeIntegrationError(RuntimeError):
         super().__init__(self.safe_message)
 
 
+def _record_provider_turn_event(
+    trace_recorder: RunTraceRecorder | None,
+    stage_input: RuntimeStageInput,
+    observation: ProviderTurnObservation,
+    *,
+    profile: AgentProfile,
+    prompt: RenderedPrompt,
+    invocation_mode: RuntimeInvocationMode,
+) -> None:
+    """Shared bounded generation metadata, never provider content or reasoning."""
+
+    if trace_recorder is None:
+        return
+    if observation.progress_kind not in {
+        "REASONING_ONLY", "THINK_ONLY", "TOOL_CALL", "CONTENT", "EMPTY",
+    }:
+        raise RuntimeProfileConfigurationError(
+            "Pantheon provider-turn progress kind is invalid"
+        )
+    if (
+        not isinstance(observation.agent_name, str)
+        or not 1 <= len(observation.agent_name) <= 128
+        or (
+            observation.execution_context_id is not None
+            and (
+                not isinstance(observation.execution_context_id, str)
+                or not 1 <= len(observation.execution_context_id) <= 128
+            )
+        )
+        or not isinstance(observation.turn_index, int)
+        or isinstance(observation.turn_index, bool)
+        or not 1 <= observation.turn_index <= 10_000
+        or not isinstance(observation.observable_progress, bool)
+        or not isinstance(observation.elapsed_ms, int)
+        or isinstance(observation.elapsed_ms, bool)
+        or observation.elapsed_ms < 0
+        or observation.elapsed_ms > 86_400_000
+        or (
+            observation.total_tokens is not None
+            and (
+                not isinstance(observation.total_tokens, int)
+                or isinstance(observation.total_tokens, bool)
+                or not 0 <= observation.total_tokens <= 100_000_000
+            )
+        )
+        or len(observation.tool_names) > 64
+        or any(
+            not isinstance(name, str) or not name or len(name) > 128
+            for name in observation.tool_names
+        )
+    ):
+        raise RuntimeProfileConfigurationError(
+            "Pantheon provider-turn observation is outside safe bounds"
+        )
+    if (
+        observation.finish_reason not in {
+            None, "stop", "length", "tool_calls", "content_filter", "function_call", "OTHER"
+        }
+        or (
+            observation.completion_tokens is not None
+            and (
+                type(observation.completion_tokens) is not int
+                or not 0 <= observation.completion_tokens <= 100_000_000
+            )
+        )
+        or len(observation.tool_argument_observations) > 64
+    ):
+        raise RuntimeProfileConfigurationError(
+            "Pantheon generation-integrity observation is outside safe bounds"
+        )
+    argument_observations = []
+    for item in observation.tool_argument_observations:
+        if (
+            any(
+                value is not None and (
+                    not isinstance(value, str)
+                    or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) is None
+                )
+                for value in (item.tool_call_id, item.tool_name)
+            )
+            or item.parse_mode not in {
+                "STRICT_JSON", "CONTROL_CHAR_OR_TRAILING", "TERMINATOR_REPAIR",
+                "JSON_REPAIR", "REJECTED",
+            }
+            or item.rejection_reason not in {
+                None, "RESPONSE_TRUNCATED", "RESPONSE_FILTERED", "INVALID_JSON_OBJECT"
+            }
+        ):
+            raise RuntimeProfileConfigurationError(
+                "Pantheon tool-argument observation is outside safe bounds"
+            )
+        argument_observations.append({
+            "tool_call_id": item.tool_call_id,
+            "tool_name": item.tool_name,
+            "parse_mode": item.parse_mode,
+            "rejection_reason": item.rejection_reason,
+        })
+    trace_recorder.emit(
+        stage_input.run_id,
+        TraceEventType.PROVIDER_TURN_OBSERVED,
+        stage_id=stage_input.stage_id,
+        invocation_id=stage_input.invocation_id,
+        agent_name=observation.agent_name,
+        execution_context_id=observation.execution_context_id,
+        status="OBSERVED",
+        payload={
+            "invocation_mode": invocation_mode.value,
+            "template_id": prompt.template_id,
+            "template_version": prompt.version,
+            "template_hash": prompt.template_hash,
+            "profile_key": profile.profile_key,
+            "turn_index": observation.turn_index,
+            "progress_kind": observation.progress_kind,
+            "observable_progress": observation.observable_progress,
+            "elapsed_ms": observation.elapsed_ms,
+            "total_tokens": observation.total_tokens,
+            "tool_names": list(observation.tool_names),
+            "finish_reason": observation.finish_reason,
+            "completion_tokens": observation.completion_tokens,
+            "tool_argument_observations": argument_observations,
+        },
+    )
+
+
 def _safe_validation_projection(
     error: ValidationError,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -87,7 +226,10 @@ def _safe_validation_projection(
     paths: list[str] = []
     error_types: list[str] = []
     for item in error.errors()[:32]:
-        location = ".".join(str(part)[:64] for part in item.get("loc", ())[:8])
+        parts = item.get("loc", ())
+        if item.get("type") == "extra_forbidden" and parts:
+            parts = (*parts[:-1], "<extra_field>")
+        location = ".".join(str(part)[:64] for part in parts[:8])
         paths.append(location[:256] or "<root>")
         error_types.append(str(item.get("type", "validation_error"))[:128])
     return tuple(paths), tuple(error_types)
@@ -212,7 +354,18 @@ class PantheonRuntimeFactory:
                 else schema.response_format(finalization_stage, workflow_control)
             ),
             use_memory=False,
+            # Capability evidence must finish inside its authorized invocation;
+            # native background receipts would replace the governed tool result.
+            allow_background_tools=False,
             strict_tool_arguments=(invocation_mode is RuntimeInvocationMode.CAPABILITY),
+            private_tool_reasoning_continuity=(
+                model.private_tool_reasoning_continuity
+                and invocation_mode is RuntimeInvocationMode.CAPABILITY
+            ),
+            provider_tool_schema_strict=(
+                model.provider_tool_schema_strict
+                and invocation_mode is RuntimeInvocationMode.CAPABILITY
+            ),
         )
         if toolset is not None:
             await agent.toolset(toolset)
@@ -504,120 +657,10 @@ class PantheonCapabilityStageInvoker:
         stage_input: RuntimeStageInput,
         observation: ProviderTurnObservation,
     ) -> None:
-        if self.trace_recorder is None:
-            return
-        if observation.progress_kind not in {
-            "REASONING_ONLY",
-            "THINK_ONLY",
-            "TOOL_CALL",
-            "CONTENT",
-            "EMPTY",
-        }:
-            raise RuntimeProfileConfigurationError(
-                "Pantheon provider-turn progress kind is invalid"
-            )
-        if (
-            not isinstance(observation.agent_name, str)
-            or not 1 <= len(observation.agent_name) <= 128
-            or (
-                observation.execution_context_id is not None
-                and (
-                    not isinstance(observation.execution_context_id, str)
-                    or not 1 <= len(observation.execution_context_id) <= 128
-                )
-            )
-            or not isinstance(observation.turn_index, int)
-            or isinstance(observation.turn_index, bool)
-            or not 1 <= observation.turn_index <= 10_000
-            or not isinstance(observation.observable_progress, bool)
-            or not isinstance(observation.elapsed_ms, int)
-            or isinstance(observation.elapsed_ms, bool)
-            or observation.elapsed_ms < 0
-            or observation.elapsed_ms > 86_400_000
-            or (
-                observation.total_tokens is not None
-                and (
-                    not isinstance(observation.total_tokens, int)
-                    or isinstance(observation.total_tokens, bool)
-                    or not 0 <= observation.total_tokens <= 100_000_000
-                )
-            )
-            or len(observation.tool_names) > 64
-            or any(
-                not isinstance(name, str) or not name or len(name) > 128
-                for name in observation.tool_names
-            )
-        ):
-            raise RuntimeProfileConfigurationError(
-                "Pantheon provider-turn observation is outside safe bounds"
-            )
-        if (
-            observation.finish_reason not in {
-                None, "stop", "length", "tool_calls", "content_filter", "function_call", "OTHER"
-            }
-            or (
-                observation.completion_tokens is not None
-                and (
-                    type(observation.completion_tokens) is not int
-                    or not 0 <= observation.completion_tokens <= 100_000_000
-                )
-            )
-            or len(observation.tool_argument_observations) > 64
-        ):
-            raise RuntimeProfileConfigurationError(
-                "Pantheon generation-integrity observation is outside safe bounds"
-            )
-        argument_observations = []
-        for item in observation.tool_argument_observations:
-            if (
-                any(
-                    value is not None and (
-                        not isinstance(value, str)
-                        or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value) is None
-                    )
-                    for value in (item.tool_call_id, item.tool_name)
-                )
-                or item.parse_mode not in {
-                    "STRICT_JSON", "CONTROL_CHAR_OR_TRAILING", "TERMINATOR_REPAIR",
-                    "JSON_REPAIR", "REJECTED",
-                }
-                or item.rejection_reason not in {
-                    None, "RESPONSE_TRUNCATED", "RESPONSE_FILTERED", "INVALID_JSON_OBJECT"
-                }
-            ):
-                raise RuntimeProfileConfigurationError(
-                    "Pantheon tool-argument observation is outside safe bounds"
-                )
-            argument_observations.append({
-                "tool_call_id": item.tool_call_id,
-                "tool_name": item.tool_name,
-                "parse_mode": item.parse_mode,
-                "rejection_reason": item.rejection_reason,
-            })
-        self.trace_recorder.emit(
-            stage_input.run_id,
-            TraceEventType.PROVIDER_TURN_OBSERVED,
-            stage_id=stage_input.stage_id,
-            invocation_id=stage_input.invocation_id,
-            agent_name=observation.agent_name,
-            execution_context_id=observation.execution_context_id,
-            status="OBSERVED",
-            payload={
-                "invocation_mode": RuntimeInvocationMode.CAPABILITY.value,
-                "template_id": self.prompt.template_id,
-                "template_version": self.prompt.version,
-                "template_hash": self.prompt.template_hash,
-                "profile_key": self.profile.profile_key,
-                "turn_index": observation.turn_index,
-                "progress_kind": observation.progress_kind,
-                "observable_progress": observation.observable_progress,
-                "elapsed_ms": observation.elapsed_ms,
-                "total_tokens": observation.total_tokens,
-                "tool_names": list(observation.tool_names),
-                "finish_reason": observation.finish_reason,
-                "completion_tokens": observation.completion_tokens,
-                "tool_argument_observations": argument_observations,
-            },
+        _record_provider_turn_event(
+            self.trace_recorder, stage_input, observation,
+            profile=self.profile, prompt=self.prompt,
+            invocation_mode=RuntimeInvocationMode.CAPABILITY,
         )
 
     @staticmethod
@@ -737,8 +780,20 @@ class PantheonTypedStageInvoker:
             effective_stage_input.stage_id,
             effective_stage_input.workflow_control,
         )
+        retrieval_control = None
         if requires_skill_assessment(effective_stage_input):
-            response_format = skill_assessment_response_format(response_format)
+            retrieval_control = skill_retrieval_control(effective_stage_input, capability_evidence)
+            response_format = skill_assessment_response_format(response_format,
+                tuple(retrieval_control["completed_search_capability_invocation_ids"]),
+                tuple(item["proposal_id"] for item in retrieval_control["completed_use_proposals"]))
+        execution_control = None
+        if requires_execution_grounding(effective_stage_input):
+            execution_control = execution_result_control(effective_stage_input, capability_evidence)
+            response_format = execution_result_response_format(response_format, execution_control)
+        report_control = None
+        if requires_report_grounding(effective_stage_input):
+            report_control = report_result_control(effective_stage_input, capability_evidence)
+            response_format = report_result_response_format(response_format, report_control)
         for agent in self.team.team_agents:
             agent.response_format = response_format
         self._emit(
@@ -783,18 +838,29 @@ class PantheonTypedStageInvoker:
         )
         active_session = None
         message = effective_stage_input.model_dump_json()
-        if capability_evidence is not None or requires_skill_assessment(effective_stage_input):
+        if capability_evidence is not None or retrieval_control is not None or execution_control is not None or report_control is not None:
             payload = {"stage_input": effective_stage_input.model_dump(mode="json")}
             if capability_evidence is not None:
                 payload["capability_evidence"] = capability_evidence.model_dump(mode="json")
-            if requires_skill_assessment(effective_stage_input):
-                payload["skill_retrieval_control"] = skill_retrieval_control(
-                    effective_stage_input, capability_evidence,
-                )
+            if retrieval_control is not None:
+                payload["skill_retrieval_control"] = retrieval_control
+            if execution_control is not None:
+                payload["execution_result_control"] = execution_control
+            if report_control is not None:
+                payload["report_result_control"] = report_control
             message = json.dumps(payload, separators=(",", ":"))
+        run_kwargs = {}
+        if self.trace_recorder is not None:
+            run_kwargs["process_turn_observation"] = lambda observation: (
+                _record_provider_turn_event(
+                    self.trace_recorder, stage_input, observation,
+                    profile=self.profile, prompt=self.prompt,
+                    invocation_mode=RuntimeInvocationMode.FINALIZE,
+                )
+            )
         try:
             if plugin is None:
-                response = await self.team.run(message)
+                response = await self.team.run(message, **run_kwargs)
             else:
                 context = StageContext(
                     run_id=stage_input.run_id,
@@ -816,6 +882,7 @@ class PantheonTypedStageInvoker:
                         message,
                         process_step_message=active_session.observe,
                         process_chunk=active_session.observe,
+                        **run_kwargs,
                     )
                     active_session.raise_trace_error()
         except ValidationError as exc:
@@ -851,22 +918,50 @@ class PantheonTypedStageInvoker:
                 validated = response_format.model_validate(content)
             else:
                 raise ValueError("Unsupported runtime response value")
-            result = RuntimeStageResult.model_validate(
-                validated.model_dump(mode="python")
-            )
+            result = (expand_report_result(validated, report_control) if report_control is not None
+                else RuntimeStageResult.model_validate(validated.model_dump(mode="python")))
             if result.stage_id is not stage_input.stage_id:
                 raise ValueError("Runtime result stage does not match the requested stage")
             validate_skill_assessment(result, effective_stage_input, capability_evidence)
+            if execution_control is not None:
+                validate_execution_result(result, execution_control)
         except ValidationError as exc:
-            field_paths, error_types = _runtime_result_validation_projection(
-                exc,
-                content,
+            field_paths, error_types = (
+                _safe_validation_projection(exc) if report_control is not None
+                else _runtime_result_validation_projection(exc, content)
             )
             error = PantheonRuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Pantheon returned a response that does not satisfy RuntimeStageResult.",
                 validation_error_field_paths=field_paths,
                 validation_error_types=error_types,
+            )
+            self._emit_failure(stage_input, error)
+            raise error from exc
+        except ReportGroundingError as exc:
+            error = PantheonRuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Pantheon selected a report without current submission evidence.",
+                validation_error_field_paths=("report_artifact_id",),
+                validation_error_types=("report_receipt_not_current",),
+            )
+            self._emit_failure(stage_input, error)
+            raise error from exc
+        except ExecutionGroundingError as exc:
+            error = PantheonRuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Pantheon returned execution facts inconsistent with current evidence.",
+                validation_error_field_paths=(exc.field_path,),
+                validation_error_types=(exc.error_code,),
+            )
+            self._emit_failure(stage_input, error)
+            raise error from exc
+        except PydanticCustomError as exc:
+            error = PantheonRuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Pantheon returned an unsupported Skill assessment.",
+                validation_error_field_paths=("body.skill_assessment",),
+                validation_error_types=(exc.type,),
             )
             self._emit_failure(stage_input, error)
             raise error from exc

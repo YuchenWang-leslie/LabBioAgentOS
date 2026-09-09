@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,9 +37,10 @@ from .models import (
 
 
 class _OutputContractValidationError(ValueError):
-    def __init__(self, code: OutputContractFailureCode):
+    def __init__(self, code: OutputContractFailureCode, *, record_index: int | None = None):
         super().__init__(code.value)
         self.code = code
+        self.record_index = record_index
 
 
 def _reject_json_constant(value: str) -> None:
@@ -57,6 +59,7 @@ class ArtifactRegistrationDecision:
     reason: str
     representation: ArtifactRepresentation
     failure_code: OutputContractFailureCode | None = None
+    record_index: int | None = None
     artifact_schema: ArtifactSchema | None = None
     schema_id: str | None = None
     release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
@@ -156,6 +159,7 @@ class ArtifactRegistrationPolicy:
                 f"Structured output contract validation failed: {exc.code.value}.",
                 contract_valid=False,
                 failure_code=exc.code,
+                record_index=exc.record_index,
                 schema_id=contract.schema_id,
             )
         except OSError:
@@ -190,6 +194,7 @@ class ArtifactRegistrationPolicy:
                 spec,
                 "Output shape is valid but model-visible safety validation failed.",
                 contract_valid=True,
+                failure_code=OutputContractFailureCode.MODEL_CONTENT_REJECTED,
                 schema_id=contract.schema_id,
             )
         return ArtifactRegistrationDecision(
@@ -264,32 +269,32 @@ class ArtifactRegistrationPolicy:
             raise _OutputContractValidationError(
                 OutputContractFailureCode.RECORD_LIMIT_EXCEEDED
             )
-        for record in records:
+        for record_index, record in enumerate(records):
             if not isinstance(record, dict):
                 raise _OutputContractValidationError(
-                    OutputContractFailureCode.INVALID_DOCUMENT
+                    OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
                 )
             fields = set(record)
             if not contract.required_fields.issubset(fields):
                 raise _OutputContractValidationError(
-                    OutputContractFailureCode.INVALID_DOCUMENT
+                    OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
                 )
             if not fields.issubset(contract.allowed_fields):
                 raise _OutputContractValidationError(
-                    OutputContractFailureCode.UNDECLARED_RECORD_FIELDS
+                    OutputContractFailureCode.UNDECLARED_RECORD_FIELDS, record_index=record_index,
                 )
             for value in record.values():
                 if isinstance(value, (dict, list)):
                     raise _OutputContractValidationError(
-                        OutputContractFailureCode.INVALID_DOCUMENT
+                        OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
                     )
                 if not isinstance(value, (str, int, float, bool, type(None))):
                     raise _OutputContractValidationError(
-                        OutputContractFailureCode.INVALID_DOCUMENT
+                        OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
                     )
                 if isinstance(value, str) and len(value) > contract.max_scalar_string_length:
                     raise _OutputContractValidationError(
-                        OutputContractFailureCode.INVALID_DOCUMENT
+                        OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
                     )
         return document
 
@@ -300,6 +305,7 @@ class ArtifactRegistrationPolicy:
         *,
         contract_valid: bool = False,
         failure_code: OutputContractFailureCode | None = None,
+        record_index: int | None = None,
         schema_id: str | None = None,
     ) -> ArtifactRegistrationDecision:
         return ArtifactRegistrationDecision(
@@ -310,6 +316,7 @@ class ArtifactRegistrationPolicy:
             reason=reason,
             representation=ArtifactRepresentation(),
             failure_code=failure_code,
+            record_index=record_index,
             schema_id=schema_id,
         )
 
@@ -341,24 +348,54 @@ class OutputCollector:
         plan: ExecutionPlan,
         output_root: Path,
     ) -> tuple[CollectedOutput, ...]:
-        controlled_root = output_root.resolve(strict=True)
         collected: list[CollectedOutput] = []
+        try:
+            for item in self._collect_declared_outputs(plan, output_root):
+                collected.append(item)
+        except OutputCollectionError as exc:
+            raise OutputCollectionError(
+                str(exc), exc.error_class, detail_code=exc.detail_code,
+                output_artifact_refs=tuple(item.ref for item in collected),
+                issues=(
+                    *(item.issue for item in collected if item.issue is not None),
+                    ExecutionIssue(
+                        error_class=exc.error_class, detail_code=exc.detail_code,
+                        output_index=len(collected),
+                        message="Declared output could not be safely collected or registered.",
+                    ),
+                ),
+            ) from exc
+        return tuple(collected)
+
+    def _collect_declared_outputs(
+        self, plan: ExecutionPlan, output_root: Path,
+    ) -> Iterator[CollectedOutput]:
+        controlled_root = output_root.resolve(strict=True)
         collected_bytes = 0
-        for spec in plan.requested_outputs:
-            path = self._resolve_declared_output(controlled_root, spec)
-            size = path.stat().st_size
-            collected_bytes += size
-            if size > self.max_output_file_bytes:
+        for output_index, spec in enumerate(plan.requested_outputs):
+            try:
+                path = self._resolve_declared_output(controlled_root, spec)
+                size = path.stat().st_size
+                collected_bytes += size
+                if size > self.max_output_file_bytes:
+                    raise OutputCollectionError(
+                        "Declared output exceeds the trusted per-file collection limit",
+                        ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                        detail_code=OutputContractFailureCode.FILE_TOO_LARGE,
+                    )
+                if collected_bytes > self.max_collected_output_bytes:
+                    raise OutputCollectionError(
+                        "Declared outputs exceed the trusted total collection limit",
+                        ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                        detail_code=OutputContractFailureCode.COLLECTION_LIMIT_EXCEEDED,
+                    )
+                sha256 = self._sha256(path)
+            except OSError as exc:
                 raise OutputCollectionError(
-                    "Declared output exceeds the trusted per-file collection limit",
+                    "Declared output inspection failed during filesystem IO.",
                     ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
-                )
-            if collected_bytes > self.max_collected_output_bytes:
-                raise OutputCollectionError(
-                    "Declared outputs exceed the trusted total collection limit",
-                    ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
-                )
-            sha256 = self._sha256(path)
+                    detail_code=OutputContractFailureCode.OUTPUT_IO_ERROR,
+                ) from exc
             self._emit(
                 plan,
                 TraceEventType.OUTPUT_COLLECTED,
@@ -405,17 +442,24 @@ class OutputCollector:
                     f"Artifact registration failed for {spec.relative_path}: {exc}",
                     ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
                 ) from exc
+            except OSError as exc:
+                raise OutputCollectionError(
+                    "Declared output registration failed during filesystem IO.",
+                    ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
+                    detail_code=OutputContractFailureCode.OUTPUT_IO_ERROR,
+                ) from exc
             issue = None
-            if spec.output_contract_id is not None and not decision.contract_valid:
+            if spec.output_contract_id is not None and (
+                not decision.contract_valid or decision.failure_code is not None
+            ):
                 issue = ExecutionIssue(
                     error_class=ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
                     detail_code=decision.failure_code,
                     output_path=spec.relative_path,
+                    output_index=output_index,
+                    record_index=decision.record_index,
                     message=decision.reason,
                 )
-            collected.append(
-                CollectedOutput(ref=ref, decision=decision, issue=issue)
-            )
             self._emit(
                 plan,
                 TraceEventType.OUTPUT_REGISTERED,
@@ -433,7 +477,7 @@ class OutputCollector:
                     ),
                 },
             )
-        return tuple(collected)
+            yield CollectedOutput(ref=ref, decision=decision, issue=issue)
 
     @staticmethod
     def _resolve_declared_output(
@@ -448,18 +492,26 @@ class OutputCollector:
                 raise OutputCollectionError(
                     f"Output path contains a symlink: {spec.relative_path}",
                     ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                    detail_code=OutputContractFailureCode.OUTPUT_PATH_REJECTED,
                 )
         try:
             resolved = candidate.resolve(strict=True)
-        except OSError as exc:
+        except FileNotFoundError as exc:
             raise OutputCollectionError(
                 f"Declared output does not exist: {spec.relative_path}",
+                ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                detail_code=OutputContractFailureCode.OUTPUT_NOT_FOUND,
+            ) from exc
+        except OSError as exc:
+            raise OutputCollectionError(
+                "Declared output could not be resolved safely",
                 ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
             ) from exc
         if not resolved.is_relative_to(output_root) or not resolved.is_file():
             raise OutputCollectionError(
                 f"Output escaped the controlled root: {spec.relative_path}",
                 ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                detail_code=OutputContractFailureCode.OUTPUT_PATH_REJECTED,
             )
         return resolved
 

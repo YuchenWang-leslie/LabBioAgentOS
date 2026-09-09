@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from .models import ExecutionFailureClass
+from labbioagentos.artifacts import ArtifactRef
+
+from .models import (
+    ExecutionDiagnostic, ExecutionFailureClass, ExecutionIssue, OutputContractFailureCode,
+)
 
 
 class ExecutionBoundaryError(RuntimeError):
@@ -43,11 +47,18 @@ class ExecutionInputSelectionError(ExecutionPlanRejected):
 class ExecutionScriptValidationError(ExecutionBoundaryError):
     """The submitted runtime program is not syntactically valid."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        script_hash: str | None = None,
+        diagnostics: tuple[ExecutionDiagnostic, ...] = (),
+    ):
         super().__init__(
             "The submitted Python script is not syntactically valid",
             ExecutionFailureClass.PLAN_REJECTED,
         )
+        self.script_hash = script_hash
+        self.diagnostics = diagnostics
 
 
 class ImageNotApprovedError(ExecutionBoundaryError):
@@ -73,3 +84,17 @@ class ContainerStartError(ExecutionBoundaryError):
 
 class OutputCollectionError(ExecutionBoundaryError):
     """A declared output could not be safely collected or registered."""
+
+    def __init__(
+        self,
+        message: str,
+        error_class: ExecutionFailureClass,
+        *,
+        detail_code: OutputContractFailureCode | None = None,
+        output_artifact_refs: tuple[ArtifactRef, ...] = (),
+        issues: tuple[ExecutionIssue, ...] = (),
+    ):
+        super().__init__(message, error_class)
+        self.detail_code = detail_code
+        self.output_artifact_refs = output_artifact_refs
+        self.issues = issues

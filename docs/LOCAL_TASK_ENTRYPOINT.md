@@ -107,9 +107,11 @@ RAW 输出可交给本地用户，但不会因此获得远程模型可读权限�
 它也不是聊天界面：未启用托管模式时没有新增审批入口；托管模式接入既有
 明确 approve/reject 的 Gold gate，但不新增任意文字答复或中断续跑协议。
 
-保持已有九阶段协议、16 次 capability turns、`retry_limit=1`、离线沙盒及
+保持已有九阶段协议、capability 的 16 条新增消息预算、`retry_limit=1`、离线沙盒及
 真实性/曝光规则。默认配置只声明通用有界汇总输出合同，不提供某项分析答案。
 是否科学正确仍需外部评价；`COMPLETED` 不是科学质量认证。
+配置字段仍名为 max_capability_turns，但 Pantheon 实际累计 assistant 消息和
+工具反馈消息；一轮批量调用多个工具会消耗多条，不等于 16 次模型采样。
 
 稳定状态可通过同一运行时配置重建；源码、profile 或有效配置不同会产生
 明确的 revision mismatch。运行中断若保留 `STAGE_IN_FLIGHT`，入口不会自动
@@ -119,7 +121,11 @@ RAW 输出可交给本地用户，但不会因此获得远程模型可读权限�
 命令退出码：`0` 表示 `run` 完成或只读命令成功，`2` 表示运行返回了非完成
 的稳定结果，`1` 表示命令失败，`130` 表示用户中断。
 入口捕获的异常仅输出安全类型，不打印可能含有凭据、原始数据或 provider 正文的异常消息。
-失败目录保留，不自动纠错、增加预算或另起隐藏任务。
+失败目录保留，入口不代 Agent 修改程序、增加预算或另起隐藏任务。
+Agent 可在原有权限和预算内自行提交修订版；每版保留独立执行身份和回执。
+`execution_inspect` 允许它分页查看同一 run、同一应用会话内自己此前提交的
+原稿与错误回执，不提供任意 RAW 读取或进程日志读取权限。该原稿索引不支持
+重启恢复；传输会改写的特殊文本明确拒绝，不伪称已完整读取。
 
 注册输出的原始文件名依赖保留的 JSONL 收集审计；审计缺失时导出明确失败。
 权威流程状态始终来自 SQLite，而不是根据日志推测。
@@ -155,3 +161,42 @@ WorkflowEngine、Pantheon、阶段图、默认 profile 和预算未因本轮修�
 本地 CLI 已使用新源码；未部署生产服务、晋升 Gold/Memory 或推送 GitHub。
 Docker、containerd、docker.socket 均为 active，没有遗留运行中的任务容器。
 本检查点到此停止，下一入口是用户查看上述报告；不自动启动另一个任务或扩大功能。
+
+## 显式模型思考配置（2026-09-09 开发中）
+
+`[provider]` 可设置 `thinking_enabled = true`，缺省仍为 false，旧配置行为不变。
+该设置进入运行 manifest/revision，不改变任务文字、方法选择、token 上限或
+重试限额。启用时使用显式兼容 Chat transport 的私有工具推理连续性；不能只
+开启 provider 开关却删除下一轮协议所需的字段。隐藏推理只在同次运行、同一
+模型的请求之间传递，不写入日志、结果、Memory、其他 Agent 或用户报告。
+此选项需要匹配的 Pantheon fork 修订；`constraints/pantheon-runtime.txt` 已锁定
+发布到用户 fork 的 `07675c45b538f7d27b9b16b1b7d8b72f37365293`，不声称官方
+发布已包含。具体测试、修订身份与发布状态以当前 workplan 为准。
+
+语法预检拒绝现在携带提交 SHA 和安全异常类型/行列，贯通工具反馈及即时审计。
+`execution_submit_request.validation_status=VALID` 仍仅表示字段结构通过，不是
+程序语法、执行结果或科学结论通过。源码、错误消息、路径及数据值仍不回传。
+
+运行期 IndexError 还可返回有限 `reported_index_condition`，区分进程报告的
+普通越界和空轴越界。标准格式以外保持未知；不回传索引、轴、长度、错误文本
+或变量值，也不据此自动改程序。这个字段不是对数据对象的独立事实认证。
+
+开启 thinking 的两个新任务均未通过：一个未修复重复运行错误，另一个在
+16,384 completion tokens 内没有发出执行工具调用。该配置不因此晋升为默认，
+也不通过隐藏 fallback 改变运行中的模式；后续显式配置实验及结果见 workplan。
+
+`[provider] provider_tool_schema_strict = true` 是独立的服务端工具 schema
+选项，缺省 false。它不是客户端 `strict_tool_arguments` 的别名：显式启用时，
+OpenAI Chat 请求携带 `function.strict=true` 并保留原 schema，不重写参数、
+required 或默认值。其他 transport 不静默降级。该选项需匹配上述 Pantheon
+修订，并须先验证目标 provider 对实际 schema 子集的支持。
+
+默认 EXECUTE 不再要求每次进入阶段都重新调用 execution_submit。Agent 可如实
+选择不执行，包括复核后只查已有结果的情况；无当前回执时只能记录
+NOT_EXECUTED、空执行引用和空新输出，不能冒充运行成功。显式自定义 profile
+中的 required_capabilities 仍会校验。旧输出保留为历史证据，不自动晋升为
+新一轮结果。retry_limit 限制显式 RETRY，不计所有普通返工迁移。
+
+CAPABILITY 和 FINALIZE 共用有限 provider-turn 观测。结构化响应校验拒绝前也
+记录结束原因、用量、耗时等元数据，不记录响应正文或隐藏推理，也不自动修复
+JSON 或追加调用。历史未记录的响应原因不能据此补推。
