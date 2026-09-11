@@ -231,6 +231,7 @@ class LocalArtifactStore(ArtifactStore):
             stage_id=stage_id,
             producer_invocation_id=producer_invocation_id,
             storage_locator=str(blob_path),
+            original_filename=source_path.name,
             artifact_schema=schema,
             exposure_class=exposure_class,
             release_basis=release_basis,

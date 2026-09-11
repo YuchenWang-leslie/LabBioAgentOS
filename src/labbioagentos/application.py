@@ -66,6 +66,7 @@ from .execution import (
     RequestedResources,
     StructuredOutputContract,
 )
+from .execution.environments import EnvironmentService
 from .governance import (
     AccessAction,
     AccessService,
@@ -531,6 +532,7 @@ class ApplicationRuntimeConfiguration:
     trace_sink: TraceSink | None = None
     run_state_store: RunStateStore | None = None
     process_runner: DockerProcessRunner | None = None
+    environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
     domain_decision_handlers: tuple[ApplicationDomainDecisionHandler, ...] = ()
@@ -660,6 +662,10 @@ class LabBioApplication:
             configuration.output_contracts
         )
         self.image_registry = ApprovedImageRegistry(configuration.approved_images)
+        environment_service = (
+            configuration.environment_service_factory(self.image_registry)
+            if configuration.environment_service_factory is not None else None
+        )
         self.execution_policy = configuration.execution_policy
         profile = configuration.execution_profile
         self.execution_capability = (
@@ -701,7 +707,8 @@ class LabBioApplication:
             ),
             process_runner=configuration.process_runner,
             command_builder=DockerCommandBuilder(
-                max_output_file_bytes=self.execution_policy.max_output_file_bytes
+                max_output_file_bytes=self.execution_policy.max_output_file_bytes,
+                tmpfs_size_mb=self.execution_policy.tmpfs_size_mb,
             ),
             trace_recorder=self.trace_recorder,
             minimum_queryable_output_count=(
@@ -731,6 +738,7 @@ class LabBioApplication:
             artifact_store=self.artifact_store,
             artifact_exposure=self.artifact_exposure,
             execution_submission=self.execution_submission,
+            environment_service=environment_service,
             skill_service=configuration.skill_service,
             memory_service=configuration.memory_service,
             report_submission=self.report_submission,

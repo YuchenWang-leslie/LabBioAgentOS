@@ -51,6 +51,7 @@ from labbioagentos.execution.models import (
     ExecutionScriptContent,
 )
 from labbioagentos.execution.submission import ExecutionInspectionError
+from labbioagentos.execution.environments import EnvironmentService, EnvironmentRequestError
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.memory import (
     MemoryConflictError,
@@ -104,10 +105,13 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
     ),
     WorkflowStage.PLAN: (
         "artifact_query", "skill_search", "skill_view", "skill_propose_use",
-        "memory_search", "memory_view",
+        "memory_search", "memory_view", "environment_list",
     ),
     WorkflowStage.PREFLIGHT: ("artifact_query",),
-    WorkflowStage.EXECUTE: ("artifact_query", "execution_submit", "execution_inspect"),
+    WorkflowStage.EXECUTE: (
+        "artifact_query", "execution_submit", "execution_inspect",
+        "environment_list", "environment_build",
+    ),
     WorkflowStage.VALIDATE: ("artifact_query",),
     WorkflowStage.INTERPRET: ("artifact_query",),
     WorkflowStage.REPORT: ("artifact_query", "report_submit"),
@@ -124,6 +128,8 @@ CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
     "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "execution_inspect": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "environment_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "environment_build": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "skill_search": InformationAuthority.MODEL_CONTEXT,
     "skill_view": InformationAuthority.MODEL_CONTEXT,
@@ -411,6 +417,7 @@ class RuntimeCapabilityServices:
     memory_service: MemoryGovernanceService | None = None
     report_submission: ReportSubmissionService | None = None
     trace_recorder: RunTraceRecorder | None = None
+    environment_service: EnvironmentService | None = None
 
 
 class LabBioRuntimeToolSet(ToolSet):
@@ -599,6 +606,53 @@ class LabBioRuntimeToolSet(ToolSet):
 
         return tuple(self._evidence_items)
 
+    def _environment_service(self) -> EnvironmentService:
+        service = self._required(self.services.environment_service, "environment")
+        if service.owner_user_id != self.binding.principal.user_id:
+            raise AuthorizationDenied("Environment owner does not match the bound user")
+        return service
+
+    @tool
+    async def environment_list(
+        self, requirements: list[str] = [], offset: int = 0, limit: int = 10,
+    ) -> dict:
+        """Discover approved Python images and verified package-version facts.
+
+        The execution capability describes the default image, not every cached
+        environment. Returned image keys may be used by execution_submit.
+        Requirements are optional PyPI distribution names with extras/version
+        constraints, not import names. An unspecified inventory does not prove
+        that a package is absent. No environment is selected or built by listing.
+        """
+        return await self._call("environment_list", lambda: (
+            self._environment_service().list_environments(
+                requirements=tuple(requirements), offset=offset, limit=limit,
+            )
+        ))
+
+    @tool
+    async def environment_build(
+        self, base_image_key: ExecutionImageKey, requirements: list[str],
+        import_modules: list[str] = [],
+    ) -> dict:
+        """Prepare and verify a reusable Python image, without running analysis.
+
+        Choose an approved base image key and PyPI package requirements with
+        optional extras/version constraints. Only wheels are supported; URLs,
+        local paths, editable installs, environment markers and pip options are
+        not accepted. import_modules are optional Python import names to verify.
+        Builds have no analysis data mounted. A SUCCEEDED receipt contains an
+        immutable verified image key usable by execution_submit; FAILED contains
+        bounded dependency diagnostics for your decision. No automatic repair or
+        analysis submission occurs. The unchanged default image remains usable.
+        """
+        return await self._call("environment_build", lambda: (
+            self._environment_service().build_environment(
+                base_image_key=base_image_key, requirements=tuple(requirements),
+                import_modules=tuple(import_modules),
+            )
+        ))
+
     @tool
     async def artifact_list(self, offset: int = 0, limit: int = 20) -> dict:
         """List bounded metadata for artifacts in the bound workspace."""
@@ -718,7 +772,12 @@ class LabBioRuntimeToolSet(ToolSet):
         Only Artifact UUIDs explicitly supplied in ``input_artifact_ids`` are
         mounted. The JSON object named by ``LABBIO_INPUT_MANIFEST_PATH`` maps
         each selected Artifact UUID string directly to its read-only container
-        path. The offline script writes declared relative outputs beneath the
+        path. Mounted basenames are unique Artifact UUIDs, not original names.
+        The sandbox-only JSON object at ``LABBIO_INPUT_IDENTITIES_PATH`` maps
+        those same UUIDs to objects containing ``original_filename`` (null for
+        legacy records without that provenance). Original names may repeat;
+        they are local provenance, not unique identifiers or remote RAW views.
+        The offline script writes declared relative outputs beneath the
         directory named by ``LABBIO_OUTPUT_DIR``.
 
         The receipt status is the process outcome. Failure diagnostics refer to
@@ -732,7 +791,8 @@ class LabBioRuntimeToolSet(ToolSet):
         execution retains its own receipt and source identity.
 
         Args:
-            image_key: Approved key from the current execution capability.
+            image_key: Approved key from the default execution capability or a
+                verified environment_list/environment_build result.
             script_content: Complete program to execute in the approved runtime.
             runtime: Runtime family from the current execution capability.
             input_artifact_ids: A subset of the current execution capability's
@@ -1311,6 +1371,8 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @staticmethod
     def _safe_error(exc: Exception) -> ToolError:
+        if isinstance(exc, EnvironmentRequestError):
+            return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, _ArtifactQueryFailure):
             messages = {
                 "INVALID_ENUM_VALUE": (

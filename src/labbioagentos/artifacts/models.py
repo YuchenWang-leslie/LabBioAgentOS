@@ -130,6 +130,8 @@ class ArtifactRef(BaseModel):
     stage_id: WorkflowStage | None = None
     producer_invocation_id: UUID | None = None
     storage_locator: StrictStr = Field(min_length=1)
+    # Local provenance only; not part of the remote ArtifactView projection.
+    original_filename: StrictStr | None = None
     artifact_schema: ArtifactSchema | None = Field(
         default=None,
         validation_alias="schema",

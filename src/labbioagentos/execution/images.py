@@ -40,6 +40,10 @@ class ApprovedImage(BaseModel):
             "tuple means the inventory is unspecified."
         ),
     )
+    installed_packages: dict[StrictStr, StrictStr] = Field(
+        default_factory=dict, max_length=2048,
+        description="Verified distribution versions for this immutable image.",
+    )
 
     @field_validator("reference")
     @classmethod
@@ -75,6 +79,12 @@ class ApprovedImage(BaseModel):
             for name in self.available_python_modules
         ):
             raise ValueError("Available Python module names must be import names")
+        if any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name) is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}", version) is None
+            for name, version in self.installed_packages.items()
+        ):
+            raise ValueError("Package inventory must contain bounded names and versions")
         return self
 
     @property
@@ -94,6 +104,16 @@ class ApprovedImageRegistry:
                 raise ValueError(f"Duplicate approved image key: {image.key}")
             entries[image.key] = image
         self._entries = entries
+
+    def register(self, image: ApprovedImage) -> None:
+        """Register a verified immutable image without replacing an existing key."""
+        existing = self._entries.get(image.key)
+        if existing is not None and existing != image:
+            raise ValueError("Approved image key already has a different identity")
+        self._entries[image.key] = image
+
+    def list(self) -> tuple[ApprovedImage, ...]:
+        return tuple(self._entries[key] for key in sorted(self._entries))
 
     def resolve(
         self,
@@ -125,6 +145,13 @@ class ExecutionPolicy(BaseModel):
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
     max_output_file_bytes: int = Field(default=16_777_216, ge=1)
     max_collected_output_bytes: int = Field(default=67_108_864, ge=1)
+    tmpfs_size_mb: int = Field(default=64, ge=1)
+
+    @model_validator(mode="after")
+    def validate_file_limits(self) -> "ExecutionPolicy":
+        if self.max_output_file_bytes > self.max_collected_output_bytes:
+            raise ValueError("Total collection limit must be at least the per-file limit")
+        return self
 
     def validate_plan(self, plan: ExecutionPlan, image: ApprovedImage) -> None:
         self.validate_request(

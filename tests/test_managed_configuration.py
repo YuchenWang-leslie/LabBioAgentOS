@@ -36,6 +36,30 @@ def test_gold_database_contents_are_not_part_of_runtime_fingerprint(settings_fil
         application.configuration.skill_service.store.close()
 
 
+def test_environment_root_is_authenticated_user_scoped(settings_file, tmp_path):
+    from argparse import Namespace
+    from labbioagentos.local_config import LocalEnvironmentSettings
+    from labbioagentos.local_workspace_cli import scoped_settings
+
+    root = tmp_path / "managed"
+    credential = tmp_path / "test.token"
+    with WorkspaceRegistry.initialize(root) as registry:
+        registry.create_user("TEST1", credential)
+        registry.create_project("TEST1", "PRJ1")
+        registry.create_project("TEST1", "PRJ2")
+    settings = load_settings(settings_file).model_copy(update={
+        "managed_root": root,
+        "environment": LocalEnvironmentSettings(root=tmp_path / "not-user-scoped"),
+    })
+    args = Namespace(workspace_root=None, user="TEST1", project="PRJ1",
+                     credential_file=credential, command="gold-list")
+    first = scoped_settings(args, settings)
+    args.project = "PRJ2"
+    second = scoped_settings(args, settings)
+    assert first.environment.root == second.environment.root == root / "TEST1/Environments"
+    assert first.environment.root != first.gold_root
+
+
 def test_failed_application_construction_closes_both_stores(settings_file, monkeypatch):
     from labbioagentos import local_gold
 

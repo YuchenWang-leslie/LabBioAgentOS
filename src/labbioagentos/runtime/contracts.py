@@ -262,7 +262,7 @@ class RuntimeApprovedOutputContractView(BaseModel):
 
 
 class RuntimeExecutionCapabilityView(BaseModel):
-    """Trusted script-free execution envelope visible to runtime models."""
+    """Trusted execution envelope and default image visible to runtime models."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -270,14 +270,43 @@ class RuntimeExecutionCapabilityView(BaseModel):
         InformationAuthority.CONTROL_STATE
     )
     runtime: ExecutionRuntime
-    image_key: StrictStr = Field(min_length=1, max_length=128)
+    image_key: StrictStr = Field(
+        min_length=1, max_length=128,
+        description=(
+            "Default approved image key. If environment tools are configured, "
+            "their verified image keys are also valid execution choices."
+        ),
+    )
     resources: RequestedResources
     network_required: bool
+    max_output_file_bytes: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Host-enforced maximum bytes per written regular file, including "
+            "intermediate files, and per collected output. Not an input read limit. "
+            "None means unspecified in an older capability snapshot."
+        ),
+    )
+    max_collected_output_bytes: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Maximum total bytes of declared outputs collected per execution; "
+            "not a workspace disk quota or permission to expose RAW data. "
+            "None means unspecified in an older capability snapshot."
+        ),
+    )
+    tmpfs_size_mb: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Capacity of memory-backed /tmp in MiB, subject to container memory "
+            "and per-file limits. None means unspecified in an older snapshot."
+        ),
+    )
     available_python_modules: tuple[StrictStr, ...] = Field(
         default=(),
         max_length=256,
         description=(
-            "Trusted import-module inventory for the approved immutable image; "
+            "Trusted import-module inventory for this default immutable image; "
             "empty means unspecified."
         ),
     )
@@ -334,6 +363,9 @@ class RuntimeExecutionCapabilityView(BaseModel):
             image_key=image_key,
             resources=resources,
             network_required=network_required,
+            max_output_file_bytes=execution_policy.max_output_file_bytes,
+            max_collected_output_bytes=execution_policy.max_collected_output_bytes,
+            tmpfs_size_mb=execution_policy.tmpfs_size_mb,
             available_python_modules=image.available_python_modules,
             minimum_queryable_output_count=minimum_queryable_output_count,
             approved_output_contracts=tuple(

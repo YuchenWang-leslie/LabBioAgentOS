@@ -748,6 +748,8 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
         "artifact_query",
         "execution_submit",
         "execution_inspect",
+        "environment_list",
+        "environment_build",
         "report_submit",
         "skill_search",
         "skill_view",

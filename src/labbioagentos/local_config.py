@@ -43,18 +43,41 @@ class LocalExecutionSettings(_SettingsModel):
     image_key: str
     image_reference: str
     available_python_modules: tuple[str, ...] = ()
+    installed_packages: dict[str, str] = Field(default_factory=dict)
     resources: RequestedResources
+    max_output_file_bytes: int = Field(default=16_777_216, ge=1, strict=True)
+    max_collected_output_bytes: int = Field(default=67_108_864, ge=1, strict=True)
+    tmpfs_size_mb: int = Field(default=64, ge=1, strict=True)
 
     def approved_image(self) -> ApprovedImage:
         return ApprovedImage(
             key=self.image_key, reference=self.image_reference,
             runtime=ExecutionRuntime.PYTHON,
             available_python_modules=self.available_python_modules,
+            installed_packages=self.installed_packages,
         )
 
     @model_validator(mode="after")
     def validate_image(self) -> "LocalExecutionSettings":
         self.approved_image()
+        if self.max_output_file_bytes > self.max_collected_output_bytes:
+            raise ValueError("Total collection limit must be at least the per-file limit")
+        return self
+
+
+class LocalEnvironmentSettings(_SettingsModel):
+    root: Path
+    build_proxy: str | None = None
+    build_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+
+    @model_validator(mode="after")
+    def validate_proxy(self) -> "LocalEnvironmentSettings":
+        if self.build_proxy is not None:
+            parsed = urlsplit(self.build_proxy)
+            if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                    or parsed.username or parsed.password or parsed.query or parsed.fragment
+                    or any(char.isspace() for char in self.build_proxy)):
+                raise ValueError("Build proxy must be an HTTP(S) endpoint without credentials")
         return self
 
 
@@ -68,6 +91,7 @@ class LocalSettings(_SettingsModel):
     profile: Path | None = None
     managed_root: Path | None = None
     gold_root: Path | None = None
+    environment: LocalEnvironmentSettings | None = None
 
     @property
     def principal(self) -> Principal:
@@ -115,6 +139,9 @@ def load_settings(path: Path) -> LocalSettings:
         "profile": absolute(settings.profile) if settings.profile else None,
         "managed_root": managed_root,
         "gold_root": absolute(settings.gold_root) if settings.gold_root else None,
+        "environment": settings.environment.model_copy(update={
+            "root": absolute(settings.environment.root),
+        }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
     })
 
@@ -148,6 +175,16 @@ def runtime_manifest(settings: LocalSettings) -> dict:
                 "user_input_enabled": True,
             }) if stage.stage is WorkflowStage.PLAN else stage
             for stage in profile.stages
+        )})
+    if settings.environment is not None:
+        environment_tools = {
+            WorkflowStage.PLAN: ("environment_list",),
+            WorkflowStage.EXECUTE: ("environment_list", "environment_build"),
+        }
+        profile = profile.model_copy(update={"stages": tuple(
+            stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
+                *stage.capabilities, *environment_tools.get(stage.stage, ()),
+            )))}) for stage in profile.stages
         )})
     effective_profile = profile.model_dump(mode="json")
     # Set iteration order must not change the revision across process restarts.
@@ -254,6 +291,21 @@ def build_application(
             handle.write(json.dumps({"kind": kind, "payload": payload}, sort_keys=True) + "\n")
 
     resources = settings.execution.resources
+    environment_service_factory = None
+    if settings.environment is not None:
+        from .execution.environment_builder import DockerEnvironmentBuilder
+        from .execution.environments import EnvironmentService
+
+        def environment_service_factory(registry):
+            return EnvironmentService(
+                root=settings.environment.root, image_registry=registry,
+                builder=DockerEnvironmentBuilder(
+                    proxy_url=settings.environment.build_proxy,
+                    timeout_seconds=settings.environment.build_timeout_seconds,
+                ),
+                owner_user_id=settings.principal.user_id,
+            )
+
     with ExitStack() as cleanup:
         skill_service = None
         handlers = ()
@@ -276,6 +328,9 @@ def build_application(
             execution_policy=ExecutionPolicy(
                 allow_network=False, max_cpus=resources.cpus, max_memory_mb=resources.memory_mb,
                 max_pids=resources.pids_limit, max_timeout_seconds=resources.timeout_seconds,
+                max_output_file_bytes=settings.execution.max_output_file_bytes,
+                max_collected_output_bytes=settings.execution.max_collected_output_bytes,
+                tmpfs_size_mb=settings.execution.tmpfs_size_mb,
             ),
             execution_profile=ApplicationExecutionProfile(
                 runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.image_key, resources=resources,
@@ -286,6 +341,7 @@ def build_application(
             run_state_store=run_store,
             boundary_observer=observe, retry_limit=1,
             skill_service=skill_service, domain_decision_handlers=handlers,
+            environment_service_factory=environment_service_factory,
         ))
         cleanup.pop_all()  # The caller now owns both stores, including failure cleanup.
         return application

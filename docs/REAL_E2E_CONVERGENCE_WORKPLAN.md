@@ -2944,3 +2944,400 @@ prevents identifying the unique cause of the 16384-token truncation. No response
 was reconstructed or written into the old workflow. The next engineering entry
 remains that finalization boundary, under separate authorization; this source
 publication does not resume the run or resolve that limitation.
+
+### 2026-09-11: trusted local file-budget configuration
+
+The user authorized only raising/configuring sandbox file and temporary-space
+limits for real-size local inputs/outputs. No paper download, matrix conversion,
+biological task, live provider, workflow continuation or scientific change is
+included. This supersedes the previous engineering stop only for this independent
+resource-configuration boundary; the older finalization blocker remains open.
+
+Root cause: `ExecutionPolicy` supported per-file/collection limits, but the local
+composition never accepted or forwarded them, leaving a 16 MiB process file-write
+limit and a 64 MiB declared-output collection limit. Docker `/tmp` was fixed at
+64 MiB. New tests first reproduced the missing TOML fields and relation validation
+(6 failed / 15 passed). The minimal repair exposes positive strict integers
+`max_output_file_bytes`, `max_collected_output_bytes`, and `tmpfs_size_mb`, with
+total collection >= single-file budget. Omitted settings retain 16/64/64 MiB.
+
+The same trusted values now reach runtime identity, policy, Docker argv and
+collection, and are projected as execution capability fields visible to the
+Agent. Legacy capability snapshots may leave those fields unknown; the current
+factory always supplies actual values. Task prose and execution tool parameters
+cannot raise them. No prompt, scientific method, workflow budget, release
+contract or Pantheon change was made. RAW exposure remains denied; the default
+DERIVED JSON summary limit is still 1 MiB.
+
+The external, mode-0600 `~/.config/labbioagent/managed-large-files-20260911.toml`
+was created from `managed-strict-runtime-20260909.toml`; a parsed deep comparison
+confirmed only three additions: single file 8 GiB, declared outputs per execution
+32 GiB, `/tmp` 256 MiB. The old configuration and default selection were not
+changed. New tasks must explicitly select the new file with `--config`.
+CPU/memory/PIDs/timeout remain 4 / 4096 MiB / 128 / 900 seconds. New limits and
+source produce runtime revision
+`local-5bdc2a05cf5a6de610b36706b8bd515841e24c85565b7b89196bb884864d1ea4`
+before managed identity/root scoping; scoped task manifests remain authoritative.
+
+Verification:
+
+- `python -m pytest`: **1033 passed, 31 skipped**, one existing Uvicorn warning.
+  The new deterministic file-budget suite contributes **31 passed**.
+- Opt-in `tests/integration/test_local_file_limits_docker.py`: **4 passed** using
+  the existing scientific image `sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb`.
+  An 18 MiB synthetic file was written, registered RAW and exported byte-exactly
+  with matching size/SHA256; remote access remained denied. A 20 MiB limit rejected
+  a 21 MiB write; a total of 20 MiB rejected two individually legal 12 MiB files.
+  Actual tmpfs capacities of 8/12 MiB and non-root/no-network/read-only-root/
+  zero-capabilities/no-new-privileges invariants were checked in the containers.
+- The first Docker test attempt had two test-only state-property errors after
+  successful output assertions; these were corrected without production changes.
+  Final tests left no containers; Docker, containerd and docker.socket remained
+  active. No images were pulled or removed, and no services/tunnels were changed.
+
+Limits are not a disk quota: undeclared/intermediate files, Artifact and delivery
+copies, and failed attempts can occupy additional storage. `/tmp` consumes the
+container memory budget. RAW storage/hash/export already stream/copy files;
+stdout/stderr buffering and the H5AD inspector's independent 4 GiB source ceiling
+remain unchanged limitations. The tests do not establish an 8 GiB workload or
+real biological conversion/analysis acceptance.
+
+Delivery is a source/local-configuration change on the existing development
+branch, not a production deployment or GitHub publication. No production
+`current` pointer or `PRODUCTIONIZATION_DEBUG_GUIDE.md` was present in the inspected
+local layout; `LABBIO_ARCHITECTURE.md` was the available source architecture.
+No profile/Gold promotion, historical-state rewrite or biological output was
+created. Stop here; the next in-scope entry is an explicitly authorized fresh
+local-data task using the selected configuration, not resuming the old run.
+
+### 2026-09-11: TEST1/DEMO local CSV integration attempt — not completed
+
+User explicitly supplied `TEST1/projects/DEMO/orig_data` and requested an Agent
+run to combine the files into one H5AD and produce an analysis report under DEMO.
+No scientific program/method/parameter was provided by Codex. The submitted task
+was: 请将本次提供的33个CSV数据文件整合成一个h5ad文件，保存在TEST1用户的DEMO项目下，并且出一份中文分析报告。
+
+DEMO was not registered. Existing downloads were temporarily relocated, the
+standard project-create command registered DEMO for authenticated TEST1, and all
+original paths were restored. The 33 CSVs (6,057,557,479 bytes) were independently
+copied into required `data/` and checked byte-exactly by size/SHA256; no matrix
+was transformed. The TAR/orig_data files remain intact. A separate mode-0600
+`managed-demo-integration-20260911.toml` changes only memory to 32768 MiB and
+execution timeout to 1800 seconds from the preceding large-file configuration;
+file budgets, four CPUs, provider, model, image, protocol and retry policy stay
+unchanged. No dependency installation or production deployment occurred.
+
+One fresh local CLI run was started with all 33 RAW inputs and command-local
+proxy localhost:12199 (Codex/global proxy settings untouched):
+
+- Directory: `projects/test/TEST1/projects/DEMO/runs/integrate-h5ad-20260911`.
+- Run: `4bc439ba-ded1-485f-bddc-c16c9dcbd80e`.
+- Scoped runtime: `local-6e278df12208ff7656127d1c5bc5365a1a0ae7afe126162658cc4cb0faeeefbf`.
+- One actual sandbox execution `6bfd1adf-e3d1-43d2-a149-6dd15547e3b7` succeeded
+  with exit code 0 and no execution issues. No source/profile edits occurred
+  during the run. Agent execution input selected all 33 mounted Artifacts.
+
+However, **the requested integration and report were not completed**. The
+499,989,304-byte `merged_output.h5ad` is valid HDF5/AnnData structurally, but has
+X shape `(32738, 3805)` and `uns/n_source_files=1`. Agent's structured result
+likewise reports one source, despite listing per-input inspection facts for 33.
+Its program keys `dfs` by `os.path.basename(fpath)`; all registered blobs mount
+with basename `content`, overwriting earlier entries. CLI currently does not
+project original basenames into the sandbox manifest. This generic input
+identity gap and the Agent's key collision are evidenced, not a reason to edit
+its scientific program or claim the 33-file task succeeded. Matrix axis semantics
+and real integration correctness have not been accepted.
+
+VALIDATE queried the entire 47-record DERIVED result. Its final provider turn
+then returned `content_filter` with zero completion tokens; runtime recorded
+`MALFORMED_RUNTIME_RESULT` / root `json_invalid` and CLI exited 1 with
+`PantheonRuntimeIntegrationError`. The provider filter trigger is unknown, and
+no response was reconstructed, filter bypassed or live call repeated. No formal
+REPORT Artifact or final delivery exists. Intermediate files and evidence remain
+in the run directory with `SUPERVISION.md` clearly marking non-completion.
+Read-only status is version 13, RUNNING/VALIDATE/STAGE_IN_FLIGHT, not recoverable
+and not eligible for automatic continuation. The CLI process has exited; this
+retained state must not be reported as an actively progressing task.
+
+Earlier RAW query denials did not stop execution: UNDERSTAND had nine denials;
+EXECUTE's first batch had three, then the Agent independently submitted code.
+Actual EXECUTE input contained all 33 exact eligible IDs and empty remote-view
+permissions, and errors distinguished remote exposure from execution admission.
+Do not misclassify the later source-key collision/filter termination as a
+network failure, file quota failure or absence of tool execution.
+
+Docker/containerd/socket remained active and all task containers exited. No
+inputs, images, historical runs, Gold approvals or Agent programs were removed
+or edited. Stop this attempted run; the next engineering entry is a separately
+authorized generic input-identity/provenance repair and fresh Agent-owned task
+verification. Do not promote this H5AD or resume an in-flight workflow by
+writing a substitute stage result.
+
+### 2026-09-11: local input identity repair and fresh DEMO annotation test
+
+The user removed 16 files from DEMO/data and authorized a generic repair followed
+by a fresh task on only the remaining files, adding broad cell-type annotation.
+Current input inventory is 17 regular CSV files, 4,048,826,899 bytes. No removed
+input was restored from orig_data; the old run and its partial H5AD remain intact.
+
+The first proven loss was at file registration: the store copied every input
+to a blob named `content` without retaining its original basename. MountResolver
+then exposed that internal name as every mounted basename. A consumer keyed by
+basename consequently collapsed distinct Artifact identities. The repair stores
+`ArtifactRef.original_filename` as local-only provenance, uses the Artifact UUID
+as every mounted basename, and supplies a separate read-only
+`LABBIO_INPUT_IDENTITIES_PATH` JSON mapping of selected UUIDs to original names.
+The existing UUID-to-path manifest is unchanged. Legacy names remain null,
+duplicate names stay distinct, and filenames never enter Docker mount syntax
+or the remote metadata allowlist. Tool documentation describes only this generic
+data contract; no scientific prompt, program, method or analysis parameter changed.
+
+Source runs through the existing local CLI rather than an API/worker production
+deployment. Pantheon remains `07675c45b538f7d27b9b16b1b7d8b72f37365293`.
+The source worktree also retains the preceding, separately tested file-budget
+changes. This checkpoint does not change global proxies, Docker services, image,
+scientific modules, Gold approvals or historical workflow state. The provider's
+previous content_filter termination is a separate unresolved cause; no filter
+bypass or substitute response is introduced.
+
+Verification: 12 identity regressions passed, one synthetic real-Docker identity
+test passed (including actual EROFS for inputs and both manifests), and full
+regression passed with 1045 passed, 32 skipped and one existing Uvicorn warning.
+The historical basename collision was reconstructed deterministically; tests
+were not run against a reverted pre-fix checkout and are not claimed as a
+pre-edit red-test run.
+
+Fresh full-input task `9f60af76-5e19-4863-a34a-782904dee596`, directory
+`DEMO/runs/integrate-annotate-20260911`, verified 17 mounted inputs, 17 distinct
+basenames and exact original filename mapping in real execution. Two executions
+exited 137, independently confirmed as OOM by Docker events. The Agent inspected
+its receipts and revised its programs without Codex assistance; one syntax-invalid
+revision was also rejected. Neither completed execution produced output files.
+The generic identity repair is verified, not the requested scientific result.
+
+While a third Agent-generated execution was running, the user explicitly changed
+the task to sampling 1000 cells per sample instead of full integration. The exact
+CLI PID received SIGINT and only container
+`labbio-d511c681ee4b479a888d1ef9a1479dda` was stopped. CLI exited 130. No task
+process/container remained and all Docker services stayed active. Persisted state
+remains RUNNING/EXECUTE/STAGE_IN_FLIGHT, version 11, unrecoverable with automatic
+continuation forbidden; it is not active progress or committed cancellation.
+The old run is retained with SUPERVISION.md; no state rewrite or resume is allowed.
+
+The now-authorized fresh task is sampling 1000 cells separately from each of the
+17 current CSV samples, integrating sampled cells into one H5AD, broad annotation,
+and a Chinese report. It uses the same source, configuration and resource budgets
+in `DEMO/runs/sample1000-annotate-20260911`. Sampling, methods, parameters other
+than the user's cell count, programs and interpretation remain Agent-owned.
+No extra prompt recipe or scientific program is supplied by Codex.
+
+Sampled task run `fa3660e2-193b-4b94-a755-5ed90d7fad5a` used scoped runtime
+`local-fdd5a9dafcb883485ea4298ab59a8df61ca2cc73dc7b214035f9d4c6b7b6074d`.
+It is **not completed or scientifically accepted**. Its first actual execution
+`07705ef0-99b7-4fd9-8d23-be316c640ff8` succeeded as a process and read both
+manifests with all 17 independent inputs. However, its H5AD has 17,000 observation
+rows, zero variables, and only the annotation `未分类`. Seventeen groups of
+1000 rows do not establish that the rows are cells. The Agent guessed matrix
+orientation from dimensions, sampled along that assumption, and intersected
+column names treated as genes; the intersection was empty. Its later claim that
+the source lacks expression data is unsupported by that processing result.
+
+The Agent independently submitted a diagnostic, corrected an
+INVALID_OUTPUT_DECLARATION, and successfully executed
+`23e03033-555e-495b-b23f-7e9491157f98`. Its column-overlap diagnostic does not
+validate the original orientation. No analysis code or corrected answer was
+supplied by Codex. VALIDATE subsequently hit `finish_reason=length` at 16384
+completion tokens and failed with MALFORMED_RUNTIME_RESULT. CLI exited 1; no
+formal MODEL_AUTHORED_REPORT or delivery directory was produced.
+
+Read-only final state is RUNNING/VALIDATE/STAGE_IN_FLIGHT, version 13,
+unrecoverable and ineligible for automatic continuation. It is retained evidence,
+not an actively working process. No task process/container remains, Docker
+services are active, and all inputs/failed outputs are preserved. The sampled
+run's SUPERVISION.md records exact files, SHA and limitations. Source remains on
+the development branch with local uncommitted changes, not deployed or pushed;
+no profile/Gold promotion occurred. Stop here: any next repair must address the
+newly evidenced reasoning/feedback/finalization root cause without replacing
+Agent-owned scientific work, then use an explicitly authorized fresh task.
+
+An additional release-boundary gap was proven in the Agent's diagnostic:
+Artifact `f67ebe41-9333-4f69-9793-cfa2ba6e7b7f` was registered DERIVED with
+42 scalar records, six of which contained short source previews in explanation
+fields. The existing output contract checked shape but did not establish that
+these strings were derived/aggregate information. REMOTE_LLM TOP_N exposures
+returned 20 then all 42 records, including those previews. No raw values are
+reproduced here. The independent audit stopped expanding those fields; no further
+live run was started. **Before any further live task, separately scope and close
+this data-release boundary gap.** Do not equate contract_valid or the identity
+leak regression with comprehensive semantic RAW-data protection. OOM status
+collection and malformed finalization remain independent limitations; neither
+was silently patched in this identity/sampling task.
+
+### 2026-09-11: user defers expanded release governance; fresh explicit-axis task
+
+The user explicitly deferred strict isolation/external governance work and made
+the real integration test the immediate priority. The unaccepted per-output
+human-review implementation was removed using exact patches, including its
+approval database composition, runtime hints, CLI handler and new workflow gate.
+Its source snapshot is recoverable at
+`/tmp/labbio-release-review-deferred-GpQdEXz9`; synthetic tests are backed up at
+`/tmp/labbio-deferred-release-tests.sqPYcZ`. This does not mark the previously
+observed scalar-content release gap fixed. Existing RAW remote-query denial,
+bounded output contracts, sandbox controls, and user/project checks remain.
+No broader governance development is authorized as a prerequisite for this test.
+
+The previously verified file-budget and input-identity changes remain. No
+Pantheon, Docker service/image, proxy/tunnel, scientific program, method or
+annotation parameter was modified. The authorized fresh natural-language task
+uses only the current 17 DEMO/data CSVs, explicitly states rows are genes and
+columns are cells, and asks for 1000 cells per sample, one combined H5AD, broad
+cell annotation, and a Chinese report. Agent decisions and programs remain
+Agent-owned; previous failed runs are immutable history, not recovery targets.
+The new task is not complete until its actual run and delivery are verified.
+
+After deferral, full regression returned to **1045 passed, 32 skipped**, with the
+one existing Uvicorn warning. Fresh run
+`4f3340e7-7521-49c9-9628-8cf7766bb48b` was started through the ordinary managed
+CLI in `DEMO/runs/sample1000-axes-20260911`; no Python analysis launcher was
+written. The exact natural-language request is persisted in `REQUEST.json`.
+The 16384-token provider limit, execution budgets and retry limit are unchanged.
+
+This fresh run subsequently **completed** with CLI exit 0 and persisted
+`COMPLETED / LEARN / STABLE`, record version 20, no in-flight operation. The
+Agent independently submitted four programs within EXECUTE: INVALID_DOCUMENT
+output rejection, NameError with line-number feedback, RECORD_LIMIT_EXCEEDED,
+then successful execution `e1fcbee1-7bde-4746-9046-33754aac1d90`. There were no
+workflow retries or provider length finishes. No Agent program was edited by
+Codex. All prior attempts and their registered outputs remain preserved.
+
+Final H5AD Artifact `873f65c1-6f01-42bf-a1f6-75df507b7a46` is readable with
+16709 observations and 32738 variables, unique IDs, 17 sample groups and 11
+populated cell-type labels. Fourteen samples contain 1000 cells; the other
+three contain 860, 903 and 946, consistent with source-header column counts.
+Its exported SHA256 is
+`02a9da4af1dff70d9b0137dfb5cea9633a1b2e9e1874301e792cb385ee49b905`.
+The typed REPORT result references Artifact
+`699ded0c-70ab-4397-81d2-31aebceea7b0`, exported as
+`delivery/REPORT-699ded0c-70ab-4397-81d2-31aebceea7b0.md`; generic `REPORT.md`
+is an earlier registered report. Delivery retains historical outputs too.
+
+Do not equate technical completion with report factual or scientific accuracy:
+the final Agent report incorrectly says two samples are below 1000 while the
+source and H5AD establish three. Annotation accuracy and biological/quality
+claims were not independently validated. Agent text is preserved, not rewritten.
+The run's SUPERVISION.md identifies the exact successful deliverables and these
+limitations. Docker services remain active, no task containers remain, and no
+source commit/push, production deployment or Gold promotion was performed.
+Stop at user review of the delivered result; do not resume the completed run or
+expand deferred governance automatically.
+
+### 2026-09-11: reusable Python environments and broader scientific base
+
+New user authorization supersedes the preceding stop boundary only for environment
+preparation: expand `scientific-python` into a useful general base, and let the Agent
+discover/build/verify/reuse task dependencies. Do not rewrite scientific behavior,
+add per-build human gates, alter Docker services or the Codex tunnel, or replace
+Agent-generated programs. This is not a new scientific milestone or C8 restart.
+
+Implementation is opt-in through local `[environment]` settings. PLAN can list
+verified environment facts; EXECUTE can list/build and explicitly select the returned
+image key through the existing execution tool. Agent owns requirements, versions,
+imports, programs and subsequent actions. No automatic package substitution, program
+repair, analysis submission, retry/budget increase or workflow graph change occurs.
+The fixed Python wheel-only builder never mounts analysis inputs and verifies package
+compatibility plus base/requested imports before registering an immutable image.
+User-owned cache records live in `USER/Environments`, separate from GoldSkills, and
+restore exact image identities. Safe failure receipts preserve bounded dependency
+facts; raw build logs remain local, outside model-visible capability evidence.
+
+Base tag `labbio/scientific-python:base-20260911` was built and independently checked:
+`sha256:bfb74cf3ec7e88ba273753ba1079c117eae02a88ca1e2d631416048896301a0e`.
+Actual Python 3.11.16 base is
+`sha256:fe316ce25958c9a5fd10d55a42d2597a2736a1c84f92690cf79cd8a0ada67506`.
+It adds Scanpy/plotting/statistical/ML/clustering packages to the old five-package
+inventory. The snapshot `docker/scientific-scrna/verified-base-20260911.json` records
+all 48 installed distributions, the precise build recipe, official compatibility
+sources and independent non-root/read-only/no-network verification. Old image
+`89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb` remains unchanged.
+
+Full regression: **1121 passed, 32 skipped**, one existing Uvicorn warning, 23.96 s.
+New service/tool/composition/backend tests cover cache/restart, user scope, immutable
+identity, malformed dependencies, bounded feedback, unknown facts and build cleanup.
+An actual Docker request for `sympy==0.0.0` produced `PIP_NO_MATCH` with that exact
+requirement, preserved its failed receipt and registered no image. Evidence:
+`WYC/result/environment-build-acceptance-20260911/failure-probe/attempts/8f4d3a6591024342acf2ba586a5049f1/receipt.json`.
+
+Fresh generic Agent task **completed and passed this environment acceptance**:
+`8020a337-72cd-4d84-8421-74f78701cb35`, TEST1/DEMO,
+`runs/environment-symbolic-20260911`, configuration
+`~/.config/labbioagent/managed-scientific-environments-20260911.toml`.
+Natural-language task requests SymPy differentiation and expansion-equivalence checks
+on a tiny synthetic polynomial JSON, plus result files and a Chinese report. No
+launcher contains a computation program, correct dependency version or tool sequence.
+The Agent independently listed environments and requested a `sympy` build.
+Only the exact prior failed-version infrastructure test is Codex-authored; it was
+not supplied as Agent context.
+
+The verified derived image is
+`sha256:dcb30bbb8483291eb90c30a21d922c8489777986bf182a562747f73a4b298b0e`,
+key `env-95f16723f32563a7d2eff4e884a87a95c4c1571d2234a395b64b85b2c63ffe27`,
+with SymPy 1.14.0 and mpmath 1.3.0. The Agent submitted execution
+`c2ed1ac2-8a1e-4df0-b47f-7882604b0283` using that returned key; it succeeded
+on the first program, exit 0, 0.809 s, no output issues, two collected outputs.
+No Agent dependency parameters, programs or reports were supplied/revised by Codex.
+All nine stages completed once, no workflow retry or provider length finish. CLI
+exit 0 and a separate authenticated status process verified
+`COMPLETED / LEARN / STABLE`, version 20, no in-flight operation.
+Final report Artifact `c99a0305-9648-4ebb-a099-74fd991a23a0` is exported to
+`delivery/REPORT.md`, SHA256
+`943ba036e48d7c937530b859ef97d6fdf39b7bb0c66ed574c5547a52837e43ae`.
+
+The run was not error-free: four UNDERSTAND and one EXECUTE RAW-view denials
+remain visible. The first report submission failed with ARTIFACT_NOT_FOUND;
+the Agent's next submission succeeded without Codex intervention. No unsupported
+claim is made about which invalid reference was used, since that request was
+not captured in the safe trace. These observed model mistakes were not hidden
+or treated as a reason to expand this environment patch into unrelated workflow work.
+
+A separate process reconstructed the user cache, confirmed the exact image still
+exists in Docker and returned cache_hit=true without invoking a builder. It also
+listed the satisfying environment for a new caller. Evidence:
+`WYC/result/environment-build-acceptance-20260911/cache-reconstruction.json`.
+This is actual restart/cache verification, not a second live Agent task. No new
+biological analysis was used to claim environment acceptance. Current local runtime
+revision is `local-3dae3bd654c2025d622ba7a7cdeb5fc9528ddcc7e44fe99c2ad6694d045707b7`,
+source digest `28731db9aff0e59e9ec26f979bd8c805967b3144408dc5061c1aa9d957fc8a80`.
+
+Scope limits: Python/PyPI wheels only; no R/Bioconductor, system package installation,
+CUDA/GPU provisioning or remote image distribution. Local cache identity does not
+prove an image was not subsequently deleted by external Docker cleanup; subsequent
+execution fails explicitly if unavailable, without hidden pull/rebuild. Base lock
+pins direct/ABI-critical dependencies; the snapshot records all resolved versions.
+This checkpoint has not rerun RCC analysis, rewritten its report, promoted Gold,
+changed Pantheon, deployed API/worker production services, committed or pushed source.
+Docker, containerd and docker.socket remain active; no task containers remain.
+The accepted base and derived image/cache are intentionally retained. Historical
+default/DEMO configuration files were not overwritten: new tasks must explicitly
+select the tested environment-enabled TOML above. The unique continuation entry is
+user review of this run's `SUPERVISION.md` and Agent report, then a separately
+authorized task using that configuration. Do not resume this completed run.
+
+### 2026-09-11: requested GitHub publication checkpoint
+
+The user authorized committing and pushing the recent accepted changes to
+`origin/test/pbmc-complex-gold-20260908`; no merge into `main` was requested.
+The source checkpoint groups configurable execution file/tmpfs budgets,
+sandbox-only original input filename provenance, reusable user-owned Python
+environments, the broader scientific base recipe, tests and acceptance records.
+Historical statements above that source was uncommitted describe those earlier
+checkpoints, before this publication request.
+
+Pre-publication full regression was rerun: **1121 passed, 32 skipped**, one
+existing Uvicorn warning, 24.58 s. Local HEAD and both remote branch/main refs
+were `b6cfc2879db3dc00245a8f1eec034a264b98c0b1` before this checkpoint.
+Only repository source/tests/docs/build recipes and non-sensitive image-version
+metadata belong to this publication. External user data, generated analysis
+programs/reports, run databases/traces, environment caches, credentials, local
+configuration and Docker image binaries remain on the server. The Pantheon
+dependency is unchanged. Publication does not activate another runtime profile,
+deploy API/workers, rebuild an image, restart Docker, or launch a live task.

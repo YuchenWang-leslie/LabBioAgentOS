@@ -30,6 +30,32 @@ python -m pip install -e . --no-deps --no-build-isolation
 不会修改 Git、全局代理、Codex 隧道或 Docker 服务，也不安装分析软件。
 本版本只封装现有 OpenAI-compatible chat transport，不承诺兼容所有 provider。
 
+### 本地文件与临时空间额度
+
+可信 TOML 的 `[execution]` 可显式配置：
+
+```toml
+max_output_file_bytes = 8589934592       # 8 GiB
+max_collected_output_bytes = 34359738368 # 32 GiB
+tmpfs_size_mb = 256
+```
+
+字段必须为正整数，收集合计不能小于单文件上限。未填写时保留旧值：
+单文件 16 MiB、收集合计 64 MiB、`/tmp` 64 MiB。单文件额度同时作用于
+Docker 进程的文件写入硬限制和产物收集，所以落盘的中间文件也受限；
+读取已存在的大输入不受该写入额度限制。`/tmp` 是计入容器内存的 tmpfs，
+不是磁盘；扩大它不会增加容器内存，较大的本地中间文件可使用既有可写输出目录。
+
+收集合计只约束一次执行声明的输出，不是工作目录磁盘配额，也不包含
+Artifact/交付副本及保留的失败版本。应按磁盘余量、内存和并发数设定额度，
+不要把上面的示例视为已验证可运行的最大数据规模。CPU、内存、超时和网络
+策略不变，H5AD 可信检查器的独立输入额度也不随之扩大。
+
+这些额度进入运行 manifest/revision，并作为真实执行能力字段提供给 Agent；
+Agent 不能通过任务文字或工具参数自行提高额度。RAW 文件仍只在本地，
+模型可读 DERIVED 摘要的独立大小和字段合同不变。新配置只用于新任务；
+不要用它恢复配置不匹配的旧运行，也不需要重启 Docker 或修改全局代理。
+
 默认协议保存在包内 `resources/local-default.json`，也可由可信配置中的
 `profile` 显式选择一个外部 JSON 文件。领域经验应进入外部 profile/skill，
 不能在 CLI 中根据任务关键词选方法。此入口没有额外接入 Gold/Memory 服务。
@@ -38,6 +64,19 @@ python -m pip install -e . --no-deps --no-build-isolation
 各阶段还接收逐个输入的 `input_artifact_usage`：来源是本次输入还是上下文、
 允许哪些远程视图、是否在本次执行输入名单内。远程可读与执行准入分别判断，
 准入不代表预检已通过。工具的受控错误含义同时保存在执行记录和最终决策证据中。
+
+### 沙盒中的文件身份
+
+文件登记时在本地保存原文件名，Artifact UUID 是唯一身份。沙盒的
+`LABBIO_INPUT_MANIFEST_PATH` 仍是 UUID 到只读路径的映射；挂载文件的
+basename 也是 UUID，不使用存储内部的 `content`，也不将原文件名当作唯一键。
+新增只读 `LABBIO_INPUT_IDENTITIES_PATH` 映射同一批已选择 UUID 到
+`{"original_filename": "登记时原名"}`。旧记录没有原名时明确为 `null`，
+不推断或迁移历史身份。两个目录中的同名文件仍有不同 UUID。
+
+原名不参与 Docker 参数或宿主路径解析，不自动加入远程模型元数据；RAW
+边界保持不变。原名只供沙盒内程序访问，如何使用这些事实由 Agent 决定。
+不恢复文件后缀路由，不提供任务专用的合并或注释程序。
 
 ## 提交任务
 
@@ -200,3 +239,48 @@ NOT_EXECUTED、空执行引用和空新输出，不能冒充运行成功。显�
 CAPABILITY 和 FINALIZE 共用有限 provider-turn 观测。结构化响应校验拒绝前也
 记录结束原因、用量、耗时等元数据，不记录响应正文或隐藏推理，也不自动修复
 JSON 或追加调用。历史未记录的响应原因不能据此补推。
+
+## 可复用 Python 环境（2026-09-11）
+
+`scientific-python` 可作为通用 base，而不是所有任务唯一可用的环境。
+新版 base 增加 Scanpy、Matplotlib、Seaborn、scikit-learn、statsmodels、
+igraph、leidenalg 及匹配的 Numba/llvmlite。构建配方仍位于
+`docker/scientific-scrna/`；`verified-base-20260911.json` 保存实际 base/image ID、
+完整安装版本和受限容器验证结果。直接及 ABI 关键依赖已锁定，镜像 ID 是本机
+不可变身份；它不是已发布到远端、可直接拉取的镜像。
+
+显式启用可选配置：
+
+```toml
+[environment]
+root = "/absolute/local/environment-cache"
+build_timeout_seconds = 600.0
+# build_proxy = "http://127.0.0.1:12199"
+```
+
+认证 managed workspace 后，root 被绑定为当前用户的 `USER/Environments`，
+不使用任务文字中的路径，与 GoldSkills 分开；同一用户不同项目可复用。
+未配置此节时不增加环境工具、不构建镜像，旧调用方式不变。
+
+- `environment_list`：PLAN/EXECUTE 可查看 base 和缓存环境、实际版本与需求
+  匹配事实；不替 Agent 选择环境。不完整清单表示未知，不冒充缺包。
+- `environment_build`：EXECUTE 可自行选择 base、PyPI 包版本约束和待验证
+  import 名称。支持 wheel 包及 extras；不接受任意 Dockerfile、安装命令、
+  URL、本地包路径、pip 参数或环境 marker。
+- 固定构建过程不挂载分析数据；依赖检查及 base/新增模块导入通过后，才登记
+  新 image key 和精确 SHA。Agent 必须自行把返回 key 用于原有 `execution_submit`；
+  框架不改写依赖要求、不自动修正程序或提交分析。
+- 失败反馈包含有界错误码，以及可提取的缺失包/冲突依赖事实，不释放原始构建
+  日志或秘密。失败回执也保留，Agent 可在既有预算内自行修订需求。
+- 相同 base SHA、规范包约束和 import 请求命中持久缓存；新进程恢复相同 key/SHA。
+  清单和缓存恢复不额外探测 Docker 实体是否被外部删除；若镜像被删，后续执行
+  明确失败，不隐藏下载或重建。缓存与镜像均不在任务完成时自动删除。
+
+首期范围是 Python/wheel 环境；R/Bioconductor、额外系统库、CUDA/GPU 和
+远端镜像分发尚未覆盖。基础/派生环境也不保证任意新软件组合都兼容。
+分析沙盒的断网、数据挂载和资源合同保持不变；构建代理只对构建命令生效，
+不修改 Docker daemon、宿主 Python、全局代理或 Codex 隧道。
+
+当前 TEST1 本地验收配置：
+`~/.config/labbioagent/managed-scientific-environments-20260911.toml`。
+它使用已验证的新 base 和用户环境缓存；历史运行配置未覆盖。

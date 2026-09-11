@@ -161,6 +161,7 @@ class DockerCommandBuilder:
     SCRIPT_TARGET = PurePosixPath("/labbio/script.py")
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
     INPUT_MANIFEST_TARGET = PurePosixPath("/labbio/input-manifest.json")
+    INPUT_IDENTITIES_TARGET = PurePosixPath("/labbio/input-identities.json")
     OUTPUT_TARGET = PurePosixPath("/workspace/outputs")
 
     def __init__(
@@ -168,13 +169,17 @@ class DockerCommandBuilder:
         docker_binary: str = "docker",
         *,
         max_output_file_bytes: int = 16_777_216,
+        tmpfs_size_mb: int = 64,
     ):
         if not docker_binary or docker_binary.startswith("-"):
             raise ValueError("docker_binary must be a configured executable name")
-        if max_output_file_bytes < 1:
-            raise ValueError("max_output_file_bytes must be positive")
+        if type(max_output_file_bytes) is not int or max_output_file_bytes < 1:
+            raise ValueError("max_output_file_bytes must be a positive integer")
+        if type(tmpfs_size_mb) is not int or tmpfs_size_mb < 1:
+            raise ValueError("tmpfs_size_mb must be a positive integer")
         self.docker_binary = docker_binary
         self.max_output_file_bytes = max_output_file_bytes
+        self.tmpfs_size_mb = tmpfs_size_mb
 
     def build(
         self,
@@ -211,13 +216,15 @@ class DockerCommandBuilder:
             f"fsize={self.max_output_file_bytes}:{self.max_output_file_bytes}",
             "--read-only",
             "--tmpfs",
-            "/tmp:rw,noexec,nosuid,size=64m",
+            f"/tmp:rw,noexec,nosuid,size={self.tmpfs_size_mb}m",
             "--workdir",
             "/workspace",
             "--env",
             f"LABBIO_PARAMETERS_PATH={self.PARAMETERS_TARGET}",
             "--env",
             f"LABBIO_INPUT_MANIFEST_PATH={self.INPUT_MANIFEST_TARGET}",
+            "--env",
+            f"LABBIO_INPUT_IDENTITIES_PATH={self.INPUT_IDENTITIES_TARGET}",
             "--env",
             f"LABBIO_OUTPUT_DIR={self.OUTPUT_TARGET}",
             "--env",
@@ -242,6 +249,12 @@ class DockerCommandBuilder:
             self._mount(
                 workspace.input_manifest_path,
                 self.INPUT_MANIFEST_TARGET,
+                read_only=True,
+            ),
+            "--mount",
+            self._mount(
+                workspace.input_identities_path,
+                self.INPUT_IDENTITIES_TARGET,
                 read_only=True,
             ),
             "--mount",
@@ -298,7 +311,10 @@ class DockerExecutor:
         self.workspace_manager = workspace_manager
         self.output_collector = output_collector
         self.process_runner = process_runner or SubprocessDockerRunner()
-        self.command_builder = command_builder or DockerCommandBuilder()
+        self.command_builder = command_builder or DockerCommandBuilder(
+            max_output_file_bytes=execution_policy.max_output_file_bytes,
+            tmpfs_size_mb=execution_policy.tmpfs_size_mb,
+        )
         self.trace_recorder = trace_recorder
         if type(minimum_queryable_output_count) is not int:
             raise TypeError("minimum_queryable_output_count must be an integer")

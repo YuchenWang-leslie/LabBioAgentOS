@@ -67,6 +67,46 @@ def test_image_identity_must_be_immutable(settings_file):
         load_settings(settings_file)
 
 
+def test_environment_composition_is_opt_in_and_does_not_build(settings_file, monkeypatch):
+    from labbioagentos.execution.environment_builder import DockerEnvironmentBuilder
+
+    settings = load_settings(settings_file)
+    assert settings.environment is None
+    settings_file.write_text(settings_file.read_text() + '''
+[environment]
+root = "environments"
+build_proxy = "http://127.0.0.1:12199"
+''')
+    settings = load_settings(settings_file)
+    assert settings.environment.root == settings_file.parent / "environments"
+    monkeypatch.setattr(DockerEnvironmentBuilder, "build", lambda **kw: pytest.fail("implicit build"))
+    before = dict(os.environ)
+    app = build_application(settings, settings.result_root / "environment", load_provider=False)
+    try:
+        assert dict(os.environ) == before
+        service = app.capability_services.environment_service
+        assert service.owner_user_id == settings.principal.user_id
+        assert service.image_registry is app.image_registry
+        assert app.image_registry.resolve("python-local").reference == "sha256:" + "a" * 64
+        stages = {spec.stage_id: spec for spec in app.configuration.stage_assemblies}
+        assert "environment_list" in stages[WorkflowStage.PLAN].capability_allowlist
+        assert "environment_build" in stages[WorkflowStage.EXECUTE].capability_allowlist
+        assert "environment_build" not in stages[WorkflowStage.PLAN].capability_allowlist
+        assert stages[WorkflowStage.EXECUTE].required_capabilities == ()
+    finally:
+        app.run_state_store.close()
+
+
+def test_environment_proxy_cannot_include_credentials(settings_file):
+    settings_file.write_text(settings_file.read_text() + '''
+[environment]
+root = "environments"
+build_proxy = "http://user:secret@127.0.0.1:12199"
+''')
+    with pytest.raises(ValidationError):
+        load_settings(settings_file)
+
+
 def test_manifest_reads_no_provider_values_and_changes_with_effective_config(settings_file, monkeypatch):
     settings = load_settings(settings_file)
     monkeypatch.setattr(local_config, "_source_digest", lambda path: "a" * 64)

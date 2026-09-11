@@ -22,6 +22,7 @@ class ResolvedMount:
     target: PurePosixPath
     read_only: bool
     artifact_id: UUID | None = None
+    original_filename: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class ExecutionWorkspace:
     script_path: Path
     parameters_path: Path
     input_manifest_path: Path
+    input_identities_path: Path
     output_root: Path
     log_root: Path
     script_hash: str
@@ -65,6 +67,7 @@ class ExecutionWorkspaceManager:
             script_path = execution_root / "script.py"
             parameters_path = execution_root / "parameters.json"
             input_manifest_path = execution_root / "input-manifest.json"
+            input_identities_path = execution_root / "input-identities.json"
             script_path.write_text(plan.script_content, encoding="utf-8")
             parameters_path.write_text(
                 json.dumps(plan.parameters, sort_keys=True, separators=(",", ":")),
@@ -74,6 +77,19 @@ class ExecutionWorkspaceManager:
                 json.dumps(
                     {
                         str(mount.artifact_id): str(mount.target)
+                        for mount in input_mounts
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            input_identities_path.write_text(
+                json.dumps(
+                    {
+                        str(mount.artifact_id): {
+                            "original_filename": mount.original_filename,
+                        }
                         for mount in input_mounts
                     },
                     sort_keys=True,
@@ -91,6 +107,7 @@ class ExecutionWorkspaceManager:
             script_path=script_path,
             parameters_path=parameters_path,
             input_manifest_path=input_manifest_path,
+            input_identities_path=input_identities_path,
             output_root=output_root,
             log_root=log_root,
             script_hash=script_hash,
@@ -127,10 +144,11 @@ class MountResolver:
                     target=PurePosixPath(
                         "/labbio/inputs",
                         str(ref.artifact_id),
-                        source.name,
+                        str(ref.artifact_id),
                     ),
                     read_only=True,
                     artifact_id=ref.artifact_id,
+                    original_filename=ref.original_filename,
                 )
             )
         return tuple(mounts)

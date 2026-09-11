@@ -21,10 +21,22 @@ max_output_tokens = 16384
 image_key = "scientific-python"
 # Replace with the exact immutable identity of an already available image.
 image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-available_python_modules = []  # Enter the actual approved image inventory; no installation occurs.
+available_python_modules = []  # Enter the actual verified image import inventory.
+installed_packages = {}       # Optional verified distribution-to-version inventory.
+# Trusted local file limits; these do not change remote Artifact exposure.
+max_output_file_bytes = 8589934592       # 8 GiB per written/collected file, including intermediates.
+max_collected_output_bytes = 34359738368 # 32 GiB of declared outputs per execution, not a disk quota.
+tmpfs_size_mb = 256                     # /tmp uses container memory, not disk.
 
 [execution.resources]
 cpus = 4.0
 memory_mb = 4096
 pids_limit = 128
 timeout_seconds = 900.0
+
+# Optional Python dependency builds. Managed workspaces use USER/Environments,
+# overriding this root; no analysis data is mounted while installing packages.
+# [environment]
+# root = "../Environments"
+# build_timeout_seconds = 600.0
+# build_proxy = "http://127.0.0.1:12199" # Build-only proxy; never changes global settings.

@@ -351,9 +351,9 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
     (
         (WorkflowStage.INTAKE, {"artifact_list", "artifact_query"}),
         (WorkflowStage.UNDERSTAND, {"artifact_list", "artifact_query", "skill_search", "skill_view", "memory_search", "memory_view"}),
-        (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view"}),
+        (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view", "environment_list"}),
         (WorkflowStage.PREFLIGHT, {"artifact_query"}),
-        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_inspect"}),
+        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_inspect", "environment_list", "environment_build"}),
         (WorkflowStage.VALIDATE, {"artifact_query"}),
         (WorkflowStage.INTERPRET, {"artifact_query"}),
         (WorkflowStage.REPORT, {"artifact_query", "report_submit"}),

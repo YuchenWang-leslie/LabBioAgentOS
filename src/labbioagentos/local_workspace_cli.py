@@ -91,6 +91,9 @@ def scoped_settings(args, settings):
             project_id=workspace.project_id, lab_id=workspace.lab_id),
         "input_roots": (workspace.data_root,), "result_root": workspace.result_root,
         "managed_root": Path(root).expanduser().absolute(), "gold_root": workspace.gold_root,
+        "environment": settings.environment.model_copy(update={
+            "root": workspace.user_root / "Environments",
+        }) if settings.environment is not None else None,
     })
 
 
