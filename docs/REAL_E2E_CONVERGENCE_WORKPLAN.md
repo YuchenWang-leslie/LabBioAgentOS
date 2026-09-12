@@ -3746,3 +3746,93 @@ deployment; production current/docs remain absent. Pantheon remains clean at
 no proxy/tunnel settings were changed. Existing uncommitted changes are preserved;
 no commit or push. Stop: the user-facing v2 file is corrected in place. The next
 entry is that file or a separately requested new task, not another Gold rewrite.
+
+### 2026-09-12: Gold export directory identity is no longer truncated
+
+Scoped user authorization: fix export uniqueness only. On source baseline
+`6dfcfeb8f7931d10a395187ef1d5ada23e15a77c`, two approved Skills with the same
+name/version and UUID prefix were reported as two exports but produced only one
+file: the rendered-file dictionary silently reused its path key. Slug collisions
+from punctuation, non-ASCII names and long-name truncation reproduced the same
+failure. SQLite still retained both approved identities.
+
+The sole production change is `_export_dirname`: directories now use
+`{slug}_v{version}_{full_skill_uuid}/skill.md`. The name remains readable metadata;
+the full UUID and version distinguish approved records without collision-driven
+fallback naming. Gold content, approval, curation, retrieval and Markdown
+rendering are unchanged. Existing short-UUID directories are left untouched,
+including any human edits; the generated INDEX points to the new canonical
+paths. Old views are neither imported nor counted as additional Gold records.
+
+Six new regression cases failed before the fix and pass after it. Path-dependent
+existing tests now exercise the current layout. Relevant export tests:
+**24 passed**, excluding three already-broken legacy-renderer tests. Full suite:
+**1151 passed, 32 skipped, 4 failed**, one existing Uvicorn warning, 25.36 s.
+The remaining failures predate this fix: three tests require the removed
+`legacy_lineage` renderer argument; one configured-curator test expects
+`SkillGuidanceDraft` instead of the current `SkillAdaptiveCuratorDraft`.
+Neither the separate old-format migration gap nor curator behavior was changed
+to make this scoped regression green.
+
+Authenticated TEST1 / PRJ1 `gold-export` refreshed the actual local library:
+two Skill identities, three approved versions, three distinct full-UUID views.
+All three previous short-directory files remain byte-identical. Agent content,
+proposals and approval records remain byte-identical in `skill_store_state.payload`;
+SHA256 before/after is
+`765a478d74da003890bee70adfb4aa681de0505f1b045177d22a2ebde87e5f6d`.
+A second fresh-process export left all Markdown bytes unchanged. User entry:
+`../test/TEST1/GoldSkills/INDEX.md`.
+
+Local source/library update only, not production deployment or skill promotion.
+Expected production `current` remains absent; no production health claim is made.
+No provider, generic live, scientific execution or report generation was run.
+No Gold was authored/approved by Codex, and no old export was deleted. No
+Pantheon, Docker, proxy or tunnel changes; no commit/push. Source remains on
+`fix/gold-evidence-crosscheck-20260911`. Stop: uniqueness repair and local export
+verification complete. Further migration/curation fixes require separate scope.
+
+### 2026-09-12: Remaining Gold export/configuration regressions closed
+
+The user authorized targeted repair of the four remaining failures. They were
+reproduced before editing: three called a removed legacy-renderer argument; one
+still required `SkillGuidanceDraft` although the user's WF+Skills configuration
+now selects `SkillAdaptiveCuratorDraft` for both drafting and revision.
+
+The export failure was not just stale test code. `legacy_hashes` was calculated
+from the current renderer, so the supposed old-format migration branch could
+never accept a different format. It is replaced with per-file SHA256 receipts
+in the existing `local_gold_export` table. A changed renderer may refresh only
+bytes matching that path's last successful generated-file receipt. Replacement
+still rechecks the original hash before the atomic swap; edits, links and unknown
+content remain conflicts. Receipt updates commit with the index receipt and roll
+back on failure. No Gold content/approval fields or database schema are changed.
+
+Existing stores that tracked only INDEX can enroll a canonical file only if its
+bytes exactly match the current approved view. Unregistered historical bytes are
+not guessed or automatically overwritten. Short-UUID/older directories remain
+untouched, as established by the uniqueness checkpoint. This is an explicit safe
+migration boundary, not a claim that arbitrary old files can be upgraded.
+
+Migration tests now exercise a real prior export followed by a renderer change,
+including reopen, human edits, concurrent edits, receipt rollback and enrollment
+with/without exact current bytes. Configuration tests retain the current
+WF+Skills schema and test both review-only and revision paths using synthetic
+Agent responses, checking unchanged draft transfer and provider settings. No
+production curator/schema/prompt change or Agent-authored Gold rewrite was made.
+
+Relevant regression: **96 passed**. Final full `python -m pytest` regression:
+**1158 passed, 32 skipped, zero failures**, one existing Uvicorn warning, 25.52 s.
+No tests were deleted or newly skipped. Authenticated TEST1 / PRJ1 export ran in
+two fresh processes: receipts increased from one INDEX receipt to four receipts
+(INDEX plus three canonical version files). Every Markdown byte, old directory
+and `skill_store_state.payload` remained unchanged. Payload SHA256 remains
+`765a478d74da003890bee70adfb4aa681de0505f1b045177d22a2ebde87e5f6d`.
+
+Local source/library only; no commit/push or deployment. Production current and
+source architecture/debug-guide documents remain absent; production health is
+not inferred. Docker/containerd/socket were active and no containers were running;
+Pantheon remained clean at `07675c45b538f7d27b9b16b1b7d8b72f37365293`.
+No provider calls, generic live, scientific execution, final-report regeneration,
+Gold approval/promotion, proxy or tunnel changes. No old views were removed.
+Stop: the requested four regressions are closed. Current user entry remains
+`../test/TEST1/GoldSkills/INDEX.md`; a new live task requires separate scope.

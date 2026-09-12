@@ -1,9 +1,10 @@
 """Synthetic catalog/export cases; no scientific Skill content or provider calls."""
 
+import hashlib
 import json
 import os
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -13,7 +14,7 @@ from labbioagentos import (
 )
 from labbioagentos.local_gold import build_personal_gold_service, close_personal_gold
 from labbioagentos.local_gold_library import (
-    GoldExportConflict, export_gold_library, list_gold_library,
+    GoldExportConflict, _export_dirname, _slugify, export_gold_library, list_gold_library,
 )
 
 
@@ -88,6 +89,66 @@ def test_empty_and_pending_and_arbitrary_markdown_are_not_gold(library):
     assert (root / "unapproved.md").read_text() == "Fixture file, never approval authority."
 
 
+@pytest.mark.parametrize("names", [
+    ("Same guide", "Same guide"),
+    ("A/B", "A B"),
+    ("质控指南", "表达概览"),
+    ("a" * 60 + " first", "a" * 60 + " second"),
+])
+def test_export_full_identity_survives_name_and_uuid_prefix_collisions(library, monkeypatch, names):
+    root, service, principal = library
+    identifiers = iter((UUID("12345678-0000-4000-8000-000000000001"),
+                        UUID("12345678-0000-4000-8000-000000000002")))
+    monkeypatch.setattr("labbioagentos.skills.store.uuid4", lambda: next(identifiers))
+    first, second = (_approve(service, principal, name=name) for name in names)
+    assert _slugify(first.name) == _slugify(second.name)
+    before = service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0]
+    result = export_gold_library(service, principal)
+    assert result["exported_versions"] == len(list(root.glob("*/skill.md"))) == 2
+    index = (root / "INDEX.md").read_text()
+    for gold, other in ((first, second), (second, first)):
+        relative = f"{_slugify(gold.name)}_v{gold.version}_{gold.skill_id}/skill.md"
+        body = (root / relative).read_text()
+        assert str(gold.skill_id) in body and str(other.skill_id) not in body
+        assert index.count(f"]({relative})") == 1
+    assert service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0] == before
+    files = {path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")}
+    reopened = build_personal_gold_service(root, principal.user_id)
+    try:
+        export_gold_library(reopened, principal)
+        assert files == {path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")}
+    finally:
+        close_personal_gold(reopened)
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_export_preserves_old_short_uuid_directory(library, monkeypatch, edited):
+    from labbioagentos import local_gold_library as exports
+
+    root, service, principal = library
+    gold = _approve(service, principal)
+    short_dir = f"{_slugify(gold.name)}_v{gold.version}_{str(gold.skill_id)[:8]}"
+    with monkeypatch.context() as old_export:
+        old_export.setattr(exports, "_export_dirname", lambda skill: short_dir)
+        export_gold_library(service, principal)
+    old_path = root / short_dir / "skill.md"
+    if edited:
+        old_path.write_bytes(old_path.read_bytes() + b"\nHuman note: preserve me.\n")
+    old_body = old_path.read_bytes()
+    before = service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0]
+    result = export_gold_library(service, principal)
+    relative = f"{_slugify(gold.name)}_v{gold.version}_{gold.skill_id}/skill.md"
+    assert result["exported_versions"] == 1
+    assert (root / relative).read_bytes() == exports._markdown(gold)
+    assert old_path.read_bytes() == old_body
+    index = (root / "INDEX.md").read_text()
+    assert f"]({relative})" in index and f"]({short_dir}/skill.md)" not in index
+    assert service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0] == before
+    assert service.get_gold(gold.skill_id, gold.version, principal=principal) == gold
+    export_gold_library(service, principal)
+    assert old_path.read_bytes() == old_body
+
+
 def test_export_preserves_text_identity_versions_and_restarts(library):
     root, service, principal = library
     first = _approve(service, principal)
@@ -97,12 +158,12 @@ def test_export_preserves_text_identity_versions_and_restarts(library):
     assert result["exported_versions"] == 3
     before = {path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")}
     for gold in (first, second, duplicate):
-        path = root / str(gold.skill_id) / f"v{gold.version}.md"
+        path = root / _export_dirname(gold) / "skill.md"
         body = path.read_text()
         assert gold.name in body and gold.procedure.workflow_outline[0] in body
         assert gold.procedure.parameter_guidance[0] in body
         assert gold.procedure.debug_lessons[0] in body
-        assert str(gold.source_run_id) in body and "Content SHA256:" in body
+        assert str(gold.source_run_id) in body and "Content SHA256" in body
         assert path.stat().st_mode & 0o777 == 0o600
         assert path.parent.stat().st_mode & 0o777 == 0o700
     assert (root / "INDEX.md").stat().st_mode & 0o777 == 0o600
@@ -112,9 +173,9 @@ def test_export_preserves_text_identity_versions_and_restarts(library):
         assert before == {path.relative_to(root): path.read_bytes() for path in root.rglob("*.md")}
         third = _approve(reopened, principal, parent=second)
         export_gold_library(reopened, principal)
-        assert (root / str(third.skill_id) / "v3.md").exists()
-        assert (root / str(first.skill_id) / "v1.md").read_bytes() == before[
-            root.joinpath(str(first.skill_id), "v1.md").relative_to(root)]
+        assert (root / _export_dirname(third) / "skill.md").exists()
+        assert (root / _export_dirname(first) / "skill.md").read_bytes() == before[
+            root.joinpath(_export_dirname(first), "skill.md").relative_to(root)]
     finally:
         close_personal_gold(reopened)
 
@@ -124,7 +185,7 @@ def test_readable_guide_omits_trace_inventory_without_changing_gold(library):
     gold = _approve(service, principal)
     before = service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0]
     export_gold_library(service, principal)
-    body = (root / str(gold.skill_id) / "v1.md").read_text()
+    body = (root / _export_dirname(gold) / "skill.md").read_text()
     assert "Trace event:" not in body and "Script Artifact:" not in body
     assert "Instruction:" not in body
     assert str(gold.procedure.source_trace_event_ids[0]) not in body
@@ -134,15 +195,17 @@ def test_readable_guide_omits_trace_inventory_without_changing_gold(library):
 
 
 @pytest.mark.parametrize("edited", [False, True])
-def test_legacy_export_upgrade_requires_exact_original_bytes(library, edited):
-    from labbioagentos.local_gold_library import _markdown
+def test_legacy_export_upgrade_requires_exact_original_bytes(library, monkeypatch, edited):
+    from labbioagentos import local_gold_library as exports
 
     root, service, principal = library
     gold = _approve(service, principal)
-    export_gold_library(service, principal)
-    path = root / str(gold.skill_id) / "v1.md"
-    legacy = _markdown(gold, legacy_lineage=True)
-    assert b"Trace event:" in legacy
+    before = service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0]
+    legacy = b"# Previous generated fixture format\n\nTrace event: synthetic-fixture\n"
+    with monkeypatch.context() as old_export:
+        old_export.setattr(exports, "_markdown", lambda skill: legacy)
+        export_gold_library(service, principal)
+    path = root / _export_dirname(gold) / "skill.md"
     original = legacy + (b"\nHuman note: preserve me.\n" if edited else b"")
     path.write_bytes(original)
     if edited:
@@ -150,12 +213,47 @@ def test_legacy_export_upgrade_requires_exact_original_bytes(library, edited):
             export_gold_library(service, principal)
         assert path.read_bytes() == original
     else:
-        export_gold_library(service, principal)
-        assert path.read_bytes() == _markdown(gold)
+        reopened = build_personal_gold_service(root, principal.user_id)
+        try:
+            export_gold_library(reopened, principal)
+        finally:
+            close_personal_gold(reopened)
+        assert path.read_bytes() == exports._markdown(gold)
         assert path.stat().st_mode & 0o777 == 0o600
         export_gold_library(service, principal)
-        assert path.read_bytes() == _markdown(gold)
+        assert path.read_bytes() == exports._markdown(gold)
+    expected = legacy if edited else exports._markdown(gold)
+    assert service.store._connection.execute(
+        "SELECT sha256 FROM local_gold_export WHERE path = ?", (str(path.relative_to(root)),)
+    ).fetchone() == (hashlib.sha256(expected).hexdigest(),)
+    assert service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0] == before
     assert service.get_gold(gold.skill_id, 1, principal=principal) == gold
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_export_without_file_receipt_requires_exact_current_bytes(library, edited):
+    root, service, principal = library
+    gold = _approve(service, principal)
+    export_gold_library(service, principal)
+    path = root / _export_dirname(gold) / "skill.md"
+    relative = str(path.relative_to(root))
+    # Before per-file receipts, only INDEX.md had an ownership hash.
+    service.store._connection.execute("DELETE FROM local_gold_export WHERE path = ?", (relative,))
+    if edited:
+        path.write_bytes(b"Unknown or human-edited historical content.\n")
+        with pytest.raises(GoldExportConflict):
+            export_gold_library(service, principal)
+        assert path.read_bytes() == b"Unknown or human-edited historical content.\n"
+        assert service.store._connection.execute(
+            "SELECT sha256 FROM local_gold_export WHERE path = ?", (relative,)
+        ).fetchone() is None
+    else:
+        before = path.read_bytes()
+        export_gold_library(service, principal)
+        assert path.read_bytes() == before
+        assert service.store._connection.execute(
+            "SELECT sha256 FROM local_gold_export WHERE path = ?", (relative,)
+        ).fetchone() == (hashlib.sha256(before).hexdigest(),)
 
 
 @pytest.mark.parametrize("target", ["version", "index"])
@@ -163,7 +261,7 @@ def test_human_edits_are_not_overwritten_or_imported(library, target):
     root, service, principal = library
     gold = _approve(service, principal)
     export_gold_library(service, principal)
-    path = root / "INDEX.md" if target == "index" else root / str(gold.skill_id) / "v1.md"
+    path = root / "INDEX.md" if target == "index" else root / _export_dirname(gold) / "skill.md"
     path.write_text("Human fixture edit: do not overwrite.")
     with pytest.raises(GoldExportConflict):
         export_gold_library(service, principal)
@@ -176,9 +274,12 @@ def test_legacy_upgrade_rechecks_file_before_replacement(library, monkeypatch):
 
     root, service, principal = library
     gold = _approve(service, principal)
-    export_gold_library(service, principal)
-    path = root / str(gold.skill_id) / "v1.md"
-    path.write_bytes(exports._markdown(gold, legacy_lineage=True))
+    legacy = b"# Previous generated fixture format\n"
+    with monkeypatch.context() as old_export:
+        old_export.setattr(exports, "_markdown", lambda skill: legacy)
+        export_gold_library(service, principal)
+    path = root / _export_dirname(gold) / "skill.md"
+    old_index = (root / "INDEX.md").read_bytes()
     original_replace = exports._replace_generated
 
     def concurrent_edit(path, body, expected_hash):
@@ -190,6 +291,10 @@ def test_legacy_upgrade_rechecks_file_before_replacement(library, monkeypatch):
         export_gold_library(service, principal)
     assert path.read_text() == "Concurrent human edit."
     assert list(path.parent.glob(".export-*.tmp")) == []
+    assert (root / "INDEX.md").read_bytes() == old_index
+    assert service.store._connection.execute(
+        "SELECT sha256 FROM local_gold_export WHERE path = ?", (str(path.relative_to(root)),)
+    ).fetchone() == (hashlib.sha256(legacy).hexdigest(),)
 
 
 def test_unmanaged_index_is_preserved(library):
@@ -215,13 +320,13 @@ def test_export_rejects_symlinks(library, tmp_path, target):
         root.rename(moved)
         root.symlink_to(outside, target_is_directory=True)
     elif target == "directory":
-        (root / str(gold.skill_id)).symlink_to(outside, target_is_directory=True)
+        (root / _export_dirname(gold)).symlink_to(outside, target_is_directory=True)
     elif target == "index":
         (root / "INDEX.md").symlink_to(source)
     else:
-        directory = root / str(gold.skill_id)
+        directory = root / _export_dirname(gold)
         directory.mkdir(mode=0o700)
-        (directory / "v1.md").symlink_to(source)
+        (directory / "skill.md").symlink_to(source)
     with pytest.raises((ValueError, GoldExportConflict)):
         export_gold_library(service, principal)
     assert source.read_text() == "untouched"
@@ -234,9 +339,9 @@ def test_export_rejects_hardlinks(library, tmp_path, target):
     source = tmp_path / "outside-file"
     source.write_text("untouched")
     source.chmod(0o600)
-    directory = root / str(gold.skill_id)
+    directory = root / _export_dirname(gold)
     directory.mkdir(mode=0o700)
-    os.link(source, root / "INDEX.md" if target == "index" else directory / "v1.md")
+    os.link(source, root / "INDEX.md" if target == "index" else directory / "skill.md")
     with pytest.raises((ValueError, GoldExportConflict)):
         export_gold_library(service, principal)
     assert source.read_text() == "untouched"
