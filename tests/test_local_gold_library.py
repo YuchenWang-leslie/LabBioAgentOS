@@ -28,7 +28,7 @@ def library(tmp_path):
 
 def _propose(service, principal, name="Fixture notes", tags=("review",), parent=None):
     source = SkillSourceBundle(source_run_id=uuid4(), final_status=RunStatus.COMPLETED,
-                               workflow_stage_path=(), trace_event_ids=())
+                               workflow_stage_path=(), trace_event_ids=(uuid4(),))
     service.store.save_source_bundle(source)
     return service.create_proposal(source.bundle_id, SkillCuratorDraft(
         proposed_name=name, description="Synthetic catalog fixture, not scientific guidance.",
@@ -119,6 +119,45 @@ def test_export_preserves_text_identity_versions_and_restarts(library):
         close_personal_gold(reopened)
 
 
+def test_readable_guide_omits_trace_inventory_without_changing_gold(library):
+    root, service, principal = library
+    gold = _approve(service, principal)
+    before = service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0]
+    export_gold_library(service, principal)
+    body = (root / str(gold.skill_id) / "v1.md").read_text()
+    assert "Trace event:" not in body and "Script Artifact:" not in body
+    assert "Instruction:" not in body
+    assert str(gold.procedure.source_trace_event_ids[0]) not in body
+    assert str(gold.source_run_id) in body and "skills.sqlite" in body
+    assert all(text in body for text in gold.procedure.workflow_outline)
+    assert service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_legacy_export_upgrade_requires_exact_original_bytes(library, edited):
+    from labbioagentos.local_gold_library import _markdown
+
+    root, service, principal = library
+    gold = _approve(service, principal)
+    export_gold_library(service, principal)
+    path = root / str(gold.skill_id) / "v1.md"
+    legacy = _markdown(gold, legacy_lineage=True)
+    assert b"Trace event:" in legacy
+    original = legacy + (b"\nHuman note: preserve me.\n" if edited else b"")
+    path.write_bytes(original)
+    if edited:
+        with pytest.raises(GoldExportConflict):
+            export_gold_library(service, principal)
+        assert path.read_bytes() == original
+    else:
+        export_gold_library(service, principal)
+        assert path.read_bytes() == _markdown(gold)
+        assert path.stat().st_mode & 0o777 == 0o600
+        export_gold_library(service, principal)
+        assert path.read_bytes() == _markdown(gold)
+    assert service.get_gold(gold.skill_id, 1, principal=principal) == gold
+
+
 @pytest.mark.parametrize("target", ["version", "index"])
 def test_human_edits_are_not_overwritten_or_imported(library, target):
     root, service, principal = library
@@ -130,6 +169,27 @@ def test_human_edits_are_not_overwritten_or_imported(library, target):
         export_gold_library(service, principal)
     assert path.read_text() == "Human fixture edit: do not overwrite."
     assert service.get_gold(gold.skill_id, 1, principal=principal) == gold
+
+
+def test_legacy_upgrade_rechecks_file_before_replacement(library, monkeypatch):
+    from labbioagentos import local_gold_library as exports
+
+    root, service, principal = library
+    gold = _approve(service, principal)
+    export_gold_library(service, principal)
+    path = root / str(gold.skill_id) / "v1.md"
+    path.write_bytes(exports._markdown(gold, legacy_lineage=True))
+    original_replace = exports._replace_generated
+
+    def concurrent_edit(path, body, expected_hash):
+        path.write_text("Concurrent human edit.")
+        original_replace(path, body, expected_hash)
+
+    monkeypatch.setattr(exports, "_replace_generated", concurrent_edit)
+    with pytest.raises(GoldExportConflict):
+        export_gold_library(service, principal)
+    assert path.read_text() == "Concurrent human edit."
+    assert list(path.parent.glob(".export-*.tmp")) == []
 
 
 def test_unmanaged_index_is_preserved(library):
@@ -223,6 +283,10 @@ async def test_cli_approval_remains_successful_when_export_conflicts(
         recover_run=lambda *_args, **_kwargs: proposal.source_run_id,
         result=lambda _handle: SimpleNamespace(),
     )
+    # This fixture covers export handling; archive scope/status checks have their
+    # own tests and must not attempt runtime recovery here.
+    monkeypatch.setattr("labbioagentos.local_gold.completed_gold_source_record",
+                        lambda *_args: None)
     monkeypatch.setattr(cli, "build_application", lambda *_args, **_kwargs: application)
     settings = SimpleNamespace(gold_root=root, result_root=directory.parent,
                                principal=principal, workspace=SimpleNamespace(project_id="P1"))

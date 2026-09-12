@@ -23,6 +23,8 @@ from labbioagentos.skills.models import (
     SkillCuratorDraft,
     SkillSourceBundle,
 )
+from test_gold_evidence_audit import checked_audit
+from labbioagentos.skills.source import SkillSourceProjector
 
 
 def _adaptive_payload():
@@ -185,13 +187,20 @@ def test_adaptive_guidance_is_optional_in_model_facing_schema():
 async def test_audited_boundary_preserves_agent_reference_steps_and_source_authority():
     source_payload = _source_payload()
     source_payload["stage_context"] = [_stage_payload()]
+    source_payload["artifact_evidence_views"] = [{
+        "artifact_id": str(uuid4()), "artifact_type": "JSON_RECORDS",
+        "exposure_class": "DERIVED", "release_basis": "TRUSTED_EXECUTION_DECLASSIFICATION",
+        "view_type": "TOP_N", "returned_count": 1, "available_count": 1,
+        "effective_limit": 1, "records": [{"metric": "fixture_metric", "value": 7}],
+        "provenance": {"owner_user_id": "fixture", "project_id": "p", "lab_id": "lab"},
+    }]
     source = _parse(SkillCurationSourceView, source_payload)
     draft_payload = _adaptive_payload()
     draft_payload["procedure"]["execution_guidance"] = [
         "The source plan proposed converter A; this is not proof it was executed."
     ]
     draft = _parse(SkillAdaptiveCuratorDraft, draft_payload)
-    audit = SkillCuratorAudit(findings=(), summary="No source overstatement found.")
+    audit = checked_audit(draft)
     captured = {}
 
     def agent(name, instructions, response_format, output):
@@ -218,12 +227,13 @@ async def test_audited_boundary_preserves_agent_reference_steps_and_source_autho
               SkillAdaptiveCuratorDraft, draft),
     ).propose(source)
 
-    assert result == draft.to_curator_draft()
-    assert captured["draft"] == source.model_dump(mode="json")
-    for stage in ("audit", "revision"):
-        assert captured[stage]["source"] == source.model_dump(mode="json")
-        assert captured[stage]["draft"] == draft.model_dump(mode="json")
-        assert captured[stage]["source"]["stage_context"][0]["authority"] == "MODEL_CONTEXT"
-    assert captured["revision"]["audit"] == audit.model_dump(mode="json")
+    assert result.procedure == draft.to_curator_draft().procedure
+    assert result.review_notes == (audit.summary,)
+    assert captured["draft"] == SkillSourceProjector.guidance_view(source)
+    assert captured["audit"]["reference_material"] == SkillSourceProjector.review_view(source)
+    assert captured["audit"]["reference_material"]["reference_plans"][0]["authority"] == "MODEL_CONTEXT"
+    assert "fixture_metric" not in json.dumps(captured["draft"])
+    assert captured["audit"]["reference_material"]["artifact_evidence_views"][0]["records"][0]["value"] == 7
+    assert "revision" not in captured  # acceptable guidance needs no forced rewrite
     assert result.procedure.workflow_outline == draft.procedure.workflow_guidance
     assert result.procedure.execution_guidance == draft.procedure.execution_guidance

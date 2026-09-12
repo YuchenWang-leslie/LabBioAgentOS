@@ -494,6 +494,7 @@ async def test_adaptive_curator_mechanically_preserves_agent_authored_choices(
 
 @pytest.mark.asyncio
 async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
+    from test_gold_evidence_audit import checked_audit
     _, _, artifacts, _, store, service, _, _ = _governed(tmp_path)
     bundle = _source_bundle(artifacts)
     store.save_source_bundle(bundle)
@@ -520,7 +521,7 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
 
     initial = adaptive("Initial adaptive Agent draft.")
     revised = adaptive("Independently audited and revised Agent draft.")
-    audit = SkillCuratorAudit(
+    audit = checked_audit(initial).model_copy(update=dict(
         findings=(
             SkillCuratorAuditFinding(
                 category=SkillCuratorAuditCategory.PRESCRIPTIVE_FUTURE_CHOICE,
@@ -530,7 +531,7 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
             ),
         ),
         summary="The adaptive draft requires Agent revision.",
-    )
+    ))
 
     def agent(name, instructions, response_format):
         return Agent(
@@ -563,6 +564,9 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
         return SimpleNamespace(content=initial)
 
     async def audit_run(_self, message, **_kwargs):
+        if "audit" in captured:
+            captured["final_audit"] = json.loads(message)
+            return SimpleNamespace(content=checked_audit(revised))
         captured["audit"] = json.loads(message)
         return SimpleNamespace(content=audit)
 
@@ -581,18 +585,23 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
         boundary_observer=lambda kind, value: observed.append((kind, value)),
     ).propose(view)
 
-    assert result == revised.to_curator_draft()
-    assert captured["draft"] == view.model_dump(mode="json")
-    assert captured["audit"] == {
-        "source": view.model_dump(mode="json"),
-        "draft": initial.model_dump(mode="json"),
-    }
+    assert result.procedure == revised.to_curator_draft().procedure
+    assert result.review_notes == (checked_audit(revised).summary,)
+    assert captured["draft"] == SkillSourceProjector.guidance_view(view)
+    assert captured["audit"]["reference_material"] == SkillSourceProjector.review_view(view)
+    assert captured["audit"]["draft"] == initial.model_dump(mode="json")
+    assert captured["final_audit"]["draft"] == revised.model_dump(mode="json")
     assert captured["revision"]["audit"] == audit.model_dump(mode="json")
     assert [kind for kind, _ in observed] == [
         "curator_source",
+        "curator_writing_source",
         "curator_initial_adaptive_draft",
+        "curator_audit_request",
         "curator_audit",
         "curator_revised_adaptive_draft",
+        "curator_final_audit_request",
+        "curator_final_audit",
+        "curator_guidance_ready_for_user_review",
     ]
     assert "storage_locator" not in json.dumps(captured)
 

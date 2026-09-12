@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 from .contracts import RunStatus
+from .run_state import RunRecoveryState
 from .governance import AccessAction, AccessService, AuthorizationDenied, InMemoryProjectStore
 from .skills import (
     GoldSkillService, SQLiteSkillStore, SkillProposalContext, SkillScope,
@@ -129,12 +130,19 @@ def decide_personal_gold(service, proposal_id, gate_id, approved, principal):
 async def propose_from_run(application, handle, principal, workspace,
                            curator: SkillCuratorPort):
     """Ask an injected Agent curator to summarize safe successful-run evidence."""
+    result = application.result(handle)
+    return await propose_from_completed_run(
+        application, result.run_id, principal, workspace, curator,
+    )
+
+
+def completed_gold_source_record(application, run_id, principal, workspace):
+    """Read a completed source without resuming it under a different runtime."""
     service = application.configuration.skill_service
     if service is None:
         raise SkillStoreError("This application has no local Gold service")
     store = _personal_store(service)
-    result = application.result(handle)
-    record = application.run_state_store.get(result.run_id)
+    record = application.run_state_store.get(run_id)
     if (
         principal.user_id != store.user_id
         or (principal.user_id, principal.lab_id) != (workspace.user_id, workspace.lab_id)
@@ -143,18 +151,32 @@ async def propose_from_run(application, handle, principal, workspace,
     ):
         raise AuthorizationDenied("Gold source must belong to the current user and project")
     application.access_service.require_project(
-        principal, workspace.project_id, AccessAction.READ_PROJECT, run_id=result.run_id,
+        principal, workspace.project_id, AccessAction.READ_PROJECT, run_id=run_id,
     )
-    if result.status is not RunStatus.COMPLETED:
-        raise SkillStoreError("Only a completed run can be proposed as local Gold")
+    if (record.workflow_run.status is not RunStatus.COMPLETED
+            or record.recovery_state is not RunRecoveryState.STABLE):
+        raise SkillStoreError("Only a stable completed run can be proposed as local Gold")
+    return record
+
+
+async def propose_from_completed_run(application, run_id, principal, workspace,
+                                     curator: SkillCuratorPort):
+    """New curation over frozen evidence; never attach, execute or rewrite the source run."""
+    record = completed_gold_source_record(application, run_id, principal, workspace)
+    service = application.configuration.skill_service
     from .local_gold_source import source_artifact_views, stage_context_from_results
 
-    events = application.trace_events(handle)
-    stage_context = stage_context_from_results(record.runtime_results, events, result.run_id)
-    views = source_artifact_views(application, result.run_id, principal, workspace)
+    events = application.trace_recorder.events(run_id)
+    stage_context = stage_context_from_results(record.runtime_results, events, run_id)
+    views = source_artifact_views(application, run_id, principal, workspace)
+    if application.configuration.boundary_observer is not None:
+        application.configuration.boundary_observer("curation_runtime", {
+            "source_run_id": str(run_id), "source_runtime_revision": record.runtime_revision,
+            "curation_runtime_revision": application.configuration.runtime_revision,
+        })
     service.source_projector = SkillSourceProjector(application.artifact_store)
     bundle = service.create_source_bundle(
-        events, run_id=result.run_id, stage_context=stage_context,
+        events, run_id=run_id, stage_context=stage_context,
         artifact_evidence_views=views,
     )
     return await service.curate_proposal(

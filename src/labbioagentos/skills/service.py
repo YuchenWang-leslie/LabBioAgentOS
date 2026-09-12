@@ -152,6 +152,7 @@ class GoldSkillService:
             source_run_id=bundle.source_run_id,
             proposed_name=draft.proposed_name,
             description=draft.description,
+            review_notes=draft.review_notes,
             scope=context.scope,
             owner_user_id=context.owner_user_id,
             project_id=context.project_id,

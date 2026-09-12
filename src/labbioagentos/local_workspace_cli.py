@@ -126,12 +126,13 @@ def gold_export(settings) -> dict:
 
 
 def configured_curator(application):
-    """Reuse the accepted Agent draft/audit/revision protocol without task answers."""
+    """Compose Agent-authored advisory guidance and review, without task answers."""
     from pantheon.agent import Agent
     from .runtime.pantheon import PantheonRuntimeFactory
     from .skills import (
-        PantheonAuditedAdaptiveSkillCurator, SkillAdaptiveCuratorDraft, SkillCuratorAudit,
+        PantheonAuditedAdaptiveSkillCurator, SkillCuratorAudit,
     )
+    from .skills.models import SkillAdaptiveCuratorDraft
     from .skills.curator import (
         SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS, SKILL_CURATOR_AUDIT_INSTRUCTIONS,
         SKILL_CURATOR_REVISION_INSTRUCTIONS,

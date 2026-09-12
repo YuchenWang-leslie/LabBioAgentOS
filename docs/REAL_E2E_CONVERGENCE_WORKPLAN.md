@@ -3341,3 +3341,408 @@ programs/reports, run databases/traces, environment caches, credentials, local
 configuration and Docker image binaries remain on the server. The Pantheon
 dependency is unchanged. Publication does not activate another runtime profile,
 deploy API/workers, rebuild an image, restart Docker, or launch a live task.
+
+### 2026-09-11: PBMC summary and delegated Gold review — candidate rejected
+
+User requested a simple PBMC summary-derived personal Gold and delegated review
+and approval. Fresh TEST1/PRJ1 run `d64f4c41-82d0-4c10-a866-d324db1ffb70`
+completed under source `9ff50467b6bfaf6b306355bc7cf1ddc43de0a711` and unchanged
+`managed-scientific-environments-20260911.toml`. Evidence lives in
+`TEST1/projects/PRJ1/runs/gold-pbmc-summary-20260911/SUPERVISION.md`;
+Agent report is `delivery/REPORT.md`. Independent readback confirms
+COMPLETED/LEARN/STABLE. Four Agent-written executions occurred (two failures,
+then two successes), including a Reviewer return to EXECUTE. Workflow completion
+does not certify scientific conclusions. Input bytes are unchanged.
+
+Normal GoldDraft/GoldAudit/GoldRevision produced personal candidate
+`4fc5981e-9bf4-4304-bc9b-71fbed7f4d10`. It incorrectly states that the second
+execution succeeded and that an already-persisted 39-record Artifact was empty
+because of failed persistence. The curator source itself contains a populated
+TOP_N view. GoldAudit returned no findings and revision retained these errors.
+Codex reviewed the exact candidate without rewriting guidance and recorded a
+delegated rejection at its exact gate. Decision
+`7ba9537a-f17c-41c7-af62-c2a09508091e` is persisted; fresh-process gold-list
+confirms zero approved Skills. Candidate/source/rejection remain in the personal
+SQLite library; no approved Markdown or reuse acceptance is claimed.
+
+No platform/Pantheon code, configuration, budgets or Agent scientific work was
+changed by Codex. No deployment/profile activation or regression rerun occurred;
+this is a live task and governance checkpoint only. Docker services remain
+active, no task containers remain, and failed-run evidence is preserved.
+The approved-Gold request remains unfulfilled. Next entry is separately
+authorized diagnosis of this candidate's evidence-grounding/audit failure,
+not blind approval or another scientific rerun. This documentation checkpoint
+is local only, not committed or pushed.
+
+### 2026-09-11: Gold evidence cross-check repair — two-strike STOP
+
+The user authorized repair and correct Gold extraction from completed PBMC run
+`d64f4c41-82d0-4c10-a866-d324db1ffb70`. No analysis rerun was performed. Scope
+and full review evidence are in that run's `GOLD_CURATION_REPAIR_REVIEW.md`.
+
+Local changes preserve execution exit codes across complementary terminal events,
+carry typed safe diagnostics, require audit field coverage and existing evidence
+references, and audit the final revision. Historical curation reads a scoped
+stable COMPLETED record without recovering execution under a new runtime; old
+run recovery revision checks and source state/manifest/report bytes remain intact.
+
+Attempt 1 used free JSON source pointers; the model invented locations and was
+rejected before proposal creation. Attempt 2 uses an enumerated safe evidence
+catalog (124 IDs, 15 draft fields in this source), preserved per-call schemas and
+exact reference/coverage checks. Its draft/audit/revision/final-audit completed,
+but the final audit still incorrectly described E066 (TOP_N: 39 available,
+10 returned) as empty-record evidence and promoted MODEL_CONTEXT assertions to
+execution proof. Structural correctness did not establish semantic correctness.
+
+Candidate `b287ca4a-bdc4-4137-a221-bd9d5f178117` was read back and rejected under
+the user's delegated authority; decision `d827a5e5-4b09-494e-976a-df1560cee7b7`
+is persisted. The personal approved Gold catalog remains empty. No approved
+Markdown, new-task reuse, scientific reanalysis or Gold acceptance is claimed.
+
+Full regression: **1135 passed, 32 skipped**, one existing Uvicorn warning,
+25.09 s. Current local curation revision:
+`local-63287c7e23e907e2ba7e93c3f9cc1b8919eea7e90a42a6afbe61820d7aba0bf3`.
+Source branch `fix/gold-evidence-crosscheck-20260911` is based on
+`9ff50467b6bfaf6b306355bc7cf1ddc43de0a711`; changes are uncommitted/unpushed.
+No Pantheon/profile/budget/environment/proxy changes or API/worker deployment.
+Docker services remain active, no task containers remain. Production current
+and the older production architecture/debug documents are absent at the expected
+local path; this checkpoint is local CLI evidence only, not service acceptance.
+
+STOP after two materially different generic attempts. Correct approved Gold is
+NOT achieved. Next entry is this frozen candidate/source contradiction and an
+explicit choice of separately scoped typed factual-claim verification or an
+independent auditor-model evaluation. Do not add a third compatibility layer,
+resume scientific execution, approve the rejected draft, or raise trace budgets.
+
+### 2026-09-11: Authorized typed Gold history — facts pass, Gold still blocked
+
+The user authorized the separately scoped typed-fact approach after the earlier
+STOP. GoldHistory now extracts literal execution status/exit/issue codes and
+Artifact structured-record counts/states. Exact local verification precedes all
+Agent writing; invalid claims remain visible failures and are never repaired.
+Writers/auditors receive the verified history, original safe views/diagnostics,
+and advisory PLAN context. Unverified retrospective MODEL_CONTEXT remains in the
+source archive, not the writing facts. Completed scientific trace projection is
+frozen at RUN_COMPLETED; later curation queries stay archived without consuming
+the source trace-reference bound. Failed terminal states still reject curation.
+
+Full regression: **1149 passed, 32 skipped**, one existing Uvicorn warning,
+25.59 s. One live curation reused the completed PBMC run; no analysis was rerun.
+Curation revision:
+`local-6b81fd00bae9e388becd9dbd064b834325cde8d7f8fbf643bfb253b18d2ee884`.
+Source bundle: `e40d8428-70b2-4cc0-8459-e7cbac8ef4d0` (436 trace refs).
+The Agent correctly extracted two failed/two successful executions and the
+39/42-record outputs; exact verification passed. The subsequent draft/audit
+still did not qualify: the audit submitted 17 checks for 14 fields, duplicating
+three fields, and omitted support for the proposed name. The existing guard
+stopped before revision or proposal creation. Manual inspection also found
+placeholder guidance and unsupported numerical generalization not caught by the
+auditor. No repair loop, citation injection or validation relaxation was added.
+
+The personal library has four source bundles, the same two rejected proposals,
+two rejection decisions and **zero approved Gold Skills**. Typed runtime-fact
+verification is evidenced; correct approved Gold is **NOT ACHIEVED**. Detailed
+evidence and next entry are in the source run's
+`GOLD_FACT_VERIFICATION_REVIEW.md`. Resume from that frozen audit-contract/semantic
+failure only after separately scoping it; do not rerun PBMC or blindly approve.
+
+Original state JSON, runtime manifest and report hashes are unchanged; execution
+count remains four. Pantheon stays clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; Docker services are active and no
+task containers remain. No API/worker deployment, profile/Skill activation,
+environment/proxy changes, generic live task, new bioinformatics run, report
+rewrite or reuse validation occurred. This is local CLI evidence only; expected
+production current/docs remain absent. Branch remains
+`fix/gold-evidence-crosscheck-20260911` based on
+`9ff50467b6bfaf6b306355bc7cf1ddc43de0a711`, uncommitted/unpushed. All failed
+evidence is preserved and no cleanup was needed.
+
+### 2026-09-11: Explicit Gold retest/approval request — fact coverage blocked
+
+The user requested testing and delegated approval. No production code, schema,
+prompt, budget or environment was changed. Full regression again passed:
+**1149 passed, 32 skipped**, one existing Uvicorn warning, 25.21 s. One fresh
+curation reused the same frozen PBMC analysis under unchanged
+`local-6b81fd00bae9e388becd9dbd064b834325cde8d7f8fbf643bfb253b18d2ee884`.
+
+Bundle `7f4eec05-f1f0-4d7a-a11c-276d764ceb64` contains 436 trace refs. The
+fact Agent correctly returned four executions and two nonempty result Artifacts,
+but omitted the report Artifact present in its source. The existing validator
+returned `ARTIFACT_FACT_COVERAGE_MISMATCH`; no writer, auditor, revision or new
+proposal was reached. This is an evidenced model coverage omission, not a network
+blocker. No correction was supplied by Codex and no further live retry was run.
+
+Approval was not executed because there is no new acceptable candidate. Personal
+store readback confirms five source bundles, the same two rejected proposals,
+two rejection decisions and **zero approved Gold Skills**. Full details are
+appended to the run's `GOLD_FACT_VERIFICATION_REVIEW.md`. Correct approved Gold
+remains **NOT ACHIEVED**. Next entry is the frozen missing-reference fact packet,
+then the existing audit issues; not blind approval or another PBMC analysis.
+
+Original state/manifest/report hashes and four-execution count are unchanged.
+Docker services are active, no task containers remain. No API/worker deployment,
+profile/Skill activation, scientific/reuse live test, cleanup, commit or push
+occurred. Existing source modifications remain local on the same branch/base.
+
+### 2026-09-11: User changes Gold acceptance to practical advisory guidance
+
+The user authorized continued fixes/testing through delegated approval, then
+explicitly clarified that Gold is modifiable guidance, not a strictly structured
+or exhaustive evidence-audit product. This supersedes the earlier mandatory
+history-coverage/per-field-citation acceptance criteria. Safety, source lineage,
+ownership/versioning, Agent authorship and explicit approval are unchanged.
+
+A keyed-contract experiment first passed structural checks but still retained a
+misleading empty-report inference. Candidate
+`201967c5-ceab-4023-b6d0-5978278355d1` was read and rejected at its exact gate;
+details are in `GOLD_REQUIRED_COVERAGE_REVIEW.md` in the frozen source run. The
+experimental history extractor/keyed audit code and tests were then removed,
+not the source evidence, run results or rejected candidates.
+
+The current curator asks for concise, useful reference steps and adaptation
+points, with optional sections/detailed checks. Agent review flags substantive
+factual, safety or inflexibility concerns; it no longer demands exhaustive field
+coverage. A sound first draft needs no gratuitous rewrite; when concerns exist,
+the Agent revises once and receives a final review. Unresolved substantive
+findings still stop promotion. Safe execution-fact projection and the completed-
+source boundary remain fixed. Codex supplies no Skill prose or scientific answer.
+
+Full regression: **1134 passed, 32 skipped**, one existing Uvicorn warning,
+25.08 s. The lower count reflects explicitly retired strict-coverage experiments.
+Only a separate Gold curation config enables the existing provider's reasoning
+mode, with the same model, 16384 output-token cap and otherwise identical parsed
+settings; original analysis configuration is unchanged:
+`/media/desk16/iy1982/.config/labbioagent/gold-guidance-reasoning-20260911.toml`.
+
+Fresh advisory curation is IN PROGRESS on source bundle
+`18df93f9-c73a-46b9-9461-ac9b3f12f690`, runtime
+`local-cfde493555640b9ad68d0abcedfb7658405592e32763255e17c96c791d20fb1c`.
+No approval is claimed yet. Continue from its actual persisted model boundaries,
+review an actual candidate, then decide through the existing exact approval gate;
+do not reinstate the superseded strict coverage requirement or write the Skill
+for the Agent. No new PBMC analysis, deployment or Git publication is in scope.
+
+### 2026-09-11: Advisory Gold generation uses a minimal prose envelope
+
+The two large-schema advisory candidates were reviewed and rejected, preserving
+their Agent text and evidence: `4e87ef7f-3c14-451f-8af2-244138b4c620` retained
+an unsupported metric interpretation; `0055eef6-39f1-43f8-bea5-86e3c122f3e1`
+retained an invented historical fix and outcome mandates. This is not a return
+to exhaustive evidence checks. The large optional-field schema continued to
+elicit a filled-out retrospective report instead of a concise reference guide.
+
+`SkillGuidanceDraft` now asks only for name, description, applicability and a
+free-form guidance body; tags and artifact types are optional catalog fields.
+No structured adaptation/evidence/parameter tables are required. The body maps
+verbatim into the existing stored reference workflow, so old Skill storage,
+retrieval, ownership, lineage and approval remain unchanged. The prior structured
+curator DTO remains supported for compatibility. No scientific prose or correction
+is authored by Codex. The author sees procedural context; the Agent reviewer
+retains all governed result previews without retrospective model verdicts.
+
+Fresh prose curation is IN PROGRESS on bundle
+`e2ea48a5-ab37-4405-94c0-e59d47f956c8`, runtime
+`local-ceaadadf6115d687ce8551ba8974912ebed428c3246f0aaef21ca8056dd43731`.
+Continue from this run's model boundaries and exact candidate gate, not a new
+scientific run or another model-authorship workaround. Full details, including
+prior transient transport-cleanup warnings, remain in
+`GOLD_REQUIRED_COVERAGE_REVIEW.md` under the frozen source run.
+
+### 2026-09-11: Advisory Gold approved; automated final-audit limitation retained
+
+The preceding prose run completed Agent writing/revision but its final auditor
+mistook source-context fields for draft fields. The two findings concern
+`markdown_report` in the final artifact-type list and `local-flat-records-v1`
+in the final guide; neither is present there. Configured Pantheon memory is
+disabled and source inspection shows no prior-message merge. No Pantheon change
+or automatic audit bypass was installed. **Automatic final review still failed.**
+
+The user explicitly authorized delegated human approval and clarified that Gold
+is guidance, not an exhaustive structured certification. After inspecting the
+actual Agent revision and source, Codex rejected the inapplicable findings and
+used the existing pending-proposal API to preserve that revision unchanged.
+The source bundle was verified for equality and owned completed-run authority.
+The proposal was then read through CLI `gold-review` and approved through its
+exact `gold-decide` gate. This was explicit delegated review, not Agent-output
+fabrication or a claim that the model's automatic final audit passed.
+
+- Proposal `2014a3bc-f7d7-4e4f-8772-abad071121c1`.
+- Gold `6b5bb41f-338b-41b3-96fc-00a1b09775fa`, v1, PERSONAL / TEST1.
+- Agent name: `Scanpy scRNA-seq Exploratory QC & Differential Expression`.
+- Readable export:
+  `../test/TEST1/GoldSkills/6b5bb41f-338b-41b3-96fc-00a1b09775fa/v1.md`.
+- Agent revision SHA256:
+  `ac22a85832d854dd7bd6e583362709da826d2cd1dafbefeb9dae24e2dba37440`.
+
+Fresh-process CLI catalog and read-only SQLite reconstruction passed. The
+proposal/Gold/Markdown preserve the Agent prose exactly; there is one approved
+Gold and no reuse authorization/usage yet. This concise Skill is a reference
+route, not a full manual or proof that every planned method ran. The delegated
+review and the failed automatic review are both preserved in model boundaries;
+full rationale and hashes are in the run's `GOLD_REQUIRED_COVERAGE_REVIEW.md`.
+
+Final regression: **1141 passed, 32 skipped**, one existing Uvicorn warning,
+24.91 s. Original scientific state version 24, four executions, runtime manifest
+and report remain unchanged. Docker/containerd/socket are active with no task
+containers. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`. This is local CLI evidence, not
+a production deployment: expected production current/docs remain absent. No
+profile promotion, new generic/scientific live task, report rewrite, new-task
+reuse validation, cleanup, commit or push occurred. Local code is uncommitted
+on `fix/gold-evidence-crosscheck-20260911` at base
+`9ff50467b6bfaf6b306355bc7cf1ddc43de0a711`.
+
+The requested approved advisory Gold is now saved; stop at this boundary. If
+automatic curation is resumed, start only from the persisted final-auditor
+source/draft confusion, not another PBMC analysis or silent replacement of v1.
+
+### 2026-09-11: User reaffirmed capability guidance; strict review experiment withdrawn
+
+The latest user instruction is authoritative: Gold is a model-readable capability
+guide, not a parameter specification or interface/artifact-schema contract. Its
+useful content is applicability, an overall approach and room to adapt. Exact
+parameters, API mappings, exhaustive evidence tables and rigid tool order are
+not required. The existing prose envelope and optional catalog fields remain;
+legacy structured Skills remain readable, but are not the required authoring form.
+
+The intervening review-binding experiment (draft SHA, JSON Pointer, exact quotes
+and blocking/suggestion severity) was withdrawn, including its dedicated tests.
+No third compatibility layer was added. Before the clarification, two review-only
+probes ran on the unchanged archived revision: the first returned
+`INVALID_REVIEW_RESPONSE`; the diagnostic second returned a valid review with
+zero findings. Both remain in `model-boundaries.jsonl`; neither is evidence of
+live validation of the now-simplified policy.
+
+The current path keeps Agent drafting, advisory review and at most one
+Agent-owned revision. A final opinion no longer automatically vetoes the pending
+candidate. Its summary and concerns are persisted verbatim as proposal
+`review_notes`, visible through `gold-review`, separate from the Gold guidance.
+No automatic approval, model-opinion filtering, host-authored correction or
+unbounded review loop was added. Invalid/unsafe response envelopes still fail
+explicitly. Ownership, source lineage, text safety and exact human approval gates
+are unchanged. Current draft and reference material are separated in the review
+request, with a smaller nonduplicated reference projection; original evidence is
+not rewritten. This is a change to advisory authority, not a claim that the model
+can no longer confuse source text with draft text.
+
+Validation: the former hard-binding schema failed the new lightweight tests
+before withdrawal. Final full regression: **1145 passed, 32 skipped**, one existing
+Uvicorn warning, 28.48 s. Coverage includes both historical false-finding classes,
+unchanged Agent prose, suggestions without final veto, pending proposal notes
+surviving SQLite restart, explicit approval and notes not entering Gold content.
+The existing six proposals and one Gold deserialize under the updated code.
+Gold-store payload, approved v1 Markdown, scientific state payload, runtime
+manifest and report hashes remain unchanged.
+
+This is local CLI source only, uncommitted/unpushed on
+`fix/gold-evidence-crosscheck-20260911`, base
+`9ff50467b6bfaf6b306355bc7cf1ddc43de0a711`. Production current/docs are absent;
+no production release was deployed, no profile/skill promoted, no new Gold
+approved and no revised-policy provider run, generic live, PBMC run or new-task
+reuse performed. Docker/containerd/socket remain active with no running task
+containers. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; no proxy/tunnel settings changed.
+Only this turn's superseded strict-binding test file was removed; all run evidence
+is retained. Stop here. If a fresh live curation is requested, use the existing
+owned completed source through `gold-propose`, inspect its actual candidate and
+advisory notes via `gold-review`, then make an explicit human decision. Do not
+resume the withdrawn strict matching experiment or rewrite approved v1.
+
+### 2026-09-11: Existing TEST1 Gold replaced by an Agent-authored capability-guide v2
+
+The user then explicitly requested updating the already saved Gold, not just
+future curation behavior. The prior stop boundary was superseded for this one
+version update. Existing lifecycle APIs were sufficient; no production code or
+scientific program changed in this checkpoint.
+
+The configured MiMo Agent received the existing guide, the frozen safe source
+projection and the user's verbatim request for capability guidance without hard
+parameters/interface correspondence. One rewrite and one advisory Agent review
+completed under runtime
+`local-d29b6cacbf27e9ad02a5f30e0371fa1764d4f7514ee3f1b9a01890107ffcf35e`.
+This was a targeted existing-guide rewrite through the configured revision/audit
+Agents, not a new full analysis or a claim about a fresh complete curation run.
+Boundary records `gold_guidance_rewrite_*` preserve request, Agent draft, review
+and pending proposal in the original run's `model-boundaries.jsonl`.
+
+The new 641-character guidance body is an Agent-authored capability overview,
+not a parameter/API recipe. The reviewer still suggested raw-input qualification,
+output-contract detail and dependency detail. Codex inspected the actual pending
+proposal through `gold-review` and acted as the explicitly authorized human
+approver: this is an adaptable capability guide, not a guarantee that one fixed
+pipeline works on every input. Missing interface/environment recipes are not
+approval requirements under the latest user instruction. Review opinions remain
+on the proposal, not in Gold prose; they were not suppressed or used as
+scientific certification. No further correction or wording was supplied by Codex.
+
+- Same Skill ID: `6b5bb41f-338b-41b3-96fc-00a1b09775fa`, PERSONAL / TEST1.
+- Current approved version: **v2**, parent v1, name
+  `Single-cell RNA-seq Exploratory Analysis`.
+- Proposal: `0c7d1f85-37c0-4f3c-8bb9-087bf98edc27`.
+- Exact approval gate: `skill-proposal:bf258d07-030f-4760-9c56-bc103f152e51`.
+- CLI approval and Markdown export completed at `2026-09-11T13:49:29.896686Z`.
+- Readable file:
+  `../test/TEST1/GoldSkills/6b5bb41f-338b-41b3-96fc-00a1b09775fa/v2.md`.
+- v2 Markdown SHA256:
+  `e62e9c4daaaeb820839baa1904aca9945821b7213c482c0782c678f78ee04704`.
+- Frozen source bundle remains `e2ea48a5-ab37-4405-94c0-e59d47f956c8` from run
+  `d64f4c41-82d0-4c10-a866-d324db1ffb70`; no new scientific source was created.
+
+Fresh-process `gold-list` returns one current Skill at v2. SQLite reconstruction
+finds v1/v2, seven proposals and seven decisions. Agent name, description and
+procedure match the saved v2 exactly; seven review-note strings remain separately
+on the proposal. Contract-ID lists and parameter guidance are empty. v1 Markdown
+and scientific state payload hashes remain unchanged. Version history is retained,
+not overwritten or deleted. There are still zero reuse usage records: no new-task
+reuse performance is claimed. Relevant lifecycle/library/prose tests: **66 passed**,
+one existing Uvicorn warning; prior full regression remains 1145 passed, 32 skipped.
+
+This updates the local TEST1 Gold library; it is not a production release/profile
+promotion. Expected production current/docs remain absent. No new generic live,
+PBMC execution, report rewrite, environment/proxy/Docker change, commit or push.
+Existing uncommitted source changes remain intact on
+`fix/gold-evidence-crosscheck-20260911`. Stop: the requested saved-content
+replacement is complete. Next use starts from current Gold v2; any new task or
+further wording change requires its own user request, not another curation loop.
+
+### 2026-09-11: Gold Markdown no longer appends the trace inventory
+
+The user identified that v2 still contained extensive trace-event information.
+The actual source was the deterministic Markdown exporter, not the Agent's
+641-character guidance: it appended 436 trace references plus other lineage
+inventory, producing a 937-line / 25,474-byte file. This checkpoint changes only
+the export presentation, not Skill content, scientific behavior or approval.
+
+`local_gold_library.py` now retains a short source-run pointer and states where
+full provenance is stored. It no longer expands instruction, script-Artifact
+or trace-event lists into the readable guide. Agent-authored sections remain
+verbatim. Existing exports can be refreshed only when their bytes match either
+the current renderer or the exact legacy renderer for that approved Skill.
+Unknown/human-edited files still conflict. Replacement rechecks the original
+file immediately before an atomic swap; temporary files are removed.
+
+The old exporter first failed three new tests. Final full regression:
+**1149 passed, 32 skipped**, one existing Uvicorn warning, 25.45 s. Tests cover
+compact output, unchanged authoritative Skill payload, legacy refresh, edited
+legacy files, concurrent edits and existing ownership/link protections.
+
+Authenticated CLI `gold-export` refreshed both generated TEST1 version views
+(v1 and v2); neither approved database version was modified. v2 is now **51 lines,
+1,995 bytes**, with no expanded trace/instruction/script inventory. Its current
+file SHA256 is
+`f7b7f9801aa35ec8a8cc17969d482a0b41b5d710f249470ba1818eb3d4e54fd6`.
+This supersedes earlier Markdown-file hashes as a presentation change only.
+The `skill_store_state.payload` SHA256 is identical before/after:
+`50c62b67df7326f89eb7cd92e61921c7b19cc3fe6adb1c35f70d21dbf888909e`.
+All 436 v2 trace references remain in SQLite, and the approved guidance is present
+unchanged in the shorter file. No export temporary files remain.
+
+The current Gold is still the same TEST1 v2; no v3, candidate or approval was
+created. No provider call, generic live, PBMC execution or report regeneration
+was needed/performed. This is local source and library export, not a production
+deployment; production current/docs remain absent. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; Docker services remain active and
+no proxy/tunnel settings were changed. Existing uncommitted changes are preserved;
+no commit or push. Stop: the user-facing v2 file is corrected in place. The next
+entry is that file or a separately requested new task, not another Gold rewrite.

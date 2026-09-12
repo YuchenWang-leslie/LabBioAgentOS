@@ -192,7 +192,9 @@ async def _governance(args: argparse.Namespace, settings) -> int:
     from .contracts import GateUserDecision
     from .local_config import _load_provider
     from .local_workspace_cli import configured_curator
-    from .local_gold import decide_personal_gold, propose_from_run
+    from .local_gold import (
+        completed_gold_source_record, decide_personal_gold, propose_from_completed_run,
+    )
 
     if settings.gold_root is None:
         raise ValueError("Gold governance requires an authenticated managed workspace")
@@ -200,16 +202,13 @@ async def _governance(args: argparse.Namespace, settings) -> int:
     run_id = _open_run_id(directory)
     application = build_application(settings, directory, load_provider=False)
     try:
-        handle = application.recover_run(run_id, principal=settings.principal,
-                                         workspace=settings.workspace)
-        result = application.result(handle)
         service = application.configuration.skill_service
+        if args.command in {"gold-propose", "gold-review", "gold-decide"}:
+            completed_gold_source_record(application, run_id, settings.principal, settings.workspace)
         if args.command == "gold-propose":
-            if result.status.value != "COMPLETED":
-                raise ValueError("Only a completed run can be a Gold curation source")
             _load_provider(settings.provider)
-            proposal = await propose_from_run(
-                application, handle, principal=settings.principal, workspace=settings.workspace,
+            proposal = await propose_from_completed_run(
+                application, run_id, principal=settings.principal, workspace=settings.workspace,
                 curator=configured_curator(application),
             )
             _emit({"event": "gold_proposed", "proposal": proposal.model_dump(mode="json")})
@@ -244,6 +243,9 @@ async def _governance(args: argparse.Namespace, settings) -> int:
                        "version": gold.version if gold else None,
                        "export_status": export_status})
             return 0
+        handle = application.recover_run(run_id, principal=settings.principal,
+                                         workspace=settings.workspace)
+        result = application.result(handle)
         pending = result.pending_user_gate
         if pending is None:
             raise ValueError("Run has no pending user gate")

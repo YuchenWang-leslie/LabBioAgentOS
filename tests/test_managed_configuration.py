@@ -97,16 +97,17 @@ def test_failed_application_construction_closes_both_stores(settings_file, monke
 def test_existing_curator_protocol_uses_configured_provider_not_task_text(settings_file, monkeypatch):
     from labbioagentos.local_workspace_cli import configured_curator
     from labbioagentos.runtime.pantheon import PantheonRuntimeFactory
-    from labbioagentos.skills import SkillAdaptiveCuratorDraft, SkillCuratorAudit
+    from labbioagentos.skills import SkillCuratorAudit
+    from labbioagentos.skills.models import SkillGuidanceDraft
 
     settings = load_settings(settings_file)
     application = build_application(settings, settings.result_root / "curator", load_provider=False)
     monkeypatch.setattr(PantheonRuntimeFactory, "_configure_transport", lambda model: "openai/mock")
     try:
         curator = configured_curator(application)
-        assert curator.drafting_curator.agent.response_format is SkillAdaptiveCuratorDraft
+        assert curator.drafting_curator.agent.response_format is SkillGuidanceDraft
         assert curator.audit_agent.response_format is SkillCuratorAudit
-        assert curator.revision_curator.agent.response_format is SkillAdaptiveCuratorDraft
+        assert curator.revision_curator.agent.response_format is SkillGuidanceDraft
         for agent in (curator.drafting_curator.agent, curator.audit_agent,
                       curator.revision_curator.agent):
             assert agent.model_params["max_tokens"] == settings.provider.max_output_tokens

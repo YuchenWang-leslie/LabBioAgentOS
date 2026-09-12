@@ -14,7 +14,9 @@ from .models import (
     SkillCurationSourceView,
     SkillCuratorAudit,
     SkillCuratorDraft,
+    SkillGuidanceDraft,
 )
+from .source import SkillSourceProjector
 
 
 SKILL_CURATOR_INSTRUCTIONS = """\
@@ -47,62 +49,80 @@ RAW content. Return only the required SkillCuratorDraft.
 
 
 SKILL_CURATOR_AUDIT_INSTRUCTIONS = """\
-Audit the supplied safe successful-run evidence and untrusted
-SkillCuratorDraft. Return only SkillCuratorAudit findings. Classify every draft
-statement that is unsupported by the safe source, turns a source-run fact into
-an unconditional future default, makes a future method, parameter, code, agent,
-or tool order mandatory regardless of current evidence, misuses an Artifact or
-execution UUID as a contract identifier, recommends RAW content access, adds a
-hidden fallback, or invents a failure cause. Source-grounded reference steps,
-methods, tools and parameter choices
-with applicability conditions and adaptation points are allowed: specificity or
-an ordered reference workflow alone is not PRESCRIPTIVE_FUTURE_CHOICE. Historical
-Agent stage context proves what was proposed or stated, not what executed;
-cross-check claimed executed procedures with execution refs and governed views.
-Do not mistake an unexecuted plan for an established successful procedure.
-Exact source observations do not authorize unconditional future defaults. Do
-not propose replacement scientific content or infer facts absent from the source.
+Review draft as a concise capability guide: what it helps with, when it applies,
+and a useful approach that a future Agent can adapt. This is advisory feedback
+for the author and human approver, not scientific certification or an execution
+contract. Do not demand exact parameters, API mappings, artifact schemas,
+exhaustive evidence tables or a rigid step sequence.
+Reference material provides context, not text authored by this draft. Do not
+attribute source statements to the draft or treat absent preview information as
+proof of absent content. Flag misleading factual claims or unsafe advice without
+inventing missing facts. Plans can inform suggestions without proving execution.
+Return SkillCuratorAudit with a short summary and only useful concerns in
+findings; use [] when none. Detailed checks are optional. Do not write the guide
+for its author. Final approval belongs to the human, not this review.
 """
 
 
 SKILL_CURATOR_REVISION_INSTRUCTIONS = """\
-Produce one corrected draft in the required response schema from the supplied
-safe successful-run evidence, untrusted draft, and independent
-SkillCuratorAudit. Resolve every finding without inventing replacement science.
-Preserve supported, conditional reference steps and guidance; do not erase a
-useful workflow merely because it names a method, tool or source parameter.
-Correct unsupported claims and unconditional defaults while keeping current-task
-methods, parameters, code, specialists and tool order open to the future Agent.
-Distinguish historical Agent plans from execution evidence; do not fill missing
-steps or failure causes by guessing. Keep a short task-oriented name and readable
-tags that distinguish this Skill from other tasks. Artifact and execution UUIDs
-remain source lineage, not contract identifiers. RAW content is not model-readable.
-Return only the required draft.
+Consider the review's advice and revise the supplied Agent draft where useful.
+The advice may be mistaken; compare it with the current draft and source rather
+than obeying it blindly. Parameters and interface/schema mappings are not required.
+Keep it a concise, useful, adaptable reference guide, not an evidence-audit report.
+Preserve the practical workflow and supported guidance. Optional sections may be
+empty; no exhaustive historical coverage or per-field evidence table is needed.
+Use current task needs as the future authority for methods, parameters and code.
+Do not invent historical facts, causal explanations or replacements for missing
+evidence. Omit unnecessary incident narratives instead of turning them into
+unreliable general rules. Return only the required draft; ownership, version,
+lineage and approval are managed by the host, not by you.
 """
 
 
 SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS = """\
-Create adaptable procedural guidance from the supplied safe successful-run
-evidence. Give a short task-oriented name, a distinguishing description, and a
-few readable reusable tags; describe the applicable inputs without inventing a
-fixed task taxonomy. Include a useful reference task workflow: preserve source-
-supported steps, methods, tools, inputs, outputs, checks and parameter choices
-with their conditions, not just general safety reminders. Omit unsupported
-details rather than inventing them. Historical Agent stage context is
-MODEL_CONTEXT: label proposed or stated procedures as such, and corroborate
-claims about executed steps with execution refs or governed Artifact views.
-Separate reusable principles and reference choices from adaptation points that
-the future Agent must decide from current-task evidence. Every adaptation point
-must state the evidence, selection considerations and revalidation needed. A
-reference sequence is advisory, not a runtime-enforced method, parameter, code,
-specialist or tool order; current user requirements take precedence. Do not
-copy source-run values as unconditional defaults, invent failure causes,
-recommend RAW model access, or copy source identifiers into the procedure. The
-resulting procedure will guide a future Agent solving a new compatible task;
-it is not a procedure
-for curating, reviewing, or editing the completed source run. Retain concrete
-guidance where supported while marking what a new task should reconsider.
-Return only SkillAdaptiveCuratorDraft.
+Write a WF+Skills reference Skill for a future compatible task using the
+supplied safe source as context. This is guidance, not a rigid pipeline,
+scientific certification, or a transcript of the completed run.
+
+Structure the Skill as workflow guidance + per-step direction hints:
+
+1. Give a short task-oriented name, description, and applicability.
+
+2. Write workflow_guidance as a SEQUENCE OF DISTINCT STEPS (one string per
+   step, not one paragraph). Each step should state:
+   - What to accomplish at this stage
+   - Which tools/methods/approaches to consider (direction, not exact code)
+   - What evidence or output to produce
+   - What to check before moving on
+   Keep each step to 2-4 sentences. 4-8 steps is typical.
+
+3. Write parameter_guidance as practical hints for key decisions the future
+   Agent will face: which parameters matter, what ranges are reasonable,
+   what tradeoffs to consider. State conditions, not fixed values.
+
+4. Write reusable_principles as short, memorable rules that apply beyond
+   this exact task (e.g. "always check mitochondrial fraction before
+   filtering", "cluster resolution should match expected cell-type diversity").
+
+5. Write adaptation_points for decisions that MUST be made fresh each time:
+   what evidence to gather, what options exist, how to validate the choice.
+
+6. Include validation_expectations (what good output looks like) and
+   known_failure_modes (common pitfalls to watch for).
+
+Tags and artifact types are optional catalog information. Do not enumerate
+historical artifacts or fill out an audit. Exact parameters, tool interfaces
+and artifact schema mappings are not required; choices and order belong to
+the future task and user preferences.
+Source plans can inform clearly advisory steps without proving each step ran.
+Prefer reusable guidance over cataloguing historical failures or numeric results.
+If including a historical claim or lesson, do not invent its cause or overstate
+the available evidence. An observed value is not a universal quality threshold.
+Do not recommend model access to RAW scripts/data/process streams, invent exact
+contract identifiers, copy source UUIDs into prose, or supply ownership/approval.
+Keep the scope of the current source task, not the task of curating Skills.
+Use the language of the source user-facing context where evident.
+Return only the required draft envelope.
 """
 
 
@@ -172,9 +192,9 @@ class PantheonAdaptiveSkillCurator(SkillCuratorPort):
     ):
         if not isinstance(agent, Agent):
             raise TypeError("agent must be a Pantheon Agent")
-        if agent.response_format is not SkillAdaptiveCuratorDraft:
+        if agent.response_format not in (SkillAdaptiveCuratorDraft, SkillGuidanceDraft):
             raise ValueError(
-                "Adaptive curator must use SkillAdaptiveCuratorDraft response_format"
+                "Adaptive curator must use a supported Skill draft response_format"
             )
         self.agent = agent
         self.boundary_observer = boundary_observer
@@ -187,12 +207,13 @@ class PantheonAdaptiveSkillCurator(SkillCuratorPort):
         try:
             response = await self.agent.run(source.model_dump_json())
             content = getattr(response, "content", response)
-            if isinstance(content, SkillAdaptiveCuratorDraft):
+            draft_type = self.agent.response_format
+            if isinstance(content, draft_type):
                 adaptive = content
             elif isinstance(content, str):
-                adaptive = SkillAdaptiveCuratorDraft.model_validate_json(content)
+                adaptive = draft_type.model_validate_json(content)
             elif isinstance(content, Mapping):
-                adaptive = SkillAdaptiveCuratorDraft.model_validate(content)
+                adaptive = draft_type.model_validate_json(json.dumps(content))
             else:
                 raise TypeError("Unsupported adaptive curator response value")
         except (ValidationError, ValueError, TypeError) as exc:
@@ -205,7 +226,7 @@ class PantheonAdaptiveSkillCurator(SkillCuratorPort):
 
 
 class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
-    """Create, independently audit, and revise one adaptive Agent draft."""
+    """Agent-authored guidance and one revision, with advisory human-review notes."""
 
     def __init__(
         self,
@@ -219,9 +240,7 @@ class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
         if not isinstance(audit_agent, Agent):
             raise TypeError("audit_agent must be a Pantheon Agent")
         if audit_agent.response_format is not SkillCuratorAudit:
-            raise ValueError(
-                "Pantheon Skill auditor must use SkillCuratorAudit response_format"
-            )
+            raise ValueError("Pantheon Skill auditor must use SkillCuratorAudit response_format")
         self.audit_agent = audit_agent
         self.revision_curator = PantheonAdaptiveSkillCurator(revision_agent)
         self.boundary_observer = boundary_observer
@@ -229,71 +248,78 @@ class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
     async def propose(self, source: SkillCurationSourceView) -> SkillCuratorDraft:
         if not isinstance(source, SkillCurationSourceView):
             raise TypeError("source must be a SkillCurationSourceView")
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_source", source)
-        initial_draft = await self._adaptive_draft(
-            self.drafting_curator.agent,
-            source.model_dump_json(),
+        self._observe("curator_source", source)
+        context = SkillSourceProjector.guidance_view(source)
+        review_source = SkillSourceProjector.review_view(source)
+        self._observe("curator_writing_source", context)
+        initial = await self._adaptive_draft(
+            self.drafting_curator.agent, json.dumps(context, ensure_ascii=False),
             "Pantheon adaptive curator returned an invalid draft",
         )
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_initial_adaptive_draft", initial_draft)
-        audit_request = json.dumps(
-            {
-                "source": source.model_dump(mode="json"),
-                "draft": initial_draft.model_dump(mode="json"),
-            },
-            sort_keys=True,
+        self._observe("curator_initial_adaptive_draft", initial)
+        audit = await self._audit(review_source, initial, "curator_audit")
+        if not audit.findings:
+            return self._reviewed_draft(initial, audit, "initial")
+        request = json.dumps({
+            "source": context, "draft": initial.model_dump(mode="json"),
+            "audit": audit.model_dump(mode="json"),
+        }, ensure_ascii=False)
+        revised = await self._adaptive_draft(
+            self.revision_curator.agent, request,
+            "Pantheon adaptive curator reviser returned an invalid draft",
         )
+        self._observe("curator_revised_adaptive_draft", revised)
+        final = await self._audit(review_source, revised, "curator_final_audit")
+        return self._reviewed_draft(revised, final, "revised")
+
+    def _reviewed_draft(self, draft, audit, revision):
+        notes = (audit.summary, *(text for finding in audit.findings
+                                 for text in (finding.statement, finding.rationale)))
+        self._observe("curator_guidance_ready_for_user_review", {"draft": revision})
+        return draft.to_curator_draft().model_copy(update={"review_notes": notes})
+
+    def _observe(self, kind, value):
+        if self.boundary_observer is not None:
+            self.boundary_observer(kind, value)
+
+    async def _audit(self, source, draft, boundary_kind):
+        payload = {"draft": draft.model_dump(mode="json"), "reference_material": source}
+        self._observe(f"{boundary_kind}_request", payload)
+        request = json.dumps(payload, ensure_ascii=False)
+
         try:
-            response = await self.audit_agent.run(audit_request)
+            response = await self.audit_agent.run(request)
             content = getattr(response, "content", response)
             if isinstance(content, SkillCuratorAudit):
                 audit = content
             elif isinstance(content, str):
                 audit = SkillCuratorAudit.model_validate_json(content)
             elif isinstance(content, Mapping):
-                audit = SkillCuratorAudit.model_validate(content)
+                audit = SkillCuratorAudit.model_validate_json(json.dumps(content))
             else:
                 raise TypeError("Unsupported curator audit response value")
         except (ValidationError, ValueError, TypeError) as exc:
-            raise SkillCuratorError(
-                "Pantheon curator auditor returned an invalid SkillCuratorAudit"
-            ) from exc
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_audit", audit)
-        revision_request = json.dumps(
-            {
-                "source": source.model_dump(mode="json"),
-                "draft": initial_draft.model_dump(mode="json"),
-                "audit": audit.model_dump(mode="json"),
-            },
-            sort_keys=True,
-        )
-        revised_draft = await self._adaptive_draft(
-            self.revision_curator.agent,
-            revision_request,
-            "Pantheon adaptive curator reviser returned an invalid draft",
-        )
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_revised_adaptive_draft", revised_draft)
-        return revised_draft.to_curator_draft()
+            self._observe("curator_audit_invalid", {
+                "audit_boundary": boundary_kind, "reason_code": "INVALID_REVIEW_RESPONSE",
+            })
+            raise SkillCuratorError("Pantheon curator returned an invalid review") from exc
+        self._observe(boundary_kind, audit)
+        return audit
 
     @staticmethod
     async def _adaptive_draft(
-        agent: Agent,
-        request: str,
-        error_message: str,
-    ) -> SkillAdaptiveCuratorDraft:
+        agent: Agent, request: str, error_message: str,
+    ) -> SkillAdaptiveCuratorDraft | SkillGuidanceDraft:
         try:
             response = await agent.run(request)
             content = getattr(response, "content", response)
-            if isinstance(content, SkillAdaptiveCuratorDraft):
+            draft_type = agent.response_format
+            if isinstance(content, draft_type):
                 return content
             if isinstance(content, str):
-                return SkillAdaptiveCuratorDraft.model_validate_json(content)
+                return draft_type.model_validate_json(content)
             if isinstance(content, Mapping):
-                return SkillAdaptiveCuratorDraft.model_validate(content)
+                return draft_type.model_validate_json(json.dumps(content))
             raise TypeError("Unsupported adaptive curator response value")
         except (ValidationError, ValueError, TypeError) as exc:
             raise SkillCuratorError(error_message) from exc

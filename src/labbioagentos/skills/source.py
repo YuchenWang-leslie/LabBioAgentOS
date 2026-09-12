@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 from typing import Any
 from uuid import UUID
 
@@ -52,6 +53,25 @@ class SkillSourceProjector:
     def __init__(self, artifact_store: ArtifactStore | None = None):
         self.artifact_store = artifact_store
 
+    @staticmethod
+    def guidance_view(source: SkillCurationSourceView) -> dict:
+        """Project procedural context; leave result previews in the review evidence."""
+        return {**source.model_dump(mode="json", exclude={"stage_context", "artifact_evidence_views"}),
+                "reference_plans": [item.model_dump(mode="json") for item in source.stage_context
+                                    if item.stage_id is WorkflowStage.PLAN]}
+
+    @staticmethod
+    def review_view(source: SkillCurationSourceView) -> dict:
+        """Relevant reference evidence, without duplicate invocation/trace inventories."""
+        return {
+            **source.model_dump(mode="json", include={
+                "source_bundle_id", "source_run_id", "task_reference", "execution_refs",
+                "artifact_descriptors", "artifact_evidence_views",
+            }),
+            "reference_plans": [item.model_dump(mode="json") for item in source.stage_context
+                                if item.stage_id is WorkflowStage.PLAN],
+        }
+
     def project(
         self,
         events: tuple[TraceEvent, ...] | list[TraceEvent],
@@ -83,6 +103,10 @@ class SkillSourceProjector:
             raise SkillSourceProjectionError(
                 "Only a successfully completed RunTrace can produce a SkillSourceBundle"
             )
+        # Re-curation queries are not part of the completed analysis. Freeze the
+        # source boundary without deleting any post-completion audit history.
+        terminal_sequence = terminal_events[-1].sequence
+        selected = tuple(event for event in selected if event.sequence <= terminal_sequence)
         try:
             projection = project_run_trace(selected, projected_run_id)
         except TraceProjectionError as exc:
@@ -274,12 +298,22 @@ class SkillSourceProjector:
                 )
             else:
                 state["terminal_event_id"] = event.event_id
+                state.setdefault("terminal_event_ids", []).append(event.event_id)
                 state["output_artifact_ids"] = _uuid_tuple(
                     event.payload.get("output_artifact_ids")
                 )
                 exit_code = event.payload.get("exit_code")
-                state["exit_code"] = exit_code if isinstance(exit_code, int) else None
-        return tuple(SkillExecutionRef.model_validate(state) for state in states.values())
+                if type(exit_code) is int:
+                    state["exit_code"] = exit_code
+                # Complementary backend/receipt events must not erase known facts.
+                # Only existing safe diagnostic contracts cross this boundary.
+                for field in ("issue_codes", "issue_detail_codes", "diagnostics"):
+                    if field in event.payload:
+                        state[field] = event.payload[field]
+                if "error_class" in event.payload and "issue_codes" not in state:
+                    state["issue_codes"] = [event.payload["error_class"]]
+        return tuple(SkillExecutionRef.model_validate_json(json.dumps(state, default=str))
+                     for state in states.values())
 
     @staticmethod
     def _artifact_ids(events: tuple[TraceEvent, ...]) -> tuple[UUID, ...]:

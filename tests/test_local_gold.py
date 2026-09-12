@@ -17,7 +17,9 @@ from labbioagentos import (
 from labbioagentos.local_gold import (
     build_personal_gold_service, close_personal_gold, decide_personal_gold,
     propose_from_run, review_personal_gold,
+    completed_gold_source_record, propose_from_completed_run,
 )
+from labbioagentos.run_state import RunRecoveryState
 
 
 @pytest.fixture
@@ -231,14 +233,17 @@ async def test_propose_from_run_uses_safe_source_and_agent_draft(service, princi
                           (TraceEventType.RUN_COMPLETED, "COMPLETED")):
         recorder.emit(run_id, event, status=status)
     application = SimpleNamespace(
-        configuration=SimpleNamespace(skill_service=service),
+        configuration=SimpleNamespace(skill_service=service, boundary_observer=None,
+                                      runtime_revision="new-curation-runtime"),
         result=lambda handle: SimpleNamespace(run_id=run_id, status=RunStatus.COMPLETED),
         run_state_store=SimpleNamespace(get=lambda identifier: SimpleNamespace(
             owner_user_id=principal.user_id, project_id="PRJ1", lab_id=principal.lab_id,
-            runtime_results=())),
+            runtime_results=(), workflow_run=SimpleNamespace(status=RunStatus.COMPLETED),
+            recovery_state=RunRecoveryState.STABLE, runtime_revision="frozen-source-runtime")),
         access_service=service.access_service,
         artifact_store=LocalArtifactStore(tmp_path / "artifacts"),
         trace_events=lambda handle: recorder.events(run_id),
+        trace_recorder=recorder,
     )
     curator = _FixtureCurator()
     proposal = await propose_from_run(application, run_id, principal, workspace, curator)
@@ -249,12 +254,40 @@ async def test_propose_from_run_uses_safe_source_and_agent_draft(service, princi
     assert proposal.owner_user_id == principal.user_id
     assert proposal.project_id is None
     assert proposal.proposed_name == _draft().proposed_name
+    historical = await propose_from_completed_run(
+        application, run_id, principal, workspace, _FixtureCurator(),
+    )
+    assert historical.source_run_id == run_id
+    assert application.run_state_store.get(run_id).runtime_revision == "frozen-source-runtime"
     assert service.search(SkillSearchContext(user_id=principal.user_id,
                           lab_id=principal.lab_id), principal=principal) == ()
-    application.result = lambda handle: SimpleNamespace(run_id=run_id, status=RunStatus.RUNNING)
+    old_get = application.run_state_store.get
+    incomplete = old_get(run_id)
+    incomplete.workflow_run.status = RunStatus.RUNNING
+    application.run_state_store.get = lambda identifier: incomplete
     with pytest.raises(SkillStoreError):
         await propose_from_run(application, run_id, principal, workspace, _FixtureCurator())
     with pytest.raises(AuthorizationDenied):
         await propose_from_run(application, run_id,
                                Principal(user_id="TEST2", lab_id=principal.lab_id),
                                workspace, _FixtureCurator())
+
+
+@pytest.mark.parametrize("status,recovery", [
+    (RunStatus.RUNNING, RunRecoveryState.STABLE),
+    (RunStatus.FAILED, RunRecoveryState.STABLE),
+    (RunStatus.COMPLETED, RunRecoveryState.STAGE_IN_FLIGHT),
+])
+def test_historical_curation_requires_stable_completion(service, principal, status, recovery):
+    workspace = WorkspaceContext(user_id=principal.user_id, project_id="PRJ1", lab_id=principal.lab_id)
+    service.access_service.projects.register(Project(project_id="PRJ1",
+        owner_user_id=principal.user_id, lab_id=principal.lab_id))
+    record = SimpleNamespace(owner_user_id=principal.user_id, project_id="PRJ1",
+        lab_id=principal.lab_id, workflow_run=SimpleNamespace(status=status), recovery_state=recovery)
+    app = SimpleNamespace(configuration=SimpleNamespace(skill_service=service),
+        access_service=service.access_service, run_state_store=SimpleNamespace(get=lambda _: record))
+    with pytest.raises(SkillStoreError, match="stable completed"):
+        completed_gold_source_record(app, uuid4(), principal, workspace)
+    with pytest.raises(AuthorizationDenied):
+        completed_gold_source_record(app, uuid4(), principal,
+            WorkspaceContext(user_id=principal.user_id, project_id="PRJ2", lab_id=principal.lab_id))

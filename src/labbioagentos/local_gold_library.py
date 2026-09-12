@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import tempfile
@@ -16,6 +17,22 @@ from .skills import SkillSearchContext
 
 class GoldExportConflict(ValueError):
     """A derived file was edited or does not belong to this exporter."""
+
+
+def _slugify(text: str, max_length: int = 60) -> str:
+    """Convert a skill name into a filesystem-safe human-readable slug."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.casefold()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if len(slug) > max_length:
+        slug = slug[:max_length].rstrip("-")
+    return slug or "unnamed"
+
+
+def _export_dirname(skill) -> str:
+    """Build a readable directory name: {slug}_v{version}_{short_uuid}."""
+    slug = _slugify(skill.name)
+    short_id = str(skill.skill_id)[:8]
+    return f"{slug}_v{skill.version}_{short_id}"
 
 
 def _owned_skills(service, principal, project_id=None):
@@ -83,49 +100,118 @@ def _section(title, values) -> str:
 
 def _markdown(skill) -> bytes:
     procedure = skill.procedure
+    short_id = str(skill.skill_id)[:8]
+
     text = (
         f"# {skill.name}\n\n"
-        "Derived read-only view of approved Agent-authored guidance. SQLite is the sole "
-        "authority; editing this file does not approve or change a Skill. A proposed edit "
-        "requires a new candidate and explicit approval. This file is not executable.\n\n"
-        f"Skill ID: `{skill.skill_id}`  \nVersion: {skill.version}  \n"
-        f"Owner: {skill.owner_user_id}  \nScope: {skill.scope.value}  \n"
-        f"Content SHA256: `{_content_hash(skill)}`  \n"
-        f"Approved by: {skill.approved_by}  \nApproved at: {skill.approved_at.isoformat()}\n\n"
-        f"{skill.description}\n"
+        f"> **WF+Skills Gold** | v{skill.version} | `{short_id}`\n"
+        f"> SQLite is the sole authority; this file is a read-only derived view.\n\n"
+        f"{skill.description}\n\n"
     )
-    for title, values in (
-        ("Tags", sorted(procedure.tags)),
-        ("Artifact types", sorted(procedure.artifact_types)),
-        ("Applicability", (procedure.applicability,)),
-        ("Reference workflow", procedure.workflow_outline),
-        ("Collaboration guidance", procedure.agent_collaboration_guidance),
-        ("Execution guidance", procedure.execution_guidance),
-        ("Parameter guidance", procedure.parameter_guidance),
-        ("Reusable principles", procedure.reusable_principles),
-        ("Validation expectations", procedure.validation_expectations),
-        ("Known failure modes", procedure.known_failure_modes),
-        ("Debug lessons", procedure.debug_lessons),
-        ("Known limitations", procedure.known_limitations),
-        ("Input contracts", procedure.input_contract_ids),
-        ("Output contracts", procedure.output_contract_ids),
-    ):
-        text += _section(title, values)
-    for index, point in enumerate(procedure.adaptation_points, 1):
-        text += f"\n## Adaptation point {index}\n\n{point.decision}\n\nModifiable: true\n"
-        text += _section("Required current evidence", point.evidence_requirements)
-        text += _section("Selection considerations", point.selection_considerations)
-        text += _section("Revalidation", point.revalidation_requirements)
-    text += _section("Source lineage", (
-        f"Source run: `{skill.source_run_id}`",
-        f"Source bundle: `{skill.source_bundle_id}`",
-        f"Source proposal: `{skill.source_proposal_id}`",
-        f"Parent Skill: `{skill.parent_skill_id}`; parent version: {skill.parent_version}",
-        f"Source usage record: `{skill.source_usage_record_id}`",
-        *[f"Instruction: `{value}`" for value in procedure.important_instruction_ids],
-        *[f"Script Artifact: `{value}`" for value in procedure.script_artifact_ids],
-        *[f"Trace event: `{value}`" for value in procedure.source_trace_event_ids],
-    ))
+
+    text += (
+        "| Field | Value |\n|---|---|\n"
+        f"| Skill ID | `{skill.skill_id}` |\n"
+        f"| Version | {skill.version} |\n"
+        f"| Owner | {skill.owner_user_id} |\n"
+        f"| Scope | {skill.scope.value} |\n"
+        f"| Approved by | {skill.approved_by} |\n"
+        f"| Approved at | {skill.approved_at.isoformat()} |\n"
+        f"| Content SHA256 | `{_content_hash(skill)[:16]}...` |\n\n"
+    )
+
+    if procedure.tags:
+        text += "**Tags:** " + " · ".join(f"`{t}`" for t in sorted(procedure.tags)) + "\n\n"
+    if procedure.artifact_types:
+        text += "**Artifact types:** " + " · ".join(f"`{t}`" for t in sorted(procedure.artifact_types)) + "\n\n"
+
+    text += f"## When to Use\n\n{procedure.applicability}\n\n"
+
+    text += "## Workflow Guide\n\n"
+    if procedure.workflow_outline:
+        for i, step in enumerate(procedure.workflow_outline, 1):
+            text += f"### Step {i}\n\n{step}\n\n"
+    else:
+        text += "_No workflow outline recorded._\n\n"
+
+    hint_sections = [
+        ("Execution Guidance", procedure.execution_guidance,
+         "How to approach execution at each stage"),
+        ("Parameter Guidance", procedure.parameter_guidance,
+         "What to consider when choosing parameters"),
+        ("Collaboration Guidance", procedure.agent_collaboration_guidance,
+         "How agents should collaborate"),
+    ]
+    hints = [(title, items, desc) for title, items, desc in hint_sections if items]
+    if hints:
+        text += "## Step-by-Step Direction Hints\n\n"
+        for title, items, desc in hints:
+            text += f"### {title}\n\n_{desc}_\n\n"
+            for item in items:
+                text += f"- {item}\n"
+            text += "\n"
+
+    if procedure.reusable_principles:
+        text += "## Reusable Principles\n\n"
+        for principle in procedure.reusable_principles:
+            text += f"- {principle}\n"
+        text += "\n"
+
+    if procedure.validation_expectations:
+        text += "## Validation Expectations\n\n"
+        for item in procedure.validation_expectations:
+            text += f"- {item}\n"
+        text += "\n"
+
+    if procedure.known_failure_modes:
+        text += "## Known Failure Modes\n\n"
+        for item in procedure.known_failure_modes:
+            text += f"- {item}\n"
+        text += "\n"
+
+    if procedure.debug_lessons:
+        text += "## Debug Lessons\n\n"
+        for item in procedure.debug_lessons:
+            text += f"- {item}\n"
+        text += "\n"
+
+    if procedure.known_limitations:
+        text += "## Known Limitations\n\n"
+        for item in procedure.known_limitations:
+            text += f"- {item}\n"
+        text += "\n"
+
+    if procedure.adaptation_points:
+        text += "## Adaptation Points\n\n"
+        text += "These decisions belong to the future task; the Gold does not prescribe them.\n\n"
+        for index, point in enumerate(procedure.adaptation_points, 1):
+            text += f"### Decision {index}\n\n**{point.decision}**\n\n"
+            if point.evidence_requirements:
+                text += "**Required evidence:**\n"
+                for req in point.evidence_requirements:
+                    text += f"- {req}\n"
+                text += "\n"
+            if point.selection_considerations:
+                text += "**Selection considerations:**\n"
+                for cons in point.selection_considerations:
+                    text += f"- {cons}\n"
+                text += "\n"
+            if point.revalidation_requirements:
+                text += "**Revalidation after choice:**\n"
+                for req in point.revalidation_requirements:
+                    text += f"- {req}\n"
+                text += "\n"
+
+    if procedure.input_contract_ids or procedure.output_contract_ids:
+        text += "## Contracts\n\n"
+        if procedure.input_contract_ids:
+            text += "**Input:** " + ", ".join(f"`{c}`" for c in procedure.input_contract_ids) + "\n\n"
+        if procedure.output_contract_ids:
+            text += "**Output:** " + ", ".join(f"`{c}`" for c in procedure.output_contract_ids) + "\n\n"
+
+    text += "---\n\n"
+    text += f"*Source run: `{skill.source_run_id}` | Full provenance in skills.sqlite*\n"
+
     return text.encode("utf-8")
 
 
@@ -158,6 +244,24 @@ def _write_new(path: Path, body: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+def _replace_generated(path: Path, body: bytes, expected_hash: str | None) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".export-", suffix=".tmp",
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _directory(path.parent)
+        if _file_hash(path) != expected_hash:
+            raise GoldExportConflict("Gold export changed during export")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def export_gold_library(service, principal) -> dict:
     """Export approved versions only; preserve edits instead of silently repairing them."""
     store = _personal_store(service)
@@ -165,24 +269,35 @@ def export_gold_library(service, principal) -> dict:
     _directory(root)
     with store._lock:
         skills = _owned_skills(service, principal)
-        # One managed root represents one authenticated local user/lab. Do not
-        # replace an existing catalog with a different lab's partial view.
         snapshot = store._load()._snapshot()
         if any(item.lab_id != principal.lab_id for item in (*snapshot.gold, *snapshot.proposals)):
             raise AuthorizationDenied("Gold export requires the library's exact lab")
         rendered = {}
-        index = ("# Gold Skills\n\nGenerated catalog of approved Agent-authored versions. "
-                 "SQLite is authoritative. Do not edit generated files; edits are not imported "
-                 "and a conflicting file stops export.\n\n")
+        legacy_hashes = {}
+        index = (
+            "# Gold Skills\n\n"
+            "Generated catalog of approved Agent-authored versions. "
+            "SQLite is authoritative. Do not edit generated files; edits are not imported "
+            "and a conflicting file stops export.\n\n"
+            "Each Gold is a **WF+Skills** record: workflow structure + per-step direction hints "
+            "for the runtime model to adapt.\n\n"
+        )
         if not skills:
             index += "No approved Gold Skills.\n"
         for skill in skills:
-            relative = f"{skill.skill_id}/v{skill.version}.md"
+            dirname = _export_dirname(skill)
+            relative = f"{dirname}/skill.md"
             rendered[relative] = _markdown(skill)
-            # Keep names as prose, never as Markdown link targets or filesystem paths.
-            index += (f"## {skill.name}\n\n[{skill.skill_id} v{skill.version}]({relative})\n\n"
-                      f"{skill.description}\n\nTags: {', '.join(sorted(skill.procedure.tags))}\n\n"
-                      f"Applicability: {skill.procedure.applicability}\n\n")
+            legacy_hashes[relative] = hashlib.sha256(_markdown(skill)).hexdigest()
+            short_id = str(skill.skill_id)[:8]
+            tags_str = ", ".join(sorted(skill.procedure.tags)) if skill.procedure.tags else "(none)"
+            index += (
+                f"## {skill.name}\n\n"
+                f"**v{skill.version}** · `{short_id}` · [{dirname}/skill.md]({relative})\n\n"
+                f"{skill.description}\n\n"
+                f"**Tags:** {tags_str}\n\n"
+                f"**When to use:** {skill.procedure.applicability}\n\n"
+            )
         index_body = index.encode("utf-8")
         index_hash = hashlib.sha256(index_body).hexdigest()
         connection = store._connection
@@ -196,35 +311,26 @@ def export_gold_library(service, principal) -> dict:
             existing_index = _file_hash(root / "INDEX.md")
             if existing_index is not None and (previous is None or existing_index != previous[0]):
                 raise GoldExportConflict("Gold catalog was modified or is not exporter-owned")
+            migrations = {}
             for relative, body in rendered.items():
                 path = root / relative
                 if path.parent.exists() or path.parent.is_symlink():
                     _directory(path.parent)
                 existing = _file_hash(path)
                 if existing is not None and existing != hashlib.sha256(body).hexdigest():
-                    raise GoldExportConflict("An approved Gold version export was modified")
+                    if existing != legacy_hashes[relative]:
+                        raise GoldExportConflict("An approved Gold version export was modified")
+                    migrations[relative] = existing
             for relative, body in rendered.items():
                 path = root / relative
                 path.parent.mkdir(mode=0o700, exist_ok=True)
                 _directory(path.parent)
-                if _file_hash(path) is None:
+                if relative in migrations:
+                    _replace_generated(path, body, migrations[relative])
+                elif _file_hash(path) is None:
                     _write_new(path, body)
             if existing_index != index_hash:
-                temporary = None
-                try:
-                    with tempfile.NamedTemporaryFile(dir=root, prefix=".index-", suffix=".tmp",
-                                                     delete=False) as stream:
-                        temporary = Path(stream.name)
-                        stream.write(index_body)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    _directory(root)
-                    if _file_hash(root / "INDEX.md") != existing_index:
-                        raise GoldExportConflict("Gold catalog changed during export")
-                    os.replace(temporary, root / "INDEX.md")
-                finally:
-                    if temporary is not None:
-                        temporary.unlink(missing_ok=True)
+                _replace_generated(root / "INDEX.md", index_body, existing_index)
             connection.execute("INSERT OR REPLACE INTO local_gold_export(path, sha256) VALUES (?, ?)",
                                ("INDEX.md", index_hash))
             connection.execute("COMMIT")

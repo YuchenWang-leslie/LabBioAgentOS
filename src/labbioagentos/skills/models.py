@@ -21,6 +21,9 @@ from pydantic import (
 
 from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef, ArtifactView
 from labbioagentos.contracts import InformationAuthority, RunStatus, WorkflowStage
+from labbioagentos.execution.models import (
+    ExecutionDiagnostic, ExecutionFailureClass, OutputContractFailureCode,
+)
 from labbioagentos.model_safety import validate_model_visible_json
 from labbioagentos.trace import DelegationProjection, InvocationProjection, InstructionKind
 
@@ -137,6 +140,7 @@ class SkillExecutionRef(BaseModel):
     execution_id: UUID
     planned_event_id: UUID | None = None
     terminal_event_id: UUID | None = None
+    terminal_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
     image_key: StrictStr | None = Field(default=None, min_length=1)
     resolved_image: StrictStr | None = Field(default=None, min_length=1)
     script_hash: StrictStr | None = Field(default=None, min_length=1)
@@ -145,6 +149,9 @@ class SkillExecutionRef(BaseModel):
     output_artifact_ids: tuple[UUID, ...] = ()
     status: StrictStr
     exit_code: int | None = None
+    issue_codes: tuple[ExecutionFailureClass, ...] = Field(default=(), max_length=32)
+    issue_detail_codes: tuple[OutputContractFailureCode, ...] = Field(default=(), max_length=32)
+    diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
 
 
 class SkillInvocationSummary(BaseModel):
@@ -423,6 +430,7 @@ class SkillCuratorDraft(BaseModel):
     proposed_name: ShortText
     description: BoundedText
     procedure: SkillProcedureDraft
+    review_notes: tuple[BoundedText, ...] = Field(default=(), max_length=129)
 
     @model_validator(mode="after")
     def reject_explicit_unsafe_text(self) -> "SkillCuratorDraft":
@@ -430,6 +438,36 @@ class SkillCuratorDraft(BaseModel):
             self.model_dump(mode="python"), label="Skill curator draft"
         )
         return self
+
+
+class SkillGuidanceDraft(BaseModel):
+    """Minimal Agent envelope; the reference guide itself is ordinary prose."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    proposed_name: ShortText
+    description: BoundedText
+    applicability: BoundedText
+    guidance: BoundedText = Field(
+        description="Readable reference workflow and adaptation advice; Markdown is allowed."
+    )
+    tags: frozenset[ShortText] = Field(default_factory=frozenset, max_length=32)
+    artifact_types: frozenset[ShortText] = Field(default_factory=frozenset, max_length=32)
+
+    @model_validator(mode="after")
+    def reject_explicit_unsafe_text(self) -> "SkillGuidanceDraft":
+        _reject_unsafe_remote_text(self.model_dump(mode="python"), label="Skill guidance draft")
+        return self
+
+    def to_curator_draft(self) -> SkillCuratorDraft:
+        """Store the Agent's prose verbatim, without synthesizing procedural choices."""
+        return SkillCuratorDraft(
+            proposed_name=self.proposed_name, description=self.description,
+            procedure=SkillProcedureDraft(
+                applicability=self.applicability, workflow_outline=(self.guidance,),
+                tags=self.tags, artifact_types=self.artifact_types,
+            ),
+        )
 
 
 class SkillAdaptiveProcedureDraft(BaseModel):
@@ -519,7 +557,7 @@ class SkillAdaptiveCuratorDraft(BaseModel):
 
 
 class SkillCuratorAuditFinding(BaseModel):
-    """One Agent-authored curation defect tied to a draft field."""
+    """One advisory Agent opinion; not a deterministic verdict on the guide."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -529,13 +567,29 @@ class SkillCuratorAuditFinding(BaseModel):
     rationale: BoundedText
 
 
+class SkillCuratorEvidenceCheck(BaseModel):
+    """Agent-owned cross-check; citations can be verified, semantics require review."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    draft_field: ShortText
+    evidence_ids: tuple[ShortText, ...] = Field(
+        max_length=16, description="IDs from the supplied evidence catalog; empty if unsupported."
+    )
+    rationale: BoundedText
+
+
 class SkillCuratorAudit(BaseModel):
-    """Strict untrusted Agent audit used to drive one bounded revision."""
+    """Untrusted Agent advice retained for explicit human review."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     findings: tuple[SkillCuratorAuditFinding, ...] = Field(max_length=64)
     summary: BoundedText
+    checks: tuple[SkillCuratorEvidenceCheck, ...] = Field(
+        default=(), max_length=32,
+        description="Optional detailed cross-checks; not required for advisory guidance review.",
+    )
 
     @model_validator(mode="after")
     def reject_explicit_unsafe_text(self) -> "SkillCuratorAudit":
@@ -590,6 +644,7 @@ class SkillProposal(BaseModel):
     project_id: StrictStr | None = Field(default=None, min_length=1)
     lab_id: StrictStr = Field(default="local-lab", min_length=1)
     procedure: SkillProcedure
+    review_notes: tuple[BoundedText, ...] = Field(default=(), max_length=129)
     parent_skill_id: UUID | None = None
     parent_version: int | None = Field(default=None, ge=1)
     source_usage_record_id: UUID | None = None
