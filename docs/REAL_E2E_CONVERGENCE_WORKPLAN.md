@@ -3836,3 +3836,25 @@ No provider calls, generic live, scientific execution, final-report regeneration
 Gold approval/promotion, proxy or tunnel changes. No old views were removed.
 Stop: the requested four regressions are closed. Current user entry remains
 `../test/TEST1/GoldSkills/INDEX.md`; a new live task requires separate scope.
+
+### 2026-09-12: Gold changes published and fast-forwarded to main
+
+The user explicitly authorized GitHub publication and merge into LabBio `main`.
+Remote `main` was verified at `9ff50467b6bfaf6b306355bc7cf1ddc43de0a711` and
+was an ancestor of the development branch. The publication includes the user's
+WF+Skills commit `6dfcfeb8f7931d10a395187ef1d5ada23e15a77c` and repair commit
+`e0f100ffeb9dee136575f3d82fa2d32c89a87359`
+(`gold: preserve export identity and safe format upgrades`).
+
+Fast-forward merge and atomic push succeeded. A fresh remote query verified
+both `main` and `fix/gold-evidence-crosscheck-20260911` at that repair SHA.
+This subsequent documentation-only checkpoint records the verified publication;
+it does not change the tested code. Publication-time full regression remained
+**1158 passed, 32 skipped, zero failures**, one existing Uvicorn warning, 25.81 s.
+
+SSH timed out; HTTPS used the existing repository-scoped credential and
+command-local proxy `127.0.0.1:12199`. No remote URL, global Git/proxy, credential
+scope, Codex tunnel, Pantheon code or release tag was changed. No force push.
+TEST1's database, exported guides and raw data were not added to Git. This is
+source publication, not production deployment or a new live scientific/Gold
+acceptance. Stop after both branch heads are verified and the worktree is clean.
