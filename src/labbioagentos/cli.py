@@ -38,6 +38,15 @@ def _parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name, help=f"{name.capitalize()} an exact persisted conversation run")
         command.add_argument("--conversation", required=True)
         command.add_argument("--run-id", type=UUID, required=True)
+    for name in ("question", "answer"):
+        command = commands.add_parser(name, help="Read a pending clarification or persist its free-text answer")
+        command.add_argument("--conversation", required=True)
+        command.add_argument("--run-id", type=UUID, required=True)
+        if name == "answer":
+            command.add_argument("--question-id", required=True)
+            command.add_argument("--text", required=True)
+            command.add_argument("--save-only", action="store_true",
+                                 help="Persist the answer without loading a provider; continue later")
     revise = commands.add_parser("revise", help="Ask the Agent to revise selected prior results in a new run")
     revise.add_argument("--conversation", required=True)
     revise.add_argument("--from-run", type=UUID, required=True)
@@ -324,11 +333,13 @@ def main(argv: list[str] | None = None) -> int:
         settings = scoped_settings(args, settings)
         if args.command == "run":
             return asyncio.run(_run(args, settings))
-        if args.command in {"history", "conversation-link", "reconcile", "continue", "revise"}:
-            from .local_continuation import history, link_legacy, reconcile_or_continue, revise
+        if args.command in {"history", "conversation-link", "reconcile", "continue", "revise", "question", "answer"}:
+            from .local_continuation import history, link_legacy, reconcile_or_continue, revise, question_or_answer
             if args.command in {"history", "conversation-link"}:
                 _emit((history if args.command == "history" else link_legacy)(args, settings))
                 return 0
+            if args.command in {"question", "answer"}:
+                return asyncio.run(question_or_answer(args, settings))
             return asyncio.run((revise if args.command == "revise" else reconcile_or_continue)(args, settings))
         if args.command == "gold-list":
             _emit(gold_catalog(args, settings))

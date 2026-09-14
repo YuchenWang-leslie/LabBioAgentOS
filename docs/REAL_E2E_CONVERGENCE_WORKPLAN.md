@@ -4165,3 +4165,192 @@ Git's existing HTTPS-to-SSH rewrite was bypassed only for the publication comman
 using the existing HTTPS proxy and repository-scoped credential. No global Git,
 proxy/tunnel, Pantheon, production deployment or profile/Gold activation changes
 are part of this publication. Remote commit identity must be verified after push.
+
+### 2026-09-14: Critical clarification integrated with continuation, verification in progress
+
+The user authorized the agreed clarification plan and explicitly required it to
+cooperate with the accepted continuation feature. Baseline is clean branch
+`continuation`, commit `385e3a58d43edbaaf9b01417b9d4c3ae9397331c`, previously verified
+on GitHub; `main` is not in scope. No deployment `current` exists here, Docker
+services are active, and no LabBio API/worker or running container was found.
+
+The missing interface was demonstrated before edits: approval-only decisions
+reject free-text answers, and RuntimeStageInput has no question/answer history.
+Two initial red regressions reproduced the missing contracts and resumed-input
+gap. New question/answer records remain separate from domain approvals. Waiting
+stores the completed phase; an answer and its FINALIZE_ONLY cursor are saved in
+one run-state transaction. Restarts do not replay completed tools. New tool work
+requires an explicit Agent continue_stage decision backed by a newly answered
+question, without raising capability or retry limits. All stages receive exact
+bounded USER_ASSERTION answers; no scientific code or methods are supplied by
+Codex. Three rounds per run, one follow-up per issue, and resolved-issue history
+bound repeated clarification without keyword/semantic routing in core code.
+
+The local profile's approval switch was previously off by default. Clarification
+has its own setting so enabling questions does not enable approval gates. Gold,
+Memory and workflow graph semantics are preserved. CLI question/answer reuse
+conversation identity, the writer lock, recovery and immutable delivery export.
+Save-only and duplicate-answer paths never load a provider. Default answer saves
+before provider loading, so a later provider failure cannot lose the user reply.
+
+First full regression after integration: **1298 passed, 32 skipped**, one existing
+Uvicorn warning, 32.55 s. The additional exact Unicode answer-to-finalizer test
+also passed; focused clarification/CLI set: **14 passed**. Full regression will
+be recorded again at handoff. No scientific fixture is claimed as live evidence.
+
+Fresh real provider test: `b25984d6-7b7f-491e-b71d-1bbdf2df9177`, evidence root
+`/media/desk16/iy1982/WYC/clarification-check-20260914-eMcvdT6Y`, conversation
+`critical-choice`, user/project `clarification-check` / `conversation-wait`.
+Input is a nine-row, three-group synthetic table. User task asks to compare two
+user-selected groups, with that selection still missing. The Agent must ask;
+its actual question will be passed to the user, not answered by Codex. This is
+a requested-clarification protocol test, not proof of spontaneous question
+selection frequency. Live completion and answer-driven results remain pending.
+Source is uncommitted/unpushed; no profile/service deployment or Gold promotion.
+Pantheon, Docker service/images, credentials and proxy/Codex tunnel are unchanged.
+
+The real run has now reached WAITING_FOR_USER/STABLE at INTAKE, version 7.
+Question `b25984d6-7b7f-491e-b71d-1bbdf2df9177:question:1` asks which two groups to
+compare, issue_key GROUP_SELECTION. It was relayed verbatim to the user; Codex
+did not supply an answer. The example Group A/B in the question is not a data
+finding; actual synthetic group labels are alpha/beta/gamma. One artifact_list
+call completed; there are zero executions and zero reports. Its completed phase
+checkpoint is retained under invocation `32a7e5cb-0c57-409c-9051-6870d236367a`.
+Runtime revision is
+`local-aca962f9a6fcef69bf6868815e7f409a47bd06779592954fe17fcc7613d2e857`.
+
+Fresh-process reconcile returns WAITING_FOR_ANSWER with no uncertain effects.
+Fresh-process continue returns the same pending question without calling a model
+or tool: record version and every trace-event counter remain unchanged. Evidence
+receipt is `WAITING_CHECKPOINT.json` under the evidence root. All test/run
+processes have exited; this is a durable user wait, not background polling.
+Final full regression: **1299 passed, 32 skipped**, one existing Uvicorn warning,
+32.99 s. No production source changed after the live run was started.
+
+Implementation and deterministic regression are complete; real waiting/restart
+is verified. Full answer-to-result live acceptance remains pending the user's
+answer. Next unique entry: submit the exact user reply with answer --save-only,
+verify its persisted FINALIZE_ONLY cursor, then continue in a separate process.
+Do not modify source/profile while this run waits; no fabricated answer or
+additional live task is authorized as a substitute for this interaction.
+
+### 2026-09-14: Exact user reply submitted to the waiting clarification
+
+The user replied: “继续向下进行，完成完整流程以及验收”. This text was submitted
+unchanged to question 1 with answer --save-only. Codex did not interpret it as
+named groups, add selection parameters, or replace it with an invented answer.
+Version 8 atomically contains the exact USER_ASSERTION and original completed
+capability evidence. No model/tool calls occurred during saving. A fresh-process
+reconcile reports FINALIZE_ONLY, the original invocation and one completed call,
+with no uncertain effects. Receipt: `ANSWER_1_CHECKPOINT.json` in the evidence root.
+
+A separate continue process has started finalization with this exact answer,
+confirmed in the persisted model input. The Agent determines whether the reply
+resolves the missing choice or requires its single bounded follow-up. No source,
+profile or runtime configuration was changed. Relevant regression rerun:
+**24 passed**, one existing warning. Final live outcome is pending.
+
+The resumed process exited normally with code 2 at its single permitted
+GROUP_SELECTION follow-up. Persisted version 10 is WAITING_FOR_USER/STABLE;
+question 2 links question 1, whose exact answer remains stored. Provider turns
+increased from 3 to 4; artifact_list remained the sole completed tool call.
+No execution or report was produced, and no retry was consumed. Receipt:
+`FOLLOWUP_CHECKPOINT.json`. Thus answer persistence, cross-process resumption and
+bounded follow-up have real evidence; answer-to-result acceptance is still open.
+
+The model's follow-up result also labels question 1 as an EXECUTION reference in
+its model-context references. This is not an execution receipt; the actual
+capability evidence contains only artifact_list. This observed reference-label
+limitation is retained, not promoted to authoritative execution evidence.
+
+Next unique entry is question 2: obtain the user's two group names from
+alpha/beta/gamma, or their explicit delegation of that choice to the Agent.
+Save that reply verbatim and continue the same run. Codex must not infer the
+choice from a general request to continue. No source/profile changes, deployment,
+Git publication or additional live run occurred at this boundary.
+
+### 2026-09-14: User-selected comparison resumed from question 2
+
+The user answered “比较alpha+beta”. CLI answer --save-only stored that exact text
+in version 11 and the actual resumed stage input as USER_ASSERTION. Original
+invocation/evidence were preserved; saving made no model/tool calls. Independent
+reconcile confirmed FINALIZE_ONLY without uncertain effects. Receipt:
+`ANSWER_2_CHECKPOINT.json` in the same evidence root.
+
+The resumed Agent recognized alpha/beta and resolved both question records. It
+explicitly chose continue_stage once (new invocation, one new artifact_list),
+then transitioned to UNDERSTAND. This extra model-selected read is recorded, not
+misreported as zero new tool calls; the original invocation was not replayed.
+No further question or workflow retry occurred at that boundary. Execution and
+report acceptance are still being observed. Source/configuration remain frozen.
+Full regression rerun: **1299 passed, 32 skipped**, one existing Uvicorn warning,
+32.91 s. No deployment, Git publication, Pantheon or service changes.
+
+### 2026-09-14: Clarification-to-result live checkpoint accepted
+
+The same run `b25984d6-7b7f-491e-b71d-1bbdf2df9177` completed all nine stages and
+is now **COMPLETED/STABLE, version 53**, with no pending question/gate or retained
+clarification checkpoint. Both question records are RESOLVED. Nine actual model
+inputs across INTAKE, UNDERSTAND, PLAN, EXECUTE, VALIDATE, INTERPRET, REPORT and
+LEARN preserve the user's exact second answer as USER_ASSERTION. No third
+question was asked. The original invocation still has exactly one tool call.
+
+Agent-owned Docker execution first exited 0 but failed output registration with
+UNDECLARED_RECORD_FIELDS/QUERYABLE_OUTPUT_REQUIRED
+(`296c919f-7f16-41ae-9bf9-213083d867b8`). The Agent corrected its own program and
+submitted a second execution (`89553454-76a5-4068-9a5a-b8ddce13aa8f`), which
+succeeded without issue codes. The retained DERIVED result is
+`8667f7df-dce1-40a2-a7bd-27a7309cd7af`, containing the requested alpha/beta groups.
+Report `076b4233-843b-4599-bd6b-d6fd04d07ad6` cites that result and was submitted
+through report_submit. Codex supplied neither scientific code nor report text.
+No workflow retry or budget increase was used. Failed attempts remain intact.
+
+Final user-facing report:
+`/media/desk16/iy1982/WYC/clarification-check-20260914-eMcvdT6Y/runs/first/deliveries/53/REPORT.md`.
+Its SHA256 is `fd8322561b2c64d7c779b16c6af427551aa34c73a26d2578a1048b793eb34c63`,
+matching the registered report. Original input bytes are unchanged. Cross-process
+history finds the completed run and its five registered results. A duplicate
+answer returns answer_already_saved. A terminal continue leaves version 53,
+the complete state hash, all model/tool/execution counters, and all seven delivery
+file hashes unchanged. Read-only reconciliation/export checks append six
+AUTHORIZATION_ALLOWED and one PROJECT_ACCESS_GRANTED event; do not claim the
+entire trace is byte-identical. Receipt: `ACCEPTANCE.json` in the evidence root.
+
+This accepts the requested clarification/wait/restart/answer/result delivery
+feature checkpoint, not flawless Agent efficiency or scientific validation.
+Observed limitations remain: four denied RAW views, two rejected report_read
+calls on non-report output, one duplicate successful TOP_N query, and the earlier
+model-context reference-label error. They remained visible; no hidden fixes or
+replays were added. This synthetic task explicitly requested clarification;
+spontaneous critical-question frequency, a new biological task, web chat UI and
+arbitrary in-flight side-effect recovery are not covered.
+
+Final regression remains **1299 passed, 32 skipped**, one existing warning.
+Clarification source is uncommitted/unpushed on `continuation` at baseline
+`385e3a58d43edbaaf9b01417b9d4c3ae9397331c`; no source/profile was changed during
+this live continuation. No production current/release is present or deployed in
+this workspace. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; Docker services are active, no container
+or test CLI remains running. No Gold/Memory approval, promotion, credentials,
+proxy/tunnel, TEST1 or image changes. The checkpoint is closed. Future operation
+uses the documented conversation/question/answer/continue CLI; publication or
+deployment requires a separate request, not another replay of this completed run.
+
+### 2026-09-14: Clarification publication on continuation
+
+The user explicitly authorized committing and pushing the accepted clarification
+work to GitHub's `continuation` branch, without merging `main`. The remote branch
+was verified at `385e3a58d43edbaaf9b01417b9d4c3ae9397331c` before publication;
+remote `main` remained `f889d6b625db29c262f964252f058b92219f0cf1`. The focused commit
+is titled `runtime: persist critical clarification and answer continuation`.
+Only source, tests and documentation are included. Runtime databases, synthetic
+inputs, Agent programs/reports, provider configuration and credentials stay out
+of Git. The preceding live acceptance remains the evidence; no live run is
+repeated for publication.
+
+Pre-publication full regression: **1299 passed, 32 skipped**, one existing
+Uvicorn warning, 34.06 s. Publication uses the existing repository-scoped
+credential and command-local HTTPS proxy, with a normal fast-forward push and
+post-push remote identity check. No force push, main merge, Pantheon publication,
+deployment, profile/Gold promotion, global Git/proxy or Codex tunnel change is
+part of this request. The commit history identifies this publication revision.

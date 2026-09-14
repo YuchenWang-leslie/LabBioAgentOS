@@ -109,6 +109,7 @@ class _StageProfile(_SettingsModel):
     required_capabilities: tuple[str, ...] = ()
     capability_protocol: str = ""
     user_input_enabled: bool = False
+    clarification_enabled: bool = True
 
 
 class _LocalProfile(_SettingsModel):
@@ -283,6 +284,7 @@ def build_application(
         required_capabilities=stage.required_capabilities,
         max_capability_turns=16, retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
         user_input_enabled=stage.user_input_enabled,
+        clarification_enabled=stage.clarification_enabled,
     ) for stage in profile.stages)
 
     def observe(kind: str, value: object) -> None:

@@ -115,6 +115,9 @@ def history(args, settings):
             "task_excerpt": record.task_text[:1000],
             "task_truncated": len(record.task_text) > 1000,
             "record_version": record.record_version,
+            "pending_clarification": (record.workflow_run.pending_clarification.model_dump(mode="json")
+                                      if record.workflow_run.status.value == "WAITING_FOR_USER"
+                                      and record.workflow_run.pending_clarification else None),
             "registered_result_count": len(refs),
             "registered_results": [{"artifact_id": str(ref.artifact_id),
                 "artifact_type": ref.artifact_type, "release_basis": ref.release_basis.value}
@@ -167,13 +170,50 @@ async def reconcile_or_continue(args, settings):
             status = assessment.recovery.run_status.value
             if status == "WAITING_FOR_USER":
                 cli._emit({"event": "waiting_for_user", "run_id": str(args.run_id),
-                           "detail": "Resolve the existing gate with an explicit decision."})
+                           "pending_clarification": (application.run_state_store.get(args.run_id)
+                               .workflow_run.pending_clarification.model_dump(mode="json")
+                               if assessment.continuation_action == "WAITING_FOR_ANSWER" else None),
+                           "detail": "Answer the pending question or resolve the approval gate; no model was called."})
                 return 2
             if status not in {"COMPLETED", "FAILED", "CANCELLED"}:
                 _load_provider(settings.provider)
             result = await application.continue_run(
                 args.run_id, principal=settings.principal, workspace=settings.workspace,
             )
+            delivery = export_snapshot(application, args.run_id, directory, settings)
+            cli._emit({"event": "continued", "conversation_id": args.conversation,
+                       **result.model_dump(mode="json"), "delivery": delivery})
+            return 0 if result.status.value == "COMPLETED" else 2
+        finally:
+            cli._close(application)
+
+
+async def question_or_answer(args, settings):
+    """Reuse conversation identity, writer lock and immutable continuation export."""
+    from . import cli
+    from .local_config import _load_provider
+
+    _, directory, _ = resolve_run(settings, args.conversation, args.run_id)
+    with run_writer(directory):
+        application = cli.build_application(settings, directory, load_provider=False)
+        try:
+            if args.command == "question":
+                record = application.run_state_store.get(args.run_id)
+                pending = record.workflow_run.pending_clarification
+                cli._emit({"run_id": str(args.run_id), "status": record.workflow_run.status.value,
+                    "pending_clarification": (pending.model_dump(mode="json") if pending
+                                               and record.workflow_run.status.value == "WAITING_FOR_USER" else None),
+                    "clarifications": [item.model_dump(mode="json") for item in record.workflow_run.clarifications]})
+                return 0
+            recorded = application.submit_answer(args.run_id, question_id=args.question_id,
+                answer_text=args.text, principal=settings.principal, workspace=settings.workspace)
+            cli._emit({"event": "answer_saved" if recorded else "answer_already_saved",
+                       "run_id": str(args.run_id), "question_id": args.question_id})
+            if not recorded or args.save_only:
+                return 0
+            _load_provider(settings.provider)
+            result = await application.continue_run(args.run_id, principal=settings.principal,
+                                                   workspace=settings.workspace)
             delivery = export_snapshot(application, args.run_id, directory, settings)
             cli._emit({"event": "continued", "conversation_id": args.conversation,
                        **result.model_dump(mode="json"), "delivery": delivery})

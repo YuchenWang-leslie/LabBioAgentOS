@@ -31,6 +31,7 @@ from labbioagentos.artifacts.models import (
 )
 from labbioagentos.contracts import (
     GateDecisionRecord,
+    ClarificationRecord,
     InformationAuthority,
     NextActionProposal,
     WorkflowDefinition,
@@ -659,6 +660,13 @@ class RuntimeGateDecisionView(BaseModel):
         )
 
 
+class RuntimeClarificationView(ClarificationRecord):
+    """Exact bounded user answers; status is control, prose is not evidence."""
+
+    answer_authority: Literal[InformationAuthority.USER_ASSERTION] = InformationAuthority.USER_ASSERTION
+    question_authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+
+
 class RuntimeInputBody(BaseModel):
     """Generic typed presentation body; arbitrary dictionaries are excluded."""
 
@@ -737,6 +745,9 @@ class RuntimeWorkflowControlView(BaseModel):
     current_stage: WorkflowStage
     transition_targets: tuple[WorkflowStage, ...] = Field(default=(), max_length=16)
     request_user_input_available: bool
+    clarification_available: bool = False
+    clarification_rounds_remaining: int = Field(default=0, ge=0, le=3)
+    continue_stage_available: bool = False
     retry_available: bool
     retry_transition_targets: tuple[WorkflowStage, ...] = Field(
         default=(),
@@ -779,6 +790,10 @@ class RuntimeWorkflowControlView(BaseModel):
             request_user_input_available=definition.allows(
                 stage, WorkflowStage.USER_GATE
             ),
+            clarification_available=len(run.clarifications) < 3,
+            clarification_rounds_remaining=3 - len(run.clarifications),
+            continue_stage_available=any(item.status == "ANSWERED" and item.source_stage is stage
+                                         for item in run.clarifications),
             retry_available=retry_available,
             retry_transition_targets=(
                 (stage, *transition_targets) if retry_available else ()
@@ -874,6 +889,7 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=32,
     )
+    clarifications: tuple[RuntimeClarificationView, ...] = Field(default=(), max_length=3)
     workflow_control: RuntimeWorkflowControlView | None = None
     execution_capability: RuntimeExecutionCapabilityView | None = None
     input_artifact_usage: tuple[RuntimeInputArtifactUsage, ...] = Field(
@@ -1089,6 +1105,8 @@ def _runtime_stage_result_format(
     retry_available: bool,
     retry_transition_targets: tuple[WorkflowStage, ...],
     finish_available: bool,
+    clarification_available: bool = False,
+    continue_stage_available: bool = False,
 ) -> type[RuntimeStageResult]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
@@ -1108,6 +1126,8 @@ def _runtime_stage_result_format(
                 retry_available=retry_available,
                 retry_transition_targets=retry_transition_targets,
                 finish_available=finish_available,
+                clarification_available=clarification_available,
+                continue_stage_available=continue_stage_available,
             ),
             ...,
         )
@@ -1135,4 +1155,6 @@ def runtime_stage_result_format(
         workflow_control.retry_available,
         workflow_control.retry_transition_targets,
         workflow_control.finish_available,
+        workflow_control.clarification_available,
+        workflow_control.continue_stage_available,
     )

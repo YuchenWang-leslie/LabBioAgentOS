@@ -65,6 +65,8 @@ class NextAction(StrEnum):
 
     TRANSITION = "transition"
     REQUEST_USER_INPUT = "request_user_input"
+    REQUEST_CLARIFICATION = "request_clarification"
+    CONTINUE_STAGE = "continue_stage"
     RETRY = "retry"
     FINISH = "finish"
     FAIL = "fail"
@@ -80,6 +82,8 @@ class WorkflowEventType(StrEnum):
     TRANSITIONED = "TRANSITIONED"
     USER_INPUT_REQUESTED = "USER_INPUT_REQUESTED"
     USER_DECISION_RECORDED = "USER_DECISION_RECORDED"
+    CLARIFICATION_REQUESTED = "CLARIFICATION_REQUESTED"
+    CLARIFICATION_ANSWERED = "CLARIFICATION_ANSWERED"
     RETRIED = "RETRIED"
     FAILED = "FAILED"
     COMPLETED = "COMPLETED"
@@ -222,10 +226,62 @@ class _RetryActionProposal(_ActionProposalBase):
     target_stage: WorkflowStage | None = None
 
 
+class ClarificationQuestion(BaseModel):
+    """An Agent-owned missing decision, not an approval or a prescribed method."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    issue_key: StrictStr = Field(min_length=1, max_length=128,
+        description="Stable identity of the missing decision; reuse for its single follow-up.")
+    prompt: StrictStr = Field(min_length=1, max_length=2000)
+    why_needed: StrictStr = Field(min_length=1, max_length=1000,
+        description="Why this missing user fact materially changes the task and cannot be inferred from available context.")
+    followup_to: StrictStr | None = Field(default=None, min_length=1, max_length=256,
+        description="Prior answered question ID, only when its answer leaves this same decision unresolved.")
+
+
+class ClarificationRecord(BaseModel):
+    """Bounded immutable question/answer history persisted with the run."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    question_id: StrictStr = Field(min_length=1, max_length=256)
+    source_stage: WorkflowStage
+    question: ClarificationQuestion
+    status: Literal["WAITING", "ANSWERED", "RESOLVED"] = "WAITING"
+    answer_text: StrictStr | None = Field(default=None, min_length=1, max_length=4000)
+    answered_by: StrictStr | None = Field(default=None, min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_answer(self):
+        if self.status == "WAITING":
+            if self.answer_text is not None or self.answered_by is not None:
+                raise ValueError("A waiting question cannot contain an answer")
+        elif not self.answer_text or not self.answer_text.strip() or not self.answered_by:
+            raise ValueError("An answered question requires nonblank text and its author")
+        return self
+
+
+class _RequestClarificationActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.REQUEST_CLARIFICATION] = Field(description=(
+        "Pause for a critical missing user fact or choice. Check existing answers first; "
+        "do not ask users to do routine technical work or repeat resolved decisions."
+    ))
+    question: ClarificationQuestion
+
+
+class _ContinueStageActionProposal(_ActionProposalBase):
+    action: Literal[NextAction.CONTINUE_STAGE] = Field(description=(
+        "Consume a newly received clarification and start a new invocation of this stage "
+        "only if additional tool work is needed. Previous tools are not replayed. "
+        "Otherwise choose the normal transition. This is not an error retry."
+    ))
+
+
 class _RequestUserInputActionProposal(_ActionProposalBase):
     action: Literal[NextAction.REQUEST_USER_INPUT] = Field(
         description=(
-            "Pause the workflow as WAITING_FOR_USER at a governed user gate. "
+            "Pause as WAITING_FOR_USER for an approve/reject authorization, not a free-text question. "
             "The required user_prompt describes the decision needed to resume."
         )
     )
@@ -266,6 +322,8 @@ _NextActionVariant: TypeAlias = Annotated[
     _TransitionActionProposal
     | _RetryActionProposal
     | _RequestUserInputActionProposal
+    | _RequestClarificationActionProposal
+    | _ContinueStageActionProposal
     | _FinishActionProposal
     | _FailActionProposal,
     Field(discriminator="action"),
@@ -302,6 +360,10 @@ class NextActionProposal(RootModel[_NextActionVariant]):
     def domain_reference_id(self) -> str | None:
         return getattr(self.root, "domain_reference_id", None)
 
+    @property
+    def question(self) -> ClarificationQuestion | None:
+        return getattr(self.root, "question", None)
+
 
 @lru_cache(maxsize=128)
 def governed_next_action_proposal_format(
@@ -311,6 +373,8 @@ def governed_next_action_proposal_format(
     retry_available: bool,
     retry_transition_targets: tuple[WorkflowStage, ...],
     finish_available: bool,
+    clarification_available: bool = False,
+    continue_stage_available: bool = False,
 ) -> type[RootModel]:
     """Build the provider proposal union from authoritative workflow control."""
 
@@ -337,6 +401,10 @@ def governed_next_action_proposal_format(
         )
     if request_user_input_available:
         variants.append(_RequestUserInputActionProposal)
+    if clarification_available:
+        variants.append(_RequestClarificationActionProposal)
+    if continue_stage_available:
+        variants.append(_ContinueStageActionProposal)
     if finish_available:
         variants.append(_FinishActionProposal)
     variants.append(_FailActionProposal)
@@ -466,8 +534,15 @@ class WorkflowRun(BaseModel):
     retry_counts: dict[WorkflowStage, int] = Field(default_factory=dict)
     pending_user_gate: PendingUserGate | None = None
     gate_decisions: tuple[GateDecisionRecord, ...] = ()
+    clarifications: tuple[ClarificationRecord, ...] = Field(default=(), max_length=3)
     failure_reason: StrictStr | None = None
     history: tuple[WorkflowHistoryEntry, ...] = ()
+
+    @property
+    def pending_clarification(self) -> ClarificationRecord | None:
+        if self.status is not RunStatus.WAITING_FOR_USER:
+            return None
+        return next((item for item in self.clarifications if item.status == "WAITING"), None)
 
     def record_stage_result(self, result: AgentStageResult) -> None:
         """Record a result for the current stage without performing a transition."""

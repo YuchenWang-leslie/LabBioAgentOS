@@ -53,6 +53,23 @@ class RunInflightOperation(StrEnum):
     DOMAIN_GATE_DECISION = "DOMAIN_GATE_DECISION"
 
 
+class ClarificationCheckpoint(BaseModel):
+    """Completed source phase retained while user input is awaited."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    stage_input: RuntimeStageInput
+    evidence: CapabilityEvidenceBundle | None = None
+
+    @model_validator(mode="after")
+    def matching_evidence(self):
+        if self.evidence is not None and (
+            self.evidence.run_id, self.evidence.stage_id, self.evidence.invocation_id
+        ) != (self.stage_input.run_id, self.stage_input.stage_id, self.stage_input.invocation_id):
+            raise ValueError("Clarification evidence must belong to its source invocation")
+        return self
+
+
 class ApplicationRunRecord(BaseModel):
     """Strict data-only snapshot needed to reconstruct one application run."""
 
@@ -80,6 +97,7 @@ class ApplicationRunRecord(BaseModel):
     inflight_input: RuntimeStageInput | None = None
     inflight_evidence: CapabilityEvidenceBundle | None = None
     inflight_result: RuntimeStageResult | None = None
+    clarification_checkpoint: ClarificationCheckpoint | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     record_version: int = Field(default=1, ge=1)
@@ -133,6 +151,15 @@ class ApplicationRunRecord(BaseModel):
             self.inflight_invocation_id,
             self.inflight_operation,
         )
+        if self.clarification_checkpoint is not None:
+            source = self.clarification_checkpoint.stage_input
+            pending = run.pending_clarification
+            if (self.recovery_state is not RunRecoveryState.STABLE
+                    or run.status is not RunStatus.WAITING_FOR_USER or pending is None
+                    or (source.run_id, source.stage_id) != (self.run_id, pending.source_stage)
+                    or (source.workspace.user_id, source.workspace.project_id, source.workspace.lab_id)
+                    != (self.owner_user_id, self.project_id, self.lab_id)):
+                raise ValueError("Clarification checkpoint must match the waiting run and question")
         checkpoints = (self.inflight_input, self.inflight_evidence, self.inflight_result)
         if any(value is not None for value in checkpoints):
             if self.recovery_state is not RunRecoveryState.STAGE_IN_FLIGHT:

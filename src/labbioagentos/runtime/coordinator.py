@@ -23,6 +23,7 @@ from .contracts import (
     RuntimeEvidenceReference,
     RuntimeExecutionCapabilityView,
     RuntimeGateDecisionView,
+    RuntimeClarificationView,
     RuntimeInputBody,
     RuntimeInputArtifactUsage,
     RuntimePriorResultView,
@@ -111,6 +112,11 @@ class RuntimeCoordinatorService:
                 and result.next_action.domain_reference_id
                 in resolved_domain_references
             )
+            and not (
+                result.next_action.action is NextAction.REQUEST_CLARIFICATION
+                and any(item.status != "WAITING" and item.question.issue_key == result.next_action.question.issue_key
+                        for item in run.clarifications)
+            )
         )[-9:]
         prior_references = tuple(
             RuntimeReference(
@@ -143,6 +149,8 @@ class RuntimeCoordinatorService:
             workflow_control = workflow_control.model_copy(
                 update={"request_user_input_available": False}
             )
+        if not spec.clarification_enabled:
+            workflow_control = workflow_control.model_copy(update={"clarification_available": False})
         return RuntimeStageInput(
             run_id=run.run_id,
             stage_id=stage,
@@ -161,6 +169,7 @@ class RuntimeCoordinatorService:
             gold_candidate_references=gold_candidate_references,
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
+            clarifications=tuple(RuntimeClarificationView(**item.model_dump()) for item in run.clarifications),
             workflow_control=workflow_control,
             execution_capability=self.execution_capability,
             input_artifact_usage=(self.input_usage_provider() if self.input_usage_provider else ()),
@@ -229,6 +238,8 @@ class RuntimeCoordinatorService:
             raise RuntimeResultValidationError(
                 f"User input is disabled for configured stage {stage.value}"
             )
+        if result.next_action.action is NextAction.REQUEST_CLARIFICATION and not spec.clarification_enabled:
+            raise RuntimeResultValidationError(f"Clarification is disabled for configured stage {stage.value}")
         # Validate before recording so an illegal proposal cannot partially
         # update workflow results or trace. No action is inferred or applied.
         self.engine.validate_proposal(run, result.next_action)

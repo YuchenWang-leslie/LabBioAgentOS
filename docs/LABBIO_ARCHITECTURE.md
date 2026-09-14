@@ -123,6 +123,17 @@ MODEL_CONTEXT report reading are described in
 [Conversation continuation](CONVERSATION_CONTINUATION.md); the catalog does not
 replace run-state authority or scientific reasoning.
 
+Ordinary clarification is distinct from approval gates: `request_clarification`
+retains the source stage in WAITING_FOR_USER, with a completed phase checkpoint.
+Question and answer records are bounded and stored in the same run-state SQLite.
+Submitting an answer atomically restores a FINALIZE_ONLY cursor containing the
+exact USER_ASSERTION text and original capability evidence. Repeating an identical
+answer is an idempotent receipt, not another model invocation. Additional source
+stage tool work requires the Agent's explicit `continue_stage` decision; it is a
+new invocation based on new user input, not replay or an error retry. Question
+history reaches all runtime stages; existing Gold/Memory approvals stay separate.
+Three total question rounds and one follow-up per issue bound clarification loops.
+
 The host must supply `ApplicationRuntimeConfiguration.runtime_revision`. The
 same value is stored at run creation; mismatch on recovery produces an explicit
 `RUNTIME_REVISION_MISMATCH` and prevents continuation. The value is a stable

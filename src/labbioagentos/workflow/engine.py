@@ -12,6 +12,7 @@ from labbioagentos.contracts import (
     AgentStageResult,
     GateDecisionRecord,
     GateUserDecision,
+    ClarificationRecord,
     NextAction,
     NextActionProposal,
     PendingUserGate,
@@ -600,6 +601,25 @@ class WorkflowEngine:
                 raise InvalidProposalError(
                     "User input was already resolved for this domain reference"
                 )
+        elif normalized.action is NextAction.REQUEST_CLARIFICATION:
+            self._require_status(run, RunStatus.RUNNING)
+            self._require_current_stage(run)
+            if len(run.clarifications) >= 3:
+                raise InvalidProposalError("Clarification round limit reached; no further automatic questions")
+            question = normalized.question
+            previous = [item for item in run.clarifications if item.question.issue_key == question.issue_key]
+            if previous:
+                last = previous[-1]
+                if (len(previous) >= 2 or last.status != "ANSWERED"
+                        or question.followup_to != last.question_id):
+                    raise InvalidProposalError("Clarification is resolved or its single follow-up is unavailable")
+            elif question.followup_to is not None:
+                raise InvalidProposalError("Follow-up must identify an answered question for the same issue")
+        elif normalized.action is NextAction.CONTINUE_STAGE:
+            self._require_status(run, RunStatus.RUNNING)
+            if not any(item.status == "ANSWERED" and item.source_stage is run.current_stage
+                       for item in run.clarifications):
+                raise InvalidProposalError("New stage work requires a newly answered clarification")
         elif normalized.action is NextAction.RETRY:
             self._require_status(run, RunStatus.RUNNING)
             stage = self._require_current_stage(run)
@@ -643,6 +663,26 @@ class WorkflowEngine:
         """Validate, then apply one structural proposal."""
 
         normalized = self.validate_proposal(run, proposal)
+        if normalized.action is NextAction.REQUEST_CLARIFICATION:
+            question = ClarificationRecord(
+                question_id=f"{run.run_id}:question:{len(run.clarifications) + 1}",
+                source_stage=run.current_stage, question=normalized.question,
+            )
+            run.clarifications = (*run.clarifications, question)
+            run.status = RunStatus.WAITING_FOR_USER
+            self._append_history(run, WorkflowEventType.CLARIFICATION_REQUESTED,
+                                 stage=run.current_stage, detail=question.question_id)
+            self._emit(run, TraceEventType.CLARIFICATION_REQUESTED, stage=run.current_stage,
+                       payload={"question_id": question.question_id})
+            return run
+        # A normal Agent control decision consumes the supplied answers. A follow-up
+        # above leaves them unresolved; later stages retain their exact contents.
+        run.clarifications = tuple(
+            item.model_copy(update={"status": "RESOLVED"}) if item.status == "ANSWERED" else item
+            for item in run.clarifications
+        )
+        if normalized.action is NextAction.CONTINUE_STAGE:
+            return run
         if normalized.action is NextAction.TRANSITION:
             assert normalized.target_stage is not None
             return self.transition(run, normalized.target_stage)
@@ -670,6 +710,25 @@ class WorkflowEngine:
         raise InvalidProposalError(
             f"Unsupported next-action proposal: {normalized.action!r}"
         )
+
+    def answer_clarification(self, run: WorkflowRun, *, question_id: str,
+                             answer_text: str, answered_by: str) -> WorkflowRun:
+        """Record user text without interpreting it or starting any Agent/tool."""
+        self._require_run(run)
+        self._require_status(run, RunStatus.WAITING_FOR_USER)
+        pending = run.pending_clarification
+        if pending is None or pending.question_id != question_id or run.pending_user_gate is not None:
+            raise UserDecisionRequiredError("Answer must name the exact pending clarification")
+        answer = ClarificationRecord.model_validate({**pending.model_dump(),
+            "answer_text": answer_text, "answered_by": answered_by, "status": "ANSWERED"})
+        run.clarifications = tuple(answer if item.question_id == question_id else item
+                                   for item in run.clarifications)
+        run.status = RunStatus.RUNNING
+        self._append_history(run, WorkflowEventType.CLARIFICATION_ANSWERED,
+                             stage=run.current_stage, detail=question_id)
+        self._emit(run, TraceEventType.CLARIFICATION_ANSWERED, stage=run.current_stage,
+                   payload={"question_id": question_id})
+        return run
 
     def _require_run(self, run: WorkflowRun) -> None:
         owned = self._runs.get(run.run_id)
@@ -703,7 +762,11 @@ class WorkflowEngine:
                 )
         elif run.status is RunStatus.WAITING_FOR_USER:
             gate = run.pending_user_gate
-            if (
+            question = run.pending_clarification
+            if question is not None:
+                if gate is not None or run.current_stage is not question.source_stage:
+                    raise InvalidRunStateError("A waiting clarification must retain its source stage")
+            elif (
                 run.current_stage is not WorkflowStage.USER_GATE
                 or gate is None
                 or gate.source_stage not in self.definition.nodes
@@ -722,6 +785,12 @@ class WorkflowEngine:
                 "A recovered terminal run cannot retain a pending gate"
             )
 
+        if (len({item.question_id for item in run.clarifications}) != len(run.clarifications)
+                or sum(item.status == "WAITING" for item in run.clarifications) > 1
+                or (any(item.status == "WAITING" for item in run.clarifications)
+                    and run.status not in {RunStatus.WAITING_FOR_USER, RunStatus.CANCELLED})
+                or any(item.source_stage not in self.definition.nodes for item in run.clarifications)):
+            raise InvalidRunStateError("Recovered clarification history is inconsistent")
         if (
             run.status is RunStatus.COMPLETED
             and run.current_stage not in self.definition.terminal_stages

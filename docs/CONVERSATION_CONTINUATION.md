@@ -45,6 +45,7 @@ labbio conversation-link --conversation my-analysis --run-dir /allowed/runs/old-
 | 核对结果 | 允许的下一动作 |
 | --- | --- |
 | `STABLE` | 从已提交的控制状态继续；终态不重新运行，待审批仍需显式决定 |
+| `WAITING_FOR_ANSWER` | 正常等待关键澄清，不调用模型或工具；用户提交回答后才恢复 |
 | `FINALIZE_ONLY` | 已完成且验证过的工具阶段有持久检查点，只重新请求阶段决策，不重放工具 |
 | `APPLY_RESULT` | 阶段返回值已持久化，经原有控制校验提交，不重复模型或工具调用 |
 | `BLOCKED` | 操作完成性不明、缺失证据、权限/版本不符或其他非法状态，不继续 |
@@ -62,6 +63,45 @@ CLI 使用 `.writer.lock` 的进程锁，防止新入口并发续接同一个运
 效果不明、审批业务动作只完成一部分。这些保持 `BLOCKED`，不能通过重发命令
 绕过。原程序 `execution_inspect` 的会话内索引也没有变成跨进程恢复服务。
 此次新增的是已确认完成边界的恢复，不是任意机器故障点的透明迁移。
+
+## 关键澄清与回答续接
+
+Agent 可用独立的 `request_clarification` 提出自然语言问题及其重要性。
+这不是 Gold/Memory 的 approve/reject，也不改变原有审批图和权限。
+默认本地入口开启普通澄清，原有 `user_input_enabled` 审批配置保持原样；
+自定义阶段可通过 `clarification_enabled` 明确关闭提问。
+
+等待时仍保留原阶段，状态为 WAITING_FOR_USER/STABLE，问题和已完成工具阶段
+检查点一同落盘。等待不占用模型调用，不是未知外部效果的 STAGE_IN_FLIGHT。
+同一用户/项目/对话可在新的进程中查看和回答：
+
+```bash
+labbio question --conversation my-analysis --run-id <运行UUID>
+labbio answer --conversation my-analysis --run-id <运行UUID> \
+  --question-id <问题ID> --text '我的回答和偏好。'
+```
+
+默认 answer 保存后续接；加 `--save-only` 只保存，之后使用普通 `continue`。
+回答原文最长 4000 字符，保留 Unicode、换行和原有空白，不要求 JSON 或参数表。
+空白回答拒绝且保持等待。完全相同的重复提交返回已保存，不再次启动模型；
+不同内容不能覆盖已回答记录，修订任务目标应走显式的新任务/修订入口。
+
+问题、回答和状态保存在原运行 SQLite，不另建聊天数据库。模型在当前和后续
+阶段均看到完整的有界问答；回答是 USER_ASSERTION，不是科学证据或权限授予。
+回答和 FINALIZE_ONLY 续接位置通过同一事务保存。因此即使回答保存后进程立即
+退出，下次 continue 仍先消化回答，不重放原工具阶段。必要的新工作须由 Agent
+显式选择 `continue_stage`；它使用新 invocation，不消耗错误重试额度，也不会
+自动复用/重发之前的工具参数。已经完成的结果仍按现有规则保留。
+
+一个运行最多三个问题轮次，同一 issue_key 最多一次补问，补问必须引用上一
+已回答问题。常规阶段决策把答案标记为已处理（RESOLVED），供后续阶段继续参考；
+该标记不认证用户事实或科学正确性。已处理事项不能重复发问；语义上的同义改写
+仍依靠 Agent 理解历史回答，全局轮次上限保证不会无限循环。达到上限后仍缺少
+必需事实时，不伪造答案，不把任务强行视为成功。用户尚未回答时没有自动超时
+默认选择，也不由 Codex 代答。现有实例身份、进程锁和 runtime revision 核对复用。
+
+本能力是 CLI/application 的交互协议，不包含新的网页聊天 UI。任意工具运行
+中途突然故障的原有 BLOCKED 边界不变。源码变更前创建的旧运行不自动迁移。
 
 ## 不覆盖的结果修订
 
@@ -108,3 +148,14 @@ Agent 生成独立新版报告；完成态再次继续不新增模型或工具�
 完整回归为 1285 passed / 32 skipped / 1 既有 warning。验收回执位于
 `/media/desk16/iy1982/WYC/continuation-check-20260914-7a7NRBqu/ACCEPTANCE.json`。
 该验收不扩展上述未知中途操作的恢复边界，也不代表已发布或部署。
+
+同日的关键澄清真实测试也已完成：Agent 提问后退出等待，先收到一条未解决选择
+的真实回答并仅补问一次；用户回复“比较alpha+beta”后，原文跨进程送入当前及
+后续阶段，Agent 自主分析、修正一次输出格式错误并提交报告，最终为
+COMPLETED/STABLE/version 53。无第三次提问或 workflow retry。重复回答及终态
+continue 不新增模型、工具或分析执行，七个交付文件保持原样；仅正常权限核对
+事件追加。完整回归为 1299 passed / 32 skipped / 1 既有 warning。
+验收回执：
+`/media/desk16/iy1982/WYC/clarification-check-20260914-eMcvdT6Y/ACCEPTANCE.json`。
+无效远程查询、误用 report_read 和一次重复读取均保留在证据中。这是有明确
+澄清要求的合成任务闭环，不是自发提问频率或真实生信/统计结论的验收。

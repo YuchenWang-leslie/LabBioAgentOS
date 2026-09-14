@@ -345,6 +345,7 @@ def test_durable_record_is_data_only_and_contains_no_runtime_object_fields():
         "inflight_input",
         "inflight_evidence",
         "inflight_result",
+        "clarification_checkpoint",
         "created_at",
         "updated_at",
         "record_version",

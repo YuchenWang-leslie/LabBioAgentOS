@@ -40,6 +40,7 @@ from .bioformats import (
     H5ADInspector,
 )
 from .contracts import (
+    ClarificationRecord,
     GateUserDecision,
     NextAction,
     NextActionProposal,
@@ -83,6 +84,7 @@ from .governance import (
 )
 from .memory import MemoryDecision, MemoryGovernanceService
 from .run_state import (
+    ClarificationCheckpoint,
     ApplicationRunRecord,
     InMemoryRunStateStore,
     RunInflightOperation,
@@ -484,6 +486,7 @@ class ApplicationRunResult(BaseModel):
     derived_artifact_ids: tuple[UUID, ...] = Field(default=(), max_length=256)
     issue_codes: tuple[StrictStr, ...] = Field(default=(), max_length=32)
     pending_user_gate: ApplicationPendingUserGate | None = None
+    pending_clarification: ClarificationRecord | None = None
     trace_run_id: UUID
 
 
@@ -523,7 +526,7 @@ class ApplicationReconciliationStatus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     recovery: ApplicationRecoveryStatus
-    continuation_action: Literal["STABLE", "FINALIZE_ONLY", "APPLY_RESULT", "BLOCKED"]
+    continuation_action: Literal["STABLE", "WAITING_FOR_ANSWER", "FINALIZE_ONLY", "APPLY_RESULT", "BLOCKED"]
     confirmed_calls: tuple[ApplicationReconciledCall, ...] = Field(default=(), max_length=256)
     uncertain_side_effects: bool
 
@@ -1100,6 +1103,8 @@ class LabBioApplication:
         if record.record_version != status.record_version:
             raise RunStateVersionConflictError("Run changed while reconciling")
         action = "STABLE" if status.recoverable else "BLOCKED"
+        if status.recoverable and record.workflow_run.pending_clarification is not None:
+            action = "WAITING_FOR_ANSWER"
         unknown = record.recovery_state is not RunRecoveryState.STABLE
         if status.issue_code is ApplicationRecoveryIssueCode.STAGE_IN_FLIGHT:
             stage_input = record.inflight_input
@@ -1135,6 +1140,9 @@ class LabBioApplication:
                         "recoverable": issue is None,
                         "automatic_continuation_allowed": False,
                     })
+        completed_evidence = record.inflight_evidence
+        if record.clarification_checkpoint is not None:
+            completed_evidence = record.clarification_checkpoint.evidence
         calls = tuple(
             ApplicationReconciledCall(
                 capability_invocation_id=item.capability_invocation_id,
@@ -1143,7 +1151,7 @@ class LabBioApplication:
                 reference_ids=item.reference_ids,
                 error_code=item.error_code,
             )
-            for item in (record.inflight_evidence.items if record.inflight_evidence else ())
+            for item in (completed_evidence.items if completed_evidence else ())
         )
         return ApplicationReconciliationStatus(
             recovery=status, continuation_action=action,
@@ -1162,11 +1170,19 @@ class LabBioApplication:
         record = self.run_state_store.get(run_id)
         if record.record_version != assessment.recovery.record_version:
             raise RunStateVersionConflictError("Run changed after reconciliation")
-        if assessment.continuation_action == "STABLE":
+        if assessment.continuation_action in {"STABLE", "WAITING_FOR_ANSWER"}:
             handle = (ApplicationRunHandle(run_id=run_id) if run_id in self._sessions
                       else self.recover_run(run_id, principal=principal, workspace=workspace))
             return await self.run(handle)
-        handle = self._attach_record(record, principal=principal, workspace=workspace)
+        if run_id in self._sessions:
+            session = self._session(run_id)
+            if (session.record_version != record.record_version
+                    or session.run.model_dump_json() != record.workflow_run.model_dump_json()
+                    or session.coordinator.results(run_id) != record.runtime_results):
+                raise RunStateVersionConflictError("Attached continuation state differs from its checkpoint")
+            handle = ApplicationRunHandle(run_id=run_id)
+        else:
+            handle = self._attach_record(record, principal=principal, workspace=workspace)
         session = self._session(handle)
         stage_input = record.inflight_input
         assert stage_input is not None
@@ -1179,6 +1195,57 @@ class LabBioApplication:
         )
         self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
         return await self.run(handle)
+
+    def submit_answer(
+        self, run_id: UUID, *, question_id: str, answer_text: str,
+        principal: Principal, workspace: WorkspaceContext,
+    ) -> bool:
+        """Atomically persist an answer and its finalization cursor, without model work.
+
+        Identical re-delivery returns False even after later progress; it never
+        starts a second continuation. Different text cannot overwrite an answer.
+        """
+        from .runtime.contracts import RuntimeClarificationView
+
+        record = self.run_state_store.get(run_id)
+        self._reauthorize_recovery(record, principal, workspace)
+        if record.runtime_revision != self.configuration.runtime_revision:
+            raise ApplicationRecoveryError(run_id, ApplicationRecoveryIssueCode.RUNTIME_REVISION_MISMATCH)
+        existing = next((item for item in record.workflow_run.clarifications
+                         if item.question_id == question_id), None)
+        if existing is not None and existing.status != "WAITING":
+            if existing.answer_text == answer_text and existing.answered_by == principal.user_id:
+                return False
+            raise ApplicationRunStateError("An existing answer cannot be overwritten")
+        handle = (ApplicationRunHandle(run_id=run_id) if run_id in self._sessions
+                  else self.recover_run(run_id, principal=principal, workspace=workspace))
+        session = self._session(handle)
+        self._require_stable_session(session)
+        saved = record.clarification_checkpoint
+        if saved is None:
+            raise ApplicationRunStateError("Pending clarification has no completed source checkpoint")
+        invoker = session.coordinator.registry.get(saved.stage_input.stage_id).invoker
+        invoker.validate_recovery_checkpoint(saved.stage_input, saved.evidence)
+        self.workflow_engine.answer_clarification(session.run, question_id=question_id,
+            answer_text=answer_text, answered_by=principal.user_id)
+        source = saved.stage_input
+        control = source.workflow_control
+        if control is not None:
+            control = control.model_copy(update={
+                "clarification_available": control.clarification_available and len(session.run.clarifications) < 3,
+                "clarification_rounds_remaining": 3 - len(session.run.clarifications),
+                "continue_stage_available": True,
+            })
+        stage_input = source.model_copy(update={
+            "clarifications": tuple(RuntimeClarificationView(**item.model_dump())
+                                    for item in session.run.clarifications),
+            "workflow_control": control,
+        })
+        self._checkpoint(session, recovery_state=RunRecoveryState.STAGE_IN_FLIGHT,
+            inflight_stage=source.stage_id, inflight_invocation_id=source.invocation_id,
+            inflight_operation=RunInflightOperation.RUNTIME_STAGE,
+            inflight_input=stage_input, inflight_evidence=saved.evidence)
+        return True
 
     def _validate_checkpoint_artifacts(
         self, record: ApplicationRunRecord, principal: Principal, workspace: WorkspaceContext,
@@ -1403,6 +1470,7 @@ class LabBioApplication:
             derived_artifact_ids=derived_ids,
             issue_codes=issue_codes,
             pending_user_gate=pending_view,
+            pending_clarification=(run.pending_clarification if run.status is RunStatus.WAITING_FOR_USER else None),
             trace_run_id=run.run_id,
         )
 
@@ -1637,6 +1705,7 @@ class LabBioApplication:
                     invoker=invoker,
                     retry_enabled=assembly.retry_enabled,
                     user_input_enabled=assembly.user_input_enabled,
+                    clarification_enabled=assembly.clarification_enabled,
                 )
             )
         return RuntimeCoordinatorService(
@@ -1768,12 +1837,23 @@ class LabBioApplication:
         inflight_stage: WorkflowStage | None = None,
         inflight_invocation_id: UUID | None = None,
         inflight_operation: RunInflightOperation | None = None,
+        inflight_input: RuntimeStageInput | None = None,
+        inflight_evidence: CapabilityEvidenceBundle | None = None,
     ) -> ApplicationRunRecord:
         current = self.run_state_store.get(session.run.run_id)
         if current.record_version != session.record_version:
             raise RunStateVersionConflictError(
                 f"Run-state version conflict for {session.run.run_id}"
             )
+        clarification_checkpoint = None
+        if session.run.status is RunStatus.WAITING_FOR_USER and session.run.pending_clarification is not None:
+            if current.inflight_input is not None:
+                clarification_checkpoint = ClarificationCheckpoint(
+                    stage_input=current.inflight_input, evidence=current.inflight_evidence)
+            else:
+                clarification_checkpoint = current.clarification_checkpoint
+            if clarification_checkpoint is None:
+                raise ApplicationRunStateError("A clarification requires its completed source checkpoint")
         replacement = current.model_copy(
             update={
                 "workflow_run": session.run,
@@ -1782,9 +1862,10 @@ class LabBioApplication:
                 "inflight_stage": inflight_stage,
                 "inflight_invocation_id": inflight_invocation_id,
                 "inflight_operation": inflight_operation,
-                "inflight_input": None,
-                "inflight_evidence": None,
+                "inflight_input": inflight_input,
+                "inflight_evidence": inflight_evidence,
                 "inflight_result": None,
+                "clarification_checkpoint": clarification_checkpoint,
             }
         )
         stored = self.run_state_store.update(
