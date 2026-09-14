@@ -94,27 +94,27 @@ from .contracts import (
     SkillSearchRequestAudit,
     ScriptValidationDetails,
 )
-from .reporting import ReportSubmissionService
+from .reporting import ReportSubmissionService, read_report_page
 
 
 CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
-    WorkflowStage.INTAKE: ("artifact_list", "artifact_query"),
+    WorkflowStage.INTAKE: ("artifact_list", "artifact_query", "report_read"),
     WorkflowStage.UNDERSTAND: (
-        "artifact_list", "artifact_query", "skill_search", "skill_view",
+        "artifact_list", "artifact_query", "report_read", "skill_search", "skill_view",
         "memory_search", "memory_view",
     ),
     WorkflowStage.PLAN: (
-        "artifact_query", "skill_search", "skill_view", "skill_propose_use",
+        "artifact_query", "report_read", "skill_search", "skill_view", "skill_propose_use",
         "memory_search", "memory_view", "environment_list",
     ),
-    WorkflowStage.PREFLIGHT: ("artifact_query",),
+    WorkflowStage.PREFLIGHT: ("artifact_query", "report_read"),
     WorkflowStage.EXECUTE: (
-        "artifact_query", "execution_submit", "execution_inspect",
+        "artifact_query", "report_read", "execution_submit", "execution_inspect",
         "environment_list", "environment_build",
     ),
-    WorkflowStage.VALIDATE: ("artifact_query",),
-    WorkflowStage.INTERPRET: ("artifact_query",),
-    WorkflowStage.REPORT: ("artifact_query", "report_submit"),
+    WorkflowStage.VALIDATE: ("artifact_query", "report_read"),
+    WorkflowStage.INTERPRET: ("artifact_query", "report_read"),
+    WorkflowStage.REPORT: ("artifact_query", "report_read", "report_submit"),
     WorkflowStage.LEARN: (
         "skill_search", "skill_view", "memory_search", "memory_view",
         "memory_propose_update",
@@ -131,6 +131,7 @@ CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
     "environment_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "environment_build": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+    "report_read": InformationAuthority.MODEL_CONTEXT,
     "skill_search": InformationAuthority.MODEL_CONTEXT,
     "skill_view": InformationAuthority.MODEL_CONTEXT,
     "memory_search": InformationAuthority.MODEL_CONTEXT,
@@ -189,6 +190,10 @@ class _InvalidExecutionDraft(ValueError):
 
 class _ExecutionSourceTransportError(RuntimeError):
     """A source page cannot be transported without alteration or truncation."""
+
+
+class _ReportPageTransportError(RuntimeError):
+    """An original report page cannot be transported exactly."""
 
 
 class ToolError(CapabilityErrorDetails):
@@ -1011,6 +1016,48 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     @tool
+    async def report_read(
+        self, artifact_id: str,
+        offset: Annotated[int, Field(strict=True, ge=0)] = 0,
+        limit: Annotated[int, Field(strict=True, ge=1, le=8_000)] = 4_000,
+        expected_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")] | None = None,
+    ) -> dict:
+        """Read exact original model-authored report prose by Artifact UUID.
+
+        This accepts only authorized DERIVED reports, not arbitrary files or RAW
+        Artifacts. Prose is MODEL_CONTEXT, not independent scientific evidence.
+        Offsets count Unicode characters. Follow next_offset to read another
+        page; truncated reports whether later text remains, not whether earlier
+        pages were read. expected_sha256 can bind subsequent pages to the first
+        page's complete-report identity. Reading does not revise or execute.
+        """
+        def read():
+            page = read_report_page(
+                self.services.artifact_store, self.services.artifact_exposure,
+                coerce_artifact_id(artifact_id), principal=self.binding.principal,
+                workspace=self.binding.workspace, offset=offset, limit=limit,
+                expected_sha256=expected_sha256,
+            )
+            from pantheon.settings import get_settings
+            from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
+            from pantheon.utils.token_optimization import get_per_tool_limit
+
+            serialized = json.dumps(page, ensure_ascii=False)
+            transport_limit = get_per_tool_limit("report_read", get_settings().max_tool_content_length)
+            if len(serialized) > transport_limit - 2_000:
+                raise _ReportPageTransportError("REPORT_PAGE_TOO_LARGE")
+            filtered = json.dumps(filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False)
+            filtered = filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"]
+            if filtered != serialized:
+                raise _ReportPageTransportError("REPORT_PAGE_TRANSPORT_UNSUPPORTED")
+            # Preserve the exact page the Agent selected across finalization
+            # and restart, at MODEL_CONTEXT authority. Trace events still carry
+            # identifiers only; no unread page is fetched or inferred.
+            return page
+
+        return await self._call("report_read", read, request_ids={"artifact_id": artifact_id})
+
+    @tool
     async def report_submit(
         self, title: str, report_text: str, evidence_artifact_ids: list[str] | None = None
     ) -> dict:
@@ -1495,6 +1542,15 @@ class LabBioRuntimeToolSet(ToolSet):
                     if exc.args[0] == "EXECUTION_SOURCE_PAGE_TOO_LARGE" else
                     "No source was released. The transport would alter this source page; "
                     "the original remains unchanged and this inspection started no execution."
+                ),
+            )
+        if isinstance(exc, _ReportPageTransportError):
+            return ToolError(
+                error_code=exc.args[0],
+                safe_message=(
+                    "No report text was released. Request a smaller limit to fit the transport bound."
+                    if exc.args[0] == "REPORT_PAGE_TOO_LARGE" else
+                    "No report text was released because transport would alter the original page."
                 ),
             )
         if isinstance(exc, ExecutionScriptValidationError):

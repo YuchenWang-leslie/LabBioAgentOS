@@ -755,6 +755,7 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     assert set(CAPABILITY_INFORMATION_AUTHORITY) == {
         "artifact_list",
         "artifact_query",
+        "report_read",
         "execution_submit",
         "execution_inspect",
         "environment_list",

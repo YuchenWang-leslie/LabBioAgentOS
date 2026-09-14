@@ -3858,3 +3858,310 @@ scope, Codex tunnel, Pantheon code or release tag was changed. No force push.
 TEST1's database, exported guides and raw data were not added to Git. This is
 source publication, not production deployment or a new live scientific/Gold
 acceptance. Stop after both branch heads are verified and the worktree is clean.
+
+### 2026-09-14: Conversation continuation and immutable result revision
+
+User scope: same-user/project/conversation history, interrupted-operation
+reconciliation without duplicate execution, and Agent-authored successor results
+without overwriting originals. No scientific behavior, workflow graph, retry or
+capability-turn limit changes; no Pantheon modification or prompt-only repair.
+
+Preflight verified an independent LabBio Git worktree, clean `main` at
+`f889d6b625db29c262f964252f058b92219f0cf1`. Changes are isolated on
+`feat/conversation-continuation-20260914`, not main. The parent WYC instruction
+claiming this is not an independent worktree is stale. Production `current`
+remains absent; the available source architecture document is
+`docs/LABBIO_ARCHITECTURE.md`, not `ARCHITECTURE.md` or the absent debug guide.
+
+Implemented:
+
+- Private exact-user/project/lab conversation catalog; immutable run-directory
+  and parent bindings. History reads authoritative SQLite state, not trace or
+  cached completion. Existing runs require explicit enrollment.
+- Durable typed invocation input, validated completed capability bundle, and
+  returned stage result checkpoints. Provider-free `reconcile_run()` and explicit
+  `continue_run()` resume only FINALIZE or apply the cached result through
+  original validation. Original invocation identity and failed calls survive;
+  required-capability checks remain, with no tool replay or field repair.
+- CLI history/link/reconcile/continue/revise and process locks. Unknown mid-tool,
+  Docker and gate effects remain BLOCKED. Not a chat UI or distributed lease.
+- Separate successor run/store preserves exact old Artifact IDs, release basis
+  and producer lineage. Result selection excludes scripts and process streams.
+  Copy receipts and catalog parent linkage connect old/new results; versioned
+  deliveries do not overwrite prior exports. USER_APPROVED transfers fail closed.
+  Legacy missing ingestion hashes permit only verified current snapshot copies.
+- Bounded original-report reading as MODEL_CONTEXT, not scientific evidence.
+  Pagination/content identity are checked; trace contains page metadata, not
+  report prose. Default allowlists expose it; custom profiles are not rewritten.
+
+Final full non-live regression: **1268 passed, 32 skipped, zero failures**,
+one existing Uvicorn warning, 32.77 s. Tests cover restart, ownership, alias and
+concurrency checks, absent/illegal checkpoints, exact execution count across
+simulated crashes, repeated FINALIZE interruptions, cached results, immutable
+old bytes, parent links, provider schema/pagination and leaks. No tests removed
+or newly skipped. Details: `docs/CONVERSATION_CONTINUATION.md`.
+
+Real end-to-end validation is **NOT accepted**. Evidence root:
+`/media/desk16/iy1982/WYC/continuation-check-20260914-7a7NRBqu/README.md`.
+Input: six-row synthetic TSV, not PBMC. User task:
+"请对这份合成小表做一次简短概览，保存汇总结果和中文报告。它仅用于软件测试，不是真实研究数据。"
+Codex did not author Agent methods, programs, tool parameters or reports.
+
+1. `a8c4879f-d551-4e22-a0cf-aa8a5c8502b4` (`runs/original`) used a small test
+   envelope (1 CPU / 1024 MB / 64 PID / 120 seconds). Five PLAN_REJECTED failures
+   surfaced as CAPABILITY_FAILED before Docker startup. The exact owned process
+   was stopped on repetition. Durable state: EXECUTE/STAGE_IN_FLIGHT, version 20,
+   no completed bundle/result. Fresh-process reconciliation correctly reports
+   BLOCKED and uncertain effects, without provider load/replay. Schema defaults
+   (128 PID / 300 seconds) exceed this test envelope and deterministically
+   reproduce the error class. Actual rejected values were not saved; the exact
+   exceeded field is unknown, not inferred.
+2. One independent run `a371b5f5-5d81-45fc-9ffb-2c765a174b1d`
+   (`runs/original-baseline`) used the existing verified host envelope
+   (4 CPU / 32768 MB / 128 PID / 1800 seconds). Original failure/config stayed
+   untouched; task, data, model, code and turn/retry budgets did not change.
+   The Agent tried four RAW views, then chose a typed fail at UNDERSTAND,
+   treating current-stage remote denial as whole-task execution unavailability.
+   It ended FAILED/STABLE, version 12. No execution, report or analysis output;
+   only failure-delivery metadata was exported.
+
+No third run, PBMC run, prompt workaround or invented successful revision.
+Actual history lookup and active-writer blocking passed; actual completed-tool
+interruption/continuation and Agent-authored live revision remain **unverified**.
+Deterministic tests are not generic live, scientific or final-report acceptance.
+
+Both test processes/watchers exited. Docker/containerd/socket remain active,
+with no running containers. Pantheon is clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`. No deployment, profile/Gold promotion,
+credential/global-proxy/Codex-tunnel change, commit or push. TEST1 and Gold were
+not touched; failed test directories are retained.
+
+Stop: requested infrastructure implemented and regression-verified, real
+end-to-end acceptance not claimed. Next unique entry: audit exact
+UNDERSTAND-visible capability facts behind the false global-unavailability
+inference, as a bounded execution-chain repair. Do not replay the first unknown
+in-flight run. Resource-rejection diagnostic fidelity remains a separate gap.
+
+### 2026-09-14: Repair run-configuration visibility; live continuation still blocked
+
+The user authorized repair of the preceding execution-chain blocker. Exact
+`original-baseline` UNDERSTAND input combined `execution_input_eligible=true`
+with `execution_capability=null`, despite a configured execution backend.
+The owner catalog and RAW-denial explanation were already present; adding
+another prompt instruction was not justified. Coordinator stage filtering,
+the input validator and the assembly binding check all enforced that omission.
+
+The existing safe execution view is now consistently projected to all main
+runtime stages and explicitly marked `scope=RUN_CONFIGURATION`. A genuinely
+absent execution profile remains null. Assembly checks exact equality with
+trusted configuration at every stage. This exposes configuration, not new tool
+authority, successful preflight, file contents or a required next action.
+Allowlist, mount authorization, exposure policy, workflow control and resource
+ceilings remain unchanged. No scientific, profile, prompt or Pantheon edits
+were made in this repair; the earlier continuation changes remain preserved.
+
+Regression first reproduced missing early-stage configuration through the real
+application/assembly and both Pantheon input serializers. After repair it
+verifies configured and genuinely unconfigured cases, out-of-stage submission
+denial, tampered scope/image/omission rejection before provider construction,
+all-stage visibility and absence of private content/paths. Final full regression:
+**1281 passed, 32 skipped, zero failures**, one existing Uvicorn warning,
+33.17 s. No tests were removed or newly skipped. Cross-version early-stage
+checkpoints containing the old null view are not automatically migrated.
+
+Two additional isolated real-provider attempts used the unchanged synthetic
+task/data and existing `runtime-baseline.toml`, not PBMC or TEST1. Both record
+runtime revision
+`local-61bdad70b78a365b25e06ff98a8c7feec772ab6388df51bbdedabbda68925166`.
+
+1. `2eb7cfd6-4dd9-4480-a3cd-345154f095ef` (`runs/visibility-fix`) passed
+   UNDERSTAND, PLAN and PREFLIGHT, reaching EXECUTE. UNDERSTAND acknowledged
+   that remote-denied RAW remained locally executable, instead of declaring
+   whole-task unavailability. At EXECUTE, provider turn 1 (trace sequence 62)
+   emitted METADATA and SCHEMA together; sequences 63–66 rejected that batch.
+   The supervisor mistakenly interpreted two failures as a post-feedback retry
+   and stopped too early. This does not prove failure to adapt after feedback.
+   Final state is EXECUTE/STAGE_IN_FLIGHT, version 20, no completed bundle/result.
+   Fresh-process reconciliation reports BLOCKED; no tool was replayed.
+2. To correct that observation error, one bounded fresh test
+   `242cd98e-9fcb-4ce6-8974-eec5ef0c1900` (`runs/visibility-verified`) was
+   observed by provider-turn identity. UNDERSTAND turn 2 queried METADATA
+   (failure seq 26), turn 3 TOP_N without limit (29), turn 4 TOP_N with a
+   numeric-string limit (32), and turn 6 SCHEMA (38), all for the same RAW.
+   Turn 2 to turn 3 is a genuine retry after feedback without changed facts.
+   Every denial included empty allowed views and `retryable=false`. Existing
+   bounded numeric conversion was recorded, not introduced by this change.
+   Supervision/polling latency allowed all four failures before SIGINT; do not
+   claim an immediate stop at the second. Final state: UNDERSTAND/STAGE_IN_FLIGHT,
+   version 10, completed capability evidence saved, no typed stage result.
+   Fresh-process `reconcile` reports FINALIZE_ONLY, six confirmed calls (two
+   completed lists and four failed queries) and no uncertain side effects.
+   This proves completed-phase recognition, not successful execution or resume.
+
+A no-network audit followed actual RAW tool results through LocalProvider,
+Pantheon tool-message construction, token/filter/sanitize processing and
+OpenAIAdapter to a stubbed SDK create call. Both final tool messages equalled
+the original result dictionaries, retaining the error code, non-retryable flag,
+empty allowed views and execution/preflight distinction. No RAW sentinel leaked.
+This verifies current transport behavior, not an unrecorded historical HTTP
+body. No transmission repair, permission relaxation, forced action sequence or
+new inspection capability is supported by this evidence and none was added.
+
+Both new runs have zero EXECUTION_STARTED and zero submitted reports. The
+first establishes that the missing-configuration failure can be crossed;
+the second demonstrates remaining tool-choice/adaptation instability with
+complete mechanical facts. Real completed-execution interruption/continuation
+and Agent-authored result revision are still **NOT accepted**. No further live
+attempt or continuation was made after the genuine repeated failure.
+
+Documentation updated: architecture, local entrypoint, known limitations and
+the retained evidence-root README. Source remains uncommitted/unpushed on
+`feat/conversation-continuation-20260914`; this is not a deployment. Production
+`current` remains absent. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`. Both CLI processes and monitors
+have exited; Docker/containerd/socket remain active with no running containers.
+No TEST1/Gold, approval, credential, proxy or Codex tunnel changes. All failed
+attempts remain intact. Next unique entry is the exact cross-turn RAW-query
+failure in `visibility-verified`, not another unchanged rerun or replay of the
+unknown `visibility-fix` invocation. Configuration-visibility repair is closed;
+the separate model tool-choice/adaptation issue needs its own evidence-bounded
+scope, without pretending another missing-transport fix has been demonstrated.
+
+### 2026-09-14: User-authorized continuation closure, verified complete
+
+The user clarified acceptance: accurate persisted boundaries, correct continuation
+timing/state, no repeated completed work, immutable result revision and real
+verification. Do not expand permission hardening or treat recorded RAW-view
+denials alone as failure of this feature. Existing isolation/exposure controls
+remain; Codex still supplies no Agent analysis program or scientific decisions.
+
+Explicit CLI continuation of `242cd98e-9fcb-4ce6-8974-eec5ef0c1900` from the saved
+UNDERSTAND FINALIZE_ONLY boundary succeeded: it accepted the original invocation
+and advanced to PLAN without replaying any of the six completed calls. PLAN then
+returned `skill_unassessed_has_evidence` at `result.body.skill_assessment` (trace
+57–58), leaving version 14 at a pure-finalization boundary. This is a distinct
+provider/internal schema mismatch, not a permissions or checkpoint failure.
+
+The existing receipt-constrained Skill schema was only installed for Skill-enabled
+PLAN, although every PLAN exposed optional SkillAssessment with the same internal
+shape validator. Its unconstrained optional variant admitted NOT_ASSESSED plus
+search/proposal evidence. Two actual-wire regression cases reproduced this before
+repair. All PLAN finalizers now reuse the existing constrained schema; non-Skill
+PLAN preserves its optional/null assessment, and Skill-enabled PLAN remains
+required. No new Skill gate, forced search, repair of returned fields or prompt
+instruction. New full regression: **1283 passed, 32 skipped**, one existing
+Uvicorn warning, 33.13 s. Related regression: 76 passed.
+
+A fresh run with unchanged synthetic input/task/configuration is
+`b1472290-88c0-45ca-a0b7-cc3fbb2e93c6`, directory
+`/media/desk16/iy1982/WYC/continuation-check-20260914-7a7NRBqu/runs/continuation-final`.
+Runtime revision:
+`local-7c582b8582e7496b06e5306f46e7fa2cdffad77881bde0d8480b7d3687305ccd`.
+It passed PLAN with an honest NOT_ASSESSED result and reached actual execution.
+
+The Agent independently submitted two different programs, both SUCCEEDED/exit 0:
+`db354087-97b6-42cd-b281-2bde53222d93` and
+`3aa2809e-1afe-46cd-a788-c85209cb3d0f`. Only after the entire EXECUTE capability
+bundle committed, a process supervisor rechecked the owned PID and stopped it.
+The container work was already complete; no Docker service or running container
+was stopped. Record version 21 preserves invocation
+`2e2f5257-fc69-45c7-ab35-201f50212e37`, five completed calls and evidence
+`c1d8167b-cd70-413f-b2d6-ac788b216eb7`. Pre-resume receipt is
+`EXECUTE_CHECKPOINT.json` in the evidence root.
+
+A separate process reported FINALIZE_ONLY with all five calls confirmed and no
+uncertain side effects. Explicit CLI continuation completed through LEARN at
+version 42. Execution count stayed **2 before / 2 after**, with zero post-restart
+tool invocations under the original EXECUTE invocation. Both outputs and report
+`7e041354-81cd-44ac-a805-045543a49bf5` were exported under
+`runs/continuation-final/deliveries/42/`. Fresh-process conversation history
+finds the completed run and its three results. Actual execution continuation is
+now verified, not only simulated.
+
+The first live revision test ran as
+`c7522dc5-1f08-45ef-8447-eecdeb50d8a0`, `runs/revision-final`, parent
+`b1472290-88c0-45ca-a0b7-cc3fbb2e93c6`, same user/project/conversation. Its task
+requests a clearer, more concise Chinese report for a first-time reader based
+on the previous results. It receives the original input and three selected
+result references through the normal revision entrypoint. No Agent program,
+tool parameter or report was supplied by Codex. Original delivery hashes were
+saved before revision in `ORIGINAL_DELIVERY_HASHES.json`. It failed at PLAN,
+version 16: the prior UNDERSTAND finalizer said the report content was unknown,
+although report_read had returned all 417 characters to its capability Agent.
+The handoff deliberately removed `content` from safe_result, retaining only page
+metadata. The next model therefore saw a read receipt without the material it
+needed. This was a handoff/checkpoint information-loss defect, not a need to
+relax report or execution permissions.
+
+report_read now keeps exactly the requested, validated, bounded page in its
+MODEL_CONTEXT capability result/checkpoint. Finalization and restart receive
+the same content as the capability Agent. Trace events still contain only call
+identity/metadata; no unread page, arbitrary Artifact or source program is fetched.
+Three tests reproduced the missing-content failure before repair; full and
+partial-page finalizer roundtrips now pass. Relevant regression: 55 passed.
+Full regression: **1285 passed, 32 skipped**, one existing Uvicorn warning,
+34.27 s. No workflow, tool-order or report-writing instruction was changed.
+
+One fresh revision under the identical natural-language request is
+`5c72921a-1993-44df-a5c3-9c90878b1755`, `runs/revision-context-fix`, with the same
+completed parent run. Runtime revision is
+`local-0662860920bb192c65e6c8c80ca76a6b4d0c9136658f248eeefacb325cd47191`.
+It independently read the original report. The supervisor stopped only after
+the UNDERSTAND bundle committed at version 10, invocation
+`58671dae-eb50-4b6f-85e3-42bec8f1238b`. Its six completed calls include an exact
+417-character report page, verified against the immutable source; receipt is
+`REPORT_CONTEXT_CHECKPOINT.json`. A fresh process reports FINALIZE_ONLY with
+no uncertain effects. Explicit continuation completed through LEARN at version
+42, COMPLETED/STABLE, without replaying any of the original six UNDERSTAND calls.
+The finalizer retained the report content instead of describing it as unknown.
+The Agent independently performed one execution for the new revision task and
+submitted new report `22278168-3ef0-42d1-9268-a6ed421e760b` under
+`runs/revision-context-fix/deliveries/42/`. That is new-task work, not replay of
+the original two executions. Codex did not write either report or Agent program.
+
+Final acceptance receipt: `/media/desk16/iy1982/WYC/continuation-check-20260914-7a7NRBqu/ACCEPTANCE.json`.
+A fresh-process history lookup finds both completed runs, their results and the
+exact parent-child link under the same user/project/conversation. All five
+original delivery files retain their original hashes and file set. The new
+report has a different Artifact identity, path and content. An additional
+`continue` on the completed revision returned the same version 42 delivery;
+provider-turn/tool/execution/report counters remained 36/37/1/1, respectively.
+There were no additional model or tool calls.
+
+The three requested features are now accepted under the user's clarified
+criterion: conversation lookup, accurately reconciled committed-boundary
+continuation without duplicate work, and Agent-authored immutable revision.
+Both interruptions and resumptions used real provider calls and the existing
+Docker backend, not fixture-only evidence. This was a six-row synthetic software
+test, not new PBMC or scientific-quality acceptance. The revised report is
+different but longer (771 versus 417 characters); the preference for shorter
+wording is not established by this test. Arbitrary unknown mid-tool effects
+remain BLOCKED rather than being replayed.
+
+Source remains uncommitted/unpushed on `feat/conversation-continuation-20260914`;
+there was no deployment, profile activation or Gold promotion. No production
+`current` exists in this workspace. Pantheon remains clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; Docker/containerd/socket are active
+with no running containers. All test CLI/supervision processes have exited.
+No credentials, global proxy, Codex tunnel, TEST1 data or Docker image changes.
+Failed predecessors and both successful versions are retained. This feature
+checkpoint is closed; the next user-facing entry is the documented
+history/reconcile/continue/revise CLI. Publication or deployment requires a
+separate user request; no further live test or milestone is started here.
+
+### 2026-09-14: Dedicated continuation publication
+
+The user authorized committing and publishing this accepted feature on a new
+branch named `continuation`, not merging into `main`. The branch starts from
+`f889d6b625db29c262f964252f058b92219f0cf1`, verified against remote `main` before
+publication; no remote `continuation` branch existed at that check. Publication
+contains the continuation source, regression tests and documentation only.
+Live run stores, data, reports, credentials and Docker assets remain outside Git.
+
+The pre-publication full regression again passed: **1285 passed, 32 skipped**,
+one existing Uvicorn warning, 32.40 s. The prior real interruption and immutable
+revision acceptance above remains the live evidence; no new model run was needed.
+Git's existing HTTPS-to-SSH rewrite was bypassed only for the publication commands
+using the existing HTTPS proxy and repository-scoped credential. No global Git,
+proxy/tunnel, Pantheon, production deployment or profile/Gold activation changes
+are part of this publication. Remote commit identity must be verified after push.

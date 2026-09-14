@@ -39,7 +39,8 @@ def _bundle(tools):
         items=tools.evidence_items())
 
 
-async def _finalize(boundary, assessment, *, evidence=None, stage_input=None, pre_return=False):
+async def _finalize(boundary, assessment, *, evidence=None, stage_input=None, pre_return=False,
+                    observe_format=None):
     tools, original_input, sink = boundary
     stage_input = stage_input or original_input
     evidence = evidence if evidence is not None else _bundle(tools)
@@ -47,6 +48,8 @@ async def _finalize(boundary, assessment, *, evidence=None, stage_input=None, pr
     team, prompts = await factory.create_team(("coordinator",), invocation_mode=RuntimeInvocationMode.FINALIZE)
 
     async def run(_self, message, **kwargs):
+        if observe_format is not None:
+            observe_format(_self.team_agents[0].response_format)
         visible = json.loads(message)
         body = {"kind": "PLAN", "procedure_steps": ["Work from current task evidence."]}
         if assessment is not None:
@@ -183,6 +186,32 @@ async def test_legacy_non_skill_plan_does_not_acquire_new_gate(boundary):
     result = await _finalize(boundary, None,
                              stage_input=stage_input.model_copy(update={"allowed_capabilities": ()}))
     assert result.body.skill_assessment is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt_field", ["search", "proposal"])
+async def test_non_skill_plan_wire_preserves_optional_assessment_shape(boundary, receipt_field):
+    from jsonschema import Draft202012Validator
+    from pantheon.utils.adapters.openai_adapter import _normalize_response_format
+
+    _, stage_input, _ = boundary
+    formats = []
+    result = await _finalize(boundary, None, pre_return=True,
+        stage_input=stage_input.model_copy(update={"allowed_capabilities": ()}),
+        observe_format=formats.append)
+    assert result.body.skill_assessment is None
+    schema = _normalize_response_format(formats[0])["json_schema"]["schema"]
+    body_ref = schema["properties"]["body"]["$ref"].rsplit("/", 1)[-1]
+    field = schema["$defs"][body_ref]["properties"]["skill_assessment"]
+    validator = Draft202012Validator({**field, "$defs": schema["$defs"]})
+    assert validator.is_valid(None)
+    assert validator.is_valid(_assessment("NOT_ASSESSED"))
+    malformed = _assessment("NOT_ASSESSED",
+        (uuid4(),) if receipt_field == "search" else (),
+        uuid4() if receipt_field == "proposal" else None)
+    assert not validator.is_valid(malformed)
+    assert not validator.is_valid(_assessment("NO_SUITABLE_RETURNED_CANDIDATE", (uuid4(),)))
+    assert not validator.is_valid(_assessment("USE_PROPOSED", proposal_id=uuid4()))
 
 
 def test_provider_schema_requires_assessment_without_widening_next_action():

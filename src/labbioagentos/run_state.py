@@ -21,7 +21,9 @@ from pydantic import (
 )
 
 from .contracts import RunStatus, WorkflowRun, WorkflowStage
-from .runtime import RuntimeReference, RuntimeStageResult
+from .runtime import (
+    CapabilityEvidenceBundle, RuntimeReference, RuntimeStageInput, RuntimeStageResult,
+)
 
 
 class RunStateStoreError(RuntimeError):
@@ -75,6 +77,9 @@ class ApplicationRunRecord(BaseModel):
     inflight_stage: WorkflowStage | None = None
     inflight_invocation_id: UUID | None = None
     inflight_operation: RunInflightOperation | None = None
+    inflight_input: RuntimeStageInput | None = None
+    inflight_evidence: CapabilityEvidenceBundle | None = None
+    inflight_result: RuntimeStageResult | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     record_version: int = Field(default=1, ge=1)
@@ -128,6 +133,31 @@ class ApplicationRunRecord(BaseModel):
             self.inflight_invocation_id,
             self.inflight_operation,
         )
+        checkpoints = (self.inflight_input, self.inflight_evidence, self.inflight_result)
+        if any(value is not None for value in checkpoints):
+            if self.recovery_state is not RunRecoveryState.STAGE_IN_FLIGHT:
+                raise ValueError("Invocation checkpoints require an in-flight runtime stage")
+            stage_input = self.inflight_input
+            if stage_input is None or (
+                stage_input.run_id != self.run_id
+                or stage_input.stage_id is not self.inflight_stage
+                or stage_input.invocation_id != self.inflight_invocation_id
+                or stage_input.workspace.user_id != self.owner_user_id
+                or stage_input.workspace.project_id != self.project_id
+                or stage_input.workspace.lab_id != self.lab_id
+            ):
+                raise ValueError("Invocation checkpoint identity does not match durable run")
+            evidence = self.inflight_evidence
+            if evidence is not None and (
+                evidence.run_id != self.run_id
+                or evidence.stage_id is not self.inflight_stage
+                or evidence.invocation_id != self.inflight_invocation_id
+            ):
+                raise ValueError("Evidence checkpoint does not match the invocation")
+            if self.inflight_result is not None and (
+                self.inflight_result.stage_id is not self.inflight_stage
+            ):
+                raise ValueError("Result checkpoint does not match the stage")
         if self.recovery_state is RunRecoveryState.STABLE:
             if any(value is not None for value in markers):
                 raise ValueError("Stable run state cannot retain in-flight markers")

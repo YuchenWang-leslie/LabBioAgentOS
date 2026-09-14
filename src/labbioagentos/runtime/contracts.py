@@ -262,12 +262,20 @@ class RuntimeApprovedOutputContractView(BaseModel):
 
 
 class RuntimeExecutionCapabilityView(BaseModel):
-    """Trusted execution envelope and default image visible to runtime models."""
+    """Run-scoped execution configuration, not current-stage tool permission."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     authority: Literal[InformationAuthority.CONTROL_STATE] = (
         InformationAuthority.CONTROL_STATE
+    )
+    scope: Literal["RUN_CONFIGURATION"] = Field(
+        default="RUN_CONFIGURATION",
+        description=(
+            "Configured execution envelope for this run, including stages that "
+            "cannot invoke execution tools. Current allowed_capabilities and "
+            "workflow_control govern actions; this is not a preflight result."
+        ),
     )
     runtime: ExecutionRuntime
     image_key: StrictStr = Field(
@@ -889,14 +897,6 @@ class RuntimeStageInput(BaseModel):
         )
         if len(prior_json.encode("utf-8")) > 256_000:
             raise ValueError("Prior result context exceeds 256000 bytes")
-        if self.execution_capability is not None and self.stage_id not in {
-            WorkflowStage.PLAN,
-            WorkflowStage.PREFLIGHT,
-            WorkflowStage.EXECUTE,
-        }:
-            raise ValueError(
-                "Execution capability state is limited to PLAN, PREFLIGHT, and EXECUTE"
-            )
         return self
 
 

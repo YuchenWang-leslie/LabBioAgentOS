@@ -6,7 +6,9 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+import json
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -15,6 +17,7 @@ from pydantic import (
     Field,
     JsonValue,
     StrictStr,
+    ValidationError,
     model_validator,
 )
 
@@ -54,6 +57,7 @@ from .execution import (
     DockerExecutor,
     DockerProcessRunner,
     ExecutionPolicy,
+    ExecutionReceipt,
     ExecutionPreflightError,
     ExecutionPreflightRequest,
     ExecutionPreflightService,
@@ -87,6 +91,8 @@ from .run_state import (
     RunStateVersionConflictError,
 )
 from .runtime import (
+    CapabilityEvidenceBundle,
+    CapabilityEvidenceStatus,
     PantheonRuntimeFactory,
     PerInvocationPantheonStageInvoker,
     PreflightStageBody,
@@ -101,15 +107,19 @@ from .runtime import (
     RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
     RuntimeStageResult,
+    RuntimeStageInput,
     StageRuntimeRegistry,
     StageRuntimeSpec,
 )
 from .runtime.assembly import BoundaryObserver, PluginFactory
-from .runtime.coordinator import RuntimeCoordinatorService
+from .runtime.coordinator import RuntimeCoordinatorError, RuntimeCoordinatorService
 from .runtime.contracts import RuntimeInputArtifactUsage
+from .runtime.pantheon import RuntimeProfileConfigurationError
+from .runtime.reporting import ReportReceipt
 from .skills import GoldSkillService, SkillUserDecision
 from .trace import InMemoryTraceSink, RunTraceRecorder, TraceEvent, TraceSink
 from .workflow import WorkflowEngine, runtime_workflow_definition
+from .workflow.engine import WorkflowEngineError
 
 
 class ApplicationConfigurationError(ValueError):
@@ -138,6 +148,7 @@ class ApplicationRecoveryIssueCode(StrEnum):
     GATE_DECISION_IN_FLIGHT = "GATE_DECISION_IN_FLIGHT"
     RUNTIME_REVISION_MISMATCH = "RUNTIME_REVISION_MISMATCH"
     REQUIRED_ARTIFACT_MISSING = "REQUIRED_ARTIFACT_MISSING"
+    CHECKPOINT_INVALID = "CHECKPOINT_INVALID"
 
 
 class ApplicationRecoveryError(ApplicationRunStateError):
@@ -492,6 +503,29 @@ class ApplicationRecoveryStatus(BaseModel):
     automatic_continuation_allowed: bool
     issue_code: ApplicationRecoveryIssueCode | None = None
     record_version: int = Field(ge=1)
+
+
+class ApplicationReconciledCall(BaseModel):
+    """Confirmed capability outcome; no arbitrary tool content or program text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    capability_invocation_id: UUID
+    capability_name: str
+    status: CapabilityEvidenceStatus
+    reference_ids: tuple[str, ...] = ()
+    error_code: str | None = None
+
+
+class ApplicationReconciliationStatus(BaseModel):
+    """Read-only assessment of authoritative checkpoints, not trace inference."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    recovery: ApplicationRecoveryStatus
+    continuation_action: Literal["STABLE", "FINALIZE_ONLY", "APPLY_RESULT", "BLOCKED"]
+    confirmed_calls: tuple[ApplicationReconciledCall, ...] = Field(default=(), max_length=256)
+    uncertain_side_effects: bool
 
 
 @dataclass(frozen=True)
@@ -1012,6 +1046,15 @@ class LabBioApplication:
             raise RunStateVersionConflictError(
                 f"Run-state version changed during recovery for {run_id}"
             )
+        return self._attach_record(record, principal=principal, workspace=workspace)
+
+    def _attach_record(
+        self, record: ApplicationRunRecord, *, principal: Principal,
+        workspace: WorkspaceContext,
+    ) -> ApplicationRunHandle:
+        run_id = record.run_id
+        if run_id in self._sessions:
+            raise ApplicationRunStateError("Reconciliation requires a fresh application session")
         references = tuple(
             self._authorized_runtime_reference(
                 artifact_id,
@@ -1047,6 +1090,135 @@ class LabBioApplication:
             record_version=record.record_version,
         )
         return ApplicationRunHandle(run_id=run_id)
+
+    def reconcile_run(
+        self, run_id: UUID, *, principal: Principal, workspace: WorkspaceContext,
+    ) -> ApplicationReconciliationStatus:
+        """Inspect exact persisted phase boundaries without invoking a provider."""
+        status = self.recovery_status(run_id, principal=principal, workspace=workspace)
+        record = self.run_state_store.get(run_id)
+        if record.record_version != status.record_version:
+            raise RunStateVersionConflictError("Run changed while reconciling")
+        action = "STABLE" if status.recoverable else "BLOCKED"
+        unknown = record.recovery_state is not RunRecoveryState.STABLE
+        if status.issue_code is ApplicationRecoveryIssueCode.STAGE_IN_FLIGHT:
+            stage_input = record.inflight_input
+            if stage_input is not None:
+                coordinator = self._build_coordinator(
+                    principal=principal, workspace=workspace,
+                    execution_input_artifact_ids=record.input_artifact_ids,
+                    context_artifact_ids=record.context_artifact_ids,
+                )
+                invoker = coordinator.registry.get(stage_input.stage_id).invoker
+                if record.inflight_evidence is not None or not invoker.assembly.capability_phase_enabled:
+                    unknown = False
+                    issue = self._required_artifact_issue(record, principal=principal, workspace=workspace)
+                    try:
+                        invoker.validate_recovery_checkpoint(stage_input, record.inflight_evidence)
+                        self._validate_checkpoint_artifacts(record, principal, workspace)
+                        if record.inflight_result is not None:
+                            validator = WorkflowEngine(self.configuration.workflow_definition)
+                            snapshot = validator.attach_recovered_run(record.workflow_run)
+                            RuntimeCoordinatorService(validator, coordinator.registry).accept_trusted_stage_result(
+                                snapshot, record.inflight_result, stage_input.invocation_id,
+                            )
+                    except ArtifactNotFoundError:
+                        issue = ApplicationRecoveryIssueCode.REQUIRED_ARTIFACT_MISSING
+                    except (RuntimeProfileConfigurationError, RuntimeCoordinatorError,
+                            ValidationError, ValueError, WorkflowEngineError):
+                        issue = ApplicationRecoveryIssueCode.CHECKPOINT_INVALID
+                    if issue is None:
+                        action = "APPLY_RESULT" if record.inflight_result else "FINALIZE_ONLY"
+                        unknown = False
+                    status = status.model_copy(update={
+                        "issue_code": issue,
+                        "recoverable": issue is None,
+                        "automatic_continuation_allowed": False,
+                    })
+        calls = tuple(
+            ApplicationReconciledCall(
+                capability_invocation_id=item.capability_invocation_id,
+                capability_name=item.capability_name,
+                status=item.status,
+                reference_ids=item.reference_ids,
+                error_code=item.error_code,
+            )
+            for item in (record.inflight_evidence.items if record.inflight_evidence else ())
+        )
+        return ApplicationReconciliationStatus(
+            recovery=status, continuation_action=action,
+            confirmed_calls=calls, uncertain_side_effects=unknown,
+        )
+
+    async def continue_run(
+        self, run_id: UUID, *, principal: Principal, workspace: WorkspaceContext,
+    ) -> ApplicationRunResult:
+        """Explicit continuation after reconciliation; completed tools are never replayed."""
+        assessment = self.reconcile_run(run_id, principal=principal, workspace=workspace)
+        if assessment.continuation_action == "BLOCKED":
+            raise ApplicationRecoveryError(
+                run_id, assessment.recovery.issue_code or ApplicationRecoveryIssueCode.STAGE_IN_FLIGHT,
+            )
+        record = self.run_state_store.get(run_id)
+        if record.record_version != assessment.recovery.record_version:
+            raise RunStateVersionConflictError("Run changed after reconciliation")
+        if assessment.continuation_action == "STABLE":
+            handle = (ApplicationRunHandle(run_id=run_id) if run_id in self._sessions
+                      else self.recover_run(run_id, principal=principal, workspace=workspace))
+            return await self.run(handle)
+        handle = self._attach_record(record, principal=principal, workspace=workspace)
+        session = self._session(handle)
+        stage_input = record.inflight_input
+        assert stage_input is not None
+        result = record.inflight_result
+        if result is None:
+            invoker = session.coordinator.registry.get(stage_input.stage_id).invoker
+            result = await invoker.finalize_recovered(stage_input, record.inflight_evidence)
+        session.coordinator.accept_trusted_stage_result(
+            session.run, result, stage_input.invocation_id,
+        )
+        self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
+        return await self.run(handle)
+
+    def _validate_checkpoint_artifacts(
+        self, record: ApplicationRunRecord, principal: Principal, workspace: WorkspaceContext,
+    ) -> None:
+        """Reauthorize typed Artifact references, including completed effect outputs."""
+        references = list(record.inflight_input.authoritative_evidence_references)
+        if record.inflight_result is not None:
+            references.extend(record.inflight_result.references)
+            body = record.inflight_result.body
+            for name in type(body).model_fields:
+                value = getattr(body, name)
+                if isinstance(value, RuntimeReference):
+                    references.append(value)
+                elif isinstance(value, tuple):
+                    references.extend(item for item in value if isinstance(item, RuntimeReference))
+        artifact_ids = {
+            UUID(ref.reference_id) for ref in references
+            if ref.kind in {RuntimeReferenceKind.ARTIFACT, RuntimeReferenceKind.REPORT}
+        }
+        produced_ids = set()
+        evidence = record.inflight_evidence
+        for item in evidence.items if evidence else ():
+            if item.status is not CapabilityEvidenceStatus.COMPLETED:
+                continue
+            if item.capability_name == "execution_submit":
+                receipt = ExecutionReceipt.model_validate_json(json.dumps(item.safe_result))
+                produced_ids.update(receipt.output_artifact_ids)
+            elif item.capability_name == "report_submit":
+                receipt = ReportReceipt.model_validate_json(json.dumps(item.safe_result))
+                produced_ids.add(receipt.report_artifact_id)
+        for artifact_id in artifact_ids | produced_ids:
+            self._authorized_runtime_reference(
+                artifact_id, principal=principal, workspace=workspace,
+            )
+            if artifact_id in produced_ids:
+                ref = self.artifact_store.get_ref(artifact_id)
+                if (ref.run_id, ref.stage_id, ref.producer_invocation_id) != (
+                    record.run_id, record.inflight_stage, record.inflight_invocation_id,
+                ):
+                    raise ValueError("Checkpoint output identity does not match the producing invocation")
 
     async def run(
         self, handle: ApplicationRunHandle | UUID
@@ -1430,6 +1602,18 @@ class LabBioApplication:
                     ))
             return tuple(usage)
 
+        observed_input = None
+
+        def observe_boundary(kind: str, value: object) -> None:
+            nonlocal observed_input
+            if kind == "stage_input":
+                observed_input = value
+            if observed_input is None:
+                raise ApplicationRunStateError("Runtime boundary has no invocation identity")
+            self._persist_runtime_boundary(observed_input.run_id, kind, value)
+            if self.configuration.boundary_observer is not None:
+                self.configuration.boundary_observer(kind, value)
+
         specs = []
         for assembly in self.configuration.stage_assemblies:
             invoker = PerInvocationPantheonStageInvoker(
@@ -1442,7 +1626,7 @@ class LabBioApplication:
                 execution_capability=execution_capability,
                 input_usage_provider=input_usage_provider,
                 plugin_factory=self._plugin_factories.get(assembly.stage_id),
-                boundary_observer=self.configuration.boundary_observer,
+                boundary_observer=observe_boundary,
             )
             specs.append(
                 StageRuntimeSpec(
@@ -1598,6 +1782,9 @@ class LabBioApplication:
                 "inflight_stage": inflight_stage,
                 "inflight_invocation_id": inflight_invocation_id,
                 "inflight_operation": inflight_operation,
+                "inflight_input": None,
+                "inflight_evidence": None,
+                "inflight_result": None,
             }
         )
         stored = self.run_state_store.update(
@@ -1605,6 +1792,29 @@ class LabBioApplication:
         )
         session.record_version = stored.record_version
         return stored
+
+    def _persist_runtime_boundary(self, run_id: UUID, kind: str, value: object) -> None:
+        field_name = {
+            "stage_input": "inflight_input",
+            "capability_evidence": "inflight_evidence",
+            "stage_result": "inflight_result",
+        }.get(kind)
+        if field_name is None:
+            return
+        session = self._session(run_id)
+        current = self.run_state_store.get(run_id)
+        if current.record_version != session.record_version:
+            raise RunStateVersionConflictError("Run changed before invocation checkpoint")
+        previous = getattr(current, field_name)
+        if previous is not None:
+            if previous != value:
+                raise ApplicationRunStateError("An invocation checkpoint cannot be overwritten")
+            return
+        stored = self.run_state_store.update(
+            current.model_copy(update={field_name: value}),
+            expected_version=session.record_version,
+        )
+        session.record_version = stored.record_version
 
     def _require_stable_session(self, session: _ApplicationRunSession) -> None:
         record = self.run_state_store.get(session.run.run_id)
@@ -1707,6 +1917,8 @@ __all__ = [
     "ApplicationRecoveryError",
     "ApplicationRecoveryIssueCode",
     "ApplicationRecoveryStatus",
+    "ApplicationReconciledCall",
+    "ApplicationReconciliationStatus",
     "ApplicationRunHandle",
     "ApplicationRunNotFoundError",
     "ApplicationRunRequest",

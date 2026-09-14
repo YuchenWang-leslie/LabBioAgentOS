@@ -38,7 +38,6 @@ from labbioagentos import (
     WorkspaceContext,
 )
 from labbioagentos.artifacts import ExposurePolicy
-from labbioagentos.runtime.coordinator import RuntimeCoordinatorService
 from labbioagentos.runtime.tooling import LabBioRuntimeToolSet
 
 
@@ -479,20 +478,31 @@ def test_ec7a_run_inputs_are_explicit_mountable_control_state():
 
 def test_ec8_untrusted_stage_body_cannot_override_capability_view():
     view = _trusted_view()
-    coordinator = RuntimeCoordinatorService.__new__(RuntimeCoordinatorService)
-    coordinator.execution_capability = view
+    with pytest.raises(ValidationError, match="execution_capability"):
+        RuntimeStageInput(
+            run_id=uuid4(), stage_id=WorkflowStage.UNDERSTAND,
+            instruction="Synthetic configuration boundary",
+            workspace=RuntimeWorkspaceIdentifiers(
+                user_id="user-a", project_id="project-a", lab_id="lab-a",
+            ),
+            execution_capability=view, body={"execution_capability": None},
+        )
 
-    assert coordinator._execution_capability_for_stage(WorkflowStage.EXECUTE) == view
 
-
-def test_ec9_plan_preflight_and_execute_receive_consistent_capability_state():
+@pytest.mark.parametrize("stage", [stage for stage in WorkflowStage if stage not in {
+    WorkflowStage.USER_GATE, WorkflowStage.SEARCH, WorkflowStage.DEBUG,
+}])
+def test_ec9_all_runtime_stages_accept_run_scoped_capability_state(stage):
     view = _trusted_view()
-    coordinator = RuntimeCoordinatorService.__new__(RuntimeCoordinatorService)
-    coordinator.execution_capability = view
-
-    assert coordinator._execution_capability_for_stage(WorkflowStage.PLAN) == view
-    assert coordinator._execution_capability_for_stage(WorkflowStage.PREFLIGHT) == view
-    assert coordinator._execution_capability_for_stage(WorkflowStage.EXECUTE) == view
+    stage_input = RuntimeStageInput(
+        run_id=uuid4(), stage_id=stage, instruction="Synthetic configuration boundary",
+        workspace=RuntimeWorkspaceIdentifiers(
+            user_id="user-a", project_id="project-a", lab_id="lab-a",
+        ),
+        execution_capability=view,
+    )
+    assert stage_input.execution_capability == view
+    assert stage_input.execution_capability.scope == "RUN_CONFIGURATION"
 
 
 def test_ec10_capability_state_does_not_depend_on_prior_model_prose():

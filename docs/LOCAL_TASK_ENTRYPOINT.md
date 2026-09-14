@@ -7,6 +7,10 @@
 需要账号、项目隔离和个人 Gold 时，使用[本地托管模式](LOCAL_WORKSPACES.md)。
 它复用本入口，增加 SQLite 身份注册、个人凭据与按用户/项目推导的目录。
 
+需要找回历史任务、中断核对或修改旧报告时，使用
+[对话续接与结果修订](CONVERSATION_CONTINUATION.md)。`run --conversation`、
+`history`、`reconcile`、`continue` 和 `revise` 复用同一身份与持久控制边界。
+
 ## 一次配置，重复提交
 
 使用已有的项目 Python 环境及文档要求的 Pantheon 修订。
@@ -26,7 +30,8 @@ python -m pip install -e . --no-deps --no-build-isolation
 - 模型名称、输出预算，以及外部凭据文件和变量名；
 - 已存在的不可变 Docker 镜像身份、实际模块清单和资源限额。
 
-配置不包含密钥。只有 `run` 读取指定凭据，并在当前进程设置模型连接；
+配置不包含密钥。执行任务或经核对允许的续接/修订才加载模型凭据；只读历史和
+中断核对不调用模型。连接设置仅作用于当前进程；
 不会修改 Git、全局代理、Codex 隧道或 Docker 服务，也不安装分析软件。
 本版本只封装现有 OpenAI-compatible chat transport，不承诺兼容所有 provider。
 
@@ -64,6 +69,11 @@ Agent 不能通过任务文字或工具参数自行提高额度。RAW 文件仍�
 各阶段还接收逐个输入的 `input_artifact_usage`：来源是本次输入还是上下文、
 允许哪些远程视图、是否在本次执行输入名单内。远程可读与执行准入分别判断，
 准入不代表预检已通过。工具的受控错误含义同时保存在执行记录和最终决策证据中。
+
+运行的 `execution_capability` 配置现在也在各阶段一致提供，并标记
+`scope=RUN_CONFIGURATION`；只有真正未配置执行 profile 时才为空。
+当前阶段是否能调用工具仍由 `allowed_capabilities` 等授权决定，不能把
+配置可见当作提前执行许可，或把本阶段无法读取 RAW 当作全流程没有执行配置。
 
 ### 沙盒中的文件身份
 

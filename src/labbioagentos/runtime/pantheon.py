@@ -719,10 +719,10 @@ class PantheonTwoModeStageInvoker:
 
     async def invoke(self, stage_input: RuntimeStageInput) -> RuntimeStageResult:
         evidence = await self.capability_invoker.invoke(stage_input)
-        if self.boundary_observer is not None:
-            self.boundary_observer("capability_evidence", evidence)
         if self.evidence_validator is not None:
             self.evidence_validator(evidence)
+        if self.boundary_observer is not None:
+            self.boundary_observer("capability_evidence", evidence)
         return await self.finalization_invoker.invoke(
             stage_input,
             capability_evidence=evidence,
@@ -781,11 +781,12 @@ class PantheonTypedStageInvoker:
             effective_stage_input.workflow_control,
         )
         retrieval_control = None
-        if requires_skill_assessment(effective_stage_input):
+        if effective_stage_input.stage_id is WorkflowStage.PLAN:
             retrieval_control = skill_retrieval_control(effective_stage_input, capability_evidence)
             response_format = skill_assessment_response_format(response_format,
                 tuple(retrieval_control["completed_search_capability_invocation_ids"]),
-                tuple(item["proposal_id"] for item in retrieval_control["completed_use_proposals"]))
+                tuple(item["proposal_id"] for item in retrieval_control["completed_use_proposals"]),
+                required=requires_skill_assessment(effective_stage_input))
         execution_control = None
         if requires_execution_grounding(effective_stage_input):
             execution_control = execution_result_control(effective_stage_input, capability_evidence)

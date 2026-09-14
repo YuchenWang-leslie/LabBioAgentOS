@@ -112,6 +112,17 @@ record, current project access is rechecked, and every required input/context
 Artifact is reloaded and reauthorized by UUID. Safe runtime references are then
 reconstructed without a storage locator. A run UUID alone grants no access.
 
+The explicit `reconcile_run()` / `continue_run()` extension additionally stores
+exact typed stage input, validated completed capability evidence, and returned
+stage result checkpoints. A complete checkpoint permits FINALIZE-only or
+result-application recovery with the original invocation ID, never tool replay.
+Unknown mid-capability effects and gate decisions remain blocked. The original
+conservative `recover_run()` contract is unchanged. Local conversation identity,
+single-writer CLI locks, immutable successor Artifact transfer, and bounded
+MODEL_CONTEXT report reading are described in
+[Conversation continuation](CONVERSATION_CONTINUATION.md); the catalog does not
+replace run-state authority or scientific reasoning.
+
 The host must supply `ApplicationRuntimeConfiguration.runtime_revision`. The
 same value is stored at run creation; mismatch on recovery produces an explicit
 `RUNTIME_REVISION_MISMATCH` and prevents continuation. The value is a stable
@@ -246,8 +257,12 @@ observability without modifying Pantheon core.
 
 Raw biological data remains local and must not be inserted into agent prompts, tool-result `content`, arbitrary dataframe previews, or unrestricted file reads. A Docker execution capability will consume artifact references and an LLM-generated execution plan, apply deterministic command/path/resource restrictions, and return execution records plus artifact references.
 
-PLAN, PREFLIGHT, and EXECUTE receive the same host-authored, script-free
-execution capability. It may include an immutable-image Python module inventory
+All runtime stages receive the same host-authored, script-free execution
+configuration, explicitly scoped `RUN_CONFIGURATION`. A missing profile remains
+null; an early-stage omission no longer looks like an absent execution backend.
+This is not current-stage tool permission or a completed preflight: tool
+allowlists, capability ceilings and workflow control still decide lawful actions.
+The view may include an immutable-image Python module inventory
 and an explicit minimum queryable-output count. The latter defaults to zero;
 when enabled for a downstream model workflow, a RAW-only process success is an
 `OUTPUT_CONTRACT_FAILURE` until an approved contract releases enough bounded

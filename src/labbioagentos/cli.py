@@ -26,6 +26,25 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--format", choices=("raw", "h5ad"), default=None,
                      help="Explicit trusted inspector; default comes from configuration")
     run.add_argument("--output", type=Path, help="New directory below configured result_root")
+    run.add_argument("--conversation", help="Conversation identity; defaults to a new UUID")
+    history = commands.add_parser("history", help="Find scoped conversations, tasks and registered results")
+    history.add_argument("--conversation")
+    history.add_argument("--offset", type=int, default=0)
+    history.add_argument("--limit", type=int, default=20)
+    link = commands.add_parser("conversation-link", help="Explicitly attach a legacy run to a conversation")
+    link.add_argument("--conversation", required=True)
+    link.add_argument("--run-dir", type=Path, required=True)
+    for name in ("reconcile", "continue"):
+        command = commands.add_parser(name, help=f"{name.capitalize()} an exact persisted conversation run")
+        command.add_argument("--conversation", required=True)
+        command.add_argument("--run-id", type=UUID, required=True)
+    revise = commands.add_parser("revise", help="Ask the Agent to revise selected prior results in a new run")
+    revise.add_argument("--conversation", required=True)
+    revise.add_argument("--from-run", type=UUID, required=True)
+    revise.add_argument("--task", required=True)
+    revise.add_argument("--preference", action="append", default=[])
+    revise.add_argument("--artifact-id", type=UUID, action="append", default=[])
+    revise.add_argument("--output", type=Path)
     for name in ("status", "export"):
         command = commands.add_parser(name, help=f"Read persisted run {name} without a model call")
         command.add_argument("--run-dir", type=Path, required=True)
@@ -120,10 +139,20 @@ async def _run(args: argparse.Namespace, settings) -> int:
     directory = _run_directory(
         settings.result_root, args.output or settings.result_root / str(uuid4()), create=True
     )
+    from .local_continuation import run_writer
+    with run_writer(directory):
+        return await _run_in_directory(args, settings, task_text, sources, directory)
+
+
+async def _run_in_directory(args, settings, task_text, sources, directory) -> int:
+    from .local_conversations import ConversationStore
+    from .local_workspace import _identifier
+    conversation_id = _identifier(args.conversation or str(uuid4()))
     selected_format = args.format or settings.default_format
     _write_json(directory / "REQUEST.json", {
         "task": args.task, "preferences": args.preference,
         "data": [str(path) for path in sources], "format": selected_format,
+        "conversation_id": conversation_id,
     })
     manifest = runtime_manifest(settings)
     _write_json(directory / "RUNTIME.json", manifest)
@@ -150,15 +179,18 @@ async def _run(args: argparse.Namespace, settings) -> int:
             input_artifact_ids=tuple(inputs), context_artifact_ids=tuple(context),
         ))
         _write_json(directory / "RUN.json", {"run_id": str(handle.run_id)})
+        with ConversationStore(settings.result_root, settings.principal, settings.workspace) as catalog:
+            catalog.add_run(conversation_id, application.run_state_store.get(handle.run_id), directory)
         _emit({"event": "started", "run_id": str(handle.run_id),
-               "run_directory": str(directory)})
+               "run_directory": str(directory), "conversation_id": conversation_id})
         result = await application.run(handle)
         delivery = None if result.status.value == "WAITING_FOR_USER" else export_run(
             application, handle, directory / "delivery",
             principal=settings.principal, workspace=settings.workspace,
         )
         _emit({"event": "finished", **result.model_dump(mode="json"),
-               "run_directory": str(directory), "delivery": delivery})
+               "run_directory": str(directory), "delivery": delivery,
+               "conversation_id": conversation_id})
         return 0 if result.status.value == "COMPLETED" else 2
     finally:
         _close(application)
@@ -292,6 +324,12 @@ def main(argv: list[str] | None = None) -> int:
         settings = scoped_settings(args, settings)
         if args.command == "run":
             return asyncio.run(_run(args, settings))
+        if args.command in {"history", "conversation-link", "reconcile", "continue", "revise"}:
+            from .local_continuation import history, link_legacy, reconcile_or_continue, revise
+            if args.command in {"history", "conversation-link"}:
+                _emit((history if args.command == "history" else link_legacy)(args, settings))
+                return 0
+            return asyncio.run((revise if args.command == "revise" else reconcile_or_continue)(args, settings))
         if args.command == "gold-list":
             _emit(gold_catalog(args, settings))
             return 0
@@ -299,6 +337,11 @@ def main(argv: list[str] | None = None) -> int:
             _emit(gold_export(settings))
             return 0
         if args.command in {"gate", "decide", "gold-propose", "gold-review", "gold-decide"}:
+            if args.command in {"decide", "gold-propose", "gold-decide"}:
+                from .local_continuation import run_writer
+                directory = _run_directory(settings.result_root, args.run_dir, create=False)
+                with run_writer(directory):
+                    return asyncio.run(_governance(args, settings))
             return asyncio.run(_governance(args, settings))
         return _read(args, settings)
     except KeyboardInterrupt:
@@ -308,6 +351,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         # Exception messages can contain provider bodies, credentials or raw data.
         from .local_gold_library import GoldExportConflict
+        from .local_continuation import RunWriterActiveError
+        if isinstance(exc, RunWriterActiveError):
+            _emit({"error": "RUN_WRITER_ACTIVE", "detail":
+                   "Another command still owns the run; no continuation was started."})
+            return 2
         if isinstance(exc, GoldExportConflict):
             _emit({"error": "GOLD_EXPORT_CONFLICT", "detail":
                    "A generated file was changed or is not exporter-owned; it was not overwritten. "

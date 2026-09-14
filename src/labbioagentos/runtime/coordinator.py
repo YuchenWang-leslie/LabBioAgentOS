@@ -162,21 +162,10 @@ class RuntimeCoordinatorService:
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
             workflow_control=workflow_control,
-            execution_capability=self._execution_capability_for_stage(stage),
+            execution_capability=self.execution_capability,
             input_artifact_usage=(self.input_usage_provider() if self.input_usage_provider else ()),
             body=body or RuntimeInputBody(),
         )
-
-    def _execution_capability_for_stage(
-        self, stage: WorkflowStage
-    ) -> RuntimeExecutionCapabilityView | None:
-        if stage in {
-            WorkflowStage.PLAN,
-            WorkflowStage.PREFLIGHT,
-            WorkflowStage.EXECUTE,
-        }:
-            return self.execution_capability
-        return None
 
     async def run_current_stage(
         self,

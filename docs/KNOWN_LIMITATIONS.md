@@ -68,11 +68,15 @@ provider turns invisible until a public message or tool call was flushed.
 Trusted MiMo configuration now sends its explicit disabled-thinking wire
 object, each provider turn has a bounded content-free audit, and 300 cumulative
 seconds without observable progress fails explicitly rather than resembling
-normal completion. PLAN, PREFLIGHT, and EXECUTE now receive one identical
-trusted execution capability, including immutable-image module inventory and
+normal completion. All runtime stages receive one identical run-scoped
+execution configuration, including immutable-image module inventory and
 any minimum queryable-output requirement. A non-zero Python exit returns only
 bounded diagnostic identifiers and Agent-script line numbers; raw process
 streams remain internal.
+
+The configuration is not a current-stage tool grant or a successful preflight
+result. Early stages retain their narrower capability allowlists. A genuinely
+unconfigured execution profile remains absent rather than being invented.
 
 Fresh run `54102b8e-8d5d-4394-93c7-fb0f401aba5e` completed through LEARN,
 released DERIVED execution result `17e7b744-4755-4aa8-aebc-672a6182daac`, and

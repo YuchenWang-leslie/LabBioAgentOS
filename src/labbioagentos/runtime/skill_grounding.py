@@ -44,6 +44,7 @@ def skill_assessment_response_format(
     base_format: type[RuntimeStageResult],
     search_ids: tuple[str, ...] = (),
     proposal_ids: tuple[str, ...] = (),
+    *, required: bool = True,
 ) -> type[RuntimeStageResult]:
     # The provider sees the same current receipt identities as local validation.
     # Keep UUID types for Python/JSON response compatibility; enums constrain wire values.
@@ -58,9 +59,11 @@ def skill_assessment_response_format(
             search_capability_invocation_ids=(tuple[search_item, ...] if search_ids else tuple[UUID, ...],
                 Field(default=(), max_length=32 if search_ids else 0)),
             proposal_id=(proposal_item, ...)))
+    assessment_format = Union[tuple(variants)]
     body_format = create_model(
         "SkillGroundedPlanBody", __base__=PlanStageBody,
-        skill_assessment=(Union[tuple(variants)], ...),
+        skill_assessment=(assessment_format if required else assessment_format | None,
+                          ... if required else None),
     )
     return create_model(
         "SkillGroundedPlanResult", __base__=base_format, body=(body_format, ...),

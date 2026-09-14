@@ -18,6 +18,7 @@ from test_application_runtime_c5 import MAIN_PATH
 from test_execution_result_grounding import _payload, _receipt
 from test_local_configuration import settings_file  # noqa: F401
 from labbioagentos.execution.models import ExecutionStatus
+from labbioagentos.run_state import RunInflightOperation
 
 
 @pytest.fixture
@@ -117,10 +118,17 @@ def _model(monkeypatch, *, query, action="transition", forgery=None):
 
 
 async def _invoke(application, session):
+    invocation_id = uuid4()
+    application._checkpoint(
+        session, recovery_state=RunRecoveryState.STAGE_IN_FLIGHT,
+        inflight_stage=WorkflowStage.EXECUTE, inflight_invocation_id=invocation_id,
+        inflight_operation=RunInflightOperation.RUNTIME_STAGE,
+    )
     result = await session.coordinator.run_current_stage(
         session.run, instruction=session.request.task_text,
         artifact_references=application._authoritative_evidence_references(session, stage=WorkflowStage.EXECUTE),
         body=application._stage_body(session),
+        invocation_id=invocation_id,
     )
     application._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
     return result

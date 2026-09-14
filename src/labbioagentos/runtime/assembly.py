@@ -162,6 +162,10 @@ class PerInvocationPantheonStageInvoker:
         self._validate_input_binding(stage_input)
         if self.boundary_observer is not None:
             self.boundary_observer("stage_input", stage_input)
+        finalizer = await self._create_finalizer(stage_input)
+        return await self._invoke_modes(stage_input, finalizer)
+
+    async def _create_finalizer(self, stage_input: RuntimeStageInput) -> PantheonTypedStageInvoker:
         root_key = self.assembly.root_profile_key
         prompt_values = self._prompt_values(
             root_key, self.assembly.finalization_prompt_values
@@ -173,7 +177,7 @@ class PerInvocationPantheonStageInvoker:
             finalization_stage=self.assembly.stage_id,
             workflow_control=stage_input.workflow_control,
         )
-        finalizer = PantheonTypedStageInvoker(
+        return PantheonTypedStageInvoker(
             final_team,
             profile=self.factory.catalog.agents[root_key],
             prompt=final_prompts[root_key],
@@ -182,12 +186,46 @@ class PerInvocationPantheonStageInvoker:
             ],
             trace_recorder=self.trace_recorder,
         )
+
+    def validate_recovery_checkpoint(
+        self, stage_input: RuntimeStageInput, evidence: CapabilityEvidenceBundle | None,
+    ) -> None:
+        """Recheck current trusted bindings without a provider or capability call."""
+        self._validate_input_binding(stage_input)
+        if self.assembly.capability_phase_enabled:
+            if evidence is None:
+                raise RuntimeProfileConfigurationError("Completed capability evidence is required")
+            if (evidence.run_id, evidence.stage_id, evidence.invocation_id) != (
+                stage_input.run_id, stage_input.stage_id, stage_input.invocation_id,
+            ):
+                raise RuntimeProfileConfigurationError("Recovered evidence identity differs")
+            self._validate_required_capabilities(evidence)
+        elif evidence is not None:
+            raise RuntimeProfileConfigurationError("Disabled capability phase cannot have evidence")
+
+    async def finalize_recovered(
+        self, stage_input: RuntimeStageInput, evidence: CapabilityEvidenceBundle | None,
+    ) -> RuntimeStageResult:
+        """Use an authoritative phase checkpoint; never reconstruct a tool loop."""
+        self.validate_recovery_checkpoint(stage_input, evidence)
+        if self.boundary_observer is not None:
+            self.boundary_observer("stage_input", stage_input)
+        finalizer = await self._create_finalizer(stage_input)
+        result = await finalizer.invoke(stage_input, capability_evidence=evidence)
+        if self.boundary_observer is not None:
+            self.boundary_observer("stage_result", result)
+        return result
+
+    async def _invoke_modes(
+        self, stage_input: RuntimeStageInput, finalizer: PantheonTypedStageInvoker,
+    ) -> RuntimeStageResult:
         if not self.assembly.capability_phase_enabled:
             result = await finalizer.invoke(stage_input)
             if self.boundary_observer is not None:
                 self.boundary_observer("stage_result", result)
             return result
 
+        root_key = self.assembly.root_profile_key
         capability_specs = (
             RuntimeAgentCapabilitySpec(
                 profile_key=root_key,
@@ -316,13 +354,7 @@ class PerInvocationPantheonStageInvoker:
             raise RuntimeProfileConfigurationError(
                 "Runtime input capabilities do not match trusted assembly allowlist"
             )
-        expected_execution_capability = (
-            self.execution_capability
-            if self.assembly.stage_id
-            in {WorkflowStage.PLAN, WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE}
-            else None
-        )
-        if stage_input.execution_capability != expected_execution_capability:
+        if stage_input.execution_capability != self.execution_capability:
             raise RuntimeProfileConfigurationError(
                 "Runtime input execution capability does not match trusted configuration"
             )
