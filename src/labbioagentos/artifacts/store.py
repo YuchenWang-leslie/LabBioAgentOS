@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import os
 import shutil
+import stat
 from pathlib import Path
 from threading import Lock
 from uuid import UUID, uuid4
@@ -20,6 +22,7 @@ from .models import (
     ArtifactRepresentation,
     ArtifactSchema,
 )
+from .preview import RawHeadPreview, inspect_file
 
 
 class ArtifactStoreError(RuntimeError):
@@ -256,6 +259,25 @@ class LocalArtifactStore(ArtifactStore):
 
     def get_ref(self, artifact_id: UUID | str) -> ArtifactRef:
         return self.load_for_view(artifact_id).ref
+
+    def inspect_raw_head(self, ref: ArtifactRef) -> RawHeadPreview:
+        """Trusted exposure-service operation, never a path-accepting model tool."""
+        if (ref.exposure_class is not ArtifactExposureClass.RAW
+                or ref.release_basis is not ArtifactReleaseBasis.RAW_INGESTION
+                or self.get_ref(ref.artifact_id) != ref):
+            raise ValueError("Preview requires the current ingested RAW identity")
+        if ref.original_filename is None:
+            return RawHeadPreview(status="UNSUPPORTED_FORMAT")
+        expected = self.root / "blobs" / str(ref.artifact_id) / "content"
+        if (Path(ref.storage_locator) != expected
+                or any(path.is_symlink() for path in (expected, *expected.parents))):
+            raise ValueError("Preview source is not an owned regular blob")
+        descriptor = os.open(expected, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError("Preview source is not a regular file")
+            return inspect_file(stream, filename=ref.original_filename,
+                                size_bytes=os.fstat(stream.fileno()).st_size)
 
     def list_refs(self) -> tuple[ArtifactRef, ...]:
         refs: list[ArtifactRef] = []

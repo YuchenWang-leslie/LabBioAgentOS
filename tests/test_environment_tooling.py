@@ -60,6 +60,11 @@ async def test_discovery_build_feedback_and_submission_share_registry(artifact_q
     item = toolset.evidence_items()[-2]
     assert item.safe_result["image_key"] == chosen
     assert item.safe_result["image_reference"] == result["data"]["image_reference"]
+    assert item.safe_result["build_provenance"]["verified_import_modules"] == ["examplepkg"]
+    # An explicit old key remains the old choice: building is not a hidden switch.
+    old_choice = await toolset.execution_submit(image_key=base["image_key"], script_content="print(1)")
+    assert old_choice["success"]
+    assert submission.drafts[-1].image_key == base["image_key"]
 
 
 @pytest.mark.asyncio

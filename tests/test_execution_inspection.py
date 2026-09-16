@@ -105,6 +105,8 @@ async def test_original_source_pages_preserve_unicode_newlines_hash_and_no_execu
             "authority": "MODEL_CONTEXT", "script_hash": receipt.script_hash,
             "source_offset": offset, "source_end": end, "total_characters": len(source),
             "complete": end == len(source), "source": source[offset:end],
+            "diagnostic_line_offsets": [],
+            "diagnostic_source_lines": [], "diagnostic_source_lines_truncated": False,
         }
         pieces.append(page["source"])
         offset = page["source_end"]
@@ -126,6 +128,30 @@ async def test_revisions_keep_separate_originals(inspection, boundary):
         result = _inspect(inspection, boundary, receipt.execution_id)
         assert result["receipt"] == receipt.model_dump(mode="json")
         assert result["submitted_program"]["source"] == source
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_lines_are_exact_bounded_and_not_page_coverage(inspection, boundary, monkeypatch):
+    from labbioagentos import ExecutionDiagnostic, ExecutionDiagnosticCode
+    service, executor, _ = inspection
+    original = executor.execute
+    # Synthetic diagnostic locations; no inference about runtime model repair.
+    source = ("# café " + "x" * 600 + "\n") * 10 + "pass\n"
+    diagnostic = ExecutionDiagnostic(code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
+        exception_type="ValueError", script_line_numbers=tuple(range(1, 11)))
+    monkeypatch.setattr(executor, "execute", lambda plan: original(plan).model_copy(
+        update={"diagnostics": (diagnostic,)}))
+    receipt = await _submit(inspection, boundary, source)
+    page = _inspect(inspection, boundary, receipt.execution_id,
+        source_offset=len(source), source_limit=1)["submitted_program"]
+    assert page["source"] == "" and page["complete"]
+    assert len(page["diagnostic_source_lines"]) == 8
+    assert page["diagnostic_source_lines_truncated"]
+    for line in page["diagnostic_source_lines"]:
+        assert line["source"] == source[line["source_offset"]:line["source_end"]]
+        assert len(line["source"]) == 512 and not line["complete"]
+        assert line["line_end"] > line["source_end"]
+    assert len(executor.plans) == 1
 
 
 @pytest.mark.asyncio

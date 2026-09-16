@@ -4354,3 +4354,654 @@ credential and command-local HTTPS proxy, with a normal fast-forward push and
 post-push remote identity check. No force push, main merge, Pantheon publication,
 deployment, profile/Gold promotion, global Git/proxy or Codex tunnel change is
 part of this request. The commit history identifies this publication revision.
+
+### 2026-09-15: Interpretation-only reasoning and literature retrieval
+
+User scope: independently enable thinking and internet literature access for
+biological interpretation/discussion, without changing the other Agents.
+Source baseline is clean `continuation` at
+`4d896578fcc83a65b3b41fe35e5ca6290546d510`. Pantheon is unchanged and clean at
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`. Neither expected production/current
+pointer exists; source ARCHITECTURE.md and PRODUCTIONIZATION_DEBUG_GUIDE.md are
+also absent, so LABBIO_ARCHITECTURE.md and this workplan are the current source
+references. No production deployment or service reconfiguration was performed.
+
+Implemented in local composition:
+
+- Built-in local-v3 binds INTERPRET to InterpretationAgent/runtime-interpretation.
+  `[provider] interpretation_thinking_enabled` defaults true; the original
+  `thinking_enabled` still governs the other roles. Both interpretation modes
+  send the explicit enabled thinking object, with the existing private tool
+  reasoning continuity in capability mode. No hidden reasoning is persisted.
+- Only INTERPRET exposes literature_search. The host uses a fixed Europe PMC
+  HTTPS endpoint, existing TLS/proxy handling, no new credential/dependency,
+  no arbitrary URL fetching and no sandbox network change. The Agent selects
+  public query terms and sources, not Codex. Query/response sizes, result count
+  and abstract excerpts are bounded; empty, missing, truncated and failed
+  results are explicit. Network failures have fixed safe diagnostics, without
+  automatic retry or an alternate backend.
+- Query, timestamp, article identity, citation URL and bounded text enter the
+  existing MODEL_CONTEXT capability checkpoint. Source text is not instructions
+  or evidence of current-run measurements. Sources carry an existing OTHER
+  RuntimeReference; they are not registered as local Artifacts. Deterministic
+  SQLite reconstruction retains the exact evidence without another search.
+
+Final non-live regression: **1320 passed, 34 skipped**, one existing Uvicorn
+warning, 36.40 s. The 21 focused checks cover independent model bindings in both
+modes, real Pantheon tool schema, stage ceilings, scope/config revision,
+bounded projections, errors, external-source authority, SQLite restart, and
+test-observer isolation. Earlier full-suite interference was an isolated test
+provider-alias mapping and was fixed in the test, not production routing.
+
+Live evidence root:
+`/media/desk16/iy1982/WYC/result/interpretation-search-20260915-Rv0TUU`.
+All tests used a public-literature discussion question, no dataset, execution
+service call, scientific program or PBMC workflow. The question asked the Agent
+to discuss limitations of single-marker cell annotation with source links and
+to distinguish literature from absent task data. Query terms, source selection
+and all interpretation text came from the Agent.
+
+Preserved attempts and limitations:
+
+1. `check`: two successful searches; a new diagnostic observer mishandled the
+   SDK NOT_GIVEN/no-tools sentinel before finalization. Fixed/tested only the
+   observer. This is not an Agent or provider failure.
+2. `recheck`: three successful searches and a valid final stage response, but
+   external MED IDs were mislabeled ARTIFACT and URLs were omitted. The first
+   source projection lacked RuntimeReference kind/identity. Added the generic
+   OTHER source_reference projection, without a prompt-specific scientific rule
+   or rewriting the Agent's output.
+3. `typed-reference`: eight model-selected searches, seven successful and one
+   LITERATURE_TIMEOUT, all retained in the completed capability checkpoint.
+   The diagnostic's total eight-request counter incorrectly blocked the normal
+   finalization request. Its test budget now separately permits at most eight
+   capability requests and one finalization; production remains 16 capability
+   turns, retry_limit=1 and max_output_tokens=16384. No retrieval was replayed.
+4. `finalize-checkpoint`: one isolated real FINALIZE_ONLY request using the exact
+   unchanged runtime and saved input/evidence from attempt 3. It completed in
+   120620 ms with thinking enabled, no tools, and a valid INTERPRET result
+   proposing REPORT. Five distinct cited IDs (ten entries including body/top
+   references) match retrieved articles and are now OTHER, not ARTIFACT. The
+   Agent explicitly reports absent task data and the search timeout.
+
+**The strict live citation acceptance is still FAILED**: the final model output
+retains article IDs but does not carry the canonical source URLs, even though
+they were visible in the checkpoint. Do not describe these tests as a fully
+accepted citation/report handoff or a fresh complete workflow. No third source
+compatibility representation, automatic ID/link rewriting, forced citation
+prompt, budget expansion or further live run was added. Core thinking/search
+activation and typed stage completion have real evidence; stable link-bearing
+interpretation/report output remains unaccepted. All failed attempts remain.
+
+Latest Agent-authored readable result:
+`finalize-checkpoint/INTERPRETATION.md`, SHA256
+`39cfec164105040989f4aa46bb5d7377aff8ce76550efa1e0de15b3c2d31348e`.
+Its AUDIT.json retains the exact source checkpoint, wire settings and result;
+SHA256 `71f5f48190a01fba2eae959148997373a8b61707a2a85e8cd4e458918fbfe2d7`.
+Runtime revision is
+`local-21209cb41e16daf3b26435075f8371ac5886f9e7449487ebedbd8092828a4ffc`.
+Run `b98e88e9-138a-4b18-a8c7-c864d80b0381`, invocation
+`78b552de-8871-4398-8626-f6a7b5965924` identify the split-stage diagnostic,
+not a complete Application workflow or a new scientific analysis.
+
+Local editable CLI imports this source and its built-in default profile; custom
+external profiles are not silently migrated. No production release, accepted
+profile/Gold promotion, scientific acceptance, Git commit or push occurred.
+No TEST1, credential, Codex tunnel, global proxy, Docker service or image change.
+Next boundary is user review of this result/limitation; any further work should
+start from the saved source-reference/final-result mismatch, not another PBMC
+run or reconstructed model answer. Updated LOCAL_TASK_ENTRYPOINT.md,
+LABBIO_ARCHITECTURE.md and the example TOML document the separate controls
+and built-in defaults.
+
+### 2026-09-15: Authorized CSV/CD8 DEMO with 1000 cells per sample — waiting for user
+
+The user confirmed per-sample downsampling to 1000 cells and authorized the first
+real DEMO analysis. Scope is the 17 CSV files in TEST1/DEMO/data: integration,
+quality and doublet filtering, dimensionality reduction/clustering, broad cell
+annotation, CD8 refinement and pseudotime, with a whole-process report and key
+figures. All scientific choices, parameters, programs and conclusions remain
+Agent-owned. No Gold decision or performance benchmark is implicitly authorized.
+
+The public task wording is in `projects/DEMO/DEMO_PLAN.md`; submitted text is
+preserved in the run's REQUEST.json. Conversation:
+`demo-csv-cd8-1000-20260915`. Run:
+`e82578a8-16f9-48eb-afd6-699df3fa4dc2`. Directory:
+`/media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-01`.
+Runtime: `local-7f6ea257218a0316c00738b9bf819dc5e58cd792191fafa600f09c644130d734`.
+Existing configuration `managed-scientific-environments-20260911.toml`, its
+resource/file budgets, and the current local source/profile remain unchanged.
+
+Initial CLI preflight stopped before creating a run or calling the model because
+the registered project's required `runs` directory was absent. Auth and project
+registration passed; data and Gold roots existed. Only the missing empty runs
+directory was recreated with mode 0700. This is local directory repair, not
+scientific self-correction or a repeated scientific run. No registry/credential,
+provider/global-proxy/Codex-tunnel, Docker-service or image change occurred.
+
+The CLI subsequently exited with code 2 at EXECUTE, WAITING_FOR_USER. Official
+read-only status reports STABLE, recoverable=true, no in-flight invocation and
+automatic_continuation_allowed=false. No signal was sent; this is not a network
+hang. No execution_submit, sandbox execution, derived/report artifact or delivery
+exists. Analysis, figures and the report are NOT completed.
+
+Read-only evidence shows three identical 17-query batches (UNDERSTAND and two
+EXECUTE invocations, including the configured single retry): all 51 request RAW
+METADATA with limit=null and fail ARTIFACT_EXPOSURE_DENIED. Inputs visibly state
+remote_view_types=[] and execution_input_eligible=true; all 17 IDs are mountable.
+The earliest incorrect behavior is querying unavailable remote views, not a
+schema/numeric error or absent local-execution eligibility facts.
+
+Both EXECUTE capability phases end after one provider turn containing 17 calls.
+Pantheon counts added history messages against max_turns=16: the assistant plus
+17 tool results exhaust that allowance before another tool-capable feedback turn.
+The first EXECUTE finalization correctly proposes local inspection in its
+Agent-authored next_action.reason, but RuntimePriorResultView.from_result() omits
+next_action/reason from the retry input. This is an observed generic handoff gap,
+not proof that adding it alone would prevent the initial wrong queries. No source
+or budget fix was attempted during this authorized startup.
+
+The saved question DATA_STRUCTURE_UNKNOWN asks about row/column orientation and
+CSV versus CSV.GZ; Codex did not answer it or inspect the matrix for the Agent.
+Gold use was only proposed, not approved or read; no reuse success is claimed.
+Safe evidence, exact identities and startup input hashes are recorded in
+`/media/desk16/iy1982/WYC/projects/DEMO/DEMO_RUN_20260915.md`.
+Next entry is the saved clarification/failure evidence, with a user answer or
+separate authority for a focused generic budget/handoff repair. Do not blindly
+resume or duplicate this run. No report follow-up, Gold approval, benchmark,
+source implementation edit, test rerun, deployment or Git publication occurred.
+Existing unrelated edits remain intact; Docker services remain active with no
+running containers. Raw inputs and failed evidence are retained.
+
+### 2026-09-15: User-authorized bounded RAW head and multi-format facts
+
+The user explicitly changed the earlier blanket RAW-view restriction: the Agent
+should see a small head and ordinary format/structure information, not only CSV.
+This authorizes the limited projection below, not arbitrary content extraction,
+scientific analysis by Codex, or automatic resumption of the failed DEMO.
+
+The earliest relevant boundary was ExposurePolicy denying even METADATA for
+ingested RAW. METADATA now permits RAW_INGESTION only, with the normal current
+identity/project authorization. Existing view enums, query argument schema,
+TOP_N-only limit rule, capability ceilings and workflow budgets are unchanged.
+No new path/offset/column-selection capability or automatic query was added.
+Generated scripts/logs/rejected RAW outputs without RAW_INGESTION remain denied.
+Raw SCHEMA/SUMMARY/TOP_N remain denied. The existing model-safe result/evidence
+path carries the preview; trace events still contain IDs/status/request shape,
+not the preview's raw values. The built-in local profile/tool documentation now
+describes the real contract instead of asserting that all RAW views are absent.
+
+Implementation is in artifacts/preview.py, artifacts/store.py,
+artifacts/exposure.py, artifacts/models.py, runtime/tooling.py and the built-in
+local-default.json. All store-owned file inputs receive bounded format hints,
+byte size, and available content-based type/encoding/compression evidence.
+CSV/TSV (including gzip) expose at most 6 logical records including any header,
+8 fields per record, 64 characters per field; no paging can enlarge this head.
+Only a bounded prefix is inspected and total_records remains unknown unless
+EOF is reached within the returned head. No axis meaning or science is inferred.
+Known credentials/secret columns/paths are masked, not general patient identity.
+These few original values can now enter the remote model context under the
+user's new authorization; do not retain the obsolete claim of zero RAW values.
+
+Other format support is deliberately mechanical: HDF5/H5AD root/child names,
+shapes and dtypes without dataset reads or following links; NPY header only,
+never pickle; Matrix Market dimensions; bounded complete JSON top-level
+names/types, not values. Signature recognition covers common binary/container
+formats; unsupported details stay explicit. Unknown files still receive basic
+facts, not fabricated dimensions or an arbitrary text dump. Prefix reads are
+bounded to 1 MiB plus a sentinel (gzip after decompression); HDF5 metadata seeks
+have a separate 1 MiB read budget. This is not full-file validation or universal
+format parsing. LOCAL_TASK_ENTRYPOINT.md and LABBIO_ARCHITECTURE.md document it.
+
+Verification:
+
+- Red test first reproduced the old RAW METADATA denial.
+- 23 new deterministic tests cover delimited/gzip/quoted and oversized input,
+  structural/binary formats, fixed bounds, unknown totals, known-secret/path
+  masking, symlink rejection, cross-owner/project authorization before reads,
+  visible input usage -> model-facing tool -> persisted capability evidence,
+  request/trace correlation, no execution and no adjustable/raw query escape.
+- Full project interpreter regression: 1343 passed, 34 skipped, one existing
+  Uvicorn warning. No live-provider integration was enabled by these tests.
+- A separate read-only check authenticated TEST1/DEMO using the existing managed
+  registry/credential path and queried its 17 already-registered input blobs.
+  All 17 returned AVAILABLE csv previews of 6 x 8; all total record counts were
+  explicitly unknown. No raw values were copied into operator diagnostics, no
+  provider/execution calls occurred and no historical run evidence was rewritten.
+
+The local editable CLI imports the modified source. The authenticated TEST1/DEMO
+runtime revision is
+`local-6c87bfed6966fe93824c7c73fb6e5c7ce5c4c42da5e8b90dcf796b59bf4aa6e0`.
+No production current
+release pointer exists at the inspected documented locations; no API/worker
+deployment, service restart, profile/Gold promotion or Git publication occurred.
+Pantheon, provider secrets, global proxy/Codex tunnel, Docker services and images
+are unchanged. Docker/containerd/docker.socket remain active; no task containers
+remain. Inputs and failed-run evidence were preserved, with no cleanup.
+
+The existing DEMO e82578a8-16f9-48eb-afd6-699df3fa4dc2 remains
+WAITING_FOR_USER/STABLE, record_version=29, with no in-flight invocation. It still
+has zero sandbox executions, derived/report outputs or delivery. The new
+contract changes runtime revision; do not bypass the revision guard or silently
+answer its clarification. Official status now reports RUNTIME_REVISION_MISMATCH
+and recoverable=false for this old run under the new source, without changing
+its persisted workflow record. No real-provider, scientific-analysis or report
+acceptance is claimed. Tool message-budget accounting and retry-reason handoff
+were not changed. Next entry is this new source contract and the preserved DEMO
+failure packet; a fresh scientific test/resumption requires explicit scope and
+the existing legal revision/continuation boundary.
+
+### 2026-09-15: Fresh CSV/CD8 run after preview authorization — started
+
+The user explicitly authorized a fresh run after the bounded multi-format
+preview change. New run 3c4b3c72-c81c-4134-bc6b-f73042cc6ab3, conversation
+demo-csv-cd8-1000-preview-20260915, uses the unchanged confirmed task and the same
+17 CSV inputs / 1000 cells per sample. Runtime revision is
+local-6c87bfed6966fe93824c7c73fb6e5c7ce5c4c42da5e8b90dcf796b59bf4aa6e0.
+Directory: /media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-02.
+The existing CLI produced started and entered INTAKE, with successful artifact_list.
+This is not a resumed checkpoint and does not bypass the old revision mismatch.
+No scientific choices, programs, clarification answers or Gold approvals were
+supplied by Codex. Configuration budgets, provider and Docker services are
+unchanged. No sandbox/scientific/report success is claimed at startup.
+The authoritative continuation point is this run's state and trace; supervision
+notes are in /media/desk16/iy1982/WYC/projects/DEMO/DEMO_RUN_20260915_02.md.
+
+Supervision checkpoint: UNDERSTAND completed 17 successful METADATA queries,
+each with an AVAILABLE six-record head in persisted model-visible capability
+evidence. The Agent reached EXECUTE, initially submitted 22 output declarations
+with zero eligible queryable outputs and received INVALID_OUTPUT_DECLARATION.
+Without Codex changes or injected instructions, its second submission passed
+the declaration guard and reached EXECUTION_STARTED at 06:13:47 UTC. Container
+5c2d9fe0fb63 was confirmed active. No workflow-level restart or manual analysis
+occurred. Full execution, collection and final report remain to be verified.
+
+Final supervision checkpoint: the first two actual sandbox executions
+b4140342-5814-4c43-996f-167c3143085d and
+b3fa5378-9f81-4541-b1f3-8ef5a1a252eb both failed with the same raw exception
+chain, ModuleNotFoundError(skmisc) followed by ImportError. Structured feedback
+exposed ImportError and script line numbers but missing_module=null; the Agent's
+first failure summary instead named scrublet. No Codex dependency installation,
+scientific program repair or method selection occurred. Two environment_build
+tool completions are not evidence of successful image builds.
+
+The Agent launched a third execution, 1a64fef8-c33d-48cb-a0fd-8ba2ad5be3ae,
+using the same base image and missing-dependency method. To stop repetition
+without new corrective evidence, the exact CLI owner was interrupted and only
+its container 93a4e02ea65e was stopped. The trace persisted this execution's
+exit 137 / NON_ZERO_EXIT and empty output_artifact_ids at 06:29:14 UTC.
+This is a supervised interruption, not a third naturally completed analysis.
+CLI exit 130 explicitly does not confirm persisted cancellation.
+
+Official status/reconcile after interruption: record_version=26,
+run_status=RUNNING, EXECUTE/STAGE_IN_FLIGHT, recoverable=false,
+active_writer=false, continuation_action=BLOCKED, uncertain_side_effects=true.
+Do not automatically resume or replay this checkpoint. All three Docker services
+remain active and no containers remain running. Inputs, images and evidence are
+preserved. There is no final H5AD/report delivery or scientific acceptance;
+failed-execution QC PNGs are intermediate files only. Preview capability and
+Agent-owned output declaration repair have real evidence, not full task closure.
+No source/profile edits, deployment, Gold approval/promotion or Git publication
+occurred in this supervised run. Next entry is this exact failure packet and
+generic exception-chain diagnostic fidelity, followed by an authorized legal
+recovery/fresh-run decision; do not rescue the analysis manually.
+
+### 2026-09-15: Authorized exception-chain fidelity repair and fresh rerun
+
+The user authorized repairing the diagnosed failure and then rerunning the same
+task. Earliest proven information loss: DockerExecutor kept only the terminal
+traceback, and its missing-module verification considered only imports in the
+submitted program, not an installed library's indirect dependency. The Agent
+received ImportError without the underlying ModuleNotFoundError(skmisc).
+
+The generic repair retains the terminal diagnostic plus at most three explicitly
+linked predecessors, each with its own identity/location and DIRECT_CAUSE or
+CONTEXT relation. Missing-module names are verified against submitted imports or
+a fixed bounded AST probe of installed source in the exact immutable image.
+That probe has no data mounts, no network, read-only root, no added capabilities,
+no library imports and no package installation. Unverified names remain hidden;
+raw exception messages, paths, source and data do not enter the safe receipt.
+No package/scientific-method-specific logic, automatic retry or repair was added.
+Tool documentation explains the diagnostic contract without task instructions.
+
+Regression-first tests reproduced the discarded chain. The saved real failure
+was then replayed through diagnostics only, not through the scientific program:
+the original image source verified skmisc.loess and the safe receipt now contains
+ImportError followed by DIRECT_CAUSE ModuleNotFoundError with missing_module=skmisc.
+Targeted regression: 172 passed, one existing Uvicorn warning. Full regression
+and fresh real run are pending at this checkpoint. The previous interrupted run
+remains preserved; the new revision must use a fresh run, not replay its in-flight
+stage. No production current release exists at the inspected documented path;
+the editable local CLI is the execution entry. No Pantheon, provider settings,
+global proxy/Codex tunnel, Docker service/image, Gold or scientific program change.
+
+Full regression completed: 1357 passed, 34 skipped, one existing Uvicorn warning.
+Fresh run 2c366cb4-d3df-4671-b50b-7fc3fb453c1e is now started under conversation
+demo-csv-cd8-1000-diagnostics-20260915 and runtime
+local-2731491824e02db6e8f3335fbffd20afbc4e72635aa10dc571b89670d7d12800.
+The task, 17 CSV inputs, format and empty extra preferences exactly match the
+prior request; no failure-specific instruction was added. Supervision record:
+/media/desk16/iy1982/WYC/projects/DEMO/DEMO_RUN_20260915_03.md.
+Scientific execution and final delivery remain pending at this checkpoint.
+
+Fresh rerun terminal checkpoint: CLI exited normally with code 2 at
+2026-09-15T06:55:58Z. Official status is WAITING_FOR_USER / VALIDATE / STABLE,
+record_version=29, recoverable=true, no in-flight invocation, and no automatic
+continuation. Question 2c366cb4-d3df-4671-b50b-7fc3fb453c1e:question:1 has issue
+EXECUTION_NOT_ATTEMPTED. No answer or approval was supplied by Codex.
+
+There were zero execution_submit/environment_build calls, sandbox executions,
+DERIVED/Report outputs or delivery. The exception-chain fix is verified by the
+saved original failure, immutable-image probe and regression, not by Agent-owned
+dependency recovery in this new run. Do not label this fresh scientific success.
+
+A separate grounding/control cluster was exposed: UNDERSTAND claimed a QC
+script had run without any execution call. EXECUTE made 17 successful input
+queries and two ARTIFACT_NOT_FOUND queries using prior RESULT identities as
+Artifact IDs. Its three provider tool turns emitted 3/8/8 calls, then finalized
+under Pantheon's existing history-message max_turns accounting. The final stage
+prose claimed complete analysis/report generation despite zero execution.
+VALIDATE queried the 17 real inputs successfully and three nonexistent Artifact
+IDs, including the EXECUTE RESULT identity. Its authoritative reference snapshot
+contained INPUT_EVIDENCE only; prior stage references were visibly kind=RESULT
+and MODEL_CONTEXT. It ultimately recognized non-execution and paused rather
+than accepting a report, but attributed this to missing prior-stage Artifacts,
+which is not an established registry defect. Do not endorse that false premise
+or auto-answer its requested rerun.
+
+Next entry is this exact stable question/failure packet, RESULT/ARTIFACT identity
+misuse, unsupported completion claims, and the actual capability-phase exit
+boundary. No additional root-cluster patch, budget increase, prompt workaround,
+fresh run or continuation was performed. Current local runtime remains
+local-2731491824e02db6e8f3335fbffd20afbc4e72635aa10dc571b89670d7d12800;
+no production service deployment, profile/Gold promotion or Git publication.
+The CLI exited, no containers remain running, all three Docker services are
+active, and inputs/images/failed evidence remain intact without cleanup.
+
+### 2026-09-15: Authorized runtime stability repair, original task convergence
+
+The user authorized repairing the state/reference/phase coordination gap and
+retesting the unchanged real task until genuinely completed, without task-specific
+prompts, Codex scientific programs, method selection, or artificial routing.
+
+Root evidence remains run 2c366cb4-d3df-4671-b50b-7fc3fb453c1e: EXECUTE's 3/8/8
+query batches consumed Pantheon's history-message budget before a submission;
+known RESULT identities were queried as Artifacts; NOT_EXECUTED in the typed
+body contradicted the model summary. The durable state itself had not lost an
+execution: there was none. Missing prior-stage artifacts was not a registry bug.
+
+Generic repair: the LabBio adapter uses existing Pantheon public callbacks to
+count provider responses, leaving max_capability_turns=16 and retry_limit=1.
+This changes the unit, and can allow more requests than the old message count;
+it is not described as an unchanged effective cost ceiling. The 64-item evidence
+bound remains, with a non-fitting batch stopped before effects. Actual loop exit
+reason/count/limit persist in capability evidence and trace. No Pantheon patch.
+Known non-Artifact IDs now return INVALID_REFERENCE_KIND rather than a misleading
+missing-Artifact diagnosis; no ID mapping or automatic tool use occurs.
+Prior next-action proposals/reasons are preserved as untrusted model context.
+The latest completed EXECUTE capability checkpoint persists a small independent
+CONTROL_STATE execution-activity snapshot for next-stage/restart handoff, even
+when it contains zero submissions. Original summaries are not rewritten.
+
+Regression-first SDK tests reproduced premature termination and verify single
+and batched calls, real feedback opportunity, exact turn-limit stopping with the
+last batch complete, and pre-effect evidence-budget stopping. State tests cover
+known RESULT/EXECUTION versus real/unknown Artifact identities, unchanged audit,
+no automatic conversion/retry, original proposal continuity, receipt authority,
+and SQLite restart -> next-stage activity without re-execution. Full regression
+and fresh real validation are pending at this checkpoint. Previous changes and
+failed runs are preserved. No scientific task, profile, provider/tunnel/global
+proxy, Docker image/service, credential, Gold approval or Git publication change.
+
+Full regression: 1374 passed, 34 skipped, one existing Uvicorn warning.
+Verified local runtime revision:
+local-7dc242175ebbe3969872533854003d64092085d6117b668f596a3343d5877f2b.
+The unchanged 17-file / 1000-cells-per-sample task is launching as fresh
+conversation demo-csv-cd8-1000-stability-20260915, directory
+/media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-04.
+No clarification answer or continuation of the previous run was injected.
+The local editable CLI uses the modified source; no production API/worker release
+was deployed. Before launch all three Docker services were active and no task
+containers were running. Fresh scientific execution/report results remain pending.
+
+Fresh run identity: 56a9345f-2496-4b1a-86fe-47bc78214419. It failed at the
+first INTAKE provider request, before any observed provider response, capability
+call or sandbox execution. CLI exited code 1 with PANTHEON_CAPABILITY_FAILED,
+correlation_id 0cf4ea83-ddd5-41bc-b193-f911cd58b8d8. Official status conservatively
+retains INTAKE/STAGE_IN_FLIGHT, record_version=4, recoverable=false, invocation
+498fe9fd-4aad-430b-b182-316ccebca5ae. Do not mistake that record for a live worker
+or automatically replay it.
+
+Two separate minimal provider_ok requests to the same configured endpoint/model,
+without dataset or tools, both returned HTTP 500 / error.code=500. The last was
+2026-09-15T07:21:20Z. Effective HTTP/HTTPS/ALL proxies for the diagnostic endpoint
+were empty; no proxy, endpoint, credential or model change occurred. This proves
+the direct live blocker does not require scientific input or tool parameters,
+not the provider's internal cause. No further full rerun was launched. The
+stability repair remains deterministic/SDK/regression verified, NOT fresh live
+scientific accepted. No H5AD/report, Gold promotion, production release or Git push.
+CLI exited; no containers remain; Docker/containerd/docker.socket are active.
+User authorization to pursue original-task completion remains the scope, but
+meaningful live progress now requires the configured provider to recover.
+Next entry: verify provider recovery, then use the exact original request in a
+fresh run under local-7dc242175ebbe3969872533854003d64092085d6117b668f596a3343d5877f2b.
+Detailed evidence: /media/desk16/iy1982/WYC/projects/DEMO/DEMO_RUN_20260915_04.md.
+
+### 2026-09-15: User-authorized retry after provider recovery
+
+A same-configuration minimal request started at 07:34:21Z returned HTTP 200
+after about 64 seconds with the exact provider_ok reply. No data/tools were sent.
+The unchanged task/data/format/preferences from run 04 were then submitted via
+the existing CLI in a fresh conversation
+demo-csv-cd8-1000-provider-recovered-20260915, run directory
+/media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-05.
+No failed checkpoint replay, source/configuration change, scientific assistance,
+approval, proxy/tunnel change or Docker mutation. Launch is not acceptance;
+execution and final delivery remain pending. Evidence entry:
+/media/desk16/iy1982/WYC/projects/DEMO/DEMO_RUN_20260915_05.md.
+
+Run 05 identity: 1ba3eb03-6212-4aef-af9d-be4de1122adc, same verified runtime
+local-7dc242175ebbe3969872533854003d64092085d6117b668f596a3343d5877f2b.
+It passed INTAKE/UNDERSTAND/PLAN/PREFLIGHT and reached real sandbox execution.
+An initial queryable-output declaration rejection was repaired by the Agent.
+The first actual execution failed with skmisc missing; the accepted exception
+chain projection exposed the module and the Agent built its own environment,
+then submitted execution in image
+sha256:a7021e1a8f222ee864a11f333c302a15640f4d87d2d2ac24b9703f92feab6156.
+No Codex scientific program, package selection or tool argument assistance.
+
+The next two actual executions, 3c000628-59e7-4bba-9e7e-b6bd447817d0 and
+bedc4b5d-2b2b-4c47-bfd0-4ca7f41a7e7f, both exited 1 at the same library
+loess.fit with the same reciprocal-condition-number ValueError (script lines
+282 and 221 respectively). Agent execution_inspect did not lead to a successful
+repair. On this repeated-failure boundary the exact owned CLI PID 965631 was
+interrupted, with no active task containers; exit 130 is NOT confirmed durable
+cancellation. No blind continuation/replay/fresh run follows. Trace and failed
+intermediates remain, no delivery/final report, no scientific acceptance.
+Docker services remain active and no containers/CLI remain running. No source
+deployment, Gold approval/promotion or Git publication occurred in this retry.
+The provider blocker was crossed; next entry is the two exact failure packets,
+Agent-visible diagnostic/inspection feedback and actual program revision, not
+another 500 probe or Codex-selected scientific workaround. See run 05 evidence.
+
+Post-interruption official status: RUNNING / EXECUTE / STAGE_IN_FLIGHT,
+record_version=21, invocation 3b270202-f4e3-4dd7-a432-7313281246d8,
+recoverable=false, automatic_continuation_allowed=false. This durable checkpoint
+is not a live process and does not authorize replay.
+
+### 2026-09-15: Authorized end-to-end execution diagnostic repair
+
+The user authorized fixing the complete error-feedback/revision chain and
+retesting the original task, not supplying scientific repairs. Run 05's two
+saved failures proved that the executor discarded the numerical reason, leaving
+only ValueError and a script line. execution_inspect repeated that same receipt;
+its first source page need not contain the failure, and immediate trace did not
+record delivered source-page coverage. No claim is made about unpersisted model
+reasoning or exactly which pages run 05 requested.
+
+Generic changes preserve a finite reported numerical condition without raw
+messages/coefficients, support the explicit qualified NumPy numerical exception,
+provide error-line character offsets from the hash-verified original source,
+and immediately audit successful inspection page identity/range/completeness.
+Executor result, receipt, tool feedback, evidence and inspection share the same
+diagnostic contract. Unknown messages stay undisclosed; no automatic method,
+parameter, program, execution, image selection or retry was introduced.
+Tests cover the original failure class, real non-scientific NumPy exception,
+neighbor conditions, leaks, cross-exception provenance, source pagination and
+explicit failed -> inspected -> new submission. Actual saved run 05 stderr now
+produces ILL_CONDITIONED_FIT at original lines 282 and 221. Full regression and
+fresh scientific task validation are being completed; no acceptance yet.
+
+Final full regression: 1389 passed, 34 skipped, one existing Uvicorn warning.
+Fresh unchanged 17-input task launched through the existing CLI as conversation
+demo-csv-cd8-1000-numerical-feedback-20260915, directory
+/media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-06.
+No scientific prompt/program assistance, approval, budget/configuration change,
+old-checkpoint replay or production service deployment. Real execution/report
+acceptance remains pending; evidence entry is projects/DEMO/DEMO_RUN_20260915_06.md.
+
+Run 06 identity: 8b448a89-1e47-4a42-b8dd-2a92bf5459e0; verified runtime
+local-ec773a73c8de8b62ad0e31c43005f7dd8f1ff7be1f52baae76ac94ed5b6117b1.
+REQUEST equality confirmed; normal provider responses observed. Monitoring only,
+without further source edits during the active run.
+
+Run 06 reached real execution and Agent-owned recovery from missing skmisc,
+but two successors 66b821c7-8c2f-4151-baf8-f4f96e245f48 and
+2a7d1824-673f-4740-9ae5-caafe35c4cf8 repeated the same KeyError at a multi-key
+source expression. The new page audit proves the Agent received the failure
+line, but diagnostics identified only key type, not which source literal failed.
+This is another lost distinction in the same error-feedback chain. Exact owned
+CLI 984694 was interrupted (exit 130) and its newly started container
+labbio-ac891d0c04324c9da1de973c306b5faf stopped after mount/identity verification.
+No services, images or historical evidence were deleted; no successful delivery.
+
+Work continues under the user's explicit whole-chain repair authorization:
+KeyError arguments now match only original-source constants inside verified
+failure highlights, yielding line/column coordinates without values or dynamic
+key disclosure. No field replacement, scientific program or hidden retry.
+Original raw failure replay and real generic Pandas/numeric-key tests verify
+the distinction; complete regression then a fresh unchanged task are required.
+Do not interpret run 06's interrupted checkpoint as cancelled or replayable.
+
+Full regression after completing key-location feedback: 1394 passed, 34 skipped,
+one existing Uvicorn warning. Run 06 official status is RUNNING / EXECUTE /
+STAGE_IN_FLIGHT, record_version=21, invocation c905296c-4cf6-446c-abaf-ee1d30a34c3c;
+the new source correctly makes its issue RUNTIME_REVISION_MISMATCH. No replay.
+Fresh unchanged run 07 is launching as conversation
+demo-csv-cd8-1000-error-chain-20260915, directory
+/media/desk16/iy1982/WYC/projects/test/TEST1/projects/DEMO/runs/demo-csv-cd8-1000-20260915-07.
+No scientific assistance or configuration/budget change. Continue supervision;
+no task acceptance yet. Evidence: projects/DEMO/DEMO_RUN_20260915_07.md.
+
+Run 07: 3c3e0295-2aa4-4537-9510-309ebeb883ee, runtime
+local-6e360263a2922c2a76f0f231d344d10f29efe267e01fbfc97e1306bd626ea4eb.
+Agent-owned recovery crossed the missing-module failure using the persisted
+scikit-misc image and its own harmonypy derivative. Two subsequent executions
+2f2993e9-c752-4453-89f8-d10d6eb08e9c and
+65fe2e27-057f-48e1-b884-4196ab827611 reported ILL_CONDITIONED_FIT at lines
+261 and 259, respectively, on the same repaired immutable image d1461fc8….
+No success/report. After confirming no container remained, exact CLI 999097
+was interrupted (130). Durable RUNNING/EXECUTE/STAGE_IN_FLIGHT remains at
+version 21, invocation 77fb6775-b5db-4a47-9325-9feaf29034cc; current source
+status is RUNTIME_REVISION_MISMATCH, not recoverable or auto-continuable.
+
+The user's additional repaired-image reuse request is implemented separately:
+bounded build provenance now survives build/list/cache/restart tool feedback;
+explicit image choices and failed-build isolation remain unchanged. The normal
+managed-scientific-environments-20260911.toml entrypoint now pins Agent-built
+a7021e1a… (scikit-misc 0.5.2), with exact prior configuration backup and versioned
+20260915-skmisc config plus a stable Docker tag. Actual data-free import and
+TEST1 cache reload verified; no Codex package/scientific selection, hidden image
+replacement, budget/provider/proxy/tunnel changes. 74 related tests and full
+1395 passed / 34 skipped / one existing Uvicorn warning. No new Agent live,
+Gold activation/promotion, production deployment or Git publication. Docker,
+containerd and docker.socket active; no analysis container or owned CLI remains.
+Production current/docs remain absent; this is the local source CLI, not a
+production release-health claim. See run 07 evidence for exact identities.
+Next entry: diagnose the two numerical failures and actual Agent-visible
+revision feedback; do not replay the interrupted checkpoint or rerun with no
+new evidence. Scientific task and final-report acceptance remain incomplete.
+
+### 2026-09-15: Focused error localization and narrowed annotation task
+
+User narrowed the live task to integration, QC/doublet handling, dimensionality
+reduction, clustering and broad annotation/report; no CD8 subdivision/trajectory.
+Run 07's first numerical failure inspection returned source 10000:11500 while
+the failing call was at 12580. The successor altered upstream QC handling but
+left the failing HVG call unchanged. No biological cause or hidden model
+reasoning is inferred. Generic correction: inspection includes bounded exact
+reported source lines independently of the selected page, with original hash,
+positions and explicit truncation. No method choice, repaired code, extra budget,
+mandatory tool sequence or hidden retry. Source stays out of persisted evidence
+and trace; the existing transport safety checks cover the complete response.
+Original-class wrong-page and adjacent missing-key/long-line/Unicode tests precede
+fresh live validation; the environment baseline remains the verified fixed image.
+
+Full regression: 1396 passed / 34 skipped / one existing Uvicorn warning.
+Fresh narrowed task launched as d3966564-7d76-4567-91ad-3c76549826ba, runtime
+local-86e5bc8be76f465e09477f6f83e7b05a6b74c0ce3b4ca0fc8799789b67b39149,
+directory projects/test/TEST1/projects/DEMO/runs/demo-broad-annotation-20260915-08.
+No acceptance yet; source frozen during active validation. See
+projects/DEMO/DEMO_RUN_20260915_08.md for the run-specific record.
+
+Fresh task completed: d3966564-7d76-4567-91ad-3c76549826ba is COMPLETED / LEARN /
+STABLE, version 43, no inflight or issue, CLI exit 0. Five explicit Agent-owned
+submissions: numerical fit failure -> corrected failed call -> PCA plotting
+TypeError -> corrected parameter -> missing output filename -> corrected save
+handling -> record schema/count errors -> corrected structured output -> success.
+The new diagnostic lines reached the model even when selected pages missed both
+actual failure lines. No Codex scientific repair, method prompt, auto rewrite,
+extra budget, hidden retry or relaxed output validation. EXECUTE ended normally
+after 12 provider turns under the unchanged 16-turn limit.
+Successful execution d3bf44fd-5b2a-40aa-a1f3-ea8c326367e7: exit 0, 17 registered
+outputs, five queryable structured artifacts, no output issues. VALIDATE,
+INTERPRET, REPORT and LEARN completed. Final report 5be71635-db67-4ca8-8994-257d52004c1b
+exported to the run's delivery/REPORT.md. Hash/size checks passed for the successful
+17 outputs and final report; H5AD readable with 16497 cells, 20793 genes, 17 samples,
+max 1000 cells/sample, cluster/annotation fields and PCA/UMAP embeddings.
+These are technical acceptance facts, not scientific accuracy or universal
+stability claims. One fresh task succeeded with autonomous recovery; independent
+repeat-run reliability has not been measured. Report notes no batch correction.
+The user's no-Gold decision was honored: no authorization/skill_view and no new
+Gold creation. After the writer exited, the exact use proposal was rejected via
+GoldSkillService.decide_use (decision 5c702c2c-3ffe-4fa0-a71f-57b98a970942).
+No production deployment, profile promotion, Pantheon change or Git publication.
+Local runtime remains local-86e5bc8be76f465e09477f6f83e7b05a6b74c0ce3b4ca0fc8799789b67b39149.
+Docker/containerd/socket active, no owned CLI/container remains. Failed evidence,
+raw inputs and images preserved. Next unique entry is user inspection of the
+run 08 final report and successful-execution outputs linked in its evidence note;
+do not relaunch old interrupted runs or call this an external scientific review.
+
+### 2026-09-16: User-authorized test cleanup and continuation publication
+
+The user requested removing run garbage except the final successful run, then
+publishing to continuation (not main). Live inspection found earlier DEMO run
+directories already absent; their removal is not attributed to this checkpoint.
+No LabBio writer/container was active. The four failed execution scratch copies
+inside run 08, obsolete interpretation-only test scratch, and Python/pytest
+caches (21 exact directories, 539711435 bytes) were moved recoverably to
+`/media/desk16/iy1982/WYC/.cleanup-quarantine/demo-test-only-20260916.l9808hA0`.
+MANIFEST.json records each exact source/destination mapping. No permanent delete
+or storage-space reclamation is claimed. Registered artifact copies, prior
+attempt provenance, all delivery files, run state/trace, original data, Gold,
+environment records, Docker images/services and historical backups remain.
+The active execution tree retains only d3bf44fd-5b2a-40aa-a1f3-ea8c326367e7.
+
+Publication scope is the accumulated source/test/docs changes since 4d89657,
+including bounded raw previews, interpretation/literature capability, stage
+state handoff/budget accounting, failure diagnostics/source localization and
+verified environment provenance. Runtime data, raw matrices, reports, databases,
+credentials and machine-local configuration are excluded. A repository-contained
+technical evidence note is docs/DEMO_ANNOTATION_ACCEPTANCE_20260915.md.
+The live repository has its own .git and exact top-level
+/media/desk16/iy1982/WYC/projects/LabBioAgentOS, unlike the old workspace note;
+Git operations use this verified explicit scope. Remote continuation baseline
+4d896578fcc83a65b3b41fe35e5ca6290546d510; main baseline
+f889d6b625db29c262f964252f058b92219f0cf1. Publish only a normal fast-forward to
+continuation using existing repository-scoped credentials and command-local
+HTTPS proxy. No main merge, force push, deployment or global proxy/tunnel changes.
+
+Pre-publication regression in the correct project: 1396 passed, 34 skipped,
+one existing Uvicorn warning (32.93 s). An initial parent-directory invocation
+collected unrelated backup/deliverable suites and failed collection; it was
+corrected without changing code and is not a project regression result.

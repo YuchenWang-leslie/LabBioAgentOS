@@ -50,6 +50,7 @@ from .mounts import (
     ResolvedMount,
 )
 from .registration import OutputCollector
+from .diagnostic_sources import traceback_chain, verified_image_imports
 
 
 _SAFE_PYTHON_EXCEPTION_TYPES = frozenset(
@@ -58,7 +59,7 @@ _SAFE_PYTHON_EXCEPTION_TYPES = frozenset(
     if isinstance(value, type)
     and issubclass(value, Exception)
     and value.__module__ == "builtins"
-)
+) | {"LinAlgError", "numpy.linalg.LinAlgError"}
 
 
 @dataclass(frozen=True)
@@ -514,6 +515,10 @@ class DockerExecutor:
                 diagnostics=self._safe_python_diagnostics(
                     outcome.stderr,
                     script_content=plan.script_content,
+                    verified_imports=verified_image_imports(
+                        outcome.stderr, image, self.process_runner,
+                        self.command_builder.docker_binary,
+                    ),
                 ),
             )
 
@@ -691,20 +696,28 @@ class DockerExecutor:
         stderr: bytes,
         *,
         script_content: str = "",
+        verified_imports: frozenset[str] = frozenset(),
     ) -> tuple[ExecutionDiagnostic, ...]:
         """Extract identifiers and Agent-script line numbers, never raw stderr."""
 
-        text = stderr[-32_768:].decode("utf-8", errors="replace")
-        if "Traceback (most recent call last):" not in text:
-            return ()
-        # Chained exceptions can have different locations and argument types.
-        text = text.rsplit("Traceback (most recent call last):", 1)[1]
+        diagnostics = []
+        for text, relation in traceback_chain(stderr):
+            items = DockerExecutor._safe_python_exception(text, script_content, verified_imports)
+            if not items:
+                break  # Never attach a cause across an unrecognized exception.
+            diagnostics.append(items[0].model_copy(update={"chain_relation": relation}))
+        return tuple(diagnostics)
+
+    @staticmethod
+    def _safe_python_exception(
+        text: str, script_content: str, verified_imports: frozenset[str],
+    ) -> tuple[ExecutionDiagnostic, ...]:
         lines = text.rstrip().splitlines()
         if not lines:
             return ()
         terminal_line = lines[-1]
         terminal_exception = re.fullmatch(
-            r"([A-Za-z_][A-Za-z0-9_]{0,127})(?::.*)?", terminal_line
+            r"([A-Za-z_][A-Za-z0-9_.]{0,127})(?::.*)?", terminal_line
         )
         if (
             terminal_exception is None
@@ -712,6 +725,13 @@ class DockerExecutor:
         ):
             return ()
         exception_type = terminal_exception.group(1)
+        from .diagnostic_sources import reported_numerical_condition
+
+        # Keep complete-message matching distinct from traceback whitespace parsing.
+        raw_terminal = text.rstrip("\r\n").split("\n")[-1]
+        numerical_condition = reported_numerical_condition(
+            exception_type, raw_terminal.removeprefix(exception_type + ": "),
+        )
         line_numbers = tuple(
             dict.fromkeys(
                 int(match)
@@ -728,7 +748,7 @@ class DockerExecutor:
             terminal_line,
         )
         if missing_module is not None:
-            imported_modules: set[str] = set()
+            imported_modules: set[str] = set(verified_imports)
             try:
                 tree = ast.parse(script_content)
             except SyntaxError:
@@ -754,7 +774,9 @@ class DockerExecutor:
                         missing_module=module_name,
                     ),
                 )
+        script_locations = DockerExecutor._script_error_locations(text, script_content)
         missing_key_type = None
+        missing_key_locations = []
         if exception_type == "KeyError":
             match = re.fullmatch(r"KeyError: (.{1,512})", terminal_line)
             if match is not None:
@@ -766,6 +788,28 @@ class DockerExecutor:
                     # Finite technical type vocabulary only; never serialize values.
                     if type(argument) in (str, bytes, int, float, bool, type(None), tuple):
                         missing_key_type = type(argument).__name__
+                        try:
+                            tree = ast.parse(script_content)
+                        except (SyntaxError, RecursionError):
+                            tree = None
+                        if tree is not None:
+                            for node in ast.walk(tree):
+                                if not isinstance(node, ast.Constant) or (
+                                    type(node.value) is not type(argument) or node.value != argument
+                                ):
+                                    continue
+                                # Existing highlights verify exact displayed source
+                                # and ASCII coordinates. No dynamic variable value
+                                # is inspected or copied from the process stream.
+                                if any(
+                                    node.lineno == node.end_lineno == loc.line_number
+                                    and loc.start_column <= node.col_offset < node.end_col_offset <= loc.end_column
+                                    for loc in script_locations
+                                ):
+                                    missing_key_locations.append(ExecutionScriptLocation(
+                                        line_number=node.lineno,
+                                        start_column=node.col_offset, end_column=node.end_col_offset,
+                                    ))
         reported_index_condition = None
         if exception_type == "IndexError":
             # Match a complete bounded message, not task/source keywords. Keep
@@ -792,11 +836,11 @@ class DockerExecutor:
                 code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
                 exception_type=exception_type,
                 script_line_numbers=line_numbers,
-                script_error_locations=DockerExecutor._script_error_locations(
-                    text, script_content
-                ),
+                script_error_locations=script_locations,
                 missing_key_type=missing_key_type,
+                missing_key_source_locations=tuple(missing_key_locations[:16]),
                 reported_index_condition=reported_index_condition,
+                reported_numerical_condition=numerical_condition,
             ),
         )
 

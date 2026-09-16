@@ -445,10 +445,16 @@ def test_application_registers_scoped_safe_inspection_artifacts(tmp_path):
         )
         assert ref.metadata["source_artifact_id"] == str(raw.artifact_id)
 
+    metadata = application.artifact_exposure.artifact_query(
+        raw.artifact_id, ArtifactQuery(view_type=ArtifactViewType.METADATA),
+        ArtifactConsumer.REMOTE_LLM, principal=principal,
+    )
+    assert metadata.head_preview.format == "hdf5"
+    assert metadata.head_preview.leading_records == ()
     with pytest.raises(ArtifactExposureDenied):
         application.artifact_exposure.artifact_query(
             raw.artifact_id,
-            ArtifactQuery(view_type=ArtifactViewType.METADATA),
+            ArtifactQuery(view_type=ArtifactViewType.SUMMARY),
             ArtifactConsumer.REMOTE_LLM,
             principal=principal,
         )

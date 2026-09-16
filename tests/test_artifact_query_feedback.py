@@ -131,7 +131,7 @@ async def test_top_n_default_null_and_large_request_preserve_policy_clamping(art
      "TOP_N", ["METADATA", "SCHEMA", "SUMMARY"]),
     (ArtifactExposureClass.DERIVED, ArtifactReleaseBasis.INTERNAL_ONLY, "SUMMARY", []),
     (ArtifactExposureClass.USER_APPROVED, ArtifactReleaseBasis.USER_APPROVED_RELEASE, "SUMMARY", []),
-    (ArtifactExposureClass.RAW, ArtifactReleaseBasis.RAW_INGESTION, "METADATA", []),
+    (ArtifactExposureClass.RAW, ArtifactReleaseBasis.RAW_INGESTION, "SUMMARY", ["METADATA"]),
 ])
 async def test_denials_reflect_actual_remote_release_policy_not_execution_eligibility(
         artifact_query_boundary, exposure, basis, view, allowed):

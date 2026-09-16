@@ -182,7 +182,7 @@ async def test_private_identity_never_enters_remote_tools_or_trace(tmp_path, art
     replies = [await tools.artifact_list()]
     for view in ("METADATA", "SCHEMA", "SUMMARY", "TOP_N"):
         response = await tools.artifact_query(str(ref.artifact_id), view)
-        assert response["success"] is (exposure is ArtifactExposureClass.DERIVED)
+        assert response["success"] is (exposure is ArtifactExposureClass.DERIVED or view == "METADATA")
         replies.append(response)
     encoded = json.dumps({
         "replies": replies,

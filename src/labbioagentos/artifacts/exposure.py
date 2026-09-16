@@ -29,7 +29,7 @@ from .models import (
     ExposureDecision,
     validate_artifact_query,
 )
-from .store import ArtifactStore, coerce_artifact_id
+from .store import ArtifactStore, LocalArtifactStore, coerce_artifact_id
 
 
 class ArtifactQueryError(ValueError):
@@ -44,6 +44,7 @@ class ExposurePolicy:
     """Structural privacy policy with no scientific ranking or interpretation."""
 
     _REMOTE_VIEWS = {
+        ArtifactExposureClass.RAW: frozenset({ArtifactViewType.METADATA}),
         ArtifactExposureClass.STRUCTURAL: frozenset(
             {ArtifactViewType.METADATA, ArtifactViewType.SCHEMA}
         ),
@@ -58,6 +59,7 @@ class ExposurePolicy:
         ArtifactExposureClass.USER_APPROVED: frozenset(ArtifactViewType),
     }
     _REMOTE_RELEASE_BASES = {
+        ArtifactExposureClass.RAW: frozenset({ArtifactReleaseBasis.RAW_INGESTION}),
         ArtifactExposureClass.STRUCTURAL: frozenset(
             {ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR}
         ),
@@ -101,12 +103,14 @@ class ExposurePolicy:
         if (
             ref.exposure_class is ArtifactExposureClass.RAW
             and consumer is ArtifactConsumer.REMOTE_LLM
+            and (query.view_type is not ArtifactViewType.METADATA
+                 or ref.release_basis is not ArtifactReleaseBasis.RAW_INGESTION)
         ):
             return self._deny(
                 ref,
                 query,
                 consumer,
-                "RAW artifacts cannot be exposed to a remote LLM.",
+                "RAW artifacts cannot be exposed beyond fixed METADATA/head preview to a remote LLM.",
             )
 
         if ref.exposure_class is ArtifactExposureClass.USER_APPROVED:
@@ -333,6 +337,13 @@ class ArtifactExposureService:
         view = self.projector.build(
             stored.ref, stored.representation, validated_query, decision
         )
+        if (validated_query.view_type is ArtifactViewType.METADATA
+                and ref.exposure_class is ArtifactExposureClass.RAW
+                and ref.release_basis is ArtifactReleaseBasis.RAW_INGESTION
+                and isinstance(self.store, LocalArtifactStore)):
+            view = ArtifactView.model_validate({
+                **view.model_dump(), "head_preview": self.store.inspect_raw_head(ref),
+            })
         self._emit(
             ref,
             TraceEventType.ARTIFACT_EXPOSED,

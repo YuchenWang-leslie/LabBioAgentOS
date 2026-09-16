@@ -856,10 +856,13 @@ def test_chained_builtin_subclass_keeps_only_terminal_script_locations(monkeypat
     diagnostics = DockerExecutor._safe_python_diagnostics(
         _synthetic_traceback(source, monkeypatch), script_content=source
     )
-    assert len(diagnostics) == 1
+    assert len(diagnostics) == 2
     assert diagnostics[0].exception_type == "FileNotFoundError"
     assert diagnostics[0].script_line_numbers == (4,)
     assert diagnostics[0].missing_key_type is None
+    assert diagnostics[1].exception_type == "KeyError"
+    assert diagnostics[1].script_line_numbers == (2,)
+    assert diagnostics[1].chain_relation == "CONTEXT"
     assert "PRIVATE_PATH" not in diagnostics[0].model_dump_json()
 
 

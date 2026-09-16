@@ -284,6 +284,7 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "clarifications",
         "workflow_control",
         "execution_capability",
+        "last_execution_activity",
         "input_artifact_usage",
         "body",
     }

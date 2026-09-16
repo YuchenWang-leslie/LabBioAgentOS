@@ -269,7 +269,17 @@ async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_bound
 
     assert schema == {
         "name": "artifact_query",
-        "description": "Request one policy-controlled view of a governed Artifact.",
+        "description": (
+            "Request one policy-controlled view of a governed Artifact.\n\n"
+            "Ingested RAW METADATA includes file size, format hints, content-based\n"
+            "recognition and available bounded structure (e.g. shapes/dtypes/fields).\n"
+            "Recognition is not full-file validation; unsupported structure is explicit.\n"
+            "It also includes a fixed CSV/TSV (optionally gzip) head:\n"
+            "first 6 records including any header, first 8 columns, 64 characters per\n"
+            "value. No offsets or full-data reads. Preview flags state truncation;\n"
+            "total_records is unknown unless EOF was reached within this head.\n"
+            "Row/column biological meaning is not inferred by the inspector."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

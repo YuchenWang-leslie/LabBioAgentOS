@@ -476,7 +476,7 @@ async def test_capability_mode_preserves_evidence_after_contentless_completion(t
         invocation_mode=RuntimeInvocationMode.CAPABILITY,
     )
 
-    async def run(_self, _message):
+    async def run(_self, _message, **_kwargs):
         await toolset.artifact_list()
         return SimpleNamespace(content=None)
 
@@ -504,7 +504,7 @@ async def test_capability_mode_does_not_auto_invoke_or_use_prose_termination(tmp
         invocation_mode=RuntimeInvocationMode.CAPABILITY,
     )
 
-    async def run(_self, _message):
+    async def run(_self, _message, **_kwargs):
         return SimpleNamespace(content="analyze mean group sufficient done")
 
     team.run = MethodType(run, team)

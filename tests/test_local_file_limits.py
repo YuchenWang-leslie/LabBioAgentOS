@@ -133,7 +133,7 @@ def test_file_budgets_wire_policy_collection_docker_and_model_input(settings_fil
         stage_input = session.coordinator.build_stage_input(session.run, instruction="Synthetic resource test")
         payload = json.loads(stage_input.model_dump_json())
         assert {name: payload["execution_capability"][name] for name in LARGER} == LARGER
-        assert payload["input_artifact_usage"][0]["remote_view_types"] == []
+        assert payload["input_artifact_usage"][0]["remote_view_types"] == ["METADATA"]
         assert payload["input_artifact_usage"][0]["execution_input_eligible"] is True
         assert "PRIVATE_RAW_SENTINEL" not in stage_input.model_dump_json()
         assert str(source) not in stage_input.model_dump_json()

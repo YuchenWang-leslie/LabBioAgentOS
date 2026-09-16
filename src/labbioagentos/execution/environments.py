@@ -193,6 +193,11 @@ class EnvironmentService:
                 "extras_verified": True if req.extras.issubset(documented_extras.get(name, set())) else None})
         known_satisfied = all(item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
         return {"image_key": image.key, "image_reference": image.resolved_reference,
+            "build_provenance": {
+                "base_image_reference": record["base_image_reference"],
+                "verified_requirements": list(record["requested_requirements"]),
+                "verified_import_modules": list(record["requested_import_modules"]),
+            } if record else None,
             "available_python_modules": list(image.available_python_modules[:64]),
             "module_count": len(image.available_python_modules), "modules_truncated": len(image.available_python_modules) > 64,
             "installed_packages": {name: inventory[name] for name in names},

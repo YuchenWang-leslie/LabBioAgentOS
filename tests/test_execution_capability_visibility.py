@@ -120,7 +120,7 @@ async def test_early_stage_actual_messages_separate_configuration_from_permissio
         usage = presented["input_artifact_usage"][0]
         assert usage["artifact_id"] == str(raw.artifact_id)
         assert usage["exposure_class"] == ArtifactExposureClass.RAW.value
-        assert usage["remote_view_types"] == []
+        assert usage["remote_view_types"] == ["METADATA"]
         assert usage["execution_input_eligible"] is configured
         if configured:
             execution = presented["execution_capability"]

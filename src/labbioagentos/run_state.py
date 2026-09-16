@@ -24,6 +24,7 @@ from .contracts import RunStatus, WorkflowRun, WorkflowStage
 from .runtime import (
     CapabilityEvidenceBundle, RuntimeReference, RuntimeStageInput, RuntimeStageResult,
 )
+from .runtime.contracts import RuntimeExecutionActivity
 
 
 class RunStateStoreError(RuntimeError):
@@ -97,6 +98,7 @@ class ApplicationRunRecord(BaseModel):
     inflight_input: RuntimeStageInput | None = None
     inflight_evidence: CapabilityEvidenceBundle | None = None
     inflight_result: RuntimeStageResult | None = None
+    last_execution_activity: RuntimeExecutionActivity | None = None
     clarification_checkpoint: ClarificationCheckpoint | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -119,6 +121,8 @@ class ApplicationRunRecord(BaseModel):
     @model_validator(mode="after")
     def validate_control_state(self) -> "ApplicationRunRecord":
         run = self.workflow_run
+        if self.last_execution_activity is not None and self.last_execution_activity.run_id != self.run_id:
+            raise ValueError("Execution activity must belong to this run")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot precede created_at")
         if self.run_id != run.run_id:

@@ -82,7 +82,70 @@ Cross-cutting: RunTrace/EventBus and user/project/lab scope
 
 ## C10 durable control-plane boundary
 
+Verified user-owned environment builds retain immutable image identities across
+tasks and restarts. Build/list feedback projects bounded `build_provenance`:
+base image reference, verified requested requirements and verified requested
+import modules. This is build history, distinct from current query requirements;
+configured images without a build record have null provenance. A successful
+build does not change a frozen run default or an explicitly selected base key.
+The Agent can submit the returned built image key; failed builds are never
+registered. Long-term default upgrades are explicit configuration operations,
+not automatic promotion of the latest build. No scientific dependency selection
+or missing-package repair is inferred by the framework.
+
+Execution failure feedback retains finite reported numerical conditions in the
+same diagnostic contract used by process results, receipts, tool evidence and
+original-submission inspection. Recognized complete messages produce technical
+conditions only, never raw exception text, coefficients, paths or scientific
+repair choices. Unknown messages remain undisclosed rather than guessed.
+Original-source inspection includes character offsets for reported failure lines
+computed from the hash-verified source; a caller can request the relevant page
+without assuming the first page contains the failure. Each successfully delivered
+inspection page records source-free hash/range/completeness facts immediately in
+the trace, including before capability finalization or an interruption. These
+facts do not assert that the model understood the page or corrected the program.
+Inspection also returns up to eight exact reported source lines (512 characters
+each) independently of the requested page. Source hash, offsets, per-line
+completeness and overall line-list truncation remain explicit. These excerpts
+use the same source verification and transport checks as the requested page;
+durable evidence/trace stores only their positions, never their source text.
+This prevents a mispositioned page from hiding the actual failed call without
+selecting a method, changing a program or forcing another execution.
+For KeyError, a reported argument may also be matched to a constant literal
+inside the source-verified highlighted expression. Only its line/column range
+crosses the boundary, not the key value. Dynamic keys and unmatched/tampered
+source receive no inferred literal location. This disambiguates multiple keys
+on one failed line without selecting a replacement or inspecting data mappings.
+
 `RunStateStore` is the authority for restart-safe application control state.
+The latest completed EXECUTE capability checkpoint also persists a bounded
+`last_execution_activity` snapshot: source invocation/evidence identity, actual
+submission receipt IDs/statuses, and tool-loop termination reason. It is carried
+to subsequent stage inputs independently of model-authored summaries. Empty
+receipts means no completed submission in that invocation; an absent snapshot
+means unavailable checkpoint history. It neither judges science nor equates a
+completed stage/loop with a completed analysis. The original model prose remains
+auditable. Prior-result context now retains the original next-action proposal
+and reason as MODEL_CONTEXT, rather than dropping the Agent's proposed next step.
+
+The LabBio capability adapter counts configured `max_capability_turns` in actual
+provider responses using Pantheon's public observation/stop callbacks, not added
+history messages. Thus a batch of tool results does not exhaust later feedback
+opportunities. The last allowed batch completes before the turn-budget stop.
+The existing 64-item evidence bound remains: a batch that cannot fit is stopped
+before its effects, never partially executed or silently truncated. Evidence
+records MODEL_RETURNED, PROVIDER_TURN_LIMIT, CAPABILITY_EVIDENCE_LIMIT, or
+RUNTIME_RETURNED separately from technical collection completion. No task tool,
+scientific method, automatic retry, or next workflow stage is chosen by this
+budget mechanism. Pantheon itself is unchanged.
+
+Artifact queries retain the canonical Artifact lookup/authorization boundary.
+If lookup fails and the identifier is a known non-Artifact reference in the
+current stage's bound context, the error is INVALID_REFERENCE_KIND with its
+actual category. Genuine unknown IDs remain ARTIFACT_NOT_FOUND. Stage RESULT
+values already embedded in prior_results are not missing files. There is no
+reference conversion, automatic query, or context-derived access permission.
+
 `RunTrace` remains append-only observational evidence and is never interpreted
 to choose or reconstruct a `WorkflowRun` state. The local durable implementation
 uses stdlib SQLite, transactional Pydantic JSON, and optimistic record versions;
@@ -360,8 +423,39 @@ The default remains 10 and the maximum remains 100. A larger explicit request
 can make a small collection complete, while a collection above the maximum is
 always visibly partial.
 
-`ExposurePolicy` applies a deterministic matrix. `REMOTE_LLM` cannot view RAW
-artifacts. STRUCTURAL permits metadata/schema, AGGREGATE additionally permits
+`ExposurePolicy` applies a deterministic matrix. Following the explicit
+2026-09-15 user authorization, RAW with trusted RAW_INGESTION basis permits only
+METADATA: allowlisted metadata plus a `head_preview` for store-owned inputs.
+All files receive byte size and a bounded format hint; content signatures and
+UTF-8 checks distinguish confirmed prefix evidence from an extension hint.
+HDF5/H5AD provides bounded root/child field names, shapes and dtypes without
+reading datasets or following links; at most another 1 MiB of metadata reads
+is allowed after the prefix scan. NPY reads its header only (never pickle/data),
+Matrix Market reads dimensions, and complete bounded JSON provides top-level
+names/types rather than values. ZIP/TAR, BAM/CRAM, Parquet/Arrow, common image/PDF
+and bzip2/xz signatures provide container/format identity, not full parsing.
+Unknown binary/text files still provide size/type-hint/encoding facts without a
+content dump. Gzip permits bounded inspection of the decompressed prefix; other
+compression types are identified but not unpacked. Format recognition is not
+whole-file validation. Detailed support is intentionally finite, not a promise
+to parse every future format automatically.
+
+UTF-8 CSV/TSV files (including gzip) additionally expose at most the first 6 logical
+records including any header, 8 fields per record and 64 characters per field.
+The inspector reads at most 1 MiB plus one sentinel byte of decompressed input;
+there are no offsets, selectable columns, caller limits or full-file scans.
+The head reports format/compression, observed field counts and truncation; total
+records remains null unless EOF occurs within the head. It neither assigns
+header/axis semantics nor infers biological labels, samples or methods. These
+few original values do cross into model context under the new authorization;
+this is not a claim that no raw values ever leave the data plane. Known secret
+columns, recognizable credentials and absolute paths are redacted, but this is
+not a general PII classifier. Invalid text/unsupported formats return an explicit
+unavailable preview, never an arbitrary text dump. H5AD's separate trusted
+structural inspector remains unchanged. RAW generated scripts, logs and rejected
+outputs without RAW_INGESTION remain denied; raw SCHEMA/SUMMARY/TOP_N stay denied.
+Identity, workspace checks and read-only local execution admission are unchanged.
+STRUCTURAL permits metadata/schema, AGGREGATE additionally permits
 summary, and DERIVED permits all bounded view types. USER_APPROVED is a
 classification, not approval: a separate approval record matching the artifact
 and intended consumer is required. The Pantheon-facing adapter pins its consumer
@@ -455,12 +549,25 @@ output-contract failure, and registration failure remain structural technical
 outcomes; no DebugAgent or scientific diagnosis is performed.
 
 Python failure diagnostics recognize only the closed host-builtin `Exception`
-name vocabulary and the final traceback's terminal identity, never arbitrary
-exception names or messages. This includes standard file/permission/Unicode
+name vocabulary, never arbitrary exception names or messages. The final
+exception is first; at most three explicitly linked preceding exceptions retain
+their own locations and DIRECT_CAUSE/CONTEXT relation, without inheriting each
+other's argument types. This includes standard file/permission/Unicode
 subclasses without losing them behind an incomplete hand-maintained list.
 Source-verified numeric line/column information remains bounded; ambiguous
 multiline/annotated terminal forms are conservatively omitted. No path, raw
 stream, source excerpt, or automatic program repair is returned to the model.
+
+Missing-module identifiers must match static imports in the submitted program
+or in installed library source from the exact immutable execution image. For
+indirect dependencies, a fixed 15-second, read-only/no-network/no-data-mount
+probe parses at most eight referenced library files (1 MiB each), without
+importing or executing their code. Only bounded import identifiers are returned;
+traceback paths/source/messages do not enter model feedback. Probe failure or an
+unverified name leaves missing_module null, not proof that no dependency is
+missing. The probe never installs packages, rewrites the program or retries the
+analysis. Existing receipts, tool evidence and execution trace carry the same
+diagnostics independently of whether the runtime stage eventually finalizes.
 
 `execution_inspect` is a separate EXECUTE capability for revisiting the exact
 original program submitted by the Agent and its technical receipt. It accepts
@@ -516,6 +623,7 @@ Every model-visible source has exactly one role:
 |---|---|---|
 | `ArtifactView`, governed Artifact/Execution/Report capability item, `ExecutionReceipt` | `AUTHORITATIVE_EVIDENCE` | Host-governed evidence for current-run factual claims |
 | `RuntimePriorResultView`, Memory/Gold capability item | `MODEL_CONTEXT` | Bounded model-authored, procedural, or historical context; not current-run proof |
+| `literature_search` capability item | `MODEL_CONTEXT` | Bounded external literature excerpts and source links, not instructions or current-run measurements |
 | mixed `CapabilityEvidenceBundle` | item-level | A container does not promote its items; each item carries trusted authority |
 | stage/workspace/capability/gate state and `NextActionProposal` handling | `CONTROL_STATE` | Deterministic control facts or proposals, not scientific evidence |
 | task instruction, goal and caller-supplied domain references | `USER_ASSERTION` | The user's request or assertion, not measured evidence |
@@ -552,6 +660,21 @@ The Reviewer at `VALIDATE` assesses governed evidence available after
 `REPORT`; final-report factual correctness is not a guarantee of Reviewer
 acceptance. Report submission can mechanically retain and authorize evidence
 Artifact IDs, but the runtime model remains responsible for report composition.
+
+The built-in local-v3 composition binds INTERPRET to a separate
+`InterpretationAgent`/`runtime-interpretation` model profile. Its thinking is
+independently enabled (including tool reasoning continuity) without changing
+the shared Coordinator, ExecutionAgent, Reviewer, stage graph or budgets.
+Only INTERPRET may call `literature_search`: a host-side, bounded Europe PMC
+HTTPS lookup, not sandbox internet access or arbitrary URL fetching. The
+model chooses queries and source relevance. Returned metadata/abstract excerpts
+retain links, retrieval time and truncation markers in the existing capability
+checkpoint; they remain MODEL_CONTEXT. Each source includes an existing
+RuntimeReference with kind OTHER and its canonical URL as identity, not a
+local ARTIFACT UUID. No literature body or hidden reasoning
+is promoted to current-run scientific evidence. REPORT receives model-authored
+interpretation as before; automatic verification of its bibliography is not
+added. Custom external profiles remain explicit, not silently migrated.
 
 The intended stage-level sequence is:
 

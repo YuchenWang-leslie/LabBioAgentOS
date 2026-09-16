@@ -250,6 +250,10 @@ class PerInvocationPantheonStageInvoker:
                 actor_profile_key=profile.profile_key,
                 actor_agent_name=profile.agent_name,
                 capability_allowlist=spec.capability_allowlist,
+                context_references=(
+                    *stage_input.model_context_references,
+                    *stage_input.authoritative_evidence_references,
+                ),
                 mountable_input_artifact_ids=(
                     self.execution_capability.mountable_input_artifact_ids
                     if self.execution_capability is not None else None

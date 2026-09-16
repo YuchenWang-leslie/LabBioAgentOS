@@ -43,6 +43,8 @@ from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolic
 from labbioagentos.execution.models import (
     ExecutionDiagnostic,
     ExecutionRuntime,
+    ExecutionReceipt,
+    ExecutionStatus,
     OutputDeclassificationMode,
     RequestedResources,
 )
@@ -69,6 +71,9 @@ SafeIdentifier = Annotated[
 ]
 
 MAX_CAPABILITY_EVIDENCE_ITEMS = 64
+CapabilityTerminationReason = Literal[
+    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED"
+]
 
 
 class CapabilityEvidenceStatus(StrEnum):
@@ -581,6 +586,9 @@ class CapabilityEvidenceBundle(BaseModel):
         InformationAuthority.MODEL_CONTEXT
     )
     technical_status: Literal["COMPLETED"] = "COMPLETED"
+    termination_reason: CapabilityTerminationReason = "RUNTIME_RETURNED"
+    provider_turn_count: int = Field(default=0, ge=0)
+    provider_turn_limit: int | None = Field(default=None, ge=1)
 
 
 class RuntimeReferenceKind(StrEnum):
@@ -595,6 +603,40 @@ class RuntimeReferenceKind(StrEnum):
     EXECUTION = "EXECUTION"
     REPORT = "REPORT"
     OTHER = "OTHER"
+
+
+class RuntimeExecutionActivityReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    execution_id: UUID
+    status: ExecutionStatus
+
+
+class RuntimeExecutionActivity(BaseModel):
+    """Persisted technical facts from a completed EXECUTE capability checkpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
+    run_id: UUID
+    invocation_id: UUID
+    evidence_id: UUID
+    receipts: tuple[RuntimeExecutionActivityReceipt, ...] = Field(default=(), max_length=64)
+    termination_reason: CapabilityTerminationReason
+
+    @classmethod
+    def from_evidence(cls, evidence: CapabilityEvidenceBundle) -> "RuntimeExecutionActivity":
+        if evidence.stage_id is not WorkflowStage.EXECUTE:
+            raise ValueError("Execution activity requires an EXECUTE checkpoint")
+        receipts = []
+        for item in evidence.items:
+            if item.capability_name != "execution_submit" or item.status is not CapabilityEvidenceStatus.COMPLETED:
+                continue
+            if item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE:
+                raise ValueError("Execution receipt requires authoritative evidence")
+            receipt = ExecutionReceipt.model_validate_json(json.dumps(item.safe_result))
+            receipts.append(RuntimeExecutionActivityReceipt(execution_id=receipt.execution_id, status=receipt.status))
+        return cls(run_id=evidence.run_id, invocation_id=evidence.invocation_id,
+                   evidence_id=evidence.evidence_id, receipts=tuple(receipts),
+                   termination_reason=evidence.termination_reason)
 
 
 class RuntimeEvidenceRole(StrEnum):
@@ -823,6 +865,7 @@ class RuntimePriorResultView(BaseModel):
     model_references: tuple[RuntimeReference, ...] = Field(
         default=(), max_length=128
     )
+    model_next_action: NextActionProposal | None = None
 
     @field_validator("model_body")
     @classmethod
@@ -841,6 +884,7 @@ class RuntimePriorResultView(BaseModel):
             body_kind=result.body.kind,
             model_body=result.body.model_dump(mode="json"),
             model_references=result.references,
+            model_next_action=result.next_action,
         )
 
 
@@ -892,6 +936,10 @@ class RuntimeStageInput(BaseModel):
     clarifications: tuple[RuntimeClarificationView, ...] = Field(default=(), max_length=3)
     workflow_control: RuntimeWorkflowControlView | None = None
     execution_capability: RuntimeExecutionCapabilityView | None = None
+    last_execution_activity: RuntimeExecutionActivity | None = Field(default=None,
+        description="Latest completed EXECUTE capability checkpoint, independent of model prose. "
+        "Empty receipts means no completed execution submission in that invocation; "
+        "null means no recorded checkpoint, not a fabricated success or failure.")
     input_artifact_usage: tuple[RuntimeInputArtifactUsage, ...] = Field(
         default=(), max_length=256,
     )
@@ -899,6 +947,8 @@ class RuntimeStageInput(BaseModel):
 
     @model_validator(mode="after")
     def reject_non_runtime_stage(self) -> "RuntimeStageInput":
+        if self.last_execution_activity is not None and self.last_execution_activity.run_id != self.run_id:
+            raise ValueError("Execution activity must belong to this stage's run")
         if self.stage_id in {
             WorkflowStage.USER_GATE,
             WorkflowStage.SEARCH,

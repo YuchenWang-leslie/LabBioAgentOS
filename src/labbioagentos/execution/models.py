@@ -276,6 +276,14 @@ class ExecutionDiagnostic(BaseModel):
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
     )
     script_line_numbers: tuple[int, ...] = Field(default=(), max_length=16)
+    chain_relation: Literal["DIRECT_CAUSE", "CONTEXT"] | None = Field(
+        default=None,
+        description=(
+            "Null for the terminal exception; subsequent diagnostics identify the "
+            "preceding exception's relation to the previous diagnostic. Reported "
+            "traceback evidence, not an inferred scientific cause."
+        ),
+    )
     script_error_locations: tuple[ExecutionScriptLocation, ...] = Field(
         default=(), max_length=16,
         description="Source-verified traceback highlights in the submitted script.",
@@ -283,6 +291,14 @@ class ExecutionDiagnostic(BaseModel):
     missing_key_type: Literal["str", "bytes", "int", "float", "bool", "NoneType", "tuple"] | None = Field(
         default=None,
         description="Type of a literal KeyError argument, never its value or mapping contents.",
+    )
+    missing_key_source_locations: tuple[ExecutionScriptLocation, ...] = Field(
+        default=(), max_length=16,
+        description=(
+            "Literal positions in the verified failed source expression whose "
+            "type and value match the reported missing key. No key value or "
+            "mapping contents are released; empty means no verified literal match."
+        ),
     )
     reported_index_condition: Literal["OUT_OF_BOUNDS", "OUT_OF_BOUNDS_EMPTY_AXIS"] | None = Field(
         default=None,
@@ -297,6 +313,17 @@ class ExecutionDiagnostic(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
     )
+    reported_numerical_condition: Literal[
+        "ILL_CONDITIONED_FIT", "SINGULAR_MATRIX",
+        "DECOMPOSITION_DID_NOT_CONVERGE", "NON_FINITE_INPUT",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Finite condition reported by the exception, not a diagnosis of the "
+            "data or a repair instruction. Null means no recognized safe detail; "
+            "it does not mean that the numerical computation was valid."
+        ),
+    )
 
     @field_validator("script_line_numbers")
     @classmethod
@@ -309,8 +336,14 @@ class ExecutionDiagnostic(BaseModel):
 
     @model_validator(mode="after")
     def require_module_only_for_module_error(self) -> "ExecutionDiagnostic":
+        if self.reported_numerical_condition is not None and self.exception_type not in (
+            "ValueError", "LinAlgError", "numpy.linalg.LinAlgError",
+        ):
+            raise ValueError("Numerical conditions require a numerical exception type")
         if self.missing_key_type is not None and self.exception_type != "KeyError":
             raise ValueError("Only KeyError diagnostics may include a missing key type")
+        if self.missing_key_source_locations and self.exception_type != "KeyError":
+            raise ValueError("Only KeyError diagnostics may identify missing key literals")
         if self.reported_index_condition is not None and self.exception_type != "IndexError":
             raise ValueError("Only IndexError diagnostics may include an indexing condition")
         if self.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND:

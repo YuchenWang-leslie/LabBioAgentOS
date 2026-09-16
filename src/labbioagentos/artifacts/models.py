@@ -21,6 +21,8 @@ from pydantic import (
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.model_safety import validate_model_visible_json
 
+from .preview import RawHeadPreview
+
 
 class ArtifactExposureClass(StrEnum):
     """Security classification assigned by trusted LabBio producer code."""
@@ -231,6 +233,7 @@ class ArtifactView(BaseModel):
         InformationAuthority.AUTHORITATIVE_EVIDENCE
     )
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    head_preview: RawHeadPreview | None = None
     artifact_schema: ArtifactSchema | None = Field(
         default=None,
         validation_alias="schema",
@@ -274,6 +277,12 @@ class ArtifactView(BaseModel):
 
     @model_validator(mode="after")
     def validate_collection_completeness(self) -> "ArtifactView":
+        if self.head_preview is not None and not (
+            self.view_type is ArtifactViewType.METADATA
+            and self.exposure_class is ArtifactExposureClass.RAW
+            and self.release_basis is ArtifactReleaseBasis.RAW_INGESTION
+        ):
+            raise ValueError("Fixed head is only valid for ingested RAW METADATA")
         if self.returned_count != len(self.records):
             raise ValueError("returned_count must match the bounded records")
         if self.available_count < self.returned_count:

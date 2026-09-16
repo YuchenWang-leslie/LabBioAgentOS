@@ -213,6 +213,7 @@ def test_g7_completeness_metadata_preserves_the_leak_boundary(tmp_path):
         "release_basis",
         "authority",
         "metadata",
+        "head_preview",
         "schema",
         "columns",
         "summary",

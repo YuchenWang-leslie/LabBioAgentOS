@@ -214,12 +214,35 @@ class ExecutionSubmissionService:
         if source_offset > len(source):
             raise ValueError("Original-program offset exceeds the source")
         end = min(source_offset + source_limit, len(source))
+        # Offsets are computed from the verified original, never guessed from
+        # a truncated page. They let the caller choose a page around a failure.
+        reported_lines = {
+            line for item in submission.receipt.diagnostics for line in item.script_line_numbers
+        }
+        diagnostic_line_offsets, diagnostic_source_lines, offset = [], [], 0
+        for line_number, line in enumerate(source.splitlines(keepends=True), 1):
+            if line_number in reported_lines:
+                diagnostic_line_offsets.append({
+                    "line_number": line_number, "source_offset": offset,
+                    "source_end": offset + len(line),
+                })
+                if len(diagnostic_source_lines) < 8:
+                    diagnostic_source_lines.append({
+                        "line_number": line_number, "source_offset": offset,
+                        "source_end": offset + min(len(line), 512),
+                        "line_end": offset + len(line), "complete": len(line) <= 512,
+                        "source": line[:512],
+                    })
+            offset += len(line)
         return {
             "receipt": submission.receipt.model_dump(mode="json"),
             "submitted_program": {
                 "authority": "MODEL_CONTEXT", "script_hash": submission.source_hash,
                 "source_offset": source_offset, "source_end": end,
                 "total_characters": len(source), "complete": end == len(source),
+                "diagnostic_line_offsets": diagnostic_line_offsets,
+                "diagnostic_source_lines": diagnostic_source_lines,
+                "diagnostic_source_lines_truncated": len(diagnostic_line_offsets) > len(diagnostic_source_lines),
                 "source": source[source_offset:end],
             },
         }

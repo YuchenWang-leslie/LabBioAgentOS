@@ -120,6 +120,31 @@ async def test_restart_recovers_exact_image_and_never_rebuilds_a_valid_cache(env
 
 
 @pytest.mark.asyncio
+async def test_build_provenance_survives_discovery_cache_and_restart(environment):
+    from labbioagentos.execution.environments import EnvironmentService
+
+    first = await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",))
+    expected = {
+        "base_image_reference": environment.base.resolved_reference,
+        "verified_requirements": ["examplepkg==2.0"],
+        "verified_import_modules": ["examplepkg"],
+    }
+    assert first["build_provenance"] == expected
+    reopened = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+        RecordingBuilder(error=AssertionError("No implicit rebuild")), "user-one")
+    page = reopened.list_environments()
+    items = {item["image_key"]: item for item in page["items"]}
+    assert items[first["image_key"]]["build_provenance"] == expected
+    assert items[first["image_key"]]["requested_requirements"] == []
+    assert items["base"]["build_provenance"] is None
+    cached = await reopened.build_environment("base", ("examplepkg==2.0",), ("examplepkg",))
+    assert cached["cache_hit"] and cached["build_provenance"] == expected
+    assert cached["image_key"] == first["image_key"]
+    assert str(environment.root) not in json.dumps(page)
+    assert reopened.image_registry.resolve("base") == environment.base
+
+
+@pytest.mark.asyncio
 async def test_discovery_keeps_nonmatching_environments_visible_and_selects_nothing(environment):
     result = await environment.service.build_environment("base", ("examplepkg==2.0",))
     response = environment.service.list_environments(("examplepkg>=3.0",))

@@ -74,6 +74,10 @@ class RuntimeProfileConfigurationError(ValueError):
     pass
 
 
+class _CapabilityEvidenceLimitReached(Exception):
+    """The next batch cannot fit the existing evidence bound; no tools ran."""
+
+
 class PantheonRuntimeIntegrationError(RuntimeError):
     """Bounded error safe for application control and trace correlation."""
 
@@ -534,13 +538,38 @@ class PantheonCapabilityStageInvoker:
             None,
         )
         active_session = None
-        run_kwargs = {"max_turns": self.max_turns} if self.max_turns is not None else {}
+        # Pantheon's max_turns counts history messages, including tool results.
+        # Its public observation/stop hooks allow a provider-turn budget without
+        # changing Pantheon or cutting off a batch of tool effects mid-flight.
+        provider_turn_count = 0
+        budget_stopped = False
+        evidence_budget_stopped = False
+        model_returned = False
+
+        def observe_turn(observation):
+            nonlocal provider_turn_count, model_returned
+            provider_turn_count += 1
+            model_returned = observation.progress_kind == "CONTENT" and not observation.tool_names
+            if self.trace_recorder is not None:
+                self._record_provider_turn(stage_input, observation)
+            recorded = sum(len(source.evidence_items()) - offset
+                           for source, offset in zip(self.evidence_sources, offsets, strict=True))
+            if recorded + len(observation.tool_names) > MAX_CAPABILITY_EVIDENCE_ITEMS:
+                raise _CapabilityEvidenceLimitReached()
+
+        def check_turn_budget(chunk):
+            nonlocal budget_stopped
+            if chunk is None and self.max_turns is not None and provider_turn_count >= self.max_turns:
+                budget_stopped = True
+                return True
+            return False
+
+        run_kwargs = {
+            "process_turn_observation": observe_turn,
+            "check_stop": check_turn_budget,
+        }
         if self.max_no_progress_seconds is not None:
             run_kwargs["max_no_progress_seconds"] = self.max_no_progress_seconds
-        if self.trace_recorder is not None:
-            run_kwargs["process_turn_observation"] = lambda observation: (
-                self._record_provider_turn(stage_input, observation)
-            )
         try:
             if plugin is None:
                 response = await self.team.run(
@@ -570,6 +599,9 @@ class PantheonCapabilityStageInvoker:
                         **run_kwargs,
                     )
                     active_session.raise_trace_error()
+        except _CapabilityEvidenceLimitReached:
+            evidence_budget_stopped = True
+            response = None
         except NoObservableProgressError as exc:
             error = PantheonRuntimeIntegrationError(
                 "PROVIDER_NO_OBSERVABLE_PROGRESS",
@@ -635,9 +667,14 @@ class PantheonCapabilityStageInvoker:
             delegation_trace_event_ids=delegation_event_ids,
             explicit_completion=(
                 self._explicit_completion(response)
-                if self.preserve_explicit_completion
+                if self.preserve_explicit_completion and not budget_stopped and not evidence_budget_stopped
                 else None
             ),
+            termination_reason=("CAPABILITY_EVIDENCE_LIMIT" if evidence_budget_stopped else
+                                "PROVIDER_TURN_LIMIT" if budget_stopped else
+                                "MODEL_RETURNED" if model_returned else "RUNTIME_RETURNED"),
+            provider_turn_count=provider_turn_count,
+            provider_turn_limit=self.max_turns,
         )
         self._emit(
             stage_input,
@@ -648,6 +685,9 @@ class PantheonCapabilityStageInvoker:
                 "evidence_id": str(bundle.evidence_id),
                 "capability_count": len(bundle.items),
                 "delegation_reference_count": len(bundle.delegation_trace_event_ids),
+                "termination_reason": bundle.termination_reason,
+                "provider_turn_count": bundle.provider_turn_count,
+                "provider_turn_limit": bundle.provider_turn_limit,
             },
         )
         return bundle

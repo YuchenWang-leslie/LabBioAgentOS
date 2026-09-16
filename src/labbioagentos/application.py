@@ -83,6 +83,7 @@ from .governance import (
     WorkspaceContext,
 )
 from .memory import MemoryDecision, MemoryGovernanceService
+from .literature import LiteratureSearchService
 from .run_state import (
     ClarificationCheckpoint,
     ApplicationRunRecord,
@@ -115,7 +116,7 @@ from .runtime import (
 )
 from .runtime.assembly import BoundaryObserver, PluginFactory
 from .runtime.coordinator import RuntimeCoordinatorError, RuntimeCoordinatorService
-from .runtime.contracts import RuntimeInputArtifactUsage
+from .runtime.contracts import RuntimeInputArtifactUsage, RuntimeExecutionActivity
 from .runtime.pantheon import RuntimeProfileConfigurationError
 from .runtime.reporting import ReportReceipt
 from .skills import GoldSkillService, SkillUserDecision
@@ -570,6 +571,7 @@ class ApplicationRuntimeConfiguration:
     run_state_store: RunStateStore | None = None
     process_runner: DockerProcessRunner | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
+    literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
     domain_decision_handlers: tuple[ApplicationDomainDecisionHandler, ...] = ()
@@ -776,6 +778,7 @@ class LabBioApplication:
             artifact_exposure=self.artifact_exposure,
             execution_submission=self.execution_submission,
             environment_service=environment_service,
+            literature_search=configuration.literature_search,
             skill_service=configuration.skill_service,
             memory_service=configuration.memory_service,
             report_submission=self.report_submission,
@@ -1339,6 +1342,7 @@ class LabBioApplication:
                         session,
                         stage=stage,
                     ),
+                    last_execution_activity=self.run_state_store.get(run.run_id).last_execution_activity,
                     body=body,
                     invocation_id=invocation_id,
                 )
@@ -1891,8 +1895,11 @@ class LabBioApplication:
             if previous != value:
                 raise ApplicationRunStateError("An invocation checkpoint cannot be overwritten")
             return
+        update = {field_name: value}
+        if kind == "capability_evidence" and isinstance(value, CapabilityEvidenceBundle) and value.stage_id is WorkflowStage.EXECUTE:
+            update["last_execution_activity"] = RuntimeExecutionActivity.from_evidence(value)
         stored = self.run_state_store.update(
-            current.model_copy(update={field_name: value}),
+            current.model_copy(update=update),
             expected_version=session.record_version,
         )
         session.record_version = stored.record_version

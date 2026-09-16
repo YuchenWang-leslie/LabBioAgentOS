@@ -58,7 +58,7 @@ Artifact/交付副本及保留的失败版本。应按磁盘余量、内存和�
 策略不变，H5AD 可信检查器的独立输入额度也不随之扩大。
 
 这些额度进入运行 manifest/revision，并作为真实执行能力字段提供给 Agent；
-Agent 不能通过任务文字或工具参数自行提高额度。RAW 文件仍只在本地，
+Agent 不能通过任务文字或工具参数自行提高额度。完整 RAW 文件仍只在本地，
 模型可读 DERIVED 摘要的独立大小和字段合同不变。新配置只用于新任务；
 不要用它恢复配置不匹配的旧运行，也不需要重启 Docker 或修改全局代理。
 
@@ -104,10 +104,23 @@ labbio run \
 不指定 `--output` 时，在结果根目录下自动创建唯一目录。
 显式输出目录必须尚不存在，且位于配置的结果根目录内。
 
-数据默认为 `raw`，原始文件只允许本地沙盒读取，不直接发送给远程模型。
-文件名后缀不会选择分析方法，也不会自动启动检查器。H5AD 的既有安全结构检查
+数据默认为 `raw`。按 2026-09-15 用户授权，所有已登记输入的
+`artifact_query(METADATA)` 均可提供基本格式信息，不限定 CSV：文件大小、
+后缀提示、内容头部可确认的类型/压缩和可用的有限结构。H5AD/HDF5 提供有限字段名、
+shape/dtype（不读矩阵，不跟随外部链接）；NPY 仅解析数组头部，Matrix Market
+读取维度，JSON 提供顶层名称和类型而非完整值。ZIP/TAR、BAM/CRAM、Parquet/Arrow、
+常见图片/PDF、bzip2/xz 可识别签名；这不等于完整解析或格式校验。未知格式仍显示
+大小、格式提示和可确认的编码事实，不自动猜成某种分析输入。
+
+此外提供固定 head：UTF-8 CSV/TSV（含 gzip）前 6 条逻辑记录（含可能的表头）、
+前 8 列，每格最多 64 个字符；这些少量原始值会进入远程模型上下文。
+返回格式、压缩信息、已观察记录的字段数和截断标记，不猜行列含义；未读到文件末尾时
+总记录数保持未知。不支持分页、任意路径、可选列或提高预览额度。完整数据仍由本地
+沙盒处理；不支持的格式/无效文本会明确返回不可预览，已识别的秘密和路径会遮蔽。
+该遮蔽不等于通用个人信息脱敏。模型查询才触发有界格式读取，文件名后缀只选择
+CSV/TSV 解析器，不选择分析方法或工具顺序。H5AD 的既有安全结构检查
 可以通过 `--format h5ad` 显式启用，或在可信配置设置 `default_format`。
-未启用检查器的输入仍可由 Agent 自己编写程序读取；CLI 不代它解析和概括原始数据。
+未支持预览的输入仍可由 Agent 自己编写程序读取；CLI 不代它判断科学含义或概括数据。
 但 RAW 登记能力不等于任意格式的模型行为已获验证；显式 H5AD 与无检查器的
 CSV 分别测试，不能用其中一项的成功替代另一项验收，具体状态见文末。
 
@@ -214,7 +227,8 @@ Docker、containerd、docker.socket 均为 active，没有遗留运行中的任�
 
 ## 显式模型思考配置（2026-09-09 开发中）
 
-`[provider]` 可设置 `thinking_enabled = true`，缺省仍为 false，旧配置行为不变。
+`[provider]` 可设置 `thinking_enabled = true`，共享模型缺省仍为 false。
+2026-09-15 起内置 local-v3 的 INTERPRET 改用独立配置，见下节；其余阶段不变。
 该设置进入运行 manifest/revision，不改变任务文字、方法选择、token 上限或
 重试限额。启用时使用显式兼容 Chat transport 的私有工具推理连续性；不能只
 开启 provider 开关却删除下一轮协议所需的字段。隐藏推理只在同次运行、同一
@@ -222,6 +236,48 @@ Docker、containerd、docker.socket 均为 active，没有遗留运行中的任�
 此选项需要匹配的 Pantheon fork 修订；`constraints/pantheon-runtime.txt` 已锁定
 发布到用户 fork 的 `07675c45b538f7d27b9b16b1b7d8b72f37365293`，不声称官方
 发布已包含。具体测试、修订身份与发布状态以当前 workplan 为准。
+
+### 仅解读阶段的 thinking 与文献联网（2026-09-15）
+
+内置 `local-v3` 将 INTERPRET 绑定到独立 `InterpretationAgent`，而不是修改
+其他阶段共用的 Coordinator。实际发往 provider 的两个解读阶段模式均携带
+`thinking: {"type": "enabled"}`；能力阶段保留所需的私有工具推理连续性，
+不持久化隐藏推理。配置如下（与缺省一致）：
+
+```toml
+[provider]
+thinking_enabled = false
+interpretation_thinking_enabled = true
+```
+
+其他阶段继续使用原 `thinking_enabled`；模型名称、输出预算、能力回合数及
+工作流重试上限不变。当前解释模型与其他 Agent 使用同一已配置模型服务。
+外部自定义 `profile` 不会被自动改写；要采用本配置，须显式把 INTERPRET
+的 root 设为 `interpretation`，并在其 capabilities 中加入 `literature_search`。
+
+`literature_search(query, limit=3)` 仅在 INTERPRET 可用，通过固定 HTTPS
+[Europe PMC 文献接口](https://europepmc.org/RestfulWebService) 检索公开生物医学
+文献（含 PubMed 来源）。Agent 自行决定是否检索、检索词和来源取舍；无固定
+科学检索词、自动重试或代选文献。只发送查询文字，不读取或上传任务文件。
+查询最多 400 字符，一次最多 5 条；每条返回来源 ID、链接、标题、作者、年份、
+DOI（可缺失）和最多 1600 字符的摘要片段。缺失与截断明确标记，不冒称全文。
+每条记录还携带现有 `RuntimeReference` 格式的 `source_reference`：kind 为
+`OTHER`、reference_id 为来源 URL。外部文献不注册为本地 Artifact；其文献
+编号不能传给 `artifact_query`。这是引用身份事实，不替 Agent 选择文献。
+
+返回内容属于不可信外部 `MODEL_CONTEXT`，不是指令、审批或当前实验结果。
+查询、检索时间、来源和摘要片段进入现有能力证据；完成的能力阶段可经既有
+SQLite checkpoint 恢复，FINALIZE_ONLY 不重放检索。普通 trace 仅记录调用
+关联及安全状态，不存外部原始响应或任意工具参数。网络错误返回固定安全错误码，
+不冒充空结果。Agent 负责在解读中保留引用与限制，后续 REPORT 仍接收它的
+MODEL_CONTEXT；本改动没有增加最终报告的自动引用真实性审查。
+
+这是文献联网检索，不是任意网页浏览或全文获取。无需额外 API 密钥；使用
+系统已有 TLS 信任与进程代理，不关闭证书检查、不修改代理设置、不开放 Docker
+网络。新增配置/profile 会改变 runtime revision，只适用于新任务；不能用它
+强行续接旧 revision 的中断任务。当前范围是本地 CLI，不代表生产服务部署。
+
+### 其他执行与模型协议约束
 
 语法预检拒绝现在携带提交 SHA 和安全异常类型/行列，贯通工具反馈及即时审计。
 `execution_submit_request.validation_status=VALID` 仍仅表示字段结构通过，不是
@@ -231,8 +287,9 @@ Docker、containerd、docker.socket 均为 active，没有遗留运行中的任�
 普通越界和空轴越界。标准格式以外保持未知；不回传索引、轴、长度、错误文本
 或变量值，也不据此自动改程序。这个字段不是对数据对象的独立事实认证。
 
-开启 thinking 的两个新任务均未通过：一个未修复重复运行错误，另一个在
-16,384 completion tokens 内没有发出执行工具调用。该配置不因此晋升为默认，
+2026-09-09 开启共享 thinking 的两个新任务均未通过：一个未修复重复运行错误，
+另一个在 16,384 completion tokens 内没有发出执行工具调用。共享/执行模型的
+thinking 不因此晋升为默认（区别于上节单独配置的解读 Agent），
 也不通过隐藏 fallback 改变运行中的模式；后续显式配置实验及结果见 workplan。
 
 `[provider] provider_tool_schema_strict = true` 是独立的服务端工具 schema

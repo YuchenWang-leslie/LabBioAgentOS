@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from labbioagentos.literature import LiteratureSearchService
 from labbioagentos import (
     ApplicationExecutionProfile, ApplicationRuntimeConfiguration, ApprovedImage,
     CapabilityProfile, ExecutionPolicy, ExecutionRuntime, JsonlTraceSink,
@@ -35,6 +36,7 @@ class LocalProviderSettings(_SettingsModel):
     base_url_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     model_identifier: str = Field(min_length=1, max_length=256)
     thinking_enabled: bool = False
+    interpretation_thinking_enabled: bool = True
     provider_tool_schema_strict: bool = False
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
 
@@ -230,7 +232,16 @@ def build_application(
         _load_provider(settings.provider)
     run_root = run_root.expanduser().resolve()
     run_root.mkdir(parents=True, exist_ok=True)
-    profiles = default_agent_profiles()
+    defaults = default_agent_profiles()
+    # A separate catalog binding keeps the shared Coordinator's other stages
+    # unchanged, including both capability and finalization model parameters.
+    interpretation = defaults[0].model_copy(update={
+        "profile_key": "interpretation", "agent_name": "InterpretationAgent",
+        "role_description": "Interpret accessible results and external literature within the current stage contract.",
+        "model_profile_key": "runtime-interpretation",
+        "capability_profile_key": "interpretation-capabilities",
+    })
+    profiles = (*defaults, interpretation)
     capabilities = {
         agent.profile_key: tuple(sorted({
             capability for stage in profile.stages if stage.root == agent.profile_key
@@ -242,17 +253,20 @@ def build_application(
         agents=profiles,
         prompts=(PromptProfile(template_id="runtime-generic", version=profile.version,
                                template_text="{protocol}", max_value_length=8_000),),
-        models=(ModelProfile(
-            profile_key="runtime-default", version=profile.version,
+        models=tuple(ModelProfile(
+            profile_key=key, version=profile.version,
             model_identifier=settings.provider.model_identifier,
             provider_config=ProviderConfigRef(config_id="local-provider", provider="openai-compatible"),
             transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
-            thinking_enabled=settings.provider.thinking_enabled,
-            private_tool_reasoning_continuity=settings.provider.thinking_enabled,
+            thinking_enabled=thinking,
+            private_tool_reasoning_continuity=thinking,
             provider_tool_schema_strict=settings.provider.provider_tool_schema_strict,
             thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
             max_output_tokens=settings.provider.max_output_tokens,
-        ),),
+        ) for key, thinking in (
+            ("runtime-default", settings.provider.thinking_enabled),
+            ("runtime-interpretation", settings.provider.interpretation_thinking_enabled),
+        )),
         schemas=(ResponseSchemaRef(),),
         capabilities=tuple(CapabilityProfile(
             profile_key=agent.capability_profile_key, version=profile.version,
@@ -344,6 +358,7 @@ def build_application(
             boundary_observer=observe, retry_limit=1,
             skill_service=skill_service, domain_decision_handlers=handlers,
             environment_service_factory=environment_service_factory,
+            literature_search=LiteratureSearchService(),
         ))
         cleanup.pop_all()  # The caller now owns both stores, including failure cleanup.
         return application
