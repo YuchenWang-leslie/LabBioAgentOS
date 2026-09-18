@@ -18,6 +18,7 @@ from labbioagentos import (
     RuntimeStageResult, SQLiteRunStateStore, WorkflowStage, WorkspaceContext,
 )
 from labbioagentos.local_delivery import LocalDeliveryError, export_run
+from labbioagentos.runtime.contracts import ExecuteStageBody, RuntimeReference, RuntimeReferenceKind
 from test_application_runtime_c5 import MAIN_PATH, _body, _configuration
 
 
@@ -83,6 +84,7 @@ def _register_deliverables(local_run, tmp_path):
 async def test_exact_local_output_report_idempotence_and_recovered_export(local_run, tmp_path, monkeypatch):
     application, handle, principal, workspace = local_run
     output, report_id, payload = _register_deliverables(local_run, tmp_path)
+    historical, _, _ = _register_deliverables(local_run, tmp_path / "later-unselected")
     calls = []
 
     async def invoke(_self, stage_input):
@@ -91,20 +93,27 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
         action = NextActionProposal(action=NextAction.FINISH) if stage is WorkflowStage.LEARN else NextActionProposal(
             action=NextAction.TRANSITION, target_stage=MAIN_PATH[MAIN_PATH.index(stage) + 1]
         )
-        return RuntimeStageResult(stage_id=stage, summary="Synthetic stage", body=_body(stage), next_action=action)
+        body = (_body(stage) if stage is not WorkflowStage.EXECUTE else ExecuteStageBody(
+            execution_status="SUCCEEDED", execution_reference=RuntimeReference(
+                kind=RuntimeReferenceKind.EXECUTION, reference_id=output.metadata["execution_id"])))
+        return RuntimeStageResult(stage_id=stage, summary="Synthetic stage", body=body, next_action=action)
 
     monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
     await application.run(handle)
     directory = tmp_path / "delivery"
     manifest = _export(local_run, directory)
     assert manifest["status"] == "COMPLETED"
-    assert manifest["report_artifact_ids"] == [str(report_id)]
+    assert str(report_id) in manifest["report_artifact_ids"]
     assert len(manifest["outputs"]) == 1
+    assert len(manifest["historical_outputs"]) == 1
+    assert manifest["historical_outputs"][0]["artifact_id"] == str(historical.artifact_id)
+    assert manifest["historical_outputs"][0]["file"].startswith("history/outputs/")
     item = manifest["outputs"][0]
     assert item["file"] == f"outputs/{output.artifact_id}/original cells.tsv"
     assert (directory / item["file"]).read_bytes() == payload
     stored = application.artifact_store.load_for_view(report_id).representation.stored_content
-    assert (directory / "REPORT.md").read_bytes() == stored.encode()
+    exported_report = next(item for item in manifest["reports"] if item["artifact_id"] == str(report_id))
+    assert (directory / exported_report["file"]).read_bytes() == stored.encode()
     assert "original%20cells.tsv" in (directory / "README.md").read_text()
     assert json.loads((directory / "RESULT.json").read_text()) == manifest
     assert "PRIVATE_CELL" not in (directory / "RESULT.json").read_text()
@@ -133,9 +142,9 @@ def test_export_collisions_preserve_existing_files(local_run, tmp_path, collisio
     elif collision == "symlink":
         (directory / "REPORT.md").symlink_to(sentinel)
     elif collision == "parent_symlink":
-        (directory / "outputs").symlink_to(tmp_path, target_is_directory=True)
+        (directory / "history").symlink_to(tmp_path, target_is_directory=True)
     else:
-        (directory / "outputs").write_text("DO_NOT_CHANGE")
+        (directory / "history").write_text("DO_NOT_CHANGE")
     with pytest.raises(LocalDeliveryError):
         _export(local_run, directory)
     assert sentinel.read_text() == "DO_NOT_CHANGE"

@@ -55,7 +55,7 @@ def test_identical_bytes_and_duplicate_names_remain_distinct_inputs(tmp_path, fi
     assert [reopened.get_ref(ref.artifact_id).original_filename for ref in refs] == list(filenames)
     _, mounts, workspace = _workspace(tmp_path, reopened, refs)
     assert len({mount.target for mount in mounts}) == len(refs)
-    assert [mount.target.name for mount in mounts] == [str(ref.artifact_id) for ref in refs]
+    assert [mount.target.name for mount in mounts] == [str(ref.artifact_id) + ".csv.gz" for ref in refs]
     # A consumer keyed by mounted basename cannot silently overwrite an input.
     by_basename = {mount.target.name: mount.source.read_bytes() for mount in mounts}
     assert len(by_basename) == len(refs)
@@ -141,7 +141,8 @@ def test_unusual_original_names_are_json_data_not_mount_syntax(tmp_path, filenam
     store = LocalArtifactStore(tmp_path / "artifacts")
     ref = _register(store, source)
     plan, mounts, workspace = _workspace(tmp_path, store, (ref,))
-    assert mounts[0].target.name == str(ref.artifact_id)
+    suffix = ".csv.gz" if filename.endswith(".csv.gz") else ""
+    assert mounts[0].target.name == str(ref.artifact_id) + suffix
     assert mounts[0].target.is_relative_to(PurePosixPath("/labbio/inputs"))
     assert mounts[0].original_filename == filename
     identities = json.loads(workspace.input_identities_path.read_text(encoding="utf-8"))
@@ -156,6 +157,23 @@ def test_unusual_original_names_are_json_data_not_mount_syntax(tmp_path, filenam
     assert identity_mount.endswith(",readonly")
     assert str(workspace.input_identities_path) in identity_mount
     assert argv[argv.index("--network") + 1] == "none"
+
+
+@pytest.mark.parametrize("filename,suffix", (
+    ("processed.h5ad", ".h5ad"), ("counts.csv.gz", ".csv.gz"),
+    ("archive.tar.gz", ".tar.gz"), ("table.parquet", ".parquet"),
+    ("no_extension", ""), ("bad.x,readonly", ""),
+))
+def test_local_manifest_retains_registered_format_suffix_without_guessing(tmp_path, filename, suffix):
+    source = tmp_path / filename
+    source.write_bytes(b"generic fixture")
+    store = LocalArtifactStore(tmp_path / "artifacts")
+    ref = _register(store, source)
+    _, mounts, workspace = _workspace(tmp_path, store, (ref,))
+    path = json.loads(workspace.input_manifest_path.read_text())[str(ref.artifact_id)]
+    assert path == str(PurePosixPath("/labbio/inputs", str(ref.artifact_id), str(ref.artifact_id) + suffix))
+    assert mounts[0].read_only
+    assert mounts[0].source.read_bytes() == source.read_bytes()
 
 
 @pytest.mark.asyncio
@@ -182,7 +200,7 @@ async def test_private_identity_never_enters_remote_tools_or_trace(tmp_path, art
     replies = [await tools.artifact_list()]
     for view in ("METADATA", "SCHEMA", "SUMMARY", "TOP_N"):
         response = await tools.artifact_query(str(ref.artifact_id), view)
-        assert response["success"] is (exposure is ArtifactExposureClass.DERIVED)
+        assert response["success"] is (exposure is ArtifactExposureClass.DERIVED or view == "METADATA")
         replies.append(response)
     encoded = json.dumps({
         "replies": replies,

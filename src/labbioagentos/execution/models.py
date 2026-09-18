@@ -276,6 +276,14 @@ class ExecutionDiagnostic(BaseModel):
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
     )
     script_line_numbers: tuple[int, ...] = Field(default=(), max_length=16)
+    chain_relation: Literal["DIRECT_CAUSE", "CONTEXT"] | None = Field(
+        default=None,
+        description=(
+            "Null for the terminal exception; subsequent diagnostics identify the "
+            "preceding exception's relation to the previous diagnostic. Reported "
+            "traceback evidence, not an inferred scientific cause."
+        ),
+    )
     script_error_locations: tuple[ExecutionScriptLocation, ...] = Field(
         default=(), max_length=16,
         description="Source-verified traceback highlights in the submitted script.",
@@ -283,6 +291,14 @@ class ExecutionDiagnostic(BaseModel):
     missing_key_type: Literal["str", "bytes", "int", "float", "bool", "NoneType", "tuple"] | None = Field(
         default=None,
         description="Type of a literal KeyError argument, never its value or mapping contents.",
+    )
+    missing_key_source_locations: tuple[ExecutionScriptLocation, ...] = Field(
+        default=(), max_length=16,
+        description=(
+            "Literal positions in the verified failed source expression whose "
+            "type and value match the reported missing key. No key value or "
+            "mapping contents are released; empty means no verified literal match."
+        ),
     )
     reported_index_condition: Literal["OUT_OF_BOUNDS", "OUT_OF_BOUNDS_EMPTY_AXIS"] | None = Field(
         default=None,
@@ -297,6 +313,17 @@ class ExecutionDiagnostic(BaseModel):
         max_length=128,
         pattern=r"^[A-Za-z_][A-Za-z0-9_.]*$",
     )
+    reported_numerical_condition: Literal[
+        "ILL_CONDITIONED_FIT", "SINGULAR_MATRIX",
+        "DECOMPOSITION_DID_NOT_CONVERGE", "NON_FINITE_INPUT",
+    ] | None = Field(
+        default=None,
+        description=(
+            "Finite condition reported by the exception, not a diagnosis of the "
+            "data or a repair instruction. Null means no recognized safe detail; "
+            "it does not mean that the numerical computation was valid."
+        ),
+    )
 
     @field_validator("script_line_numbers")
     @classmethod
@@ -309,8 +336,14 @@ class ExecutionDiagnostic(BaseModel):
 
     @model_validator(mode="after")
     def require_module_only_for_module_error(self) -> "ExecutionDiagnostic":
+        if self.reported_numerical_condition is not None and self.exception_type not in (
+            "ValueError", "LinAlgError", "numpy.linalg.LinAlgError",
+        ):
+            raise ValueError("Numerical conditions require a numerical exception type")
         if self.missing_key_type is not None and self.exception_type != "KeyError":
             raise ValueError("Only KeyError diagnostics may include a missing key type")
+        if self.missing_key_source_locations and self.exception_type != "KeyError":
+            raise ValueError("Only KeyError diagnostics may identify missing key literals")
         if self.reported_index_condition is not None and self.exception_type != "IndexError":
             raise ValueError("Only IndexError diagnostics may include an indexing condition")
         if self.code is ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND:
@@ -319,6 +352,19 @@ class ExecutionDiagnostic(BaseModel):
         elif self.missing_module is not None:
             raise ValueError("Only missing-module diagnostics may include a module name")
         return self
+
+
+class ExecutionErrorContext(BaseModel):
+    """Explicitly authorized bounded error text, not scientific evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal["UNTRUSTED_PROCESS_ERROR"] = "UNTRUSTED_PROCESS_ERROR"
+    source: Literal["PYTHON_TRACEBACK", "STDERR_TAIL"]
+    text: StrictStr = Field(max_length=6000)
+    truncated: bool
+    redacted: bool
+    stderr_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ExecutionResult(BaseModel):
@@ -346,6 +392,7 @@ class ExecutionResult(BaseModel):
     error_message: StrictStr | None = Field(default=None, max_length=2000)
     issues: tuple[ExecutionIssue, ...] = ()
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
+    error_context: ExecutionErrorContext | None = None
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -369,23 +416,28 @@ class ExecutionReceipt(BaseModel):
         default=(),
         description="Output Artifact UUIDs that are queryable by remote runtime models.",
     )
+    registered_outputs: dict[UUID, Annotated[StrictStr, Field(max_length=255)] | None] = Field(
+        default_factory=dict, max_length=128,
+        description="Complete registered output inventory: Artifact UUID to filename, including non-queryable files. A write in source code is not proof of registration. Null means filename unavailable; legacy receipts may lack this inventory.",
+    )
     stdout_artifact_id: UUID | None = Field(
         default=None,
-        description="Reserved for compatibility; RAW stdout is never model-queryable.",
+        description="Registered stdout identity when generated-file reading is authorized; otherwise null.",
     )
     stderr_artifact_id: UUID | None = Field(
         default=None,
-        description="Reserved for compatibility; RAW stderr is never model-queryable.",
+        description="Registered stderr identity when generated-file reading is authorized; otherwise null.",
     )
     issue_codes: tuple[ExecutionFailureClass, ...] = ()
     issue_detail_codes: tuple[OutputContractFailureCode, ...] = ()
     issue_messages: tuple[StrictStr, ...] = Field(default=(), max_length=32)
     output_issues: tuple[ExecutionOutputIssue, ...] = Field(default=(), max_length=128)
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
+    error_context: ExecutionErrorContext | None = None
     retryable: bool = False
 
     @classmethod
-    def from_result(cls, result: ExecutionResult) -> "ExecutionReceipt":
+    def from_result(cls, result: ExecutionResult, *, include_generated_file_refs: bool = False) -> "ExecutionReceipt":
         retryable_classes = {
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
@@ -418,8 +470,19 @@ class ExecutionReceipt(BaseModel):
                 for ref in result.output_artifact_refs
                 if ref.exposure_class is not ArtifactExposureClass.RAW
             ),
-            stdout_artifact_id=None,
-            stderr_artifact_id=None,
+            registered_outputs={
+                ref.artifact_id: (
+                    ref.original_filename
+                    if ref.original_filename and len(ref.original_filename) <= 255
+                    and not any(c in ref.original_filename for c in ("/", "\\", "\n", "\r", "\0"))
+                    else None
+                )
+                for ref in result.output_artifact_refs
+            },
+            stdout_artifact_id=(result.stdout_ref.artifact_id
+                if include_generated_file_refs and result.stdout_ref else None),
+            stderr_artifact_id=(result.stderr_ref.artifact_id
+                if include_generated_file_refs and result.stderr_ref else None),
             issue_codes=codes,
             issue_detail_codes=detail_codes,
             issue_messages=messages,
@@ -434,6 +497,7 @@ class ExecutionReceipt(BaseModel):
                 if issue.output_index is not None
             ),
             diagnostics=result.diagnostics,
+            error_context=result.error_context,
             retryable=any(code in retryable_classes for code in codes),
         )
 

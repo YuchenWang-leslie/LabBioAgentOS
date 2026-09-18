@@ -576,7 +576,8 @@ def test_output_contract_failure_projects_a_safe_specific_detail_code(tmp_path):
     assert receipt.issue_detail_codes == (OutputContractFailureCode.FILE_TOO_LARGE,)
     encoded = receipt.model_dump_json()
     assert "x" * 64 not in encoded
-    assert "oversized.json" not in encoded
+    assert set(receipt.registered_outputs.values()) == {"oversized.json"}
+    assert str(tmp_path) not in encoded
 
 
 def test_output_contract_does_not_rewrite_an_unsupported_exposure_request(tmp_path):
@@ -856,10 +857,13 @@ def test_chained_builtin_subclass_keeps_only_terminal_script_locations(monkeypat
     diagnostics = DockerExecutor._safe_python_diagnostics(
         _synthetic_traceback(source, monkeypatch), script_content=source
     )
-    assert len(diagnostics) == 1
+    assert len(diagnostics) == 2
     assert diagnostics[0].exception_type == "FileNotFoundError"
     assert diagnostics[0].script_line_numbers == (4,)
     assert diagnostics[0].missing_key_type is None
+    assert diagnostics[1].exception_type == "KeyError"
+    assert diagnostics[1].script_line_numbers == (2,)
+    assert diagnostics[1].chain_relation == "CONTEXT"
     assert "PRIVATE_PATH" not in diagnostics[0].model_dump_json()
 
 

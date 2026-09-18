@@ -78,8 +78,9 @@ def scoped_settings(args, settings):
     )
     with WorkspaceRegistry(root) as registry:
         workspace = registry.resolve(args.user, args.project, credential)
-    if args.command == "run":
-        args.data = [workspace.check_input(path) for path in args.data]
+    if args.command in {"run", "revise"}:
+        if args.command == "run":
+            args.data = [workspace.check_input(path) for path in args.data]
         if args.output is not None:
             workspace.validate_run(args.output)
     elif hasattr(args, "run_dir"):

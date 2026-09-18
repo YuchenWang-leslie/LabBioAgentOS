@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from pantheon.agent import Agent
+from pantheon.providers import LocalProvider
 from pydantic import ValidationError
 
 from labbioagentos import (
@@ -281,7 +282,7 @@ async def test_pantheon_native_validation_failure_is_classified_as_malformed():
         ("coordinator",), prompt_values={"coordinator": {"boundary": "bounded"}}
     )
 
-    async def run(_self, _message):
+    async def run(_self, _message, **kwargs):
         RuntimeStageResult.model_validate({"invalid": "provider value"})
 
     team.run = MethodType(run, team)
@@ -354,13 +355,15 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
         (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view", "environment_list"}),
         (WorkflowStage.PREFLIGHT, {"artifact_query"}),
         (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_inspect", "environment_list", "environment_build"}),
-        (WorkflowStage.VALIDATE, {"artifact_query"}),
-        (WorkflowStage.INTERPRET, {"artifact_query"}),
-        (WorkflowStage.REPORT, {"artifact_query", "report_submit"}),
+        (WorkflowStage.VALIDATE, {"artifact_query", "artifact_aggregate", "execution_inspect"}),
+        (WorkflowStage.INTERPRET, {"artifact_query", "artifact_aggregate", "literature_search", "execution_inspect"}),
+        (WorkflowStage.REPORT, {"artifact_query", "artifact_aggregate", "report_submit", "execution_inspect"}),
         (WorkflowStage.LEARN, {"skill_search", "skill_view", "memory_search", "memory_view", "memory_propose_update"}),
     ),
 )
 def test_stage_capability_ceiling_is_exact(stage, expected):
+    if "artifact_query" in expected:
+        expected = expected | {"report_read", "file_read"}
     assert set(CAPABILITY_CEILINGS[stage]) == expected
 
 
@@ -661,19 +664,26 @@ async def test_impossible_output_declaration_reaches_tool_evidence_and_trace(
         "requested_exposure": "RAW" if declaration == "raw" else "DERIVED",
         "output_contract_id": contract.contract_id,
     }]
-    result = await toolset.execution_submit(
-        image_key="python-fixture", script_content="print('PRIVATE_PROGRAM')",
-        parameters={"credential": "PRIVATE_CREDENTIAL", "path": "/private/input"},
-        requested_outputs=outputs,
-    )
+    provider = LocalProvider(toolset)
+    await provider.initialize()
+    await provider.list_tools()
+    result = await provider.call_tool("execution_submit", {
+        "image_key": "python-fixture", "script_content": "print('PRIVATE_PROGRAM')",
+        "parameters": {"credential": "PRIVATE_CREDENTIAL", "path": "/private/input"},
+        "requested_outputs": outputs,
+    })
     expected = {
+        "field": "requested_outputs",
+        "requested_output_count": len(outputs),
         "minimum_queryable_output_count": minimum,
         "declared_queryable_output_count": int(declaration == "one_of_two"),
     }
     assert result["success"] is False
-    assert result["data"] is None
+    assert result["data"] == {"execution_output_declaration": expected}
     assert result["error"]["error_code"] == "INVALID_OUTPUT_DECLARATION"
     assert "No execution started" in result["error"]["safe_message"]
+    assert "requested_outputs" in result["error"]["safe_message"]
+    assert "stdout" in result["error"]["safe_message"]
     assert f"at least {minimum}" in result["error"]["safe_message"]
     assert runner.calls == 0
     assert store.list_refs() == ()

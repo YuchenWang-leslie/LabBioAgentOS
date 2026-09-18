@@ -340,10 +340,16 @@ def test_request_and_ingestion_keep_paths_and_raw_content_outside_model_contract
     assert handle.run_id
     assert "storage_locator" not in raw.model_dump_json()
     assert raw.exposure_class is ArtifactExposureClass.RAW
+    metadata = application.artifact_exposure.artifact_query(
+        raw.artifact_id, ArtifactQuery(view_type=ArtifactViewType.METADATA),
+        ArtifactConsumer.REMOTE_LLM, principal=principal,
+    )
+    assert metadata.head_preview.format == "text"
+    assert "private,row" not in metadata.model_dump_json()
     with pytest.raises(ArtifactExposureDenied):
         application.artifact_exposure.artifact_query(
             raw.artifact_id,
-            ArtifactQuery(view_type=ArtifactViewType.METADATA),
+            ArtifactQuery(view_type=ArtifactViewType.SUMMARY),
             ArtifactConsumer.REMOTE_LLM,
             principal=principal,
         )

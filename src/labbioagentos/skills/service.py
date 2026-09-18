@@ -145,8 +145,6 @@ class GoldSkillService:
             raise SkillStoreError(
                 "Skill source evidence references exceed the proposal bound"
             )
-        if len(bundle.trace_event_ids) > 512:
-            raise SkillStoreError("Skill source trace references exceed the proposal bound")
         proposal = SkillProposal(
             source_bundle_id=bundle.bundle_id,
             source_run_id=bundle.source_run_id,
@@ -170,7 +168,8 @@ class GoldSkillService:
                     for item in bundle.execution_refs
                     if item.script_artifact_id is not None
                 ),
-                source_trace_event_ids=bundle.trace_event_ids,
+                # Complete trace lineage stays in the immutable source bundle,
+                # referenced by the proposal and Gold; do not duplicate it here.
             ),
         )
         self.store.save_proposal(proposal)

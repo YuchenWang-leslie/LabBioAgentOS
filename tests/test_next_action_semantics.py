@@ -53,6 +53,7 @@ def _stage(stage):
         invoker=unused_invoker,
         retry_enabled=False,
         user_input_enabled=False,
+        clarification_enabled=False,
     ),))
     engine = WorkflowEngine(runtime_workflow_definition())
     coordinator = RuntimeCoordinatorService(engine, registry)

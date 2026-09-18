@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import (
@@ -21,7 +21,10 @@ from pydantic import (
 )
 
 from .contracts import RunStatus, WorkflowRun, WorkflowStage
-from .runtime import RuntimeReference, RuntimeStageResult
+from .runtime import (
+    CapabilityEvidenceBundle, RuntimeReference, RuntimeStageInput, RuntimeStageResult,
+)
+from .runtime.contracts import RuntimeExecutionActivity
 
 
 class RunStateStoreError(RuntimeError):
@@ -51,6 +54,45 @@ class RunInflightOperation(StrEnum):
     DOMAIN_GATE_DECISION = "DOMAIN_GATE_DECISION"
 
 
+class ClarificationCheckpoint(BaseModel):
+    """Completed source phase retained while user input is awaited."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    stage_input: RuntimeStageInput
+    evidence: CapabilityEvidenceBundle | None = None
+
+    @model_validator(mode="after")
+    def matching_evidence(self):
+        if self.evidence is not None and (
+            self.evidence.run_id, self.evidence.stage_id, self.evidence.invocation_id
+        ) != (self.stage_input.run_id, self.stage_input.stage_id, self.stage_input.invocation_id):
+            raise ValueError("Clarification evidence must belong to its source invocation")
+        return self
+
+
+class RejectedStageCheckpoint(BaseModel):
+    """Completed invocation evidence retained as rejected, never accepted history."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    stage_input: RuntimeStageInput
+    evidence: CapabilityEvidenceBundle | None = None
+    result: RuntimeStageResult | None = None
+    failure_code: Literal["INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT"]
+
+    @model_validator(mode="after")
+    def matching_invocation(self):
+        source = self.stage_input
+        if self.evidence is not None and (
+            self.evidence.run_id, self.evidence.stage_id, self.evidence.invocation_id
+        ) != (source.run_id, source.stage_id, source.invocation_id):
+            raise ValueError("Rejected evidence must belong to its source invocation")
+        if self.result is not None and self.result.stage_id is not source.stage_id:
+            raise ValueError("Rejected result must belong to its source stage")
+        return self
+
+
 class ApplicationRunRecord(BaseModel):
     """Strict data-only snapshot needed to reconstruct one application run."""
 
@@ -75,6 +117,12 @@ class ApplicationRunRecord(BaseModel):
     inflight_stage: WorkflowStage | None = None
     inflight_invocation_id: UUID | None = None
     inflight_operation: RunInflightOperation | None = None
+    inflight_input: RuntimeStageInput | None = None
+    inflight_evidence: CapabilityEvidenceBundle | None = None
+    inflight_result: RuntimeStageResult | None = None
+    last_execution_activity: RuntimeExecutionActivity | None = None
+    clarification_checkpoint: ClarificationCheckpoint | None = None
+    rejected_stage_checkpoint: RejectedStageCheckpoint | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     record_version: int = Field(default=1, ge=1)
@@ -96,6 +144,8 @@ class ApplicationRunRecord(BaseModel):
     @model_validator(mode="after")
     def validate_control_state(self) -> "ApplicationRunRecord":
         run = self.workflow_run
+        if self.last_execution_activity is not None and self.last_execution_activity.run_id != self.run_id:
+            raise ValueError("Execution activity must belong to this run")
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot precede created_at")
         if self.run_id != run.run_id:
@@ -128,6 +178,51 @@ class ApplicationRunRecord(BaseModel):
             self.inflight_invocation_id,
             self.inflight_operation,
         )
+        if self.rejected_stage_checkpoint is not None:
+            rejected = self.rejected_stage_checkpoint
+            source = rejected.stage_input
+            if (self.recovery_state is not RunRecoveryState.STABLE or run.status is not RunStatus.FAILED
+                    or run.failure_reason != rejected.failure_code
+                    or (source.run_id, source.stage_id) != (self.run_id, run.current_stage)
+                    or (source.workspace.user_id, source.workspace.project_id, source.workspace.lab_id)
+                    != (self.owner_user_id, self.project_id, self.lab_id)
+                    or (rejected.result is not None and any(
+                        r.result_id == rejected.result.result_id for r in self.runtime_results))):
+                raise ValueError("Rejected checkpoint must match a failed run, not accepted result history")
+        if self.clarification_checkpoint is not None:
+            source = self.clarification_checkpoint.stage_input
+            pending = run.pending_clarification
+            if (self.recovery_state is not RunRecoveryState.STABLE
+                    or run.status is not RunStatus.WAITING_FOR_USER or pending is None
+                    or (source.run_id, source.stage_id) != (self.run_id, pending.source_stage)
+                    or (source.workspace.user_id, source.workspace.project_id, source.workspace.lab_id)
+                    != (self.owner_user_id, self.project_id, self.lab_id)):
+                raise ValueError("Clarification checkpoint must match the waiting run and question")
+        checkpoints = (self.inflight_input, self.inflight_evidence, self.inflight_result)
+        if any(value is not None for value in checkpoints):
+            if self.recovery_state is not RunRecoveryState.STAGE_IN_FLIGHT:
+                raise ValueError("Invocation checkpoints require an in-flight runtime stage")
+            stage_input = self.inflight_input
+            if stage_input is None or (
+                stage_input.run_id != self.run_id
+                or stage_input.stage_id is not self.inflight_stage
+                or stage_input.invocation_id != self.inflight_invocation_id
+                or stage_input.workspace.user_id != self.owner_user_id
+                or stage_input.workspace.project_id != self.project_id
+                or stage_input.workspace.lab_id != self.lab_id
+            ):
+                raise ValueError("Invocation checkpoint identity does not match durable run")
+            evidence = self.inflight_evidence
+            if evidence is not None and (
+                evidence.run_id != self.run_id
+                or evidence.stage_id is not self.inflight_stage
+                or evidence.invocation_id != self.inflight_invocation_id
+            ):
+                raise ValueError("Evidence checkpoint does not match the invocation")
+            if self.inflight_result is not None and (
+                self.inflight_result.stage_id is not self.inflight_stage
+            ):
+                raise ValueError("Result checkpoint does not match the stage")
         if self.recovery_state is RunRecoveryState.STABLE:
             if any(value is not None for value in markers):
                 raise ValueError("Stable run state cannot retain in-flight markers")

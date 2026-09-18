@@ -67,10 +67,15 @@ async def test_real_finalization_parser_keeps_only_bounded_turn_metadata(
             await invoker.invoke(stage_input)
         assert caught.value.error_code == "MALFORMED_RUNTIME_RESULT"
         assert caught.value.validation_error_types == ("json_invalid",)
-    assert len(calls) == 1
+    assert len(calls) == (1 if valid_json else 2)
     events = sink.read(stage_input.run_id)
     observed = [event for event in events if event.event_type is TraceEventType.PROVIDER_TURN_OBSERVED]
-    assert len(observed) == 1
+    assert len(observed) == len(calls)
+    corrections = [event for event in events
+                   if event.event_type is TraceEventType.FINALIZATION_CORRECTION_REQUESTED]
+    assert len(corrections) == (0 if valid_json else 1)
+    if corrections:
+        assert observed[0].sequence < corrections[0].sequence < observed[1].sequence
     event = observed[0]
     assert event.stage_id is WorkflowStage.REPORT
     assert event.invocation_id == stage_input.invocation_id

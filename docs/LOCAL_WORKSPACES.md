@@ -115,6 +115,12 @@ domain handler 持久化决定并继续模型。授权不能跨用户、项目�
 
 ## 从成功任务生成候选
 
+完整来源 trace 保存在不可变 `SkillSourceBundle` 中。新候选及批准后的 Gold
+通过已有 `source_bundle_id` 引用完整来源，不再把所有事件 ID 重复复制进
+有界的 procedure 字段，因而长运行不会在模型提炼完成后因 512 条内嵌引用
+限制而入库失败。旧记录的 `source_trace_event_ids` 仍原样兼容读取；没有
+截断 trace，也没有扩大模型可见内容或跳过审批。
+
 ```bash
 labbio gold-propose ... --run-dir /path/to/project/runs/completed-run
 labbio gold-review ... --run-dir /path/to/project/runs/completed-run \

@@ -281,13 +281,19 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "gold_candidate_references",
         "allowed_capabilities",
         "gate_decisions",
+        "clarifications",
         "workflow_control",
         "execution_capability",
+        "last_execution_activity",
         "input_artifact_usage",
         "body",
     }
     assert dumped["input_artifact_usage"] == []
     assert dumped["workflow_control"] == {
+        "clarification_available": True,
+        "clarification_rounds_remaining": 3,
+        "clarification_followup_ids": [],
+        "continue_stage_available": False,
         "authority": "CONTROL_STATE",
         "current_stage": "INTAKE",
         "transition_targets": ["UNDERSTAND"],

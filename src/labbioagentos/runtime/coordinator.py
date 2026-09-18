@@ -22,7 +22,9 @@ from labbioagentos.workflow import InvalidRunStateError, WorkflowEngine
 from .contracts import (
     RuntimeEvidenceReference,
     RuntimeExecutionCapabilityView,
+    RuntimeExecutionActivity,
     RuntimeGateDecisionView,
+    RuntimeClarificationView,
     RuntimeInputBody,
     RuntimeInputArtifactUsage,
     RuntimePriorResultView,
@@ -84,6 +86,7 @@ class RuntimeCoordinatorService:
         instruction: str,
         goal_reference: RuntimeReference | None = None,
         artifact_references: tuple[RuntimeEvidenceReference, ...] = (),
+        last_execution_activity: RuntimeExecutionActivity | None = None,
         memory_candidate_references: tuple[RuntimeReference, ...] = (),
         gold_candidate_references: tuple[RuntimeReference, ...] = (),
         body: RuntimeInputBody | None = None,
@@ -110,6 +113,11 @@ class RuntimeCoordinatorService:
                 and result.next_action.action is NextAction.REQUEST_USER_INPUT
                 and result.next_action.domain_reference_id
                 in resolved_domain_references
+            )
+            and not (
+                result.next_action.action is NextAction.REQUEST_CLARIFICATION
+                and any(item.status != "WAITING" and item.question.issue_key == result.next_action.question.issue_key
+                        for item in run.clarifications)
             )
         )[-9:]
         prior_references = tuple(
@@ -143,6 +151,8 @@ class RuntimeCoordinatorService:
             workflow_control = workflow_control.model_copy(
                 update={"request_user_input_available": False}
             )
+        if not spec.clarification_enabled:
+            workflow_control = workflow_control.model_copy(update={"clarification_available": False})
         return RuntimeStageInput(
             run_id=run.run_id,
             stage_id=stage,
@@ -157,26 +167,17 @@ class RuntimeCoordinatorService:
             model_context_references=prior_references,
             prior_results=prior_views,
             authoritative_evidence_references=artifact_references,
+            last_execution_activity=last_execution_activity,
             memory_candidate_references=memory_candidate_references,
             gold_candidate_references=gold_candidate_references,
             allowed_capabilities=spec.capability_allowlist,
             gate_decisions=gate_decisions,
+            clarifications=tuple(RuntimeClarificationView(**item.model_dump()) for item in run.clarifications),
             workflow_control=workflow_control,
-            execution_capability=self._execution_capability_for_stage(stage),
+            execution_capability=self.execution_capability,
             input_artifact_usage=(self.input_usage_provider() if self.input_usage_provider else ()),
             body=body or RuntimeInputBody(),
         )
-
-    def _execution_capability_for_stage(
-        self, stage: WorkflowStage
-    ) -> RuntimeExecutionCapabilityView | None:
-        if stage in {
-            WorkflowStage.PLAN,
-            WorkflowStage.PREFLIGHT,
-            WorkflowStage.EXECUTE,
-        }:
-            return self.execution_capability
-        return None
 
     async def run_current_stage(
         self,
@@ -185,6 +186,7 @@ class RuntimeCoordinatorService:
         instruction: str,
         goal_reference: RuntimeReference | None = None,
         artifact_references: tuple[RuntimeEvidenceReference, ...] = (),
+        last_execution_activity: RuntimeExecutionActivity | None = None,
         memory_candidate_references: tuple[RuntimeReference, ...] = (),
         gold_candidate_references: tuple[RuntimeReference, ...] = (),
         body: RuntimeInputBody | None = None,
@@ -197,6 +199,7 @@ class RuntimeCoordinatorService:
             instruction=instruction,
             goal_reference=goal_reference,
             artifact_references=artifact_references,
+            last_execution_activity=last_execution_activity,
             memory_candidate_references=memory_candidate_references,
             gold_candidate_references=gold_candidate_references,
             body=body,
@@ -240,6 +243,8 @@ class RuntimeCoordinatorService:
             raise RuntimeResultValidationError(
                 f"User input is disabled for configured stage {stage.value}"
             )
+        if result.next_action.action is NextAction.REQUEST_CLARIFICATION and not spec.clarification_enabled:
+            raise RuntimeResultValidationError(f"Clarification is disabled for configured stage {stage.value}")
         # Validate before recording so an illegal proposal cannot partially
         # update workflow results or trace. No action is inferred or applied.
         self.engine.validate_proposal(run, result.next_action)

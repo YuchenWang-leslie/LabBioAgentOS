@@ -74,6 +74,10 @@ class RuntimeProfileConfigurationError(ValueError):
     pass
 
 
+class _CapabilityEvidenceLimitReached(Exception):
+    """The next batch cannot fit the existing evidence bound; no tools ran."""
+
+
 class PantheonRuntimeIntegrationError(RuntimeError):
     """Bounded error safe for application control and trace correlation."""
 
@@ -534,13 +538,38 @@ class PantheonCapabilityStageInvoker:
             None,
         )
         active_session = None
-        run_kwargs = {"max_turns": self.max_turns} if self.max_turns is not None else {}
+        # Pantheon's max_turns counts history messages, including tool results.
+        # Its public observation/stop hooks allow a provider-turn budget without
+        # changing Pantheon or cutting off a batch of tool effects mid-flight.
+        provider_turn_count = 0
+        budget_stopped = False
+        evidence_budget_stopped = False
+        model_returned = False
+
+        def observe_turn(observation):
+            nonlocal provider_turn_count, model_returned
+            provider_turn_count += 1
+            model_returned = observation.progress_kind == "CONTENT" and not observation.tool_names
+            if self.trace_recorder is not None:
+                self._record_provider_turn(stage_input, observation)
+            recorded = sum(len(source.evidence_items()) - offset
+                           for source, offset in zip(self.evidence_sources, offsets, strict=True))
+            if recorded + len(observation.tool_names) > MAX_CAPABILITY_EVIDENCE_ITEMS:
+                raise _CapabilityEvidenceLimitReached()
+
+        def check_turn_budget(chunk):
+            nonlocal budget_stopped
+            if chunk is None and self.max_turns is not None and provider_turn_count >= self.max_turns:
+                budget_stopped = True
+                return True
+            return False
+
+        run_kwargs = {
+            "process_turn_observation": observe_turn,
+            "check_stop": check_turn_budget,
+        }
         if self.max_no_progress_seconds is not None:
             run_kwargs["max_no_progress_seconds"] = self.max_no_progress_seconds
-        if self.trace_recorder is not None:
-            run_kwargs["process_turn_observation"] = lambda observation: (
-                self._record_provider_turn(stage_input, observation)
-            )
         try:
             if plugin is None:
                 response = await self.team.run(
@@ -570,6 +599,9 @@ class PantheonCapabilityStageInvoker:
                         **run_kwargs,
                     )
                     active_session.raise_trace_error()
+        except _CapabilityEvidenceLimitReached:
+            evidence_budget_stopped = True
+            response = None
         except NoObservableProgressError as exc:
             error = PantheonRuntimeIntegrationError(
                 "PROVIDER_NO_OBSERVABLE_PROGRESS",
@@ -635,9 +667,14 @@ class PantheonCapabilityStageInvoker:
             delegation_trace_event_ids=delegation_event_ids,
             explicit_completion=(
                 self._explicit_completion(response)
-                if self.preserve_explicit_completion
+                if self.preserve_explicit_completion and not budget_stopped and not evidence_budget_stopped
                 else None
             ),
+            termination_reason=("CAPABILITY_EVIDENCE_LIMIT" if evidence_budget_stopped else
+                                "PROVIDER_TURN_LIMIT" if budget_stopped else
+                                "MODEL_RETURNED" if model_returned else "RUNTIME_RETURNED"),
+            provider_turn_count=provider_turn_count,
+            provider_turn_limit=self.max_turns,
         )
         self._emit(
             stage_input,
@@ -648,6 +685,9 @@ class PantheonCapabilityStageInvoker:
                 "evidence_id": str(bundle.evidence_id),
                 "capability_count": len(bundle.items),
                 "delegation_reference_count": len(bundle.delegation_trace_event_ids),
+                "termination_reason": bundle.termination_reason,
+                "provider_turn_count": bundle.provider_turn_count,
+                "provider_turn_limit": bundle.provider_turn_limit,
             },
         )
         return bundle
@@ -719,10 +759,10 @@ class PantheonTwoModeStageInvoker:
 
     async def invoke(self, stage_input: RuntimeStageInput) -> RuntimeStageResult:
         evidence = await self.capability_invoker.invoke(stage_input)
-        if self.boundary_observer is not None:
-            self.boundary_observer("capability_evidence", evidence)
         if self.evidence_validator is not None:
             self.evidence_validator(evidence)
+        if self.boundary_observer is not None:
+            self.boundary_observer("capability_evidence", evidence)
         return await self.finalization_invoker.invoke(
             stage_input,
             capability_evidence=evidence,
@@ -781,11 +821,12 @@ class PantheonTypedStageInvoker:
             effective_stage_input.workflow_control,
         )
         retrieval_control = None
-        if requires_skill_assessment(effective_stage_input):
+        if effective_stage_input.stage_id is WorkflowStage.PLAN:
             retrieval_control = skill_retrieval_control(effective_stage_input, capability_evidence)
             response_format = skill_assessment_response_format(response_format,
                 tuple(retrieval_control["completed_search_capability_invocation_ids"]),
-                tuple(item["proposal_id"] for item in retrieval_control["completed_use_proposals"]))
+                tuple(item["proposal_id"] for item in retrieval_control["completed_use_proposals"]),
+                required=requires_skill_assessment(effective_stage_input))
         execution_control = None
         if requires_execution_grounding(effective_stage_input):
             execution_control = execution_result_control(effective_stage_input, capability_evidence)
@@ -849,42 +890,82 @@ class PantheonTypedStageInvoker:
             if report_control is not None:
                 payload["report_result_control"] = report_control
             message = json.dumps(payload, separators=(",", ":"))
-        run_kwargs = {}
-        if self.trace_recorder is not None:
-            run_kwargs["process_turn_observation"] = lambda observation: (
-                _record_provider_turn_event(
-                    self.trace_recorder, stage_input, observation,
-                    profile=self.profile, prompt=self.prompt,
-                    invocation_mode=RuntimeInvocationMode.FINALIZE,
-                )
+        finish_reason = None
+
+        def observe(observation):
+            nonlocal finish_reason
+            _record_provider_turn_event(
+                self.trace_recorder, stage_input, observation,
+                profile=self.profile, prompt=self.prompt,
+                invocation_mode=RuntimeInvocationMode.FINALIZE,
             )
+            finish_reason = observation.finish_reason
+
+        run_kwargs = {"process_turn_observation": observe}
         try:
-            if plugin is None:
-                response = await self.team.run(message, **run_kwargs)
-            else:
-                context = StageContext(
-                    run_id=stage_input.run_id,
-                    stage=stage_input.stage_id,
-                    instruction=stage_input.instruction,
-                    metadata={
-                        "invocation_id": str(stage_input.invocation_id),
-                        "project_id": stage_input.workspace.project_id,
-                    },
-                )
-                await self.team.async_setup()
-                await plugin.install(self.team)
-                with delegation_session(
-                    context,
-                    trace_recorder=self.trace_recorder,
-                    root_invocation_id=invocation_id,
-                ) as active_session:
-                    response = await self.team.run(
-                        message,
-                        process_step_message=active_session.observe,
-                        process_chunk=active_session.observe,
-                        **run_kwargs,
-                    )
-                    active_session.raise_trace_error()
+            # A rejected, truncated control response is new protocol evidence,
+            # not a reason to replay tools or spend a scientific workflow retry.
+            # One explicitly traced correction uses the same frozen input/schema.
+            for attempt in range(2):
+                finish_reason = None
+                try:
+                    if plugin is None:
+                        response = await self.team.run(message, **run_kwargs)
+                    else:
+                        context = StageContext(
+                            run_id=stage_input.run_id,
+                            stage=stage_input.stage_id,
+                            instruction=stage_input.instruction,
+                            metadata={
+                                "invocation_id": str(stage_input.invocation_id),
+                                "project_id": stage_input.workspace.project_id,
+                            },
+                        )
+                        await self.team.async_setup()
+                        await plugin.install(self.team)
+                        with delegation_session(
+                            context,
+                            trace_recorder=self.trace_recorder,
+                            root_invocation_id=invocation_id,
+                        ) as active_session:
+                            response = await self.team.run(
+                                message,
+                                process_step_message=active_session.observe,
+                                process_chunk=active_session.observe,
+                                **run_kwargs,
+                            )
+                            active_session.raise_trace_error()
+                    break
+                except ValidationError as exc:
+                    if active_session is not None and active_session.is_trace_error(exc):
+                        raise
+                    errors = exc.errors(include_url=False)
+                    if attempt or finish_reason != "length" or not all(
+                        item["type"] == "json_invalid" for item in errors
+                    ):
+                        raise
+                    rejected = errors[0].get("input")
+                    feedback = {
+                        "error_code": "RESPONSE_TRUNCATED", "attempt": 2,
+                        "maximum_attempts": 2, "validation_error_types": ["json_invalid"],
+                        "instruction": (
+                            "The previous state response exhausted its output budget and was not valid JSON. "
+                            "No decision was applied. Return one concise complete JSON result matching "
+                            "the unchanged response schema and frozen evidence. Avoid repeating evidence "
+                            "or expanding labels into prose. Do not repeat tools or invent results."
+                        ),
+                    }
+                    self._emit(stage_input, TraceEventType.FINALIZATION_CORRECTION_REQUESTED,
+                        "REJECTED", {
+                            "feedback": feedback,
+                            "rejected_characters": len(rejected) if isinstance(rejected, str) else None,
+                            "rejected_whitespace_characters": (
+                                sum(char.isspace() for char in rejected) if isinstance(rejected, str) else None
+                            ),
+                        })
+                    payload = json.loads(message)
+                    payload["finalization_feedback"] = feedback
+                    message = json.dumps(payload, separators=(",", ":"))
         except ValidationError as exc:
             if active_session is not None and active_session.is_trace_error(exc):
                 raise

@@ -46,7 +46,7 @@ async def test_real_factory_schema_has_only_synchronous_governed_arguments(bound
     schemas = await agent.get_tools_for_llm()
     query = next(item["function"] for item in schemas
                  if item["function"]["name"].endswith("__artifact_query"))
-    assert set(query["parameters"]["properties"]) == {"artifact_id", "view_type", "limit"}
+    assert set(query["parameters"]["properties"]) == {"artifact_id", "view_type", "limit", "offset"}
     assert query["parameters"]["required"] == ["artifact_id", "view_type"]
     assert not any(item["function"]["name"] == "background_task" for item in schemas)
 
@@ -144,7 +144,7 @@ async def test_failed_query_reaches_next_sdk_request_before_explicit_adjacent_qu
         function = _function(request, "artifact_query")
         assert function["strict"] is True
         assert function["parameters"]["additionalProperties"] is False
-        assert set(function["parameters"]["properties"]) == {"artifact_id", "view_type", "limit"}
+        assert set(function["parameters"]["properties"]) == {"artifact_id", "view_type", "limit", "offset"}
         assert function["parameters"]["properties"]["limit"]["anyOf"] == [
             {"type": "integer", "minimum": 1}, {"type": "null"}]
         if turn == 0:
@@ -152,7 +152,7 @@ async def test_failed_query_reaches_next_sdk_request_before_explicit_adjacent_qu
                                      if message["role"] == "user"))
             chosen.update(visible["references"])
             arguments = {"artifact_id": chosen["raw" if failure == "raw" else "derived"],
-                         "view_type": "METADATA" if failure == "raw" else "SUMMARY"}
+                         "view_type": "SCHEMA" if failure == "raw" else "SUMMARY"}
             if failure == "summary-limit":
                 arguments["limit"] = 20
             return _calls(("failed-query", function["name"], arguments))
@@ -164,7 +164,7 @@ async def test_failed_query_reaches_next_sdk_request_before_explicit_adjacent_qu
                 "ARTIFACT_EXPOSURE_DENIED" if failure == "raw" else "INVALID_QUERY_SHAPE")
             constraints = feedback["error"]["query_constraints"]
             assert constraints["allowed_view_types"] == (
-                [] if failure == "raw" else ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"])
+                ["METADATA"] if failure == "raw" else ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"])
             assert constraints == tools.evidence_items()[0].error_details.query_constraints.model_dump(mode="json")
             assert constraints["authority"] == "CONTROL_STATE"
             assert constraints["limit_allowed_view_type"] == "TOP_N"

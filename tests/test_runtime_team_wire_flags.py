@@ -29,8 +29,10 @@ from test_runtime_milestone_c2 import _catalog, _profile
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("thinking_enabled", [False, True])
+@pytest.mark.parametrize("batch_size", [1, 8, 40])
+@pytest.mark.parametrize("turn_limit", [2, 3])
 async def test_team_preserves_wire_flags_and_failed_then_valid_tool_feedback(
-    artifact_query_boundary, monkeypatch, thinking_enabled,
+    artifact_query_boundary, monkeypatch, thinking_enabled, batch_size, turn_limit,
 ):
     def forbid_network(*args, **kwargs):
         pytest.fail("Network access is forbidden in this offline test", pytrace=False)
@@ -110,12 +112,12 @@ async def test_team_preserves_wire_flags_and_failed_then_valid_tool_feedback(
         if requests < 3:
             # Synthetic protocol failure and correction, not scientific decisions.
             delta = {"role": "assistant", "tool_calls": [{
-                "index": 0, "id": f"fixture-{requests}", "type": "function",
+                "index": index, "id": f"fixture-{requests}-{index}", "type": "function",
                 "function": {"name": query["name"], "arguments": json.dumps({
                     "artifact_id": artifact["reference_id"], "view_type": "SUMMARY",
                     "limit": "null" if requests == 1 else None,
                 })},
-            }]}
+            } for index in range(batch_size)]}
         else:
             delta = {"role": "assistant", "content": "Fixture complete."}
 
@@ -144,15 +146,21 @@ async def test_team_preserves_wire_flags_and_failed_then_valid_tool_feedback(
     )
     evidence = await PantheonCapabilityStageInvoker(
         team, profile=profile, prompt=prompts[profile.profile_key],
-        evidence_sources=(toolset,), max_turns=6,
+        evidence_sources=(toolset,), max_turns=turn_limit,
     ).invoke(stage)
 
-    assert requests == 3
-    assert observed_feedback == [False, True]
+    evidence_limited = batch_size == 40
+    expected_turns = 2 if evidence_limited else turn_limit
+    assert requests == expected_turns
+    assert observed_feedback == ([False, True] if expected_turns == 3 else [False])
     assert team.team_agents[0] is team.agents[profile.agent_name] is agent
     assert agent.provider_tool_schema_strict is True
-    assert [item.status.value for item in evidence.items] == ["FAILED", "COMPLETED"]
+    assert evidence.provider_turn_count == expected_turns
+    assert evidence.termination_reason == ("CAPABILITY_EVIDENCE_LIMIT" if evidence_limited else
+        "MODEL_RETURNED" if turn_limit == 3 else "PROVIDER_TURN_LIMIT")
+    completed_count = 0 if evidence_limited else batch_size
+    assert [item.status.value for item in evidence.items] == ["FAILED"] * batch_size + ["COMPLETED"] * completed_count
     audits = [item.artifact_query_request.model_dump(mode="json") for item in evidence.items]
-    assert [audit["limit_type"] for audit in audits] == ["STRING", "NULL"]
-    assert [audit["limit"] for audit in audits] == ["INVALID_VALUE", None]
+    assert [audit["limit_type"] for audit in audits] == ["STRING"] * batch_size + ["NULL"] * completed_count
+    assert [audit["limit"] for audit in audits] == ["INVALID_VALUE"] * batch_size + [None] * completed_count
     assert all(audit["normalization_applied"] is False for audit in audits)

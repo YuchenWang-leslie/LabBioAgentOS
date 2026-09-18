@@ -170,9 +170,10 @@ async def test_partial_collection_preserves_receipt_evidence_and_trace(
     for forbidden in (
         "SECRET_FIELD", "SECRET_VALUE", "SECRET_PROGRAM", "SECRET_HOST_PATH",
         "SECRET_STORE_ERROR", "PRIVATE_PROCESS_OUTPUT", "PRIVATE_PROCESS_ERROR",
-        str(tmp_path), "result.json", "second.json", "third.json", "output_path",
+        str(tmp_path), "second.json", "third.json", "output_path",
     ):
         assert forbidden not in encoded
+    assert receipt["registered_outputs"] == {str(ref.artifact_id): "result.json"}
 
 
 @pytest.mark.asyncio

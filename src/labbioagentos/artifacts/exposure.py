@@ -29,7 +29,7 @@ from .models import (
     ExposureDecision,
     validate_artifact_query,
 )
-from .store import ArtifactStore, coerce_artifact_id
+from .store import ArtifactStore, LocalArtifactStore, coerce_artifact_id
 
 
 class ArtifactQueryError(ValueError):
@@ -44,6 +44,7 @@ class ExposurePolicy:
     """Structural privacy policy with no scientific ranking or interpretation."""
 
     _REMOTE_VIEWS = {
+        ArtifactExposureClass.RAW: frozenset({ArtifactViewType.METADATA}),
         ArtifactExposureClass.STRUCTURAL: frozenset(
             {ArtifactViewType.METADATA, ArtifactViewType.SCHEMA}
         ),
@@ -58,6 +59,7 @@ class ExposurePolicy:
         ArtifactExposureClass.USER_APPROVED: frozenset(ArtifactViewType),
     }
     _REMOTE_RELEASE_BASES = {
+        ArtifactExposureClass.RAW: frozenset({ArtifactReleaseBasis.RAW_INGESTION}),
         ArtifactExposureClass.STRUCTURAL: frozenset(
             {ArtifactReleaseBasis.TRUSTED_STRUCTURAL_INSPECTOR}
         ),
@@ -82,6 +84,7 @@ class ExposurePolicy:
         user_approved_enabled: bool = False,
         max_top_n: int = 100,
         default_top_n: int = 10,
+        allow_generated_file_read: bool = False,
     ):
         if max_top_n < 1:
             raise ValueError("max_top_n must be positive")
@@ -91,6 +94,7 @@ class ExposurePolicy:
         self.user_approved_enabled = user_approved_enabled
         self.max_top_n = max_top_n
         self.default_top_n = default_top_n
+        self.allow_generated_file_read = allow_generated_file_read
 
     def decide(
         self,
@@ -101,12 +105,14 @@ class ExposurePolicy:
         if (
             ref.exposure_class is ArtifactExposureClass.RAW
             and consumer is ArtifactConsumer.REMOTE_LLM
+            and (query.view_type is not ArtifactViewType.METADATA
+                 or ref.release_basis is not ArtifactReleaseBasis.RAW_INGESTION)
         ):
             return self._deny(
                 ref,
                 query,
                 consumer,
-                "RAW artifacts cannot be exposed to a remote LLM.",
+                "RAW artifacts cannot be exposed beyond fixed METADATA/head preview to a remote LLM.",
             )
 
         if ref.exposure_class is ArtifactExposureClass.USER_APPROVED:
@@ -239,7 +245,9 @@ class ArtifactModelViewProjector:
             limit = decision.effective_limit
             if limit is None:
                 raise ArtifactQueryError("TOP_N policy decision omitted an effective limit")
-            records = representation.records[:limit]
+            if query.offset > len(representation.records):
+                raise ArtifactQueryError("Record offset exceeds available stored records")
+            records = representation.records[query.offset:query.offset + limit]
             validate_model_visible_json(records, reject_absolute_paths=True)
             truncated = representation.record_count > len(records)
 
@@ -262,6 +270,10 @@ class ArtifactModelViewProjector:
             ),
             effective_limit=decision.effective_limit,
             truncated=truncated,
+            offset=query.offset,
+            next_offset=(query.offset + len(records)
+                if query.view_type is ArtifactViewType.TOP_N
+                and query.offset + len(records) < len(representation.records) else None),
             provenance=ArtifactProvenance(
                 owner_user_id=ref.owner_user_id,
                 project_id=ref.project_id,
@@ -333,6 +345,13 @@ class ArtifactExposureService:
         view = self.projector.build(
             stored.ref, stored.representation, validated_query, decision
         )
+        if (validated_query.view_type is ArtifactViewType.METADATA
+                and ref.exposure_class is ArtifactExposureClass.RAW
+                and ref.release_basis is ArtifactReleaseBasis.RAW_INGESTION
+                and isinstance(self.store, LocalArtifactStore)):
+            view = ArtifactView.model_validate({
+                **view.model_dump(), "head_preview": self.store.inspect_raw_head(ref),
+            })
         self._emit(
             ref,
             TraceEventType.ARTIFACT_EXPOSED,
@@ -344,6 +363,8 @@ class ArtifactExposureService:
                 "available_count": view.available_count,
                 "effective_limit": view.effective_limit,
                 "truncated": view.truncated,
+                "offset": view.offset,
+                "next_offset": view.next_offset,
             },
         )
         return view
@@ -395,6 +416,8 @@ class ArtifactExposureService:
         }
         if query.limit is not None:
             payload["requested_limit"] = query.limit
+        if query.offset:
+            payload["offset"] = query.offset
         if extra:
             payload.update(extra)
         self.trace_recorder.emit(

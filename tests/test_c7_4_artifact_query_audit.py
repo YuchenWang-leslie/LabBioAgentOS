@@ -80,6 +80,7 @@ def artifact_query_boundary(tmp_path):
 
 
 def _assert_correlated_audit(sink, binding, item, expected, terminal_type):
+    expected = {**expected, "offset": 0}
     events = [
         event
         for event in sink.read(binding.run_id)
@@ -368,6 +369,7 @@ async def test_a8_request_audit_redacts_non_contract_values_and_does_not_leak(
         "limit": "INVALID_VALUE",
         "limit_type": "STRING",
         "normalization_applied": False,
+        "offset": 0,
     }
     persisted = json.dumps(
         {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from uuid import UUID
@@ -138,13 +139,18 @@ class MountResolver:
         for artifact_id in artifact_ids:
             ref = self.store.get_ref(artifact_id)
             source = self._validate_locator(ref)
+            # Preserve registered format suffixes for ordinary file APIs without
+            # exposing names, guessing a format, or reintroducing basename collisions.
+            suffix = "".join(PurePosixPath(ref.original_filename or "").suffixes)
+            if not re.fullmatch(r"(?:\.[A-Za-z0-9_-]+)*", suffix) or len(suffix) + 36 > 255:
+                suffix = ""
             mounts.append(
                 ResolvedMount(
                     source=source,
                     target=PurePosixPath(
                         "/labbio/inputs",
                         str(ref.artifact_id),
-                        str(ref.artifact_id),
+                        str(ref.artifact_id) + suffix,
                     ),
                     read_only=True,
                     artifact_id=ref.artifact_id,

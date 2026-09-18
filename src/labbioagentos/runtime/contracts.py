@@ -31,6 +31,7 @@ from labbioagentos.artifacts.models import (
 )
 from labbioagentos.contracts import (
     GateDecisionRecord,
+    ClarificationRecord,
     InformationAuthority,
     NextActionProposal,
     WorkflowDefinition,
@@ -42,6 +43,8 @@ from labbioagentos.execution.images import ApprovedImageRegistry, ExecutionPolic
 from labbioagentos.execution.models import (
     ExecutionDiagnostic,
     ExecutionRuntime,
+    ExecutionReceipt,
+    ExecutionStatus,
     OutputDeclassificationMode,
     RequestedResources,
 )
@@ -68,6 +71,9 @@ SafeIdentifier = Annotated[
 ]
 
 MAX_CAPABILITY_EVIDENCE_ITEMS = 64
+CapabilityTerminationReason = Literal[
+    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED"
+]
 
 
 class CapabilityEvidenceStatus(StrEnum):
@@ -110,6 +116,7 @@ class ArtifactQueryRequestAudit(BaseModel):
     limit: int | Literal["INVALID_VALUE"] | None = None
     limit_type: ArtifactQueryLimitType
     normalization_applied: bool = False
+    offset: int | Literal["INVALID_VALUE"] = 0
 
     @model_validator(mode="after")
     def normalization_matches_safe_projection(self) -> "ArtifactQueryRequestAudit":
@@ -262,12 +269,20 @@ class RuntimeApprovedOutputContractView(BaseModel):
 
 
 class RuntimeExecutionCapabilityView(BaseModel):
-    """Trusted execution envelope and default image visible to runtime models."""
+    """Run-scoped execution configuration, not current-stage tool permission."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     authority: Literal[InformationAuthority.CONTROL_STATE] = (
         InformationAuthority.CONTROL_STATE
+    )
+    scope: Literal["RUN_CONFIGURATION"] = Field(
+        default="RUN_CONFIGURATION",
+        description=(
+            "Configured execution envelope for this run, including stages that "
+            "cannot invoke execution tools. Current allowed_capabilities and "
+            "workflow_control govern actions; this is not a preflight result."
+        ),
     )
     runtime: ExecutionRuntime
     image_key: StrictStr = Field(
@@ -401,6 +416,11 @@ class RuntimeInputArtifactUsage(BaseModel):
 
     authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
     artifact_id: UUID
+    artifact_type: StrictStr | None = Field(default=None, max_length=128)
+    original_filename: StrictStr | None = Field(default=None, max_length=255,
+        description="Registered source filename only, not a path or an inferred patient/condition assignment. Null means unavailable.")
+    producer_run_id: UUID | None = None
+    producer_execution_id: UUID | None = None
     source: Literal["RUN_INPUT", "RUN_CONTEXT"]
     exposure_class: ArtifactExposureClass
     remote_view_types: tuple[ArtifactViewType, ...] = Field(
@@ -422,8 +442,22 @@ class RuntimeInputArtifactUsage(BaseModel):
     ) -> "RuntimeInputArtifactUsage":
         """Project a caller-authorized reference without querying its content."""
 
+        producer_execution_id = None
+        execution_id = ref.metadata.get("execution_id")
+        if isinstance(execution_id, str):
+            try:
+                producer_execution_id = UUID(execution_id)
+            except ValueError:
+                pass  # Legacy missing/malformed provenance is unknown, not invented.
         return cls(
             artifact_id=ref.artifact_id,
+            artifact_type=ref.artifact_type if len(ref.artifact_type) <= 128 else None,
+            original_filename=(ref.original_filename
+                if ref.original_filename and len(ref.original_filename) <= 255
+                and not any(c in ref.original_filename for c in ("/", "\\", "\n", "\r", "\0"))
+                else None),
+            producer_run_id=ref.run_id,
+            producer_execution_id=producer_execution_id,
             source=source,
             exposure_class=ref.exposure_class,
             remote_view_types=tuple(
@@ -445,6 +479,11 @@ class ArtifactQueryConstraints(BaseModel):
     artifact_id: UUID
     exposure_class: ArtifactExposureClass
     allowed_view_types: tuple[ArtifactViewType, ...] = Field(max_length=4)
+    available_file_readers: tuple[Literal["report_read", "file_read"], ...] = Field(
+        default=(), max_length=2,
+        description="Currently exposed and authorized readers for this generated file; "
+                    "not query view types. File integrity and page bounds are checked on read.",
+    )
     limit_allowed_view_type: Literal[ArtifactViewType.TOP_N] = ArtifactQuery.LIMIT_ALLOWED_VIEW_TYPE
     limit_minimum: Literal[1] = ARTIFACT_QUERY_LIMIT_MINIMUM
     top_n_default_limit: ArtifactQueryLimit
@@ -572,6 +611,9 @@ class CapabilityEvidenceBundle(BaseModel):
         InformationAuthority.MODEL_CONTEXT
     )
     technical_status: Literal["COMPLETED"] = "COMPLETED"
+    termination_reason: CapabilityTerminationReason = "RUNTIME_RETURNED"
+    provider_turn_count: int = Field(default=0, ge=0)
+    provider_turn_limit: int | None = Field(default=None, ge=1)
 
 
 class RuntimeReferenceKind(StrEnum):
@@ -586,6 +628,40 @@ class RuntimeReferenceKind(StrEnum):
     EXECUTION = "EXECUTION"
     REPORT = "REPORT"
     OTHER = "OTHER"
+
+
+class RuntimeExecutionActivityReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    execution_id: UUID
+    status: ExecutionStatus
+
+
+class RuntimeExecutionActivity(BaseModel):
+    """Persisted technical facts from a completed EXECUTE capability checkpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
+    run_id: UUID
+    invocation_id: UUID
+    evidence_id: UUID
+    receipts: tuple[RuntimeExecutionActivityReceipt, ...] = Field(default=(), max_length=64)
+    termination_reason: CapabilityTerminationReason
+
+    @classmethod
+    def from_evidence(cls, evidence: CapabilityEvidenceBundle) -> "RuntimeExecutionActivity":
+        if evidence.stage_id is not WorkflowStage.EXECUTE:
+            raise ValueError("Execution activity requires an EXECUTE checkpoint")
+        receipts = []
+        for item in evidence.items:
+            if item.capability_name != "execution_submit" or item.status is not CapabilityEvidenceStatus.COMPLETED:
+                continue
+            if item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE:
+                raise ValueError("Execution receipt requires authoritative evidence")
+            receipt = ExecutionReceipt.model_validate_json(json.dumps(item.safe_result))
+            receipts.append(RuntimeExecutionActivityReceipt(execution_id=receipt.execution_id, status=receipt.status))
+        return cls(run_id=evidence.run_id, invocation_id=evidence.invocation_id,
+                   evidence_id=evidence.evidence_id, receipts=tuple(receipts),
+                   termination_reason=evidence.termination_reason)
 
 
 class RuntimeEvidenceRole(StrEnum):
@@ -651,6 +727,13 @@ class RuntimeGateDecisionView(BaseModel):
         )
 
 
+class RuntimeClarificationView(ClarificationRecord):
+    """Exact bounded user answers; status is control, prose is not evidence."""
+
+    answer_authority: Literal[InformationAuthority.USER_ASSERTION] = InformationAuthority.USER_ASSERTION
+    question_authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+
+
 class RuntimeInputBody(BaseModel):
     """Generic typed presentation body; arbitrary dictionaries are excluded."""
 
@@ -700,6 +783,19 @@ class RuntimeEvidenceGroundingControl(BaseModel):
         "or numeric claim from prior context unless current authoritative evidence "
         "supports it."
     )
+    artifact_scope_rule: Literal[
+        "Artifact views establish the registered content of that Artifact only. "
+        "An execution-produced table may itself contain model-authored assertions. "
+        "Neither release permission, file registration nor a reconciliation claim "
+        "independently verifies other files, performed methods or successful corrections. "
+        "Use evidence from the actual producer and inspected output; otherwise state unverified."
+    ] = (
+        "Artifact views establish the registered content of that Artifact only. "
+        "An execution-produced table may itself contain model-authored assertions. "
+        "Neither release permission, file registration nor a reconciliation claim "
+        "independently verifies other files, performed methods or successful corrections. "
+        "Use evidence from the actual producer and inspected output; otherwise state unverified."
+    )
     reference_rule: Literal[
         "Authoritative references identify governed sources; query an allowed view "
         "when claim content is required."
@@ -729,6 +825,11 @@ class RuntimeWorkflowControlView(BaseModel):
     current_stage: WorkflowStage
     transition_targets: tuple[WorkflowStage, ...] = Field(default=(), max_length=16)
     request_user_input_available: bool
+    clarification_available: bool = False
+    clarification_rounds_remaining: int = Field(default=0, ge=0, le=3)
+    clarification_followup_ids: tuple[StrictStr, ...] = Field(default=(), max_length=3,
+        description="Exact answered question IDs still eligible for one follow-up on the same issue. Empty means followup_to must be null.")
+    continue_stage_available: bool = False
     retry_available: bool
     retry_transition_targets: tuple[WorkflowStage, ...] = Field(
         default=(),
@@ -771,6 +872,13 @@ class RuntimeWorkflowControlView(BaseModel):
             request_user_input_available=definition.allows(
                 stage, WorkflowStage.USER_GATE
             ),
+            clarification_available=len(run.clarifications) < 3,
+            clarification_rounds_remaining=3 - len(run.clarifications),
+            clarification_followup_ids=tuple(item.question_id for item in run.clarifications
+                if item.status == "ANSWERED" and len(run.clarifications) < 3
+                and sum(other.question.issue_key == item.question.issue_key for other in run.clarifications) == 1),
+            continue_stage_available=any(item.status == "ANSWERED" and item.source_stage is stage
+                                         for item in run.clarifications),
             retry_available=retry_available,
             retry_transition_targets=(
                 (stage, *transition_targets) if retry_available else ()
@@ -800,6 +908,7 @@ class RuntimePriorResultView(BaseModel):
     model_references: tuple[RuntimeReference, ...] = Field(
         default=(), max_length=128
     )
+    model_next_action: NextActionProposal | None = None
 
     @field_validator("model_body")
     @classmethod
@@ -818,6 +927,7 @@ class RuntimePriorResultView(BaseModel):
             body_kind=result.body.kind,
             model_body=result.body.model_dump(mode="json"),
             model_references=result.references,
+            model_next_action=result.next_action,
         )
 
 
@@ -866,8 +976,13 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=32,
     )
+    clarifications: tuple[RuntimeClarificationView, ...] = Field(default=(), max_length=3)
     workflow_control: RuntimeWorkflowControlView | None = None
     execution_capability: RuntimeExecutionCapabilityView | None = None
+    last_execution_activity: RuntimeExecutionActivity | None = Field(default=None,
+        description="Latest completed EXECUTE capability checkpoint, independent of model prose. "
+        "Empty receipts means no completed execution submission in that invocation; "
+        "null means no recorded checkpoint, not a fabricated success or failure.")
     input_artifact_usage: tuple[RuntimeInputArtifactUsage, ...] = Field(
         default=(), max_length=256,
     )
@@ -875,6 +990,8 @@ class RuntimeStageInput(BaseModel):
 
     @model_validator(mode="after")
     def reject_non_runtime_stage(self) -> "RuntimeStageInput":
+        if self.last_execution_activity is not None and self.last_execution_activity.run_id != self.run_id:
+            raise ValueError("Execution activity must belong to this stage's run")
         if self.stage_id in {
             WorkflowStage.USER_GATE,
             WorkflowStage.SEARCH,
@@ -889,14 +1006,6 @@ class RuntimeStageInput(BaseModel):
         )
         if len(prior_json.encode("utf-8")) > 256_000:
             raise ValueError("Prior result context exceeds 256000 bytes")
-        if self.execution_capability is not None and self.stage_id not in {
-            WorkflowStage.PLAN,
-            WorkflowStage.PREFLIGHT,
-            WorkflowStage.EXECUTE,
-        }:
-            raise ValueError(
-                "Execution capability state is limited to PLAN, PREFLIGHT, and EXECUTE"
-            )
         return self
 
 
@@ -1089,6 +1198,9 @@ def _runtime_stage_result_format(
     retry_available: bool,
     retry_transition_targets: tuple[WorkflowStage, ...],
     finish_available: bool,
+    clarification_available: bool = False,
+    continue_stage_available: bool = False,
+    clarification_followup_ids: tuple[str, ...] = (),
 ) -> type[RuntimeStageResult]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
@@ -1108,6 +1220,9 @@ def _runtime_stage_result_format(
                 retry_available=retry_available,
                 retry_transition_targets=retry_transition_targets,
                 finish_available=finish_available,
+                clarification_available=clarification_available,
+                continue_stage_available=continue_stage_available,
+                clarification_followup_ids=clarification_followup_ids,
             ),
             ...,
         )
@@ -1135,4 +1250,7 @@ def runtime_stage_result_format(
         workflow_control.retry_available,
         workflow_control.retry_transition_targets,
         workflow_control.finish_available,
+        workflow_control.clarification_available,
+        workflow_control.continue_stage_available,
+        workflow_control.clarification_followup_ids,
     )

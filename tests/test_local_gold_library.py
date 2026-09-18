@@ -188,7 +188,8 @@ def test_readable_guide_omits_trace_inventory_without_changing_gold(library):
     body = (root / _export_dirname(gold) / "skill.md").read_text()
     assert "Trace event:" not in body and "Script Artifact:" not in body
     assert "Instruction:" not in body
-    assert str(gold.procedure.source_trace_event_ids[0]) not in body
+    source = service.store.get_source_bundle(gold.source_bundle_id)
+    assert str(source.trace_event_ids[0]) not in body
     assert str(gold.source_run_id) in body and "skills.sqlite" in body
     assert all(text in body for text in gold.procedure.workflow_outline)
     assert service.store._connection.execute("SELECT payload FROM skill_store_state").fetchone()[0] == before

@@ -21,6 +21,8 @@ from pydantic import (
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.model_safety import validate_model_visible_json
 
+from .preview import RawHeadPreview
+
 
 class ArtifactExposureClass(StrEnum):
     """Security classification assigned by trusted LabBio producer code."""
@@ -188,6 +190,7 @@ class ArtifactQuery(BaseModel):
 
     view_type: ArtifactViewType
     limit: ArtifactQueryLimit | None = None
+    offset: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def validate_query_shape(self) -> "ArtifactQuery":
@@ -195,6 +198,8 @@ class ArtifactQuery(BaseModel):
             raise ValueError(
                 f"limit is only valid for {self.LIMIT_ALLOWED_VIEW_TYPE.value} queries"
             )
+        if self.view_type is not ArtifactViewType.TOP_N and self.offset:
+            raise ValueError("offset is only valid for TOP_N queries")
         return self
 
 
@@ -230,7 +235,14 @@ class ArtifactView(BaseModel):
     authority: Literal[InformationAuthority.AUTHORITATIVE_EVIDENCE] = (
         InformationAuthority.AUTHORITATIVE_EVIDENCE
     )
+    evidence_scope: Literal["REGISTERED_ARTIFACT_CONTENT"] = Field(
+        default="REGISTERED_ARTIFACT_CONTENT",
+        description="Evidence of this Artifact's stored fields, not independent verification "
+        "of claims about other files, executed methods, or completed revisions. "
+        "Release permission does not establish scientific or narrative truth.",
+    )
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    head_preview: RawHeadPreview | None = None
     artifact_schema: ArtifactSchema | None = Field(
         default=None,
         validation_alias="schema",
@@ -243,6 +255,8 @@ class ArtifactView(BaseModel):
     available_count: int = Field(ge=0)
     effective_limit: int | None = Field(default=None, ge=1)
     truncated: bool = False
+    offset: int = Field(default=0, ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
     provenance: ArtifactProvenance
 
     @field_validator("metadata", "summary")
@@ -274,6 +288,12 @@ class ArtifactView(BaseModel):
 
     @model_validator(mode="after")
     def validate_collection_completeness(self) -> "ArtifactView":
+        if self.head_preview is not None and not (
+            self.view_type is ArtifactViewType.METADATA
+            and self.exposure_class is ArtifactExposureClass.RAW
+            and self.release_basis is ArtifactReleaseBasis.RAW_INGESTION
+        ):
+            raise ValueError("Fixed head is only valid for ingested RAW METADATA")
         if self.returned_count != len(self.records):
             raise ValueError("returned_count must match the bounded records")
         if self.available_count < self.returned_count:
@@ -288,6 +308,13 @@ class ArtifactView(BaseModel):
                 raise ValueError("TOP_N view exceeds its effective_limit")
         elif self.effective_limit is not None:
             raise ValueError("effective_limit is only valid for TOP_N views")
+        if self.next_offset is not None and (
+            self.view_type is not ArtifactViewType.TOP_N
+            or not self.returned_count
+            or self.next_offset != self.offset + self.returned_count
+            or self.next_offset >= self.available_count
+        ):
+            raise ValueError("next_offset must identify the next available record page")
         validate_model_visible_json(
             self.model_dump(mode="json"),
             max_serialized_bytes=128_000,

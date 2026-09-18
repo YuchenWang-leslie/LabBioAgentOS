@@ -98,9 +98,11 @@ async def test_usage_visible_in_all_stages_and_both_phases_without_queries(input
         assert not usage[refs[2].artifact_id].execution_input_eligible
         assert not usage[refs[3].artifact_id].execution_input_eligible
         assert usage[refs[4].artifact_id].remote_view_types == ()
-        assert (stage_input.execution_capability is not None) == (stage_input.stage_id in {
-            WorkflowStage.PLAN, WorkflowStage.PREFLIGHT, WorkflowStage.EXECUTE,
-        })
+        assert stage_input.execution_capability is not None
+        assert stage_input.execution_capability.scope == "RUN_CONFIGURATION"
+        assert stage_input.execution_capability.mountable_input_artifact_ids == (
+            refs[0].artifact_id, refs[1].artifact_id,
+        )
         encoded = stage_input.model_dump_json()
         assert all(value not in encoded for value in ("PRIVATE_RAW_CONTENT", "PRIVATE_METADATA", "/private/source", "storage_locator"))
     assert all(seen[i][1] is seen[i + 1][1] for i in range(0, 18, 2))
