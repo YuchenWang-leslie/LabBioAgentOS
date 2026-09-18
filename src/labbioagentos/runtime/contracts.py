@@ -116,6 +116,7 @@ class ArtifactQueryRequestAudit(BaseModel):
     limit: int | Literal["INVALID_VALUE"] | None = None
     limit_type: ArtifactQueryLimitType
     normalization_applied: bool = False
+    offset: int | Literal["INVALID_VALUE"] = 0
 
     @model_validator(mode="after")
     def normalization_matches_safe_projection(self) -> "ArtifactQueryRequestAudit":
@@ -415,6 +416,11 @@ class RuntimeInputArtifactUsage(BaseModel):
 
     authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
     artifact_id: UUID
+    artifact_type: StrictStr | None = Field(default=None, max_length=128)
+    original_filename: StrictStr | None = Field(default=None, max_length=255,
+        description="Registered source filename only, not a path or an inferred patient/condition assignment. Null means unavailable.")
+    producer_run_id: UUID | None = None
+    producer_execution_id: UUID | None = None
     source: Literal["RUN_INPUT", "RUN_CONTEXT"]
     exposure_class: ArtifactExposureClass
     remote_view_types: tuple[ArtifactViewType, ...] = Field(
@@ -436,8 +442,22 @@ class RuntimeInputArtifactUsage(BaseModel):
     ) -> "RuntimeInputArtifactUsage":
         """Project a caller-authorized reference without querying its content."""
 
+        producer_execution_id = None
+        execution_id = ref.metadata.get("execution_id")
+        if isinstance(execution_id, str):
+            try:
+                producer_execution_id = UUID(execution_id)
+            except ValueError:
+                pass  # Legacy missing/malformed provenance is unknown, not invented.
         return cls(
             artifact_id=ref.artifact_id,
+            artifact_type=ref.artifact_type if len(ref.artifact_type) <= 128 else None,
+            original_filename=(ref.original_filename
+                if ref.original_filename and len(ref.original_filename) <= 255
+                and not any(c in ref.original_filename for c in ("/", "\\", "\n", "\r", "\0"))
+                else None),
+            producer_run_id=ref.run_id,
+            producer_execution_id=producer_execution_id,
             source=source,
             exposure_class=ref.exposure_class,
             remote_view_types=tuple(
@@ -459,6 +479,11 @@ class ArtifactQueryConstraints(BaseModel):
     artifact_id: UUID
     exposure_class: ArtifactExposureClass
     allowed_view_types: tuple[ArtifactViewType, ...] = Field(max_length=4)
+    available_file_readers: tuple[Literal["report_read", "file_read"], ...] = Field(
+        default=(), max_length=2,
+        description="Currently exposed and authorized readers for this generated file; "
+                    "not query view types. File integrity and page bounds are checked on read.",
+    )
     limit_allowed_view_type: Literal[ArtifactViewType.TOP_N] = ArtifactQuery.LIMIT_ALLOWED_VIEW_TYPE
     limit_minimum: Literal[1] = ARTIFACT_QUERY_LIMIT_MINIMUM
     top_n_default_limit: ArtifactQueryLimit
@@ -758,6 +783,19 @@ class RuntimeEvidenceGroundingControl(BaseModel):
         "or numeric claim from prior context unless current authoritative evidence "
         "supports it."
     )
+    artifact_scope_rule: Literal[
+        "Artifact views establish the registered content of that Artifact only. "
+        "An execution-produced table may itself contain model-authored assertions. "
+        "Neither release permission, file registration nor a reconciliation claim "
+        "independently verifies other files, performed methods or successful corrections. "
+        "Use evidence from the actual producer and inspected output; otherwise state unverified."
+    ] = (
+        "Artifact views establish the registered content of that Artifact only. "
+        "An execution-produced table may itself contain model-authored assertions. "
+        "Neither release permission, file registration nor a reconciliation claim "
+        "independently verifies other files, performed methods or successful corrections. "
+        "Use evidence from the actual producer and inspected output; otherwise state unverified."
+    )
     reference_rule: Literal[
         "Authoritative references identify governed sources; query an allowed view "
         "when claim content is required."
@@ -789,6 +827,8 @@ class RuntimeWorkflowControlView(BaseModel):
     request_user_input_available: bool
     clarification_available: bool = False
     clarification_rounds_remaining: int = Field(default=0, ge=0, le=3)
+    clarification_followup_ids: tuple[StrictStr, ...] = Field(default=(), max_length=3,
+        description="Exact answered question IDs still eligible for one follow-up on the same issue. Empty means followup_to must be null.")
     continue_stage_available: bool = False
     retry_available: bool
     retry_transition_targets: tuple[WorkflowStage, ...] = Field(
@@ -834,6 +874,9 @@ class RuntimeWorkflowControlView(BaseModel):
             ),
             clarification_available=len(run.clarifications) < 3,
             clarification_rounds_remaining=3 - len(run.clarifications),
+            clarification_followup_ids=tuple(item.question_id for item in run.clarifications
+                if item.status == "ANSWERED" and len(run.clarifications) < 3
+                and sum(other.question.issue_key == item.question.issue_key for other in run.clarifications) == 1),
             continue_stage_available=any(item.status == "ANSWERED" and item.source_stage is stage
                                          for item in run.clarifications),
             retry_available=retry_available,
@@ -1157,6 +1200,7 @@ def _runtime_stage_result_format(
     finish_available: bool,
     clarification_available: bool = False,
     continue_stage_available: bool = False,
+    clarification_followup_ids: tuple[str, ...] = (),
 ) -> type[RuntimeStageResult]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
@@ -1178,6 +1222,7 @@ def _runtime_stage_result_format(
                 finish_available=finish_available,
                 clarification_available=clarification_available,
                 continue_stage_available=continue_stage_available,
+                clarification_followup_ids=clarification_followup_ids,
             ),
             ...,
         )
@@ -1207,4 +1252,5 @@ def runtime_stage_result_format(
         workflow_control.finish_available,
         workflow_control.clarification_available,
         workflow_control.continue_stage_available,
+        workflow_control.clarification_followup_ids,
     )

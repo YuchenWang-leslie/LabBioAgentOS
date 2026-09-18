@@ -35,6 +35,7 @@ from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .models import (
     ExecutionDiagnostic,
     ExecutionDiagnosticCode,
+    ExecutionErrorContext,
     ExecutionFailureClass,
     ExecutionIssue,
     ExecutionPlan,
@@ -51,6 +52,7 @@ from .mounts import (
 )
 from .registration import OutputCollector
 from .diagnostic_sources import traceback_chain, verified_image_imports
+from .error_context import bounded_error_context
 
 
 _SAFE_PYTHON_EXCEPTION_TYPES = frozenset(
@@ -489,6 +491,8 @@ class DockerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.TIMEOUT,
                 error_message=message,
+                error_context=(bounded_error_context(outcome.stderr)
+                    if self.execution_policy.include_error_context else None),
             )
         if outcome.exit_code != 0:
             message = f"Docker process exited with code {outcome.exit_code}."
@@ -512,6 +516,8 @@ class DockerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.NON_ZERO_EXIT,
                 error_message=message,
+                error_context=(bounded_error_context(outcome.stderr)
+                    if self.execution_policy.include_error_context else None),
                 diagnostics=self._safe_python_diagnostics(
                     outcome.stderr,
                     script_content=plan.script_content,
@@ -665,6 +671,7 @@ class DockerExecutor:
         output_refs: tuple[ArtifactRef, ...] = (),
         issues: tuple[ExecutionIssue, ...] = (),
         diagnostics: tuple[ExecutionDiagnostic, ...] = (),
+        error_context: ExecutionErrorContext | None = None,
         error_class: ExecutionFailureClass | None = None,
         error_message: str | None = None,
     ) -> ExecutionResult:
@@ -689,6 +696,7 @@ class DockerExecutor:
             error_message=error_message,
             issues=issues,
             diagnostics=diagnostics,
+            error_context=error_context,
         )
 
     @staticmethod

@@ -419,6 +419,8 @@ class SkillProcedure(SkillProcedureDraft):
 
     important_instruction_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
     script_artifact_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    # Legacy inline references remain readable. New records resolve the complete
+    # trace through their proposal/Gold source_bundle_id, not this bounded copy.
     source_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=512)
 
 

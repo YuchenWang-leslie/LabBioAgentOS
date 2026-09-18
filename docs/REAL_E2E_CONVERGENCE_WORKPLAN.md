@@ -1,5 +1,802 @@
 # Real E2E Convergence Workplan
 
+## 2026-09-18 — Publication checkpoint
+
+The user authorized publishing all recent repository changes and merging
+`continuation` into `main`, explicitly excluding analysis data and results.
+Scope is source, regression tests and engineering documentation only;
+`projects/DEMO`, `projects/test`, H5AD files, figures, analysis reports, runtime
+databases and credentials remain local and outside this commit.
+
+Pre-publication full regression: `1479 passed, 34 skipped`, with one existing
+Uvicorn deprecation warning. No additional live analysis, production deployment,
+Gold promotion, Docker service change or global proxy change is part of this
+publication. The following run checkpoints retain their stated scientific
+limitations; publication is not a new scientific acceptance decision.
+
+## 2026-09-18 — Harmony-based Leiden reannotation and bounded consistency correction
+
+User requested reannotation from the saved Harmony H5AD, combining known markers
+and Leiden DEGs in the confirmed renal cancer bone-metastasis task context, plus
+English barplot/UMAP deliverables. Run `3f46c7dd-8d6d-49d5-bf37-a708f46f4f12`
+completed from Harmony parent `2fc639bf-8764-465c-9d1e-94d195944ec9`.
+ExecutionAgent generated and repaired its own programs; no scientific code,
+replacement markers or cell identities were supplied by Codex. Agent repaired
+H5AD serialization and output-contract errors. Successful execution
+`0e82189e-1e67-4ded-bca0-1972893df093` rebuilt neighbors/Leiden/UMAP from
+`X_pca_harmony_v2`, with 19 clusters and registered marker/DEG evidence.
+
+The Agent's own formal report identified contradictions in its saved labels.
+A bounded successor relayed those existing findings, without replacement labels
+or rerunning upstream analysis: `f6056d86-029a-4f82-81e2-94ae679a8310` completed
+COMPLETED / STABLE / LEARN. Final execution
+`2ff52878-68f8-4595-b0f8-bf309c47026f` registered 7 outputs; formal report
+`83d1dbdb-bf2a-4b76-a821-5b13c9a12aaf`. Final H5AD is 16,250 x 21,521,
+19 unchanged clusters and 14 labels; 293 cells retain a putative epithelial/
+malignant label, not confirmed malignancy. Expression, counts, Harmony, UMAP,
+Leiden, pairwise graph data and ranked DEGs were preserved in the successor.
+
+Delivery: `projects/DEMO/harmony-annotation-20260918/README.md`, with exact-byte
+H5AD, five PNGs, records, report and provenance. All 8 deliverable hashes match
+registration. QA explicitly records residual uncertain labels, inherited stale
+confidence/annotation fields, and the correction's use of 9 pre-existing patient
+labels while 17 original samples remain. These are not silently repaired or
+presented as scientific acceptance. No additional run beyond the bounded successor.
+
+No framework/configuration/Pantheon changes or deployments; runtime remains
+`local-0b69353e591504cd122876658d4c26a1264461e0b8663761b95437acf1b4d2bf`.
+No new Gold approval/reuse validation, generic regression run or Git push.
+No active sandbox; Docker/containerd/socket active. Existing results retained.
+Next entry is the final delivery README and QA, not a restart from CSV.
+
+## 2026-09-17 — CSV-to-result Gold explicitly approved
+
+User explicitly approved candidate `e1fca485-e175-4a01-9764-a82f8a44dae8`
+for TEST1's personal Gold library. Verified the persisted candidate against the
+reviewed file, then used ordinary gold-decide with the exact approval gate.
+Created GOLD v1 `1d03636f-617f-4f98-9056-c992bc25d1e7`, approved_by TEST1 at
+10:20:10 UTC; export completed. Agent content was not changed. A separate process
+reopened the database and verified content, complete 622-event source bundle,
+and exact generated Markdown. Same-user PRJ1 catalog can discover it; TEST1 now
+has three distinct approved Skill identities. Existing Gold was not replaced.
+
+Approved guide is under `test/TEST1/GoldSkills/` in directory
+`scrna-seq-multi-sample-csv-to-h5ad-pipeline-with-qc-and-anno_v1_1d03636f-617f-4f98-9056-c992bc25d1e7`.
+Handoff receipt: `projects/DEMO/gold-csv-review-20260917/human-review/APPROVAL_RECEIPT.json`.
+Earlier candidate/failed-persistence receipts remain historical snapshots.
+Remaining advisory wording limitations are retained in the handoff, not erased
+by approval. No provider call, new-task reuse, analysis rerun, source patch,
+deployment or Git push in this approval pass. Local repaired runtime remains
+`local-0b69353e591504cd122876658d4c26a1264461e0b8663761b95437acf1b4d2bf`.
+No active sandbox; Docker/containerd/socket active. Stop at approval and export;
+future task-specific selection/use authorization is separate from Gold creation.
+
+## 2026-09-17 — CSV-to-result Gold candidate and lineage persistence repair
+
+User requested Agent-authored Gold abstraction of the recent successful full
+CSV analysis, explicitly allowing human QA feedback. Source remains completed
+run `a4e917d8-fa6b-4eb7-ab82-e8ae7eea0b7d`; later English delivery and Harmony-only
+revision were labeled human-review context, not merged into source-run execution
+claims. Existing configured Gold author/auditor/reviser were used with
+request-local feedback; no global prompt or scientific code change. First draft
+overgeneralized parameter advice and error causes; a separate authorized human
+review asked the Agent to revise its own content. Agent text is retained verbatim.
+
+Curation completed but persistence failed: source bundle
+`399e1107-bc2f-4fdc-8e28-ea83dd920d39` holds 622 trace refs, while create_proposal
+copied the entire list into a field bounded at 512. User explicitly authorized
+root-cause investigation and minimal repair. New candidates now rely on their
+existing source_bundle_id for complete immutable lineage instead of duplicating
+all events inside the guide; the legacy inline field remains readable. No event
+deletion, larger limit, data migration, relaxed approval or provider retry.
+
+New regression reproduces failures above 512, then verifies 1/512/513/622/1500
+refs through curation, exact approval gates and SQLite restart, plus old-record
+compatibility. Focused: 125 passed. Full: **1479 passed, 34 skipped**, one existing
+Uvicorn warning, 34.50 seconds. Production changes are limited to skills/service.py
+and compatibility documentation in skills/models.py; no scientific behavior change.
+
+Persisted the exact saved Agent draft without another provider call. Proposal
+`e1fca485-e175-4a01-9764-a82f8a44dae8`, PERSONAL / TEST1, is
+**PENDING_USER_APPROVAL**, not active Gold. Name:
+"scRNA-seq Multi-Sample CSV-to-H5AD Pipeline with QC and Annotation".
+Eight workflow steps, four modifiable decisions. Reopened typed candidate matches
+the saved proposal; all 622 source refs remain. Existing approved Skill identities
+are unchanged. Remaining illustrative-parameter, exit-code/resource and narrow-
+revision wording caveats are documented for human approval, not silently edited.
+
+Handoff: `projects/DEMO/gold-csv-review-20260917/README.md`, with current guide in
+`human-review/CANDIDATE.md`, exact draft/proposal, review context and audit records.
+Repaired persistence runtime:
+`local-0b69353e591504cd122876658d4c26a1264461e0b8663761b95437acf1b4d2bf`.
+Local CLI only; no production release activation, Git push, Pantheon modification,
+Gold approval/promotion, generic live run or scientific rerun. Real Agent curation
+and actual candidate persistence completed; new-task reuse remains untested.
+No active curation/sandbox remains; Docker/containerd/socket are active.
+Stop at the user's review/approval of this exact candidate. Do not resume the
+scientific source run or re-call the provider merely to retry persistence.
+
+## 2026-09-17 — User-authorized Harmony-only review completed
+
+User requested an Agent-owned revision from the existing H5AD, rerunning only
+Harmony and saving a separate result. Ordinary `labbio revise` from completed
+parent `a4e917d8-fa6b-4eb7-ab82-e8ae7eea0b7d`, selecting H5AD Artifact
+`a755695c-c7e3-43b2-97dd-c92f3cc041f5`, created run
+`2fc639bf-8764-465c-9d1e-94d195944ec9` in
+`test/TEST1/projects/DEMO/runs/demo-harmony-review-20260917-01`.
+The request prohibited CSV reanalysis and recomputation of QC, PCA, UMAP,
+clustering or annotation. No operator analysis code or repair hint was supplied.
+
+Agent corrected a missing harmonypy dependency through its environment tools,
+then a result-transpose shape error. Third execution
+`91646fe0-06fa-428d-bdad-ecc5e3d53199` succeeded. Harmony converged after five
+iterations; revised H5AD adds `obsm/X_pca_harmony_v2`, shape `(16250, 50)`.
+Independent read-only comparison: all 88 original HDF5 datasets have unchanged
+shape/dtype/values; only the new Harmony dataset was added. Original source
+hash is unchanged. No claim of independently accepted biological integration.
+
+Completed at 09:39 UTC: COMPLETED / STABLE, LEARN, record version 43, no pending
+gate/clarification or inflight operation. Formal report
+`5492d7cc-eab3-45c5-bf10-8b23b2026e8c` is retained unchanged. QA flags its
+unsupported prior-key-error speculation and component-mean acceptance wording;
+these do not invalidate the verified shape correction. No extra scientific run
+was launched to polish the prose.
+
+Delivery: `projects/DEMO/harmony-review-20260917`, 59 hash-verified copied files
+(415,510,216 bytes), plus engineering README/QA notes. Revised H5AD Artifact
+`b93ca03d-064e-415e-b9ee-472320010a3d`, SHA-256
+`ea1d81921e8954b7cc60ae0eb14d7cfe3233aadf9b8496266d6edfbae0c01b1f`.
+Original UMAP/clusters/annotations remain pre-correction and are not a new
+Harmony-based downstream analysis. Earlier fresh-analysis presentation folder
+was absent on inspection; source registered run artifact remained intact.
+
+Runtime unchanged:
+`local-3073b560c1ae1b0d0f22dc229af2f3c4bd8cfc1572f0840931d62fd07c37c328`.
+No framework patch/deployment, Git push, Gold promotion or service/proxy change.
+No generic live or full regression rerun; the real-data revision and final report
+completed. No active sandbox remains; Docker/containerd/socket are active.
+Stop at delivery. The only next entry is the user's review of this package;
+downstream reanalysis is not automatically authorized.
+
+## 2026-09-17 — Fresh DEMO after user-cleared runs
+
+Current authority: user cleared previous runs and requested a complete fresh
+DEMO, prioritizing delivery over non-blocking bug polishing. Verified the DEMO
+runs directory was empty, no LabBio CLI process and no active Docker container.
+Previous run paths below are historical and no longer available. Preserved
+`projects/DEMO/assets-20260917` is historical material, not new-run evidence.
+
+Started ordinary CLI run `a4e917d8-fa6b-4eb7-ab82-e8ae7eea0b7d`, conversation
+and directory `demo-from-scratch-20260917-03`, from the same 17 original CSVs
+and user task/preferences. No old analysis code, results or report imported.
+Scope remains 1000 cells per sample, QC/doublet handling, clustering and broad
+annotation, no CD8 subtyping or trajectory. Agent owns analysis and reporting.
+No new source/config changes, extra budget, deployment or Git push. Only proven
+workflow blockers are in scope for repair; scientific caveats remain explicit.
+Completed at 08:07 UTC: **COMPLETED**, final stage LEARN, no issue codes, pending
+gate or clarification. Six Agent-authored executions: initial OOM with 512 MiB;
+Agent requested 32 GiB, then corrected CSV dtype, matrix orientation and numerical
+fit failures; fifth execution computed results but failed one declared filename;
+sixth execution `1b7c4fff-6150-4c13-81cc-3eb310ea498e` succeeded (exit 0,
+260.37 seconds, 13 registered outputs). Agent also corrected one missing report
+reference after execution_inspect. Formal report
+`7ecc1541-0beb-4415-853f-6d4f786f10bd` explicitly discloses failed Harmony and
+actual PCA use, and the proxy nature of doublet filtering. No operator scientific
+code, parameters, correction hints or report prose supplied. No new framework
+patch in this fresh run; no FINALIZATION_CORRECTION_REQUESTED event occurred.
+
+Curated exact final bytes and provenance: `projects/DEMO/fresh-analysis-20260917`,
+113 hash-verified files, 412,085,616 bytes. H5AD: 16,250 cells x 21,521 genes;
+27 clusters, 8 figures and 3 result tables. Gold proposals were not approved or
+promoted; this is not a Gold reuse acceptance claim.
+
+Presentation QA found missing Chinese glyphs in plots. Started an Agent-owned
+display-only revision through ordinary `labbio revise`, same conversation,
+directory `demo-display-revision-20260917-01`. Task asks readable figures from
+existing outputs, preserving data/coordinates/clusters/annotations, no raw-CSV
+reanalysis. No source edits or scientific method prescription. Current sole live
+entry is now the English delivery revision below; original full analysis is
+terminal and preserved.
+
+Display revision `9b41f414-76aa-40f5-bce8-feed89c30274` generated registered
+figures but inspection still found Chinese category glyphs missing. User then
+explicitly requested all deliverables in English. Interrupted only its owned CLI
+with SIGINT while no container was active. Reconciliation: no active writer,
+VALIDATE STAGE_IN_FLIGHT, FINALIZE_ONLY possible, no uncertain side effects.
+This is an interrupted, superseded attempt, not COMPLETED or confirmed
+cancellation; do not resume it.
+
+Final English entry: `demo-english-delivery-20260917-01`, ordinary revision
+of the completed original run, explicitly importing its H5AD, three tables and
+formal report. User's English-only requirement covers report and all visible
+figure labels; no reanalysis or operator-written scientific content.
+
+English run `b1bb02b6-ecbb-481a-99e3-aa6ba7a41c80` completed at 09:03:09 UTC,
+final LEARN, STABLE record version 43, no inflight operation, gate or clarification.
+Agent corrected a pandas categorical-label error and QC-field KeyError; execution
+`dd1dc0f5-b23e-452e-9b89-da79ea125602` registered 10 outputs including 8 English
+PNGs. INTERPRET had one reasoning-only 16,384-token/length response, then continued
+through the existing Pantheon mechanism; no LabBio JSON-correction event or new
+patch was needed. Agent corrected one missing report reference and submitted
+formal report `5479e069-1d5a-4c16-92a1-5837bdb697e9`.
+
+English package: `projects/DEMO/english-delivery-20260917`, 79 byte/hash-verified
+files (4,924,866 bytes). Primary entry: `projects/DEMO/START_HERE.md`. Original
+H5AD remains unchanged; display-only English labels are not re-annotation. All
+PNGs decode; rendered UMAP/QC/composition/marker views have no missing Chinese
+glyphs. Marker title overlap and report arithmetic/clinical-label caveats are
+recorded in QA_NOTES.md, not silently edited or used to trigger more runs.
+The short English report has no Chinese; detailed formal report preserves a
+source-label translation crosswalk. Neither report is independent biological
+acceptance. No Gold reuse/promotion or controlled-agent benchmark was completed.
+
+Current frozen source CLI runtime:
+`local-3073b560c1ae1b0d0f22dc229af2f3c4bd8cfc1572f0840931d62fd07c37c328`.
+Fresh full regression: **1473 passed, 34 skipped**, one existing Uvicorn warning,
+34.92 seconds. No new production-source patch, deployment, push, budget change or
+Docker-service modification in this pass. No production current pointer exists.
+No active analysis container remains; Docker/containerd/socket are active.
+Stop at delivery. Next entry is START_HERE.md and the user's review, not another
+automatic run. Preserve completed runs and the explicitly superseded interrupted
+display attempt; do not resume it merely because its persisted status is RUNNING.
+
+## 2026-09-17 — Truncated FINALIZE protocol recovery
+
+User authorized diagnosis, minimal repair and fresh testing through actual task
+completion. Preserved failure `b937318b-e8d9-4284-890b-9b58b37f2c73` had no
+sandbox execution: INTAKE capability listing completed, FINALIZE exhausted
+16,384 completion tokens and failed JSON parsing. The old audit did not save
+rejected content; the exact field/repetition that consumed its budget cannot
+be retrospectively established. Do not claim an unsupported scientific or
+transport diagnosis.
+
+One isolated finalization-only replay of the exact input/evidence, unchanged
+model, prompt and schema, returned a valid transition in 1,674 completion tokens
+(42,365 ms). No tools or state transition were applied. Actual SDK wire schema
+and safe request metadata are in `projects/DEMO/diagnostics/intake-20260917-01`.
+This rules out a consistently unusable schema or an intrinsically 16K-token
+input acknowledgement; it does not prove why the earlier generation diverged.
+
+Confirmed structural recovery gap: tools provide failure feedback, but rejected
+FINALIZE JSON terminated the whole run before the model could see its protocol
+failure. Added exactly one explicitly traced, model-authored correction only
+when observed finish_reason=length accompanies json_invalid. Frozen stage input,
+capability evidence and effective schema stay unchanged; rejected content is not
+replayed. No tool/scientific execution replay, JSON repair, invented decisions,
+relaxed validator, increased per-call budget, capability turns, workflow retry,
+Pantheon modification or provider configuration change. An extra FINALIZE call
+is an explicit cost only after this documented failure. Repeated truncation,
+filtering, transport errors and non-truncation validation failures still fail.
+
+Regression first reproduced immediate termination, then covered one correction,
+exhaustion, original evidence identity, actual Pantheon Response parsing, rejected
+content non-replay, filtered/non-truncated failures and trace leakage. Full
+regression: **1473 passed, 34 skipped**, one existing Uvicorn warning, log
+`/tmp/labbio-finalization-recovery-regression-final-20260917.log`.
+
+Frozen runtime `local-1b3502aff27e5761d63ba3a447e86bca9bf43ea350873a64f8e7608a85a46267`
+started fresh ordinary CLI run `24181c72-0acc-484e-b543-d560d1fa1a6d`, directory
+`test/TEST1/projects/DEMO/runs/demo-from-scratch-20260917-02`. Same original
+task/preferences and 17 raw CSVs; no old outputs or code imported. No source
+edits while active. End-to-end outcome pending. Source CLI only, no deployment,
+Git push, Docker service changes or Gold promotion.
+
+Live checkpoint: INTAKE (3,215 tokens), UNDERSTAND (2,959) and PLAN (3,784)
+finalizations passed without truncation. One RAW SCHEMA denial was not repeated.
+Agent proposed Gold REFERENCE but ultimately chose independent analysis; no
+Gold use authorization/view succeeded or operator approval was applied.
+EXECUTE remains active on the same frozen runtime, with no operator input:
+
+- `0cd10c43-ff97-414d-95df-fa90b428a1c2`: Harmony-to-AnnData shape error.
+- `be602127-6fdf-4a4b-b3d5-3909fc94ac60`: direct Harmony call retained wrong
+  transpose assumption; same shape class, now at the submitted source line.
+- `363bfcbe-4e8e-42bc-add6-f46a210a0b94`: Agent added actual shape checks;
+  process exit 0, but all three tables had undeclared fields (no final success).
+- `934df4fb-28bf-4350-b0ac-543a089e7a1d`: process exit 0; two tables registered,
+  cluster table still had an undeclared field. Agent then hit one syntax precheck
+  rejection, corrected it itself, and submitted the next execution.
+- `d8c3dbfd-2d1e-487a-807f-e68b1fb41400`: fifth sandbox execution is active.
+
+Complete redacted error contexts/contract indices reached the Agent, and the
+approved field list was verified in its actual EXECUTE input. No scientific code,
+method, parameter, table conversion or corrective hint was supplied by Codex.
+Generated files from exit-0-but-contract-failed attempts are not final delivery.
+Do not launch a duplicate run; inspect this active run/process first.
+
+## 2026-09-17 — Curated delivery, authorized cleanup, fresh CSV run
+
+User requested usable data/reports in `projects/DEMO`, deletion of old runs,
+then one analysis from scratch. Curated package `projects/DEMO/assets-20260917`
+contains 201 byte-verified files (4,347,808,679 bytes), including 17 unchanged
+raw CSV copies, the revised H5AD, selected figures/tables, unchanged latest
+Agent REPORT plus QA notes, and selected programs/logs/traces/artifact envelopes.
+`projects/DEMO/README.md` distinguishes analysis, revision and REPORT origins;
+this is not a claim of a historical unattended full workflow. The package is
+a delivery/provenance snapshot, not a fully restorable runtime database.
+
+After checking idle locks, no open run handles, no nested mounts and no running
+Docker containers, deleted only `test/TEST1/projects/DEMO/runs`: 944 files,
+70,425,839,935 logical bytes. Original data, other projects, personal Gold,
+Docker images and existing DEMO planning documents remain. Package contains
+the cleanup receipt and per-file copy hashes. Old paths below are historical.
+
+Fresh ordinary CLI run `b937318b-e8d9-4284-890b-9b58b37f2c73`, directory
+`test/TEST1/projects/DEMO/runs/demo-from-scratch-20260917-01`, conversation
+`demo-from-scratch-20260917`, started from the same user task/preferences and
+only the 17 raw CSVs. No previous results, reports or programs were imported.
+Task retains 1000-cell/sample downsampling, broad annotation only, and optional
+Gold reference. Analysis/code/correction/report remain Agent work. Runtime
+`local-bd1e033acb311075f5a7c90850a3d9f74e70de60d78833f8ab1f32daa42b84b2`;
+no source runtime changes, budget increase, deployment, Git push or Gold change.
+Run terminated **FAILED at INTAKE**, before any sandbox execution or new result.
+Artifact listing succeeded; FINALIZE took 174,517 ms and returned
+`finish_reason=length`, `completion_tokens=16384`. Parsing failed at `<root>`
+with `json_invalid`, surfaced as `MALFORMED_RUNTIME_RESULT`. This proves a
+truncated stage result, not a CSV/H5AD analysis error or an HTTP 500. Why this
+stage generated that much output has not been established from the bounded
+audit. No extra retry, budget change, manual scientific input or source repair
+was made. The new failed run is retained as the single fresh run and next
+diagnostic entry point; old-run deletion is not repeated against new evidence.
+Process exited (CLI code 2); no analysis container remains. Curated old results
+remain usable with their documented limitations; there is no new successful
+end-to-end result. Source CLI runtime only, no production release deployment.
+
+## 2026-09-17 — Authorized REPORT-only retest completed
+
+User authorized only a fresh REPORT-generation retest. Reused the existing
+launcher and frozen generated artifacts with unchanged budgets; no source
+changes, CSV analysis, environment build, workflow resume, deployment or push.
+Run `5fb69d6a-d2ca-458c-9c17-866be891018b`, directory
+`projects/test/TEST1/projects/DEMO/runs/report-only-20260917-03`, ended
+**REPORT_SUBMITTED / MODEL_RETURNED** after 12 provider turns. Report Artifact:
+`3f02a87b-6fb3-461b-b594-a59c0034970f`.
+
+The Agent successfully used report_read 12 times, aggregate 6 times and
+artifact_query 4 times. One REPORT_EVIDENCE_INCOMPLETE submission was corrected
+by the Agent reading missing table pages, then successfully resubmitting.
+No illegal view guessing or file-read authorization failure occurred. Exported
+REPORT markdown matches the registered report exactly.
+
+Technical generation is proven, not final content acceptance: the report has
+contradictory pre-filter gene-count statements, conflates sampled vs pre-sampling
+cell counts, imprecisely describes the outlier score threshold, and mixes earlier
+and revised figure/file inventories. These were documented, not silently edited;
+see the run's `QA_NOTES.md`. No further invocation was launched. The interrupted
+full workflow remains interrupted. Further report-content work needs a separately
+scoped user request; this REPORT-generation retest is complete.
+
+## 2026-09-17 — Query/read permission feedback repair; non-live only
+
+Latest user instruction: diagnose the repeated REPORT tool misuse, make a
+targeted repair and interface tests today; defer real model testing until tomorrow.
+No provider calls or scientific executions were made for this repair.
+
+Observed failure `report-only-20260917-02`: 40 artifact_query calls, 20 aggregate
+calls; 15 exposure denials and 10 unsupported `TABULAR_SUMMARY` views. The actual
+provider schema already had the correct finite view enum. Denial feedback had
+`allowed_view_types: []` but no representation of separately authorized file
+readers. REPORT instructions emphasized table queries/source inspection without
+describing the newly authorized generated-file access. This is a demonstrated
+information/contract gap, not proof of the model's internal reason for repeating.
+The first standalone attempt also exposed a real string-reference/UUID comparison
+gap in generated-file scope checks; its launcher workaround is no longer needed
+for correctly typed ARTIFACT context references.
+
+Minimal repair: query constraints now include `available_file_readers`, computed
+from current capability exposure and the same generated-file authorization used
+by actual reads. No content is read during this projection. Query errors and tool
+documentation distinguish unavailable views from available file-reading tools.
+Generated-file readers share canonical UUID scope binding. Generic deployment
+and REPORT descriptions distinguish original ingestion restrictions from explicit
+generated-file permissions. No scientific method, automatic tool selection,
+request rewriting, hidden read, retry increase, Pantheon modification or deleted
+interface. Original inputs and non-ARTIFACT references remain denied.
+
+Deterministic regression covers wrong query -> persisted access facts -> explicit
+caller-selected read; scope, disabled permission, unavailable tool, original data
+and execution-reference negatives remain failures. Targeted suite: **139 passed**.
+Final full non-live suite: **1467 passed, 34 skipped**, one existing Uvicorn warning;
+log `/tmp/labbio-report-access-feedback-regression-final-20260917.log`.
+Source/configuration documentation only: no deployment, push, new report or Gold
+promotion. No production `projects/LabBioAgentOS-production/current` exists in the
+checked workspace; the scoped CLI/source runtime is the applicable integration.
+
+Stop here. Next authorized validation is one fresh REPORT-only invocation using
+the existing report-only launcher and frozen generated artifacts, with the same
+budgets, not a CSV analysis rerun or a resume of the interrupted workflow. It must
+verify actual report_read use, successful report submission and report/file
+consistency; deterministic tests do not establish that live outcome.
+
+## 2026-09-17 — User-authorized generated-file access
+
+User explicitly authorized direct file reading except original input files.
+Previously generated reports/logs/H5AD were classified RAW and blocked even
+when they were Agent outputs. Added `file_read` with deployment-controlled
+`allow_generated_file_read` (enabled in the existing local config), using
+registered Artifact UUIDs, execution provenance, current/imported run scope,
+owner/project access and byte hashes. Original RAW_INGESTION files and arbitrary
+host paths remain rejected. Generated UTF-8 reports/code/logs/tables are redacted
+then paginated; binary files receive bounded format/structure inspection, not
+matrix dumps or image interpretation. Text above 16 MiB has an explicit unread
+limit status. Generated text can contain input-derived values; this permission
+is not a data-privacy guarantee, classification promotion or scientific validation.
+Authorized receipts expose stdout/stderr identities for on-demand reads, not
+automatic process-text injection into prompts.
+
+Full regression: **1451 passed, 34 skipped**, one existing Uvicorn warning.
+Actual 03 file checks: report/stdout TEXT_PAGE, H5AD HDF5 structure, original CSV
+denied. Scope/hash/symlink/redaction/pagination/provider transport/binary cases
+tested. Revision 05 (`5856a172-f7fe-4d24-a263-fd968bafd439`) was safely interrupted
+before sandbox submission when the user changed this authority. Docker unchanged.
+Started `demo-broad-annotation-delivery-20260917-06` directly from completed 03,
+with the same revision request and newly authorized frozen source/config.
+Source CLI only: no production deployment, push or Gold promotion.
+Run `332fbd35-1520-4810-8cb7-d8496fe851e9` completed revision execution
+`437d9d16-7285-4999-b993-4a933b9281dd` with exit 0. The Agent then successfully
+used `file_read` for its generated stdout. Read-only checks confirm the revised
+H5AD has 15,897 cells, 20,958 genes, 17 readable sample categories and no `tissue`
+column. Formal report/export are incomplete; execution success is not final
+delivery acceptance. Revision 06 was interrupted at REPORT with no active sandbox
+when the user requested a read-interface change. No successor was launched.
+
+The latest user scope is ONLY to change and test `report_read` permissions, then
+stop. The interface was retained, not deleted. It now uses the existing generated
+file reader for authorized execution outputs; formal model-authored report pages
+retain their existing exact-prose reader. Both paths retain their permission,
+identity, pagination, transport and evidence checks. Original ingested files stay
+closed. No changes to `file_read`, scientific behavior, workflow budgets or provider.
+Targeted report-interface tests: **29 passed, 14 deselected**, one existing Uvicorn
+warning. No full regression, live Agent rerun, regenerated report, deployment or
+push was performed for this final permission adjustment. Stop here; any further
+report generation requires a new user request.
+
+### Subsequent authorized REPORT-only live check
+
+The user then requested Agent report generation without rerunning analysis.
+Invoked the existing REPORT capability runtime separately, exposing only
+`report_read`, `artifact_query`, `artifact_aggregate` and `report_submit` with
+the existing 16-turn/300-second limits. No scientific execution, workflow
+resume, source-runtime modification, environment build or Gold action occurred.
+Copied selected immutable generated artifacts from execution `437d9d16...`
+and the original program/logs from `57c7628a...`, preserving their identities
+and byte hashes. Original CSVs and previous report prose were not imported.
+
+`runs/report-only-20260917-01` ended without a report: the isolated launcher
+omitted the typed imported-artifact binding used by normal runs. Its string
+context IDs did not satisfy the generated-reader UUID scope check, so reads
+were denied. Corrected only the launcher to bind the actual imported UUIDs.
+`runs/report-only-20260917-02` (`3f29c466-c4a6-4c38-9b6e-6149f60fdf72`)
+also ended **NO_REPORT_SUBMITTED**, this time at **CAPABILITY_EVIDENCE_LIMIT**
+after 10 provider turns. The Agent repeatedly queried generated files via
+`artifact_query`, including unsupported view values, and did not invoke
+`report_read` or `report_submit`. Thus this check does not establish successful
+live report generation after the permission change. No third attempt or
+framework repair was started. Both attempts retain REQUEST/EVIDENCE/RESULT
+and trace files; the earlier workflow remains interrupted and unaccepted.
+
+## 2026-09-16 — Authorized general execution error feedback and fresh retest
+
+User explicitly authorized broader error visibility and continued repair through
+real task completion, without Codex scientific code/decisions or a premature
+skill-based stop. Added deployment-controlled `include_error_context` (default
+false; enabled in the existing local scientific-environments config). Failed and
+timed-out executions now project bounded, redacted traceback/error text with a
+stderr content hash and explicit redaction/truncation flags. The exact same
+projection survives receipt, model tools, inspection and durable trace. It is
+untrusted process evidence, not a method-specific repair recommendation. No new
+error enum for Harmony or dataset-specific logic. stdout and arbitrary file/locals
+inspection remain closed; redaction is best effort and errors may contain values.
+
+The original real shape-error traceback now retains both reported shapes and the
+library assignment frame without host paths. New tests cover unknown/multiline
+errors, exception chains, explicit exit error text, timeouts, opt-in policy,
+redaction/bounds, provider tool transport, inspection and persistence. Full
+regression: **1437 passed, 34 skipped**, one existing Uvicorn warning.
+
+Fresh CLI run directory: `projects/test/TEST1/projects/DEMO/runs/`
+`demo-broad-annotation-fresh-20260916-02`, conversation
+`demo-fresh-errors-20260916`. Same 17 original inputs, task/preference text,
+model/budgets and environments as 01; no old scientific artifacts or error-specific
+repair hints imported. Source frozen during live validation. No production
+service deployment, Docker service change, Gold promotion or push. Acceptance
+awaits actual complete deliverables, not the regression count.
+
+Fresh 02 run `feeca5dc-9178-4ce3-8314-6a4a3863c2f9` completed all stages.
+Its first execution `25c6ddfc-398d-4c88-b08d-21f517e2310c` failed at HVG fitting;
+the real tool/trace preserved a 695-character, untruncated traceback with the
+exception text. Agent independently changed the implementation. Execution
+`e0f2795e-5a36-4a2b-9830-c7e4ef6a9683` succeeded and registered 15 outputs,
+including H5AD, ten images, two queryable tables, CSV and sandbox report; formal
+REPORT was submitted. This proves technical workflow completion, not complete
+task satisfaction: the Agent caught and printed missing-dependency exceptions
+to stdout, skipped doublet removal/batch correction, and created a placeholder
+doublet image. Unconfirmed tissue labels also entered outputs. Error context
+does not inspect stdout or detect scientific work omitted by Agent catch blocks.
+
+Under the user's continue-until-complete authorization, started revision
+`demo-broad-annotation-completion-20260916-03` from fresh 02, using the same
+conversation and frozen source/config. Supplied observed task gaps and exact
+non-sensitive logged errors (missing skimage for Scrublet automatic threshold;
+missing harmonypy), not installation commands, scientific alternatives or repair
+code. Agent chooses its repair and may reuse this fresh run's real intermediates.
+No old deleted outputs or old report prose imported. No Gold use approval or
+full skill_view occurred in 02 despite an ADAPT proposal. Final delivery still
+requires the original task's actual doublet treatment and truthful reporting.
+
+Revision 03 is run `b6310098-0bd3-491c-a93d-49b6f994da34`. Its first
+execution exited 137 with empty stderr and a 512 MiB request; that exit alone
+does not establish OOM. Agent independently requested 32768 MiB next. Subsequent
+real errors exposed the full pandas `usecols` contract, LOESS fitting condition,
+and Harmony alignment mismatch. Agent corrected the CSV and HVG code. Harmony
+first failed in the library wrapper, then in the Agent's direct assignment;
+both complete tracebacks reached the model. Agent then checked actual dimensions.
+Execution `4f5f6ec0-6cd5-4131-a450-619555d009a3` produced a `(15897, 50)`
+Harmony result and completed the scientific program with exit 0. Registration
+still failed with `UNDECLARED_RECORD_FIELDS`, output index 1, record index 0.
+The Agent inspected its own submission and repaired the record declaration.
+Execution `57c7628a-0f75-4911-a969-59e92053b5db` then completed in 326 seconds
+and registered 15 outputs; workflow 03 reached `COMPLETED` / `LEARN` / `STABLE`.
+Formal report `559429e8-f825-41c7-8b53-705ad7b94709` and delivery snapshot
+`deliveries/43` exist. Read-only QA confirmed H5AD shape `(15897, 20958)`, aligned
+PCA/Harmony/UMAP dimensions, 17 samples x 3 nonempty QC median records, and ten
+figures with readable sample labels. Codex supplied none of the scientific code.
+
+Do not call the report fully accepted: it incorrectly reconstructs input count
+from final count plus flagged cells, calls post-filter genes the initial gene
+intersection, retains unconfirmed tissue labels, and calls the user context bone
+marrow metastasis. Its doublet step is an IQR outlier heuristic, not validated
+doublet identity. Started `demo-broad-annotation-delivery-20260916-04` as a normal
+Agent revision of 03, pointing out these observed factual/user-scope mismatches
+and asking to reuse the existing H5AD/results rather than rerun large computation.
+No prior report was selected as evidence; no replacement prose, scientific
+parameters, analysis program or desired biological result was supplied by Codex.
+
+Revision 04 (`6a29aa12-f774-4df5-b2b1-5c57f0becfc4`) submitted empty output
+declarations twice without new evidence; no sandbox launched. Its owned CLI was
+interrupted between calls, with Docker unchanged. Inspection found that the
+safe declaration failure structure existed in trace/final-stage evidence but
+the immediate tool result returned `data: null`. Project that same structure
+to the immediate model, including the exact field and safe submitted count;
+clarify existing declaration field names and that stdout is not automatically
+queryable. No validator relaxation or Agent output values were supplied.
+Regression covers empty, RAW-only and insufficient-count declarations through
+Pantheon, durable evidence, leak checks, and a subsequent valid execution.
+Full regression again: **1437 passed, 34 skipped**, one existing warning.
+Reconciliation confirms no active 04 writer; old runtime mismatch remains a
+blocked historical record, not a resumed task. Started fresh revision
+`demo-broad-annotation-delivery-20260916-05` directly from completed 03 with
+byte-identical task/preferences to 04 and the new frozen source. Delivery QA
+and real validation of this additional feedback projection remain pending.
+
+## 2026-09-16 — Authorized fresh DEMO analysis with optional Gold reference
+
+After permanent result deletion, the user authorized starting from original CSVs
+with partial reference to existing personal Gold, keeping prior task boundaries.
+Fresh run `df608636-4385-41d3-a924-cff685155a75` is in
+`projects/test/TEST1/projects/DEMO/runs/demo-broad-annotation-fresh-20260916-01`,
+conversation `demo-fresh-20260916`. All 17 count CSVs were explicitly submitted;
+no old artifacts, reports or revision lineage were imported. Scope: 1000 cells
+per sample, integration/QC/doublet handling, clustering and broad annotation,
+Chinese report, necessary figures/tables and H5AD; no CD8 refinement/trajectory.
+Scientific grouping requires user-grounded metadata, not inferred UUID labels.
+
+Restored only the empty managed `runs/` directory required by workspace
+resolution. The two existing approved personal Gold entries are discoverable;
+the Agent chooses whether/how to reference/adapt them. Exact use gates remain
+subject to inspection before acting on the user's authorization. Gold is not
+current scientific evidence. No Gold contents or scientific program were written
+by Codex. Frozen source and the existing scientific-environments configuration,
+model/budgets and skmisc-capable image are unchanged. This is a source CLI run,
+not a new production service deployment. Final acceptance is NOT achieved.
+
+Observed result: Agent first proposed ADAPT of PBMC Gold v1, then its final PLAN
+judged the returned skills unsuitable and proceeded independently. No use gate
+was approved and no authorized Gold guidance was read; do not claim Gold reuse.
+UNDERSTAND explicitly preserved original filenames and treated biological groups
+as unconfirmed. Three Agent-authored sandbox programs were submitted:
+
+- `ebb7c633-c8a7-4d10-96e7-0a289b415c0d`: failed at line 253 in seurat_v3
+  LOESS fitting. The safe ILL_CONDITIONED_FIT diagnostic was projected. The Agent
+  changed its HVG implementation without Codex scientific instructions.
+- `41eba40c-9c43-4362-a248-f896623e9517`: passed that point, then failed at
+  line 265 in harmony_integrate while assigning its result to AnnData.obsm.
+- `f1e8231d-69de-4587-bb6a-e6d5f47b1b07`: altered preprocessing/object handling,
+  but failed at line 212 in the same Harmony result assignment. Both tracebacks
+  report actual aligned shape (50,) versus expected (16566,). Safe feedback
+  preserves only ValueError and the script line; no shape condition/detail is
+  represented. This is a confirmed diagnostic information gap, not proof that
+  any particular method/parameter change is the scientifically correct repair.
+
+After the repeated failure, Codex stopped only this owned CLI via SIGINT, between
+sandbox executions. No fourth attempt, runtime patch, budget increase, scientific
+code edit or hidden solution hint. Reconcile: active_writer=false,
+STAGE_IN_FLIGHT/EXECUTE, continuation_action=BLOCKED, uncertain_side_effects=true.
+Persisted RUNNING is stale interrupted state, not a live process. Docker,
+containerd and docker.socket remain active; no running sandbox. No selected
+successful execution, accepted report, complete H5AD or final delivery exists.
+This new failed run remains only for diagnosis, not as reusable scientific input.
+All earlier deleted runs remain absent. Next bounded scope, if authorized, is
+generic safe shape-mismatch evidence projection and regression before a fresh
+run; do not blindly resume this interrupted stage or substitute Agent code.
+
+## 2026-09-16 — User-directed permanent DEMO result deletion
+
+This checkpoint supersedes all earlier preservation, archive, resume and revision
+instructions below. The user explicitly rejected retaining prior generated
+results, including the unsuccessful replacements. After checking for live
+processes, containers, mounts and open handles, permanently removed the exact
+DEMO `runs/` and `run-archive-20260916/` directories. This includes original run
+08, revisions 01–06, their H5ADs, reports, tables, figures, execution programs,
+run databases/traces and project-local conversation index. No backup was made.
+The removed directories occupied 34,177,253,376 allocated bytes (31.83 GiB).
+
+Only `projects/test/TEST1/projects/DEMO/data/` remains in that project. Original
+CSV inputs, the pre-existing smoke input, source, user GoldSkills, environments,
+Docker images/services and unrelated projects were not deleted. Earlier artifact
+links in these engineering notes are historical and no longer resolve; they must
+not be treated as available runtime evidence or delivered results. There is no
+current DEMO report or H5AD. Any newly authorized analysis must start fresh from
+the retained inputs, not resume/revise a deleted run. No new analysis, production
+deployment, framework change, Gold activation or push was performed in cleanup.
+
+## 2026-09-16 — DEMO deliverable regeneration, cleanup pending exact confirmation
+
+User prioritized actual report/figures/H5AD delivery over expanding generic
+diagnostics, and requested deletion of old generated products. Keep original
+data and necessary source/provenance until a replacement is verified; exact
+permanent-delete scope was requested asynchronously. No deletion yet.
+
+The direct input obstacle is addressed at the file interface: UUID-namespaced
+read-only mounts retain safe registered filename suffixes, without inferring file
+type, selecting an input, rewriting Agent code, exposing raw logs, or changing
+scientific behavior. UUID basename uniqueness and original-name sidecar survive.
+Tests cover the original extension-loss failure, compound suffixes, duplicate
+names, missing names and unsafe mount syntax. This is not scientific routing.
+Full regression: **1427 passed, 34 skipped**, one existing Uvicorn warning.
+Source remained frozen during two fresh revisions of original run 08. Neither
+revision is an accepted replacement, and no previous generated files were deleted.
+
+- Revision 05 (`1e2aa43a-14c0-4243-b85e-4533b95b3e9b`) produced an H5AD,
+  figures and report, but its five tables were empty and the sample labels were
+  unchanged. VALIDATE finalization hit the 16384-token output limit; the rejected
+  response persisted FAILED/STABLE. Not an accepted delivery.
+- Revision 06 (`c227dbac-3e21-42b9-8e3a-d0abb55a1251`) was given only factual
+  feedback about those defects. Its selected execution
+  `f2617479-2447-4b2f-883f-bee425fe4aaa` produced an H5AD and five nonempty
+  tables (170/17/27/256/135 records), plus a sandbox report. Independent read-only
+  comparison found unchanged X/PCA/UMAP, Leiden and cell_type. Sample labels
+  changed, but the Agent also assigned unconfirmed patient/condition meanings.
+  No new figures were produced. Its sandbox report incorrectly claims Harmony
+  and links to absent figures. REPORT exhausted 16 provider turns without
+  report_submit; the CLI exited with RuntimeProfileConfigurationError. Persisted
+  RUNNING/REPORT/STAGE_IN_FLIGHT is not a live writer or task completion.
+
+Do not rerun or delete the original successful data to conceal these failures.
+Next entry is the exact revision 06 REPORT evidence/inspection boundary and
+deliverable completeness, not CSV analysis or another blind retry. Existing
+original composition records were truncated to 256 by the original Agent code;
+reading all stored records does not establish complete biological composition.
+No report acceptance, new figure delivery, cleanup, push, production deployment,
+Gold activation, Docker image/service change or Pantheon change is claimed.
+
+## 2026-09-16 — Authorized evidence-first revision and reversible cleanup
+
+User authorized archiving old revision products, then testing a revision without
+automatically importing old report prose. Revision runs 01/02/03 moved intact to
+`projects/test/TEST1/projects/DEMO/run-archive-20260916/`; restore the exact original
+path before application access. Catalog bindings were not rewritten. Original
+analysis run 08 and data remain in place; no disk-space reclamation is claimed.
+No writer/container/open handle was found for the three archive targets.
+
+`revise` now defaults to selected non-report products and original producer
+programs, not old MODEL_AUTHORED_REPORT or sandbox report files. Inherited report
+context also requires explicit --artifact-id selection. Existing explicit report
+revision remains supported; no text/filename keyword routing. Current-stage
+handoffs, user instructions and answered clarifications remain intact. Artifact
+views explicitly scope authority to registered content; a model-authored claim
+inside an execution-produced table is not independent verification of other files.
+This metadata does not implement scientific grading or prove narrative truth.
+Full regression: **1421 passed, 34 skipped**, one existing Uvicorn warning.
+Fresh revision 04 (`48eab202-4d75-4cd5-8c9e-a0b0288b68e7`) imported 34 objects,
+zero reports, and the exact original producer program. EXECUTE read that entire
+program (20360 characters), unlike 03. This is input/provenance-path evidence,
+not report acceptance: no corrected H5AD, figure or report was delivered.
+
+After one rejected empty output declaration, the Agent submitted two programs;
+both searched UUID-mounted paths for a .h5ad suffix/string and called sys.exit(1)
+without finding it. Both have exit 1, empty stderr and empty safe diagnostics.
+The root repeated without useful new diagnostic evidence. The supervised CLI
+was interrupted with SIGINT after the two sandbox attempts; no further run or
+Agent-code edit. Reconcile: active_writer=false, STAGE_IN_FLIGHT,
+continuation_action=BLOCKED, uncertain_side_effects=true; persisted RUNNING is
+not a live process or confirmation of success. Do not resume blindly or rewrite
+the checkpoint. Docker services are active, with no running container.
+
+Next unique scope is safe diagnostic visibility for nonzero explicit process
+exit without a traceback. Artifact name/type/UUID mapping was already available;
+the Agent still selected by mounted suffix. The generic diagnostics currently
+parse stderr tracebacks, so stdout-only failure messages provide no diagnosis.
+Do not solve by exposing arbitrary stdout, guessing a scientific repair, adding
+a dataset-specific hint, or replacing the Agent's program. Old-report exclusion
+is tested but its effect on final report quality is still unverified. No push,
+production deployment, profile/Gold promotion, image or tunnel change.
+
+## 2026-09-16 — Authorized clarification-contract follow-up
+
+User authorized continuing after the rejected first-question follow-up in revision
+02. Provider schema now constrains followup_to to null or exact eligible answered
+question IDs, refreshed after an answer and on restart. Existing engine semantics
+remain authoritative; no question/answer repair or extra retries. Known rejected
+final results now persist FAILED/STABLE with a separate rejected-phase checkpoint
+and completed evidence, not accepted stage history. Unknown/incomplete effects
+retain existing in-flight protection. Original filenames are now visible input
+identity facts across stages, not inferred biological group assignments.
+
+Failing-first and adjacent-state tests pass; full regression **1418 passed,
+34 skipped**, one existing Uvicorn warning. Fresh revision
+`demo-report-revision-20260916-03` finished COMPLETED/STABLE with source frozen
+and exactly the same task/configuration as 02, using original run 08 intermediates.
+The clarification blocker did not recur. One sandbox revision registered six
+outputs, including its H5AD; matrix, PCA, UMAP, clusters and per-cell annotations
+match the original. The report now gives 16497 final cells and all 17 samples'
+stored QC medians. However, report acceptance is FAILED: it still claims Scrublet
+and PCA 50 instead of the original IQR heuristic and PCA 30; the condition plot
+still contains UUID fragments despite a claim that labels were replaced. Existing
+sample/patient/condition fields remain unchanged; only sample_name was added.
+The Agent inspected its revision program, not the original analysis program,
+and treated its own reconciliation manifest as content verification. No fourth
+run: next scope is distinguishing observed file/program evidence from authored
+claims, not another prompt-only reporting patch. See the revision audit for exact
+identities and evidence. No CSV reanalysis, source push, production deployment,
+Gold activation or Pantheon change. Prior rejected attempts remain immutable.
+
+## 2026-09-16 — Report grounding / identity audit supersedes run 08 report acceptance
+
+Run 08 remains technically COMPLETED; its report is NOT factually accepted.
+The report claimed 63779 final cells versus 16497 in the saved H5AD and QC
+records, and described planned rather than submitted methods. All 170 QC
+records exist, but TOP_N capped access at 100 with no paging. Seven samples'
+reported missing medians were unread records, not absent measurements.
+Original REQUEST.json has no condition/patient comparison request. The Agent
+introduced these in UNDERSTAND, then parsed mounted UUID basenames as metadata.
+Codex did not supply these groups; original identities were available locally.
+Exports mixed 17 selected outputs with 26 historical outputs.
+
+User authorized generic report/identity/delivery fixes and a successor using
+existing results, not another CSV analysis. Changes add bounded complete record
+paging and source-free offset audit, exact cited-table coverage before report
+registration, read-only original-program inspection in reporting stages, explicit
+immutable program provenance transfer on revision, and selected versus historical
+delivery paths. Generic instructions distinguish plans from performed work and
+require user clarification for unconfirmed scientific group assignments. No
+Codex scientific program, labels, method choice, report rewriting or data mutation.
+Coverage checks establish reading, not semantic correctness of arbitrary prose.
+
+This is the editable source CLI; no production current/docs or deployed service
+was found. Requested legacy PRODUCTIONIZATION_DEBUG_GUIDE.md / ARCHITECTURE.md
+are absent in this source; LABBIO_ARCHITECTURE.md and current entrypoint documents
+were used. Docker services are active, with no task container before changes.
+First regression passed 1401/34 skipped. Agent-owned successor
+`demo-report-revision-20260916-01` completed technically but is NOT accepted:
+complete QC reading worked, while totals/methods remained wrong, its scratch
+H5AD changed 4978 existing cell_type labels and was not registered for delivery.
+No CSV analysis rerun or Codex correction of these outputs took place.
+
+After that writer exited, producer identity projection, complete registered-file
+receipts and source-bound generic SUM/COUNT were added with failing-first tests.
+Regression now passes **1412/34 skipped**, one existing Uvicorn warning. Source
+stayed frozen for fresh `demo-report-revision-20260916-02`, using original run 08,
+not the first successor's mutated H5AD. This successor exited in UNDERSTAND with
+InvalidProposalError: first clarification supplied prose in followup_to, without
+any prior answered question. No execution or corrected delivery occurred.
+Read-only reconcile reports no writer, CHECKPOINT_INVALID / STAGE_IN_FLIGHT,
+continuation BLOCKED, no uncertain side effects. No third run or manual state
+repair. Next scope is clarification reference fidelity and failure checkpointing,
+not more reporting prompt edits. Live report/H5AD acceptance is NOT achieved;
+model, thinking configuration and budgets were unchanged. See
+`REPORT_EVIDENCE_REVISION_20260916.md` for evidence and limits. Old outputs remain
+immutable. No push, production deployment, Pantheon, Gold or proxy change.
+
 This source-side workplan covers only the transition from accepted synthetic
 runtime evidence to accepted real bioinformatics behavior. It is not an Agent
 prompt and does not establish production deployment or health.

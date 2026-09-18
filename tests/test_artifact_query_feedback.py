@@ -34,6 +34,7 @@ def _feedback(boundary, response, ref, views):
     assert constraints == {
         "authority": "CONTROL_STATE", "artifact_id": str(ref.artifact_id),
         "exposure_class": ref.exposure_class.value, "allowed_view_types": views,
+        "available_file_readers": [],
         "limit_allowed_view_type": "TOP_N", "limit_minimum": 1,
         "top_n_default_limit": policy.default_top_n,
         "top_n_max_returned": policy.max_top_n,
@@ -68,7 +69,7 @@ async def test_summary_string_limit_failure_projects_facts_then_caller_selects_l
     constraints = _feedback(boundary, failed, ref, ["METADATA", "SCHEMA", "SUMMARY"])
     request = tools.evidence_items()[-1].artifact_query_request.model_dump(mode="json")
     assert request == {"artifact_id": str(ref.artifact_id), "view_type": "SUMMARY", "limit": 20,
-                       "limit_type": "STRING", "normalization_applied": True}
+                       "limit_type": "STRING", "normalization_applied": True, "offset": 0}
     invoked = [event for event in sink.read(binding.run_id)
                if event.event_type is TraceEventType.CAPABILITY_INVOKED]
     assert len(invoked) == 1 and invoked[0].payload["artifact_query_request"] == request

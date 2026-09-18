@@ -88,9 +88,11 @@ def import_revision_artifacts(
                     and ref.exposure_class is ArtifactExposureClass.RAW
                     and ref.release_basis is ArtifactReleaseBasis.RAW_INGESTION
                 )
+                original_program = (ref.artifact_type == "execution-script"
+                    and "requested_exposure" not in ref.metadata and ref.metadata.get("sha256") == digest)
                 expected = (
                     ref.metadata.get("sha256", digest if legacy_input else None),
-                    ref.metadata.get("size_bytes", size if legacy_input else None),
+                    ref.metadata.get("size_bytes", size if legacy_input or original_program else None),
                 )
                 if expected != (digest, size):
                     raise RevisionImportError("File payload lacks matching registered integrity evidence")

@@ -292,6 +292,7 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
     assert dumped["workflow_control"] == {
         "clarification_available": True,
         "clarification_rounds_remaining": 3,
+        "clarification_followup_ids": [],
         "continue_stage_available": False,
         "authority": "CONTROL_STATE",
         "current_stage": "INTAKE",

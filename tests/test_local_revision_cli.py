@@ -57,7 +57,7 @@ def _args(fixture, *, conversation="conversation-a", selected=None):
 def test_revision_cli_links_parent_and_keeps_original_data_and_report(revision_cli, capsys):
     settings, original, observed, report_id, source_record, old_artifacts, old_report = revision_cli
     capsys.readouterr()
-    assert cli.main(_args(revision_cli)) == 2
+    assert cli.main(_args(revision_cli, selected=report_id)) == 2
     directory = settings.result_root / "revision"
     record = read_run_record(directory)
     assert record.run_id != source_record.run_id
@@ -105,7 +105,7 @@ def test_invalid_revision_is_rejected_before_provider(revision_cli, case):
         stored = json.loads(envelope.read_text())
         stored["ref"]["owner_user_id"] = "another-user"
         envelope.write_text(json.dumps(stored))
-        args = _args(revision_cli)
+        args = _args(revision_cli, selected=report_id)
     else:
         source = settings.input_roots[0] / "other.txt"
         source.write_text("different fixture")
@@ -123,7 +123,7 @@ def test_invalid_revision_is_rejected_before_provider(revision_cli, case):
     assert not (settings.result_root / "revision").exists()
 
 
-def test_default_revision_excludes_execution_diagnostics(revision_cli):
+def test_explicit_report_revision_excludes_execution_diagnostics(revision_cli):
     settings, directory, observed, report_id, record, *_ = revision_cli
     application = build_application(settings, directory, load_provider=False)
     diagnostic = directory / "diagnostic.txt"
@@ -136,8 +136,53 @@ def test_default_revision_excludes_execution_diagnostics(revision_cli):
         metadata={"execution_id": str(uuid4())},
     )
     cli._close(application)
-    assert cli.main(_args(revision_cli)) == 2
+    assert cli.main(_args(revision_cli, selected=report_id)) == 2
     revised = read_run_record(settings.result_root / "revision")
     assert ref.artifact_id not in (*revised.input_artifact_ids, *revised.context_artifact_ids)
     assert report_id in revised.context_artifact_ids
     assert observed["explicit_provider_loads"] == [True]
+
+
+def test_default_revision_omits_narratives_but_preserves_results_and_source(revision_cli, monkeypatch):
+    settings, directory, observed, report_id, record, *_ = revision_cli
+    application = build_application(settings, directory, load_provider=False)
+    execution_id = str(uuid4())
+    refs = []
+    for name, kind, content in (
+        ("measurements.json", "data_table", b'{"value": 7}'),
+        ("result.md", "report", b"OLD_NARRATIVE_SENTINEL"),
+        ("script.py", "execution-script", b"print('generic fixture')\n"),
+    ):
+        path = directory / name
+        path.write_bytes(content)
+        refs.append(application.artifact_store.register_file(path, artifact_type=kind,
+            exposure_class=ArtifactExposureClass.RAW, representation=ArtifactRepresentation(),
+            owner_user_id=settings.principal.user_id, project_id=settings.workspace.project_id,
+            lab_id=settings.workspace.lab_id, run_id=record.run_id,
+            stage_id=WorkflowStage.EXECUTE,
+            metadata={"execution_id": execution_id, "sha256": hashlib.sha256(content).hexdigest(),
+                      "size_bytes": len(content),
+                      **({"requested_exposure": "RAW"} if kind != "execution-script" else {})}))
+    # An inherited report must not sneak into a second revision via context.
+    source_record = application.run_state_store.get(record.run_id)
+    application.run_state_store.update(source_record.model_copy(update={
+        "context_artifact_ids": (*source_record.context_artifact_ids, report_id)}),
+        expected_version=source_record.record_version)
+    cli._close(application)
+    monkeypatch.setattr("labbioagentos.local_continuation.selected_execution_id", lambda record: execution_id)
+    assert cli.main(_args(revision_cli)) == 2
+    revised = read_run_record(settings.result_root / "revision")
+    imported = set((*revised.input_artifact_ids, *revised.context_artifact_ids))
+    assert report_id not in imported and refs[1].artifact_id not in imported
+    assert {refs[0].artifact_id, refs[2].artifact_id}.issubset(imported)
+    assert set(record.input_artifact_ids).issubset(imported)
+    assert revised.task_text == "Revise the previous explanation in plain language."
+    assert not (settings.result_root / "revision" / "artifacts" / f"{report_id}.json").exists()
+    assert not (settings.result_root / "revision" / "artifacts" / f"{refs[1].artifact_id}.json").exists()
+
+
+def test_report_only_source_needs_explicit_selection(revision_cli):
+    settings, _, observed, *_ = revision_cli
+    assert cli.main(_args(revision_cli)) == 1
+    assert observed["explicit_provider_loads"] == []
+    assert not (settings.result_root / "revision").exists()

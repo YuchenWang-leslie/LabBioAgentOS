@@ -86,6 +86,7 @@ from .memory import MemoryDecision, MemoryGovernanceService
 from .literature import LiteratureSearchService
 from .run_state import (
     ClarificationCheckpoint,
+    RejectedStageCheckpoint,
     ApplicationRunRecord,
     InMemoryRunStateStore,
     RunInflightOperation,
@@ -117,11 +118,11 @@ from .runtime import (
 from .runtime.assembly import BoundaryObserver, PluginFactory
 from .runtime.coordinator import RuntimeCoordinatorError, RuntimeCoordinatorService
 from .runtime.contracts import RuntimeInputArtifactUsage, RuntimeExecutionActivity
-from .runtime.pantheon import RuntimeProfileConfigurationError
+from .runtime.pantheon import PantheonRuntimeIntegrationError, RuntimeProfileConfigurationError
 from .runtime.reporting import ReportReceipt
 from .skills import GoldSkillService, SkillUserDecision
 from .trace import InMemoryTraceSink, RunTraceRecorder, TraceEvent, TraceSink
-from .workflow import WorkflowEngine, runtime_workflow_definition
+from .workflow import InvalidProposalError, WorkflowEngine, runtime_workflow_definition
 from .workflow.engine import WorkflowEngineError
 
 
@@ -759,6 +760,7 @@ class LabBioApplication:
             access_service=self.access_service,
             executor=self.docker_executor,
             trace_recorder=self.trace_recorder,
+            allow_generated_file_read=configuration.exposure_policy.allow_generated_file_read,
         )
         self.execution_preflight = ExecutionPreflightService(
             artifact_store=self.artifact_store,
@@ -1146,6 +1148,8 @@ class LabBioApplication:
         completed_evidence = record.inflight_evidence
         if record.clarification_checkpoint is not None:
             completed_evidence = record.clarification_checkpoint.evidence
+        if record.rejected_stage_checkpoint is not None:
+            completed_evidence = record.rejected_stage_checkpoint.evidence
         calls = tuple(
             ApplicationReconciledCall(
                 capability_invocation_id=item.capability_invocation_id,
@@ -1190,12 +1194,16 @@ class LabBioApplication:
         stage_input = record.inflight_input
         assert stage_input is not None
         result = record.inflight_result
-        if result is None:
-            invoker = session.coordinator.registry.get(stage_input.stage_id).invoker
-            result = await invoker.finalize_recovered(stage_input, record.inflight_evidence)
-        session.coordinator.accept_trusted_stage_result(
-            session.run, result, stage_input.invocation_id,
-        )
+        try:
+            if result is None:
+                invoker = session.coordinator.registry.get(stage_input.stage_id).invoker
+                result = await invoker.finalize_recovered(stage_input, record.inflight_evidence)
+            session.coordinator.accept_trusted_stage_result(
+                session.run, result, stage_input.invocation_id,
+            )
+        except (InvalidProposalError, PantheonRuntimeIntegrationError) as exc:
+            self._fail_rejected_stage(session, exc)
+            return await self.run(handle)
         self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
         return await self.run(handle)
 
@@ -1208,7 +1216,7 @@ class LabBioApplication:
         Identical re-delivery returns False even after later progress; it never
         starts a second continuation. Different text cannot overwrite an answer.
         """
-        from .runtime.contracts import RuntimeClarificationView
+        from .runtime.contracts import RuntimeClarificationView, RuntimeWorkflowControlView
 
         record = self.run_state_store.get(run_id)
         self._reauthorize_recovery(record, principal, workspace)
@@ -1237,6 +1245,8 @@ class LabBioApplication:
             control = control.model_copy(update={
                 "clarification_available": control.clarification_available and len(session.run.clarifications) < 3,
                 "clarification_rounds_remaining": 3 - len(session.run.clarifications),
+                "clarification_followup_ids": RuntimeWorkflowControlView.from_run(
+                    self.configuration.workflow_definition, session.run).clarification_followup_ids,
                 "continue_stage_available": True,
             })
         stage_input = source.model_copy(update={
@@ -1331,21 +1341,25 @@ class LabBioApplication:
                     invocation_id,
                 )
             else:
-                await session.coordinator.run_current_stage(
-                    run,
-                    instruction=(
-                        session.request.task_text
-                        + f"\nOperate only within the current {stage.value} stage "
-                        "and its typed contract."
-                    ),
-                    artifact_references=self._authoritative_evidence_references(
-                        session,
-                        stage=stage,
-                    ),
-                    last_execution_activity=self.run_state_store.get(run.run_id).last_execution_activity,
-                    body=body,
-                    invocation_id=invocation_id,
-                )
+                try:
+                    await session.coordinator.run_current_stage(
+                        run,
+                        instruction=(
+                            session.request.task_text
+                            + f"\nOperate only within the current {stage.value} stage "
+                            "and its typed contract."
+                        ),
+                        artifact_references=self._authoritative_evidence_references(
+                            session,
+                            stage=stage,
+                        ),
+                        last_execution_activity=self.run_state_store.get(run.run_id).last_execution_activity,
+                        body=body,
+                        invocation_id=invocation_id,
+                    )
+                except (InvalidProposalError, PantheonRuntimeIntegrationError) as exc:
+                    self._fail_rejected_stage(session, exc)
+                    break
             self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
             invocations += 1
         if self.configuration.skill_service is not None:
@@ -1354,6 +1368,27 @@ class LabBioApplication:
                 run.status,
             )
         return self.result(handle)
+
+    def _fail_rejected_stage(self, session, error):
+        """Close only a known invalid result after completed tool work, not a crash."""
+        if isinstance(error, PantheonRuntimeIntegrationError):
+            if error.error_code != "MALFORMED_RUNTIME_RESULT":
+                raise error
+            code = "MALFORMED_RUNTIME_RESULT"
+        else:
+            code = "INVALID_RUNTIME_PROPOSAL"
+        current = self.run_state_store.get(session.run.run_id)
+        assembly = next(item for item in self.configuration.stage_assemblies
+            if item.stage_id is current.inflight_stage)
+        if current.inflight_input is None or (
+            assembly.capability_phase_enabled and current.inflight_evidence is None
+        ):
+            raise error  # Incomplete tool effects remain an in-flight recovery case.
+        rejected = RejectedStageCheckpoint(stage_input=current.inflight_input,
+            evidence=current.inflight_evidence, result=current.inflight_result, failure_code=code)
+        self.workflow_engine.fail(session.run, code)
+        self._checkpoint(session, recovery_state=RunRecoveryState.STABLE,
+            rejected_stage_checkpoint=rejected)
 
     async def resume_run(
         self,
@@ -1450,6 +1485,7 @@ class LabBioApplication:
             RunStatus.FAILED: (
                 (_EXECUTION_PREFLIGHT_FAILURE_CODE,)
                 if run.failure_reason == _EXECUTION_PREFLIGHT_FAILURE_CODE
+                else (run.failure_reason,) if run.failure_reason in {"INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT"}
                 else ("RUN_FAILED",)
             ),
             RunStatus.WAITING_FOR_USER: ("USER_INPUT_REQUIRED",),
@@ -1843,6 +1879,7 @@ class LabBioApplication:
         inflight_operation: RunInflightOperation | None = None,
         inflight_input: RuntimeStageInput | None = None,
         inflight_evidence: CapabilityEvidenceBundle | None = None,
+        rejected_stage_checkpoint: RejectedStageCheckpoint | None = None,
     ) -> ApplicationRunRecord:
         current = self.run_state_store.get(session.run.run_id)
         if current.record_version != session.record_version:
@@ -1870,6 +1907,7 @@ class LabBioApplication:
                 "inflight_evidence": inflight_evidence,
                 "inflight_result": None,
                 "clarification_checkpoint": clarification_checkpoint,
+                "rejected_stage_checkpoint": rejected_stage_checkpoint or current.rejected_stage_checkpoint,
             }
         )
         stored = self.run_state_store.update(

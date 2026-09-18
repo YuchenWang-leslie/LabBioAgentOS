@@ -354,6 +354,19 @@ class ExecutionDiagnostic(BaseModel):
         return self
 
 
+class ExecutionErrorContext(BaseModel):
+    """Explicitly authorized bounded error text, not scientific evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    authority: Literal["UNTRUSTED_PROCESS_ERROR"] = "UNTRUSTED_PROCESS_ERROR"
+    source: Literal["PYTHON_TRACEBACK", "STDERR_TAIL"]
+    text: StrictStr = Field(max_length=6000)
+    truncated: bool
+    redacted: bool
+    stderr_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class ExecutionResult(BaseModel):
     """Model-safe process metadata and references, never unrestricted logs."""
 
@@ -379,6 +392,7 @@ class ExecutionResult(BaseModel):
     error_message: StrictStr | None = Field(default=None, max_length=2000)
     issues: tuple[ExecutionIssue, ...] = ()
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
+    error_context: ExecutionErrorContext | None = None
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -402,23 +416,28 @@ class ExecutionReceipt(BaseModel):
         default=(),
         description="Output Artifact UUIDs that are queryable by remote runtime models.",
     )
+    registered_outputs: dict[UUID, Annotated[StrictStr, Field(max_length=255)] | None] = Field(
+        default_factory=dict, max_length=128,
+        description="Complete registered output inventory: Artifact UUID to filename, including non-queryable files. A write in source code is not proof of registration. Null means filename unavailable; legacy receipts may lack this inventory.",
+    )
     stdout_artifact_id: UUID | None = Field(
         default=None,
-        description="Reserved for compatibility; RAW stdout is never model-queryable.",
+        description="Registered stdout identity when generated-file reading is authorized; otherwise null.",
     )
     stderr_artifact_id: UUID | None = Field(
         default=None,
-        description="Reserved for compatibility; RAW stderr is never model-queryable.",
+        description="Registered stderr identity when generated-file reading is authorized; otherwise null.",
     )
     issue_codes: tuple[ExecutionFailureClass, ...] = ()
     issue_detail_codes: tuple[OutputContractFailureCode, ...] = ()
     issue_messages: tuple[StrictStr, ...] = Field(default=(), max_length=32)
     output_issues: tuple[ExecutionOutputIssue, ...] = Field(default=(), max_length=128)
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
+    error_context: ExecutionErrorContext | None = None
     retryable: bool = False
 
     @classmethod
-    def from_result(cls, result: ExecutionResult) -> "ExecutionReceipt":
+    def from_result(cls, result: ExecutionResult, *, include_generated_file_refs: bool = False) -> "ExecutionReceipt":
         retryable_classes = {
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
@@ -451,8 +470,19 @@ class ExecutionReceipt(BaseModel):
                 for ref in result.output_artifact_refs
                 if ref.exposure_class is not ArtifactExposureClass.RAW
             ),
-            stdout_artifact_id=None,
-            stderr_artifact_id=None,
+            registered_outputs={
+                ref.artifact_id: (
+                    ref.original_filename
+                    if ref.original_filename and len(ref.original_filename) <= 255
+                    and not any(c in ref.original_filename for c in ("/", "\\", "\n", "\r", "\0"))
+                    else None
+                )
+                for ref in result.output_artifact_refs
+            },
+            stdout_artifact_id=(result.stdout_ref.artifact_id
+                if include_generated_file_refs and result.stdout_ref else None),
+            stderr_artifact_id=(result.stderr_ref.artifact_id
+                if include_generated_file_refs and result.stderr_ref else None),
             issue_codes=codes,
             issue_detail_codes=detail_codes,
             issue_messages=messages,
@@ -467,6 +497,7 @@ class ExecutionReceipt(BaseModel):
                 if issue.output_index is not None
             ),
             diagnostics=result.diagnostics,
+            error_context=result.error_context,
             retryable=any(code in retryable_classes for code in codes),
         )
 

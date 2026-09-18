@@ -45,7 +45,7 @@ class _SubmittedExecution:
     script_ref: ArtifactRef
     source_hash: str
     source_bytes: int
-    receipt: ExecutionReceipt
+    receipt: ExecutionReceipt | None
 
 
 class ExecutionSubmissionService:
@@ -56,11 +56,13 @@ class ExecutionSubmissionService:
         access_service: AccessService,
         executor: ExecutorPort,
         trace_recorder: RunTraceRecorder | None = None,
+        allow_generated_file_read: bool = False,
     ):
         self.artifact_store = artifact_store
         self.access_service = access_service
         self.executor = executor
         self.trace_recorder = trace_recorder
+        self.allow_generated_file_read = allow_generated_file_read
         # Exact submissions made through this live service, not discovery of RAW
         # files by type/metadata. Keep references, not duplicate source bodies.
         self._submitted_executions: dict[UUID, _SubmittedExecution] = {}
@@ -123,7 +125,8 @@ class ExecutionSubmissionService:
         if not isinstance(result, ExecutionResult):
             raise ExecutionSubmissionError("Executor returned an invalid result contract")
         self._validate_result(result, plan, workspace)
-        receipt = ExecutionReceipt.from_result(result)
+        receipt = ExecutionReceipt.from_result(result,
+            include_generated_file_refs=self.allow_generated_file_read)
         source_bytes = plan.script_content.encode("utf-8")
         self._submitted_executions[result.execution_id] = _SubmittedExecution(
             script_ref=result.script_ref,
@@ -147,6 +150,8 @@ class ExecutionSubmissionService:
                 "diagnostics": [
                     item.model_dump(mode="json") for item in receipt.diagnostics
                 ],
+                "error_context": (receipt.error_context.model_dump(mode="json")
+                    if receipt.error_context is not None else None),
                 "output_artifact_ids": [str(item) for item in receipt.output_artifact_ids],
                 "issue_codes": [item.value for item in receipt.issue_codes],
                 "issue_detail_codes": [
@@ -168,11 +173,12 @@ class ExecutionSubmissionService:
         run_id: UUID,
         source_offset: int = 0,
         source_limit: int = 12_000,
+        imported_source_artifact_ids: tuple[UUID, ...] = (),
     ) -> dict:
         """Read an exact prior submission in this run, without executing it.
 
-        Only a previously bound original script is readable. Restarts do not
-        reconstruct this registry from Artifact metadata or observational logs.
+        Only live submissions or explicitly imported original programs are
+        readable. Imported sources do not reconstruct execution receipts.
         The caller must keep source pages out of trace/finalization projections.
         """
         if type(source_offset) is not int or source_offset < 0 or (
@@ -185,12 +191,34 @@ class ExecutionSubmissionService:
             principal, workspace.project_id, AccessAction.READ_PROJECT, run_id=run_id,
         )
         submission = self._submitted_executions.get(execution_id)
+        imported = False
+        if submission is None:
+            # Only explicit immutable successor inputs, not project-wide RAW discovery.
+            candidates = [self.artifact_store.get_ref(item) for item in imported_source_artifact_ids]
+            candidates = [ref for ref in candidates
+                if ref.artifact_type == "execution-script"
+                and ref.stage_id is WorkflowStage.EXECUTE
+                and "requested_exposure" not in ref.metadata
+                and ref.metadata.get("execution_id") == str(execution_id)]
+            if len(candidates) == 1:
+                ref = candidates[0]
+                digest = ref.metadata.get("sha256")
+                if (ref.owner_user_id, ref.project_id, ref.lab_id) != (
+                        workspace.user_id, workspace.project_id, workspace.lab_id):
+                    raise AuthorizationDenied("Original submission is outside the bound workspace")
+                self.access_service.require_artifact(principal, ref, AccessAction.READ_ARTIFACT)
+                if isinstance(digest, str) and len(digest) == 64:
+                    size = Path(ref.storage_locator).stat().st_size
+                    if size > 4_000_000:
+                        raise ExecutionInspectionError("Original program exceeds its source bound")
+                    submission = _SubmittedExecution(ref, digest, size, None)
+                    imported = True
         if submission is None:
             raise ExecutionInspectionError("Original submission is unavailable")
         ref = submission.script_ref
-        if (ref.owner_user_id, ref.project_id, ref.lab_id, ref.run_id) != (
-            workspace.user_id, workspace.project_id, workspace.lab_id, run_id,
-        ):
+        if (ref.owner_user_id, ref.project_id, ref.lab_id) != (
+            workspace.user_id, workspace.project_id, workspace.lab_id,
+        ) or (not imported and ref.run_id != run_id):
             raise AuthorizationDenied("Original submission is outside the bound run")
         current = self.artifact_store.get_ref(ref.artifact_id)
         if current != ref:
@@ -207,7 +235,7 @@ class ExecutionSubmissionService:
         except OSError:
             raise ExecutionInspectionError("Original submission source is unavailable") from None
         if len(raw) != submission.source_bytes or sha256(raw).hexdigest() != submission.source_hash or (
-            submission.receipt.script_hash != submission.source_hash
+            submission.receipt is not None and submission.receipt.script_hash != submission.source_hash
         ):
             raise ExecutionInspectionError("Original submission source changed")
         source = raw.decode("utf-8")
@@ -217,7 +245,8 @@ class ExecutionSubmissionService:
         # Offsets are computed from the verified original, never guessed from
         # a truncated page. They let the caller choose a page around a failure.
         reported_lines = {
-            line for item in submission.receipt.diagnostics for line in item.script_line_numbers
+            line for item in (submission.receipt.diagnostics if submission.receipt else ())
+            for line in item.script_line_numbers
         }
         diagnostic_line_offsets, diagnostic_source_lines, offset = [], [], 0
         for line_number, line in enumerate(source.splitlines(keepends=True), 1):
@@ -235,7 +264,9 @@ class ExecutionSubmissionService:
                     })
             offset += len(line)
         return {
-            "receipt": submission.receipt.model_dump(mode="json"),
+            "receipt": submission.receipt.model_dump(mode="json") if submission.receipt else None,
+            "execution_id": str(execution_id),
+            "producer_run_id": str(ref.run_id),
             "submitted_program": {
                 "authority": "MODEL_CONTEXT", "script_hash": submission.source_hash,
                 "source_offset": source_offset, "source_end": end,

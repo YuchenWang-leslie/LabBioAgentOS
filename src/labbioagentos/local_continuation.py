@@ -12,7 +12,7 @@ from .application import ApplicationRunHandle, ApplicationRunRequest
 from .artifacts import ArtifactReleaseBasis
 from .artifacts.store import StoredArtifact
 from .local_conversations import ConversationStore, read_run_record
-from .local_delivery import _digest, _no_symlinks, export_run
+from .local_delivery import _digest, _no_symlinks, export_run, selected_execution_id
 from .local_revision import import_revision_artifacts
 
 
@@ -231,12 +231,28 @@ async def revise(args, settings):
     }:
         raise ValueError("Reconcile a nonterminal source before requesting a revision")
     refs = result_refs(source_directory, record)
-    selected = tuple(args.artifact_id) if args.artifact_id else tuple(ref.artifact_id for ref in refs)
+    selected_execution = selected_execution_id(record)
+    selected = tuple(args.artifact_id) if args.artifact_id else tuple(ref.artifact_id for ref in refs
+        if ref.artifact_type != "report"
+        and ref.release_basis is not ArtifactReleaseBasis.MODEL_AUTHORED_REPORT
+        and selected_execution is not None and ref.metadata.get("execution_id") == selected_execution)
     if not selected or len(set(selected)) != len(selected):
-        raise ValueError("Revision requires distinct selected source results")
+        raise ValueError("Revision requires distinct selected source results; prior reports require explicit --artifact-id selection")
     if not set(selected).issubset({ref.artifact_id for ref in refs}):
         raise ValueError("Revision selection is not a registered result of the source run")
-    artifact_ids = tuple(dict.fromkeys((*record.input_artifact_ids, *record.context_artifact_ids, *selected)))
+    selected_executions = {ref.metadata.get("execution_id") for ref in refs if ref.artifact_id in selected}
+    sources, narrative_ids = [], set()
+    for path in sorted((source_directory / "artifacts").glob("*.json")):
+        _no_symlinks(path)
+        ref = StoredArtifact.model_validate_json(path.read_bytes()).ref
+        if ref.artifact_type == "report" or ref.release_basis is ArtifactReleaseBasis.MODEL_AUTHORED_REPORT:
+            narrative_ids.add(ref.artifact_id)
+        if (ref.artifact_type == "execution-script" and "requested_exposure" not in ref.metadata
+                and ref.metadata.get("execution_id") in selected_executions
+                and ref.run_id == record.run_id):
+            sources.append(ref.artifact_id)
+    artifact_ids = tuple(dict.fromkeys((*record.input_artifact_ids, *record.context_artifact_ids, *selected, *sources)))
+    artifact_ids = tuple(item for item in artifact_ids if item not in narrative_ids or item in selected)
     if len(artifact_ids) > 128:
         raise ValueError("Revision context exceeds its bound; narrow the selected artifacts")
     task = cli._task_text(args.task, args.preference)

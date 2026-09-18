@@ -95,6 +95,7 @@ async def test_qi1_integer_limit_preserves_value_and_type(query_boundary):
         "limit": 12,
         "limit_type": "INTEGER",
         "normalization_applied": False,
+        "offset": 0,
     }
 
 
@@ -111,6 +112,7 @@ async def test_qi2_null_limit_has_explicit_null_type(query_boundary):
         "limit": None,
         "limit_type": "NULL",
         "normalization_applied": False,
+        "offset": 0,
     }
 
 
@@ -271,6 +273,11 @@ async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_bound
         "name": "artifact_query",
         "description": (
             "Request one policy-controlled view of a governed Artifact.\n\n"
+            "This queries registered views/record tables, not arbitrary file content.\n"
+            "An empty allowed_view_types means no query view is authorized; changing\n"
+            "the view name cannot enable file reading. Query errors separately expose\n"
+            "available_file_readers when a generated file can be read in this stage.\n"
+            "Those are tool names, not additional view_type values.\n\n"
             "Ingested RAW METADATA includes file size, format hints, content-based\n"
             "recognition and available bounded structure (e.g. shapes/dtypes/fields).\n"
             "Recognition is not full-file validation; unsupported structure is explicit.\n"
@@ -294,6 +301,10 @@ async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_bound
                     "type": "string",
                     "enum": ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"],
                     "description": "One of METADATA, SCHEMA, SUMMARY, or TOP_N.",
+                },
+                "offset": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Zero-based record offset, TOP_N only. Follow next_offset to\nread all governed records across bounded pages. A truncated\npage is not the full result and missing pages are not missing data.",
                 },
                 "limit": {
                     "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
@@ -383,6 +394,7 @@ async def test_w1_native_integer_is_preserved_without_normalization(query_bounda
         "limit": 18,
         "limit_type": "INTEGER",
         "normalization_applied": False,
+        "offset": 0,
     }
 
 
@@ -400,6 +412,7 @@ async def test_w2_canonical_integer_string_is_normalized_once(query_boundary):
         "limit": 18,
         "limit_type": "STRING",
         "normalization_applied": True,
+        "offset": 0,
     }
 
 

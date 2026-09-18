@@ -1,5 +1,37 @@
 # 本地自然语言任务入口
 
+## 阶段状态响应截断后的纠正
+
+FINALIZE 的 provider 明确返回 `finish_reason=length`，且严格 JSON 解析失败时，
+框架记录拒绝事实，并允许模型就同一冻结输入、证据和 schema 重新生成一次状态
+响应。`FINALIZATION_CORRECTION_REQUESTED` 保存原失败的字符数/空白数和模型
+实际收到的安全反馈，不保存被拒正文或隐藏思考。第二次仍失败则正常落盘失败。
+非截断错误、内容过滤、科学/谱系/权限校验失败不会触发此纠正。
+
+该动作不重放 capability、沙盒或报告提交，不应用不完整决策、不修补 JSON，
+也不改变模型科学判断。单次 token、capability turn、工作流 retry 上限不变；
+一次截断会额外消耗一次 FINALIZE 模型调用。这不是保证后续科学任务成功。
+
+## 已授权的生成文件读取
+
+可信部署配置 `[execution].allow_generated_file_read = true` 后，相关阶段提供
+`file_read(artifact_id, offset, limit, expected_sha256)`。这允许 Agent 读取已登记的
+执行报告、程序、stdout/stderr 和结果表，即使其分类仍为 RAW；不重新分类，也不把
+内容认定为已验证的科学结论。原始 RAW_INGESTION 输入不开放直接读取，既有固定
+head 预览规则不变。接口只接受当前运行或显式导入的生成产物 ID，不接受宿主机路径。
+
+文本先进行尽力的密钥/路径脱敏，再按字符分页（单页最多 8000 字符），返回原文件
+和脱敏视图的哈希、后续页偏移。超过 16 MiB 的文本返回明确的未读取状态；二进制
+文件返回格式/结构检查，不声称完整解码或解读图片。生成内容可能包含输入派生值，
+启用该权限不等于保证没有数据披露。原文件与结果不被改写。执行回执会给出已登记
+stdout/stderr 的 ID，模型自行决定是否读取；不会自动注入全部日志。
+
+`report_read` 保留正式报告的原文读取能力，也可在同一权限下读取上述生成文件。
+`artifact_query` 仍只处理已登记的查询视图/记录表，不把文件正文伪装成新视图。
+误用查询接口时，错误中的 `query_constraints.available_file_readers` 列出当前阶段
+确实已开放且范围授权通过的生成文件读取入口；空列表不是提示模型猜另一个视图名。
+这一反馈不读取文件、不自动换工具，也不跳过实际读取时的哈希与分页检查。
+
 用户提供数据、任务和偏好，不再为每个任务编写 Python 启动脚本。
 本入口调用已有 `LabBioApplication`，不替换 WorkflowEngine、Pantheon、
 执行器或 Artifact 治理。分析方案、参数、程序与报告由运行中的 Agent 产生。
@@ -10,6 +42,13 @@
 需要找回历史任务、中断核对或修改旧报告时，使用
 [对话续接与结果修订](CONVERSATION_CONTINUATION.md)。`run --conversation`、
 `history`、`reconcile`、`continue` 和 `revise` 复用同一身份与持久控制边界。
+
+`revise` 默认导入所选成功执行的非报告产物、原始数据/上下文和原执行程序，
+不再自动导入旧报告（包括沙盒注册为 `report` 的文件和继承的报告上下文）。
+报告对照或纯文字修订需要通过 `--artifact-id` 显式选择旧报告；不根据用户文字
+猜测是否需要它。原报告留在原运行中，未删除、重写或降格为结果证据。
+当前阶段之间的协作信息仍保留。Artifact 的可见内容只证明该对象保存了什么，
+不把模型写入的“已修好”记录提升为对其他文件的独立验证。
 `question` / `answer` 支持 Agent 的关键澄清与自然语言回答，并复用上述续接检查点。
 
 ## 一次配置，重复提交
@@ -76,11 +115,31 @@ Agent 不能通过任务文字或工具参数自行提高额度。完整 RAW 文
 当前阶段是否能调用工具仍由 `allowed_capabilities` 等授权决定，不能把
 配置可见当作提前执行许可，或把本阶段无法读取 RAW 当作全流程没有执行配置。
 
+### 经授权的执行错误上下文
+
+可信配置 `[execution] include_error_context = true` 可开放充分的错误取证信息。
+默认关闭，Agent 的工具参数不能开启。2026-09-16 用户授权后，本机托管科学
+运行配置已开启；该值进入运行身份，因此旧运行不能跨配置静默恢复。
+
+失败/超时回执中的 `error_context` 提供 Python traceback（包括异常说明、库
+调用位置和异常链），没有 traceback 时提供 stderr 末段。不再要求先认识某种
+错误枚举。最多扫描末尾64 KiB，返回最多80行、每行1200字符、总计6000字符，
+保留末端错误，明确 `truncated` 和 `redacted`；原stderr哈希绑定本地证据。
+`execution_inspect`、工具证据与持久化事件保留同一投影。stdout、变量遍历和
+任意文件读取仍不开放。进程文本明确为不可信错误证据，不是执行指令或科学结论。
+
+路径、常见凭据字段、Bearer、已识别令牌、URL及私钥块做遮蔽；库调用位置
+保留模块相对名称与行号。此类规则不是通用隐私脱敏保证：异常说明可能包含
+数据值或字段名，启用前须获得相应部署/数据使用授权。完整日志继续仅在本地。
+该开关不修改科学方法、Agent程序、环境依赖、工具预算或重试次数。
+
 ### 沙盒中的文件身份
 
 文件登记时在本地保存原文件名，Artifact UUID 是唯一身份。沙盒的
 `LABBIO_INPUT_MANIFEST_PATH` 仍是 UUID 到只读路径的映射；挂载文件的
-basename 也是 UUID，不使用存储内部的 `content`，也不将原文件名当作唯一键。
+basename 是 UUID 加登记原文件名的安全格式后缀（如 `.h5ad`、`.csv.gz`），
+不使用存储内部的 `content`，也不将原文件名当作唯一键。没有原名、没有后缀或
+后缀无法安全用于挂载时只使用 UUID，不推断格式；只读权限与 UUID 映射不变。
 新增只读 `LABBIO_INPUT_IDENTITIES_PATH` 映射同一批已选择 UUID 到
 `{"original_filename": "登记时原名"}`。旧记录没有原名时明确为 `null`，
 不推断或迁移历史身份。两个目录中的同名文件仍有不同 UUID。
@@ -152,12 +211,16 @@ my-new-task/
   executions/              本地沙盒工作空间和执行证据
   delivery/
     REPORT.md              Agent 提交的报告原文（存在报告时）
-    outputs/<artifact-id>/ 原文件名的声明输出副本
+    outputs/<artifact-id>/ 当前已选成功执行的声明输出副本
+    history/outputs/<artifact-id>/ 历史或未选执行的输出副本（非最终交付）
     RESULT.json            Artifact 身份、SHA256、大小及真实流程状态
     README.md              本地结果索引
 ```
 
 导出报告必须来自 `MODEL_AUTHORED_REPORT`；Codex/CLI 不补写科学报告。
+最终执行来自持久化 EXECUTE 的显式选择，不按文件时间或最近一次尝试猜测。
+RESULT.json 分开记录 outputs、historical_outputs 和 selected_execution_id；
+没有成功执行选择时，不把已有文件冒充最终产物。旧导出不会原地重写。
 输出来自注册记录及匹配的收集审计，并检查内容摘要；不猜测文件名。
 RAW 输出可交给本地用户，但不会因此获得远程模型可读权限。
 原始输入、分析脚本、stdout/stderr 不会自动复制到用户交付目录；它们的本地
@@ -173,6 +236,14 @@ RAW 输出可交给本地用户，但不会因此获得远程模型可读权限�
 保持已有九阶段协议、capability 的 16 条新增消息预算、`retry_limit=1`、离线沙盒及
 真实性/曝光规则。默认配置只声明通用有界汇总输出合同，不提供某项分析答案。
 是否科学正确仍需外部评价；`COMPLETED` 不是科学质量认证。
+
+报告取证支持 `artifact_query` 的 TOP_N offset/next_offset 分页：每页仍有界，
+所有已登记、允许曝光的记录都可以逐页读取。RAW 预览不支持分页扩大读取。
+报告引用的记录表须在当前报告调用中完整读取，缺页提交返回
+REPORT_EVIDENCE_INCOMPLETE，不登记报告。该检查不证明自然语言结论一定正确。
+报告相关阶段可只读 `execution_inspect` 核对真实提交程序，不能提交执行。
+修订入口会同时转移所选输出的原程序来源；旧 receipt 不可用时明确为 null，
+不从源码推断执行成功，也不读取任意 RAW 内容或进程日志。
 配置字段仍名为 max_capability_turns，但 Pantheon 实际累计 assistant 消息和
 工具反馈消息；一轮批量调用多个工具会消耗多条，不等于 16 次模型采样。
 

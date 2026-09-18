@@ -13,10 +13,21 @@ from labbioagentos.application import ApplicationRunHandle, LabBioApplication
 from labbioagentos.artifacts import ArtifactReleaseBasis
 from labbioagentos.governance import AccessAction, AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.trace import TraceEventType
+from labbioagentos.runtime.contracts import ExecuteStageBody
 
 
 class LocalDeliveryError(ValueError):
     """A local export cannot preserve scope, provenance, or existing files."""
+
+
+def selected_execution_id(record):
+    """Use the persisted Agent-selected execution, never timestamps or filenames."""
+    for result in reversed(record.runtime_results):
+        if isinstance(result.body, ExecuteStageBody):
+            body = result.body
+            return (body.execution_reference.reference_id
+                if body.execution_status == "SUCCEEDED" and body.execution_reference else None)
+    return None
 
 
 def _no_symlinks(path: Path) -> None:
@@ -115,6 +126,8 @@ def export_run(
     writes: dict[str, bytes | Path] = {}
     reports = []
     outputs = []
+    historical_outputs = []
+    selected_execution = selected_execution_id(record)
     input_ids = {*record.input_artifact_ids, *record.context_artifact_ids}
     for artifact_id, ref in sorted(refs.items(), key=lambda item: str(item[0])):
         if artifact_id in input_ids:
@@ -164,9 +177,10 @@ def export_run(
         size, digest = _digest(source)
         if (size, digest) != (provenance.get("size_bytes"), provenance.get("sha256")):
             raise LocalDeliveryError("Registered output payload failed integrity verification")
-        filename = f"outputs/{artifact_id}/{PurePosixPath(original).name}"
+        is_final = ref.metadata["execution_id"] == selected_execution
+        filename = f"{'outputs' if is_final else 'history/outputs'}/{artifact_id}/{PurePosixPath(original).name}"
         writes[filename] = source
-        outputs.append({
+        (outputs if is_final else historical_outputs).append({
             "artifact_id": str(artifact_id), "execution_id": ref.metadata["execution_id"],
             "exposure_class": ref.exposure_class.value, "file": filename,
             "size_bytes": size, "sha256": digest,
@@ -178,6 +192,8 @@ def export_run(
         "issue_codes": list(outcome.issue_codes),
         "report_artifact_ids": [report["artifact_id"] for report in reports],
         "reports": reports, "outputs": outputs,
+        "selected_execution_id": selected_execution,
+        "historical_outputs": historical_outputs,
     }
     writes["RESULT.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
     readme = [
@@ -186,9 +202,14 @@ def export_run(
         "Exact copies of registered artifacts; RAW outputs remain local-only.", "",
     ]
     for item in (*reports, *outputs):
-        readme.append(f"- [{item['artifact_id']}]({quote(item['file'], safe='/')})")
+        readme.append(f"- [{PurePosixPath(item['file']).name}]({quote(item['file'], safe='/')})")
     if not reports and not outputs:
         readme.append("No registered deliverables are available in this snapshot.")
+    if historical_outputs:
+        readme.extend(["", "## Historical / unselected execution outputs", "",
+            "Retained for audit; these are not the selected final results.", ""])
+        for item in historical_outputs:
+            readme.append(f"- [{item['execution_id']} / {PurePosixPath(item['file']).name}]({quote(item['file'], safe='/')})")
     writes["README.md"] = ("\n".join(readme) + "\n").encode()
     for filename, data in writes.items():
         target = directory / filename

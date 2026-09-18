@@ -890,42 +890,82 @@ class PantheonTypedStageInvoker:
             if report_control is not None:
                 payload["report_result_control"] = report_control
             message = json.dumps(payload, separators=(",", ":"))
-        run_kwargs = {}
-        if self.trace_recorder is not None:
-            run_kwargs["process_turn_observation"] = lambda observation: (
-                _record_provider_turn_event(
-                    self.trace_recorder, stage_input, observation,
-                    profile=self.profile, prompt=self.prompt,
-                    invocation_mode=RuntimeInvocationMode.FINALIZE,
-                )
+        finish_reason = None
+
+        def observe(observation):
+            nonlocal finish_reason
+            _record_provider_turn_event(
+                self.trace_recorder, stage_input, observation,
+                profile=self.profile, prompt=self.prompt,
+                invocation_mode=RuntimeInvocationMode.FINALIZE,
             )
+            finish_reason = observation.finish_reason
+
+        run_kwargs = {"process_turn_observation": observe}
         try:
-            if plugin is None:
-                response = await self.team.run(message, **run_kwargs)
-            else:
-                context = StageContext(
-                    run_id=stage_input.run_id,
-                    stage=stage_input.stage_id,
-                    instruction=stage_input.instruction,
-                    metadata={
-                        "invocation_id": str(stage_input.invocation_id),
-                        "project_id": stage_input.workspace.project_id,
-                    },
-                )
-                await self.team.async_setup()
-                await plugin.install(self.team)
-                with delegation_session(
-                    context,
-                    trace_recorder=self.trace_recorder,
-                    root_invocation_id=invocation_id,
-                ) as active_session:
-                    response = await self.team.run(
-                        message,
-                        process_step_message=active_session.observe,
-                        process_chunk=active_session.observe,
-                        **run_kwargs,
-                    )
-                    active_session.raise_trace_error()
+            # A rejected, truncated control response is new protocol evidence,
+            # not a reason to replay tools or spend a scientific workflow retry.
+            # One explicitly traced correction uses the same frozen input/schema.
+            for attempt in range(2):
+                finish_reason = None
+                try:
+                    if plugin is None:
+                        response = await self.team.run(message, **run_kwargs)
+                    else:
+                        context = StageContext(
+                            run_id=stage_input.run_id,
+                            stage=stage_input.stage_id,
+                            instruction=stage_input.instruction,
+                            metadata={
+                                "invocation_id": str(stage_input.invocation_id),
+                                "project_id": stage_input.workspace.project_id,
+                            },
+                        )
+                        await self.team.async_setup()
+                        await plugin.install(self.team)
+                        with delegation_session(
+                            context,
+                            trace_recorder=self.trace_recorder,
+                            root_invocation_id=invocation_id,
+                        ) as active_session:
+                            response = await self.team.run(
+                                message,
+                                process_step_message=active_session.observe,
+                                process_chunk=active_session.observe,
+                                **run_kwargs,
+                            )
+                            active_session.raise_trace_error()
+                    break
+                except ValidationError as exc:
+                    if active_session is not None and active_session.is_trace_error(exc):
+                        raise
+                    errors = exc.errors(include_url=False)
+                    if attempt or finish_reason != "length" or not all(
+                        item["type"] == "json_invalid" for item in errors
+                    ):
+                        raise
+                    rejected = errors[0].get("input")
+                    feedback = {
+                        "error_code": "RESPONSE_TRUNCATED", "attempt": 2,
+                        "maximum_attempts": 2, "validation_error_types": ["json_invalid"],
+                        "instruction": (
+                            "The previous state response exhausted its output budget and was not valid JSON. "
+                            "No decision was applied. Return one concise complete JSON result matching "
+                            "the unchanged response schema and frozen evidence. Avoid repeating evidence "
+                            "or expanding labels into prose. Do not repeat tools or invent results."
+                        ),
+                    }
+                    self._emit(stage_input, TraceEventType.FINALIZATION_CORRECTION_REQUESTED,
+                        "REJECTED", {
+                            "feedback": feedback,
+                            "rejected_characters": len(rejected) if isinstance(rejected, str) else None,
+                            "rejected_whitespace_characters": (
+                                sum(char.isspace() for char in rejected) if isinstance(rejected, str) else None
+                            ),
+                        })
+                    payload = json.loads(message)
+                    payload["finalization_feedback"] = feedback
+                    message = json.dumps(payload, separators=(",", ":"))
         except ValidationError as exc:
             if active_session is not None and active_session.is_trace_error(exc):
                 raise

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import (
@@ -71,6 +71,28 @@ class ClarificationCheckpoint(BaseModel):
         return self
 
 
+class RejectedStageCheckpoint(BaseModel):
+    """Completed invocation evidence retained as rejected, never accepted history."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    stage_input: RuntimeStageInput
+    evidence: CapabilityEvidenceBundle | None = None
+    result: RuntimeStageResult | None = None
+    failure_code: Literal["INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT"]
+
+    @model_validator(mode="after")
+    def matching_invocation(self):
+        source = self.stage_input
+        if self.evidence is not None and (
+            self.evidence.run_id, self.evidence.stage_id, self.evidence.invocation_id
+        ) != (source.run_id, source.stage_id, source.invocation_id):
+            raise ValueError("Rejected evidence must belong to its source invocation")
+        if self.result is not None and self.result.stage_id is not source.stage_id:
+            raise ValueError("Rejected result must belong to its source stage")
+        return self
+
+
 class ApplicationRunRecord(BaseModel):
     """Strict data-only snapshot needed to reconstruct one application run."""
 
@@ -100,6 +122,7 @@ class ApplicationRunRecord(BaseModel):
     inflight_result: RuntimeStageResult | None = None
     last_execution_activity: RuntimeExecutionActivity | None = None
     clarification_checkpoint: ClarificationCheckpoint | None = None
+    rejected_stage_checkpoint: RejectedStageCheckpoint | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     record_version: int = Field(default=1, ge=1)
@@ -155,6 +178,17 @@ class ApplicationRunRecord(BaseModel):
             self.inflight_invocation_id,
             self.inflight_operation,
         )
+        if self.rejected_stage_checkpoint is not None:
+            rejected = self.rejected_stage_checkpoint
+            source = rejected.stage_input
+            if (self.recovery_state is not RunRecoveryState.STABLE or run.status is not RunStatus.FAILED
+                    or run.failure_reason != rejected.failure_code
+                    or (source.run_id, source.stage_id) != (self.run_id, run.current_stage)
+                    or (source.workspace.user_id, source.workspace.project_id, source.workspace.lab_id)
+                    != (self.owner_user_id, self.project_id, self.lab_id)
+                    or (rejected.result is not None and any(
+                        r.result_id == rejected.result.result_id for r in self.runtime_results))):
+                raise ValueError("Rejected checkpoint must match a failed run, not accepted result history")
         if self.clarification_checkpoint is not None:
             source = self.clarification_checkpoint.stage_input
             pending = run.pending_clarification

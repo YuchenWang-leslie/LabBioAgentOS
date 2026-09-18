@@ -46,7 +46,7 @@ async def test_real_factory_schema_has_only_synchronous_governed_arguments(bound
     schemas = await agent.get_tools_for_llm()
     query = next(item["function"] for item in schemas
                  if item["function"]["name"].endswith("__artifact_query"))
-    assert set(query["parameters"]["properties"]) == {"artifact_id", "view_type", "limit"}
+    assert set(query["parameters"]["properties"]) == {"artifact_id", "view_type", "limit", "offset"}
     assert query["parameters"]["required"] == ["artifact_id", "view_type"]
     assert not any(item["function"]["name"] == "background_task" for item in schemas)
 
@@ -144,7 +144,7 @@ async def test_failed_query_reaches_next_sdk_request_before_explicit_adjacent_qu
         function = _function(request, "artifact_query")
         assert function["strict"] is True
         assert function["parameters"]["additionalProperties"] is False
-        assert set(function["parameters"]["properties"]) == {"artifact_id", "view_type", "limit"}
+        assert set(function["parameters"]["properties"]) == {"artifact_id", "view_type", "limit", "offset"}
         assert function["parameters"]["properties"]["limit"]["anyOf"] == [
             {"type": "integer", "minimum": 1}, {"type": "null"}]
         if turn == 0:

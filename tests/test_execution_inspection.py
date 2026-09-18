@@ -313,10 +313,38 @@ async def test_submission_failure_never_claims_inspection_did_not_execute(
     assert "PRIVATE_SUBMISSION_FAILURE" not in encoded
 
 
-def test_inspection_capability_is_limited_to_execute():
-    assert "execution_inspect" in CAPABILITY_CEILINGS[WorkflowStage.EXECUTE]
-    assert all("execution_inspect" not in tools for stage, tools in CAPABILITY_CEILINGS.items()
-               if stage is not WorkflowStage.EXECUTE)
+def test_inspection_is_read_only_in_reporting_stages():
+    for stage in (WorkflowStage.EXECUTE, WorkflowStage.VALIDATE, WorkflowStage.INTERPRET, WorkflowStage.REPORT):
+        assert "execution_inspect" in CAPABILITY_CEILINGS[stage]
+        if stage is not WorkflowStage.EXECUTE:
+            assert "execution_submit" not in CAPABILITY_CEILINGS[stage]
+
+
+@pytest.mark.asyncio
+async def test_successor_inspection_requires_explicit_original_program_and_hash(inspection, boundary, tmp_path):
+    service, executor, run_id = inspection
+    receipt = await _submit(inspection, boundary, "# submitted method\npass\n")
+    _, _, _, principal, workspace, store, _ = boundary
+    source = executor.script_refs[receipt.execution_id]
+    imported = store.register_file(
+        Path(source.storage_locator), artifact_type="execution-script", exposure_class=source.exposure_class,
+        representation=ArtifactRepresentation(), owner_user_id=principal.user_id,
+        project_id=workspace.project_id, lab_id=workspace.lab_id, run_id=run_id,
+        stage_id=WorkflowStage.EXECUTE,
+        metadata={"execution_id": str(receipt.execution_id), "sha256": receipt.script_hash},
+    )
+    restarted = ExecutionSubmissionService(artifact_store=store, access_service=service.access_service,
+                                         executor=executor)
+    kwargs = dict(principal=principal, workspace=workspace, run_id=uuid4())
+    with pytest.raises(ExecutionSubmissionError):
+        restarted.inspect(receipt.execution_id, **kwargs)
+    page = restarted.inspect(receipt.execution_id, imported_source_artifact_ids=(imported.artifact_id,), **kwargs)
+    assert page["submitted_program"]["source"] == "# submitted method\npass\n"
+    assert page["receipt"] is None  # never invent a historical receipt
+    assert page["producer_run_id"] == str(run_id)
+    Path(imported.storage_locator).write_text("# changed\npass\n")
+    with pytest.raises(ExecutionSubmissionError):
+        restarted.inspect(receipt.execution_id, imported_source_artifact_ids=(imported.artifact_id,), **kwargs)
 
 
 @pytest.mark.asyncio

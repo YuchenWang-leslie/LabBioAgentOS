@@ -139,6 +139,7 @@ class ExecutionPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     allow_network: bool = False
+    include_error_context: bool = False
     max_cpus: float = Field(default=4.0, gt=0)
     max_memory_mb: int = Field(default=8192, ge=16)
     max_pids: int = Field(default=512, ge=1)

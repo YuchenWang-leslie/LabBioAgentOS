@@ -75,6 +75,7 @@ async def test_answer_restart_preserves_completed_tools_and_reaches_later_stages
     answered = store.get(handle.run_id)
     assert answered.inflight_evidence == before.clarification_checkpoint.evidence
     assert answered.workflow_run.clarifications[0].status == "ANSWERED"
+    assert answered.inflight_input.workflow_control.clarification_followup_ids == (question_id,)
     assert len(observed) == count
     assert app.submit_answer(handle.run_id, question_id=question_id,
                              answer_text="Readers are new to the example.",

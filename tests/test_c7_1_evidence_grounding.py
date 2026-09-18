@@ -211,6 +211,7 @@ def test_g7_completeness_metadata_preserves_the_leak_boundary(tmp_path):
         "view_type",
         "exposure_class",
         "release_basis",
+        "evidence_scope",
         "authority",
         "metadata",
         "head_preview",
@@ -221,6 +222,8 @@ def test_g7_completeness_metadata_preserves_the_leak_boundary(tmp_path):
         "returned_count",
         "available_count",
         "effective_limit",
+        "offset",
+        "next_offset",
         "truncated",
         "provenance",
     }

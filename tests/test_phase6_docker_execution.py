@@ -576,7 +576,8 @@ def test_output_contract_failure_projects_a_safe_specific_detail_code(tmp_path):
     assert receipt.issue_detail_codes == (OutputContractFailureCode.FILE_TOO_LARGE,)
     encoded = receipt.model_dump_json()
     assert "x" * 64 not in encoded
-    assert "oversized.json" not in encoded
+    assert set(receipt.registered_outputs.values()) == {"oversized.json"}
+    assert str(tmp_path) not in encoded
 
 
 def test_output_contract_does_not_rewrite_an_unsupported_exposure_request(tmp_path):

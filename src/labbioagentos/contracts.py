@@ -237,7 +237,7 @@ class ClarificationQuestion(BaseModel):
     why_needed: StrictStr = Field(min_length=1, max_length=1000,
         description="Why this missing user fact materially changes the task and cannot be inferred from available context.")
     followup_to: StrictStr | None = Field(default=None, min_length=1, max_length=256,
-        description="Prior answered question ID, only when its answer leaves this same decision unresolved.")
+        description="Null for a first question. For a follow-up, the exact prior answered question ID for the same issue, never explanatory prose.")
 
 
 class ClarificationRecord(BaseModel):
@@ -375,6 +375,7 @@ def governed_next_action_proposal_format(
     finish_available: bool,
     clarification_available: bool = False,
     continue_stage_available: bool = False,
+    clarification_followup_ids: tuple[str, ...] = (),
 ) -> type[RootModel]:
     """Build the provider proposal union from authoritative workflow control."""
 
@@ -402,7 +403,16 @@ def governed_next_action_proposal_format(
     if request_user_input_available:
         variants.append(_RequestUserInputActionProposal)
     if clarification_available:
-        variants.append(_RequestClarificationActionProposal)
+        followup_type = Literal.__getitem__(clarification_followup_ids) | None if clarification_followup_ids else type(None)
+        question_type = create_model(
+            "GovernedClarificationQuestion", __base__=ClarificationQuestion,
+            followup_to=(followup_type, Field(default=None,
+                description=ClarificationQuestion.model_fields["followup_to"].description)),
+        )
+        variants.append(create_model(
+            "GovernedRequestClarificationActionProposal",
+            __base__=_RequestClarificationActionProposal, question=(question_type, ...),
+        ))
     if continue_stage_available:
         variants.append(_ContinueStageActionProposal)
     if finish_available:
