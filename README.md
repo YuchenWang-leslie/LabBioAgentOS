@@ -68,6 +68,27 @@ LabBioAgentOS is an active research prototype. Its core architecture and local e
 - [Runtime integration and capability map](docs/RUNTIME_INTEGRATION_MAP.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
 
-## Runtime acknowledgement
+## Citation & Attribution
 
-The current version draws substantially on and depends on [PantheonOS](https://github.com/aristoteleo/PantheonOS) for agent runtime capabilities. LabBioAgentOS develops its workflow, execution, artifact, and governance layers in this repository. A more independent runtime core is a future direction, not a capability claimed for the present version. See [runtime provenance](docs/UPSTREAM_MODIFICATIONS.md) for the exact development dependency.
+LabBioAgentOS is an open-source framework for autonomous bioinformatics research, with particular emphasis on traceable research workflows, reproducible execution, and reusable procedural knowledge through Gold Skills.
+
+If you use LabBioAgentOS in your research, publications, or software development, we strongly request that you acknowledge and cite our work.
+
+### In particular:
+
+Academic research: If LabBioAgentOS contributes to your research methodology, analysis, or results, please cite the corresponding publication.
+
+Framework reuse and derivative development: If you reuse, adapt, or extend LabBioAgentOS, especially its traceability mechanisms, provenance management, or Gold Skills architecture, please provide clear attribution to the original project and reference the corresponding publication in relevant documentation.
+
+Redistribution: When redistributing code derived from LabBioAgentOS, you must retain the original copyright and license notices as required by the MIT License.
+
+### How to Cite
+
+The citation information for LabBioAgentOS will be provided here upon publication.
+
+Project repository: https://github.com/YuchenWang-leslie/LabBioAgentOS
+
+## License
+
+LabBioAgentOS is distributed under the MIT License. The academic citation and attribution requests above reflect our expectations for responsible scientific reuse and do not impose additional legal restrictions beyond the MIT License.
+
