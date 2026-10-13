@@ -418,7 +418,7 @@ class NativeKernelStageInvoker:
             delegation_trace_event_ids=delegation_event_ids,
             explicit_completion=explicit_completion,
             termination_reason=(
-                "REPEATED_NON_RETRYABLE_REQUEST"
+                result.leader_result.output["capability_stop_reason"]
                 if result.leader_result.termination == "RUNTIME_STOPPED"
                 else "CAPABILITY_EVIDENCE_LIMIT"
                 if result.leader_result.termination == "CAPABILITY_EVIDENCE_LIMIT"

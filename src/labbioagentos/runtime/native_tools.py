@@ -302,6 +302,20 @@ CAPABILITY_ARGUMENT_MODELS: dict[str, type[NativeToolArguments]] = {
     "skill_view": SkillViewArguments,
 }
 
+_STABLE_READ_CAPABILITIES = frozenset({
+    "artifact_aggregate",
+    "artifact_query",
+    "environment_list",
+    "execution_inspect",
+    "file_read",
+    "memory_search",
+    "memory_view",
+    "report_check",
+    "report_read",
+    "skill_search",
+    "skill_view",
+})
+
 if frozenset(CAPABILITY_ARGUMENT_MODELS) != ALL_CAPABILITIES:
     raise RuntimeError("Native capability argument model catalog is incomplete")
 
@@ -322,6 +336,9 @@ class NativeRuntimeCapabilityHost:
     def __init__(self, binding, services):
         from .tooling import LabBioRuntimeToolSet
         self._host = LabBioRuntimeToolSet(binding, services)
+        self._stable_read_results: list[tuple[str, dict, JsonValue | None]] = []
+        self._stable_read_feedback_boundary: int | None = None
+        self._stop_reason: str | None = None
 
     async def invoke(
         self,
@@ -332,14 +349,34 @@ class NativeRuntimeCapabilityHost:
             raise ValueError("Unknown native capability")
         method = getattr(self._host, capability_name)
         payload = arguments.model_dump(mode="json")
-        return await method(**payload)
+        result = await method(**payload)
+        if (
+            capability_name in _STABLE_READ_CAPABILITIES
+            and isinstance(result, dict)
+            and result.get("success") is True
+        ):
+            safe_result = result.get("data")
+            boundary = self._stable_read_feedback_boundary
+            if boundary is not None and any(
+                previous_name == capability_name
+                and previous_payload == payload
+                and previous_result == safe_result
+                for previous_name, previous_payload, previous_result
+                in reversed(self._stable_read_results[:boundary])
+            ):
+                self._stop_reason = "REPEATED_NO_PROGRESS_REQUEST"
+            self._stable_read_results.append(
+                (capability_name, payload, safe_result)
+            )
+        return result
 
     def mark_feedback_delivered(self) -> None:
         self._host.mark_feedback_delivered()
+        self._stable_read_feedback_boundary = len(self._stable_read_results)
 
     @property
     def stop_reason(self) -> str | None:
-        return self._host.stop_reason
+        return self._stop_reason or self._host.stop_reason
 
     def evidence_items(self) -> tuple[CapabilityEvidenceItem, ...]:
         return self._host.evidence_items()

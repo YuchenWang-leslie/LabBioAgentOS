@@ -1,7 +1,7 @@
 """P2 acceptance for LabBio capability registration, authority, and evidence."""
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -16,8 +16,11 @@ from labbioagentos.runtime.capability_catalog import (
     CAPABILITY_INFORMATION_AUTHORITY,
 )
 from labbioagentos.runtime.native_tools import (
+    ArtifactAggregateArguments,
+    ExecutionSubmitArguments,
     NativeCapabilityBinding,
     NativeCapabilityDispatcher,
+    NativeRuntimeCapabilityHost,
     build_labbio_tool_registry,
 )
 
@@ -87,6 +90,50 @@ class RecordingHost:
         if self.fail_with is not None:
             raise self.fail_with
         return {"capability": capability_name, "accepted": True}
+
+
+class StableRuntimeToolSet:
+    def __init__(self):
+        self.stop_reason = None
+        self.aggregate_results = [{"count": 3}]
+        self.calls = []
+
+    async def artifact_aggregate(self, **payload):
+        self.calls.append(("artifact_aggregate", payload))
+        value = self.aggregate_results.pop(0) if len(self.aggregate_results) > 1 else (
+            self.aggregate_results[0]
+        )
+        return {
+            "success": True,
+            "capability_invocation_id": str(uuid4()),
+            "information_authority": "AUTHORITATIVE_EVIDENCE",
+            "data": value,
+            "error": None,
+        }
+
+    async def execution_submit(self, **payload):
+        self.calls.append(("execution_submit", payload))
+        return {
+            "success": True,
+            "capability_invocation_id": str(uuid4()),
+            "information_authority": "AUTHORITATIVE_EVIDENCE",
+            "data": {"execution_id": str(uuid4())},
+            "error": None,
+        }
+
+    def mark_feedback_delivered(self):
+        pass
+
+    def evidence_items(self):
+        return ()
+
+
+def _runtime_host(monkeypatch, tool_set):
+    monkeypatch.setattr(
+        "labbioagentos.runtime.tooling.LabBioRuntimeToolSet",
+        lambda _binding, _services: tool_set,
+    )
+    return NativeRuntimeCapabilityHost(None, None)
 
 
 def _stage_for(capability_name: str) -> WorkflowStage:
@@ -190,6 +237,61 @@ def test_zero_output_count_keeps_submit_outputs_optional():
     )
 
     assert "requested_outputs" not in schema["required"]
+
+
+@pytest.mark.asyncio
+async def test_unchanged_successful_read_after_feedback_requests_stop(monkeypatch):
+    tool_set = StableRuntimeToolSet()
+    host = _runtime_host(monkeypatch, tool_set)
+    arguments = ArtifactAggregateArguments(
+        artifact_id=UUID(IDENTITY),
+        operation="COUNT",
+    )
+
+    first = await host.invoke("artifact_aggregate", arguments)
+    host.mark_feedback_delivered()
+    second = await host.invoke("artifact_aggregate", arguments)
+
+    assert first["data"] == second["data"] == {"count": 3}
+    assert len(tool_set.calls) == 2
+    assert host.stop_reason == "REPEATED_NO_PROGRESS_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_changed_read_result_after_feedback_remains_live(monkeypatch):
+    tool_set = StableRuntimeToolSet()
+    tool_set.aggregate_results = [{"count": 3}, {"count": 4}]
+    host = _runtime_host(monkeypatch, tool_set)
+    arguments = ArtifactAggregateArguments(
+        artifact_id=UUID(IDENTITY),
+        operation="COUNT",
+    )
+
+    first = await host.invoke("artifact_aggregate", arguments)
+    host.mark_feedback_delivered()
+    second = await host.invoke("artifact_aggregate", arguments)
+
+    assert first["data"] == {"count": 3}
+    assert second["data"] == {"count": 4}
+    assert len(tool_set.calls) == 2
+    assert host.stop_reason is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_side_effect_is_not_classified_as_stable_read(monkeypatch):
+    tool_set = StableRuntimeToolSet()
+    host = _runtime_host(monkeypatch, tool_set)
+    arguments = ExecutionSubmitArguments(
+        image_key="scientific-python",
+        script_content="print('ok')",
+    )
+
+    await host.invoke("execution_submit", arguments)
+    host.mark_feedback_delivered()
+    await host.invoke("execution_submit", arguments)
+
+    assert len(tool_set.calls) == 2
+    assert host.stop_reason is None
 
 
 @pytest.mark.asyncio
