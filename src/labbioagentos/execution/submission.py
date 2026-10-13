@@ -146,7 +146,10 @@ class ExecutionSubmissionService:
             raise ExecutionSubmissionError("Executor returned an invalid result contract")
         self._validate_result(result, plan, workspace)
         receipt = ExecutionReceipt.from_result(result,
-            include_generated_file_refs=self.allow_generated_file_read, resources=plan.resources)
+            include_generated_file_refs=self.allow_generated_file_read,
+            resources=plan.resources,
+            input_artifact_ids=plan.input_artifact_ids,
+        )
         source_bytes = plan.script_content.encode("utf-8")
         self._submitted_executions[result.execution_id] = _SubmittedExecution(
             script_ref=result.script_ref,

@@ -41,6 +41,13 @@ def _receipt(status=ExecutionStatus.FAILED, outputs=()):
         output_artifact_ids=outputs, issue_messages=("MODEL_CONTEXT_SENTINEL",))
 
 
+def test_execution_receipt_preserves_selected_input_identities():
+    selected = (uuid4(),)
+    receipt = _receipt().model_copy(update={"input_artifact_ids": selected})
+
+    assert receipt.model_dump(mode="json")["input_artifact_ids"] == [str(selected[0])]
+
+
 def _bundle(stage_input, *receipts):
     return CapabilityEvidenceBundle(run_id=stage_input.run_id, stage_id=stage_input.stage_id,
         invocation_id=stage_input.invocation_id, items=tuple(CapabilityEvidenceItem(

@@ -450,6 +450,14 @@ class ExecutionReceipt(BaseModel):
         default=None,
         description="Canonical resources of this submitted plan, not the run ceiling. Null means unavailable in a legacy receipt.",
     )
+    input_artifact_ids: tuple[UUID, ...] = Field(
+        default=(),
+        max_length=128,
+        description=(
+            "Exact input Artifact UUIDs selected and mounted for this execution. "
+            "An empty list means the submitted program received no task inputs."
+        ),
+    )
     output_artifact_ids: tuple[UUID, ...] = Field(
         default=(),
         description="Output Artifact UUIDs that are queryable by remote runtime models.",
@@ -475,8 +483,14 @@ class ExecutionReceipt(BaseModel):
     retryable: bool = False
 
     @classmethod
-    def from_result(cls, result: ExecutionResult, *, include_generated_file_refs: bool = False,
-                    resources: RequestedResources | None = None) -> "ExecutionReceipt":
+    def from_result(
+        cls,
+        result: ExecutionResult,
+        *,
+        include_generated_file_refs: bool = False,
+        resources: RequestedResources | None = None,
+        input_artifact_ids: tuple[UUID, ...] = (),
+    ) -> "ExecutionReceipt":
         retryable_classes = {
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
@@ -505,6 +519,7 @@ class ExecutionReceipt(BaseModel):
             script_hash=result.script_hash,
             exit_code=result.exit_code,
             resources=resources,
+            input_artifact_ids=input_artifact_ids,
             output_artifact_ids=tuple(
                 ref.artifact_id
                 for ref in result.output_artifact_refs

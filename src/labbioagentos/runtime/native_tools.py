@@ -18,6 +18,7 @@ from labbioagentos.execution.models import (
     ExecutionRuntime,
     ExecutionScriptContent,
     ExecutionSourceEdit,
+    OutputArtifactSpec,
     RequestedResources,
 )
 from labbioagentos.kernel import (
@@ -445,11 +446,42 @@ def build_labbio_tool_registry(
         if (capability_name == "execution_submit"
                 and execution_capability is not None
                 and execution_capability.minimum_queryable_output_count > 0):
+            queryable_output_model = create_model(
+                "QueryableOutputArtifactSpec",
+                __base__=OutputArtifactSpec,
+                requested_exposure=(
+                    Literal["DERIVED"],
+                    Field(
+                        description=(
+                            "Required DERIVED classification for an output that "
+                            "satisfies the current nonzero queryable-output minimum."
+                        ),
+                    ),
+                ),
+                output_contract_id=(
+                    StrictStr,
+                    Field(
+                        min_length=1,
+                        max_length=128,
+                        description=(
+                            "Required approved contract ID copied from the current "
+                            "execution_capability.approved_output_contracts."
+                        ),
+                    ),
+                ),
+            )
+            queryable_outputs = Annotated[
+                tuple[queryable_output_model, ...],
+                Field(
+                    min_length=execution_capability.minimum_queryable_output_count,
+                    max_length=128,
+                ),
+            ]
             arguments_model = create_model(
                 "OutputRequiredExecutionSubmitArguments",
                 __base__=ExecutionSubmitArguments,
                 requested_outputs=(
-                    ExecutionRequestedOutputs,
+                    queryable_outputs,
                     Field(
                         description=(
                             "Required nonempty output declarations because the "

@@ -215,9 +215,17 @@ def test_required_output_count_is_projected_into_current_submit_schema():
     }
 
     assert "requested_outputs" in schemas["execution_submit"]["required"]
-    assert schemas["execution_submit"]["properties"]["requested_outputs"][
-        "minItems"
-    ] == 1
+    requested_outputs = schemas["execution_submit"]["properties"]["requested_outputs"]
+    assert requested_outputs["minItems"] == 1
+    assert set(requested_outputs["items"]["required"]) == {
+        "relative_path",
+        "artifact_type",
+        "requested_exposure",
+        "output_contract_id",
+    }
+    assert requested_outputs["items"]["properties"]["requested_exposure"][
+        "const"
+    ] == "DERIVED"
 
 
 def test_zero_output_count_keeps_submit_outputs_optional():

@@ -1,5 +1,7 @@
 """Only finite process-reported indexing conditions cross the model boundary."""
 
+from uuid import uuid4
+
 import pytest
 from pydantic import ValidationError
 
@@ -107,7 +109,11 @@ def test_index_numbers_and_unrelated_process_content_are_not_released(tmp_path):
     runner = FakeDockerRunner(exit_code=1, stderr=stderr)
     _, executor, _ = _environment(tmp_path, runner)
     result = executor.execute(_plan())
-    receipt = ExecutionReceipt.from_result(result)
+    selected_input = uuid4()
+    receipt = ExecutionReceipt.from_result(
+        result,
+        input_artifact_ids=(selected_input,),
+    )
     assert receipt.diagnostics == result.diagnostics
     assert receipt.diagnostics[0].reported_index_condition == "OUT_OF_BOUNDS"
     assert receipt.status.value == "FAILED"
@@ -116,6 +122,7 @@ def test_index_numbers_and_unrelated_process_content_are_not_released(tmp_path):
     for forbidden in ("PRIVATE", "/private", "876543210987654321", "axis 123", "size 456"):
         assert forbidden not in encoded
     assert receipt.script_hash == result.script_hash
+    assert receipt.input_artifact_ids == (selected_input,)
 
 
 @pytest.mark.parametrize("condition", ["OUT_OF_BOUNDS", "OUT_OF_BOUNDS_EMPTY_AXIS"])
