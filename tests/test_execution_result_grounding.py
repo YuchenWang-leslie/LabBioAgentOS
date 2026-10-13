@@ -5,10 +5,11 @@ from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from pydantic import create_model
+from pydantic import ValidationError, create_model
 
 from labbioagentos import (
-    CapabilityEvidenceBundle,
+    CapabilityEvidenceBundle, ExecutionRuntime, RequestedResources,
+    RuntimeExecutionCapabilityView,
     RuntimeStageInput,
     RuntimeWorkspaceIdentifiers, RuntimeWorkflowControlView, WorkflowStage,
 )
@@ -17,14 +18,21 @@ from labbioagentos.execution.models import ExecutionReceipt, ExecutionStatus
 from labbioagentos.runtime.contracts import CapabilityEvidenceItem, CapabilityEvidenceStatus
 
 
-def _input():
+def _input(*, minimum_outputs=0, retry_available=False):
     return RuntimeStageInput(run_id=uuid4(), invocation_id=uuid4(),
         stage_id=WorkflowStage.EXECUTE, instruction="Work from current task evidence.",
         workspace=RuntimeWorkspaceIdentifiers(user_id="fixture-user", lab_id="fixture-lab", project_id="fixture-project"),
         allowed_capabilities=("execution_submit",),
         workflow_control=RuntimeWorkflowControlView(current_stage=WorkflowStage.EXECUTE,
             transition_targets=(WorkflowStage.VALIDATE,), request_user_input_available=False,
-            retry_available=False, finish_available=False))
+            retry_available=retry_available,
+            retry_transition_targets=(WorkflowStage.EXECUTE, WorkflowStage.VALIDATE)
+            if retry_available else (), finish_available=False),
+        execution_capability=RuntimeExecutionCapabilityView(
+            runtime=ExecutionRuntime.PYTHON, image_key="fixture-image",
+            resources=RequestedResources(), network_required=False,
+            minimum_queryable_output_count=minimum_outputs,
+        ))
 
 
 def _receipt(status=ExecutionStatus.FAILED, outputs=()):
@@ -54,3 +62,72 @@ def _payload(receipt=None):
             "execution_reference": _ref(receipt.execution_id) if receipt else None,
             "output_artifact_references": [_ref(i, "ARTIFACT") for i in receipt.output_artifact_ids] if receipt else []},
         "next_action": {"action": "transition", "target_stage": "VALIDATE"}}
+
+
+def _format(stage_input, *receipts):
+    from labbioagentos.runtime.contracts import runtime_stage_result_format
+    from labbioagentos.runtime.execution_grounding import (
+        execution_result_control, execution_result_response_format,
+    )
+
+    control = execution_result_control(stage_input, _bundle(stage_input, *receipts))
+    return execution_result_response_format(
+        runtime_stage_result_format(stage_input.stage_id, stage_input.workflow_control),
+        control,
+    )
+
+
+def test_required_output_without_receipt_cannot_advance_but_can_retry_or_fail():
+    stage_input = _input(minimum_outputs=1, retry_available=True)
+    response_format = _format(stage_input)
+
+    with pytest.raises(ValidationError):
+        response_format.model_validate(_payload())
+
+    retry = _payload()
+    retry["next_action"] = {"action": "retry", "target_stage": "EXECUTE"}
+    assert response_format.model_validate(retry).next_action.root.action.value == "retry"
+
+    fail = _payload()
+    fail["next_action"] = {"action": "fail", "reason": "No task result was produced."}
+    assert response_format.model_validate(fail).next_action.root.action.value == "fail"
+
+
+def test_successful_receipt_with_required_output_can_advance():
+    output_id = uuid4()
+    receipt = _receipt(status=ExecutionStatus.SUCCEEDED, outputs=(output_id,))
+
+    result = _format(_input(minimum_outputs=1), receipt).model_validate(
+        _payload(receipt)
+    )
+
+    assert result.next_action.root.action.value == "transition"
+    assert result.body.output_artifact_references[0].reference_id == str(output_id)
+
+
+def test_required_transition_must_select_the_qualifying_receipt_and_outputs():
+    failed = _receipt(outputs=(uuid4(),))
+    succeeded = _receipt(status=ExecutionStatus.SUCCEEDED, outputs=(uuid4(),))
+    response_format = _format(_input(minimum_outputs=1), failed, succeeded)
+
+    with pytest.raises(ValidationError):
+        response_format.model_validate(_payload(failed))
+
+    missing_output = _payload(succeeded)
+    missing_output["body"]["output_artifact_references"] = []
+    with pytest.raises(ValidationError):
+        response_format.model_validate(missing_output)
+
+
+def test_zero_required_outputs_preserves_not_executed_transition():
+    result = _format(_input(minimum_outputs=0)).model_validate(_payload())
+
+    assert result.next_action.root.action.value == "transition"
+    assert result.body.execution_status == "NOT_EXECUTED"
+
+
+def test_failed_receipt_does_not_satisfy_required_output_even_with_artifact():
+    receipt = _receipt(outputs=(uuid4(),))
+
+    with pytest.raises(ValidationError):
+        _format(_input(minimum_outputs=1), receipt).model_validate(_payload(receipt))
