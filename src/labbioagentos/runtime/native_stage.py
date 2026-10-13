@@ -339,7 +339,9 @@ class NativeKernelStageInvoker:
                 instructions=prompt.sanitized_text,
             ))
             providers[profile.profile_key] = provider
-            registries[profile.profile_key] = build_labbio_tool_registry(host)
+            registries[profile.profile_key] = build_labbio_tool_registry(
+                host, stage_input.execution_capability
+            )
             batch_observers[profile.profile_key] = host.mark_feedback_delivered
             hosts.append(host)
         team = TeamSpec(leader=agent_specs[0], specialists=tuple(agent_specs[1:]))

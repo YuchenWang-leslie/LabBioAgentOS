@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, create_model
 
 from labbioagentos.artifacts.models import ArtifactQueryLimit
 from labbioagentos.contracts import WorkflowStage
@@ -43,6 +43,7 @@ from .contracts import (
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
     ExecutionReview,
+    RuntimeExecutionCapabilityView,
 )
 
 
@@ -388,7 +389,10 @@ _CAPABILITY_DESCRIPTIONS["execution_revise"] = (
 )
 
 
-def build_labbio_tool_registry(host: LabBioCapabilityHost) -> ToolRegistry:
+def build_labbio_tool_registry(
+    host: LabBioCapabilityHost,
+    execution_capability: RuntimeExecutionCapabilityView | None = None,
+) -> ToolRegistry:
     """Register the complete capability catalog without a legacy runtime import."""
 
     registry = ToolRegistry()
@@ -400,10 +404,29 @@ def build_labbio_tool_registry(host: LabBioCapabilityHost) -> ToolRegistry:
         ):
             return await host.invoke(_capability_name, arguments)
 
+        arguments_model = CAPABILITY_ARGUMENT_MODELS[capability_name]
+        if (capability_name == "execution_submit"
+                and execution_capability is not None
+                and execution_capability.minimum_queryable_output_count > 0):
+            arguments_model = create_model(
+                "OutputRequiredExecutionSubmitArguments",
+                __base__=ExecutionSubmitArguments,
+                requested_outputs=(
+                    ExecutionRequestedOutputs,
+                    Field(
+                        description=(
+                            "Required nonempty output declarations because the "
+                            "current execution_capability minimum is nonzero. "
+                            "Use DERIVED exposure and an approved output contract."
+                        ),
+                        min_length=execution_capability.minimum_queryable_output_count,
+                    ),
+                ),
+            )
         registry.register(
             name=capability_name,
             description=_CAPABILITY_DESCRIPTIONS[capability_name],
-            arguments_model=CAPABILITY_ARGUMENT_MODELS[capability_name],
+            arguments_model=arguments_model,
             handler=invoke,
         )
     return registry

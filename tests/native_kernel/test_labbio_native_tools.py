@@ -5,6 +5,9 @@ from uuid import uuid4
 
 import pytest
 
+from labbioagentos import (
+    ExecutionRuntime, RequestedResources, RuntimeExecutionCapabilityView,
+)
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
 from labbioagentos.kernel import FinishReason, ToolBatchRejectedError, ToolCall
 from labbioagentos.runtime.capability_catalog import (
@@ -147,6 +150,46 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     )
     assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_revise"]
     assert "direct JSON mapping" in descriptions["execution_revise"]
+
+
+def test_required_output_count_is_projected_into_current_submit_schema():
+    host = RecordingHost()
+    required = RuntimeExecutionCapabilityView(
+        runtime=ExecutionRuntime.PYTHON,
+        image_key="scientific-python",
+        resources=RequestedResources(),
+        network_required=False,
+        minimum_queryable_output_count=1,
+    )
+
+    schemas = {
+        spec.name: spec.parameters
+        for spec in build_labbio_tool_registry(host, required).specs
+    }
+
+    assert "requested_outputs" in schemas["execution_submit"]["required"]
+    assert schemas["execution_submit"]["properties"]["requested_outputs"][
+        "minItems"
+    ] == 1
+
+
+def test_zero_output_count_keeps_submit_outputs_optional():
+    host = RecordingHost()
+    optional = RuntimeExecutionCapabilityView(
+        runtime=ExecutionRuntime.PYTHON,
+        image_key="scientific-python",
+        resources=RequestedResources(),
+        network_required=False,
+        minimum_queryable_output_count=0,
+    )
+
+    schema = next(
+        spec.parameters
+        for spec in build_labbio_tool_registry(host, optional).specs
+        if spec.name == "execution_submit"
+    )
+
+    assert "requested_outputs" not in schema["required"]
 
 
 @pytest.mark.asyncio
