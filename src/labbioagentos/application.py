@@ -1137,7 +1137,8 @@ class LabBioApplication:
                             )
                     except ArtifactNotFoundError:
                         issue = ApplicationRecoveryIssueCode.REQUIRED_ARTIFACT_MISSING
-                    except (RuntimeProfileConfigurationError, RuntimeCoordinatorError,
+                    except (RuntimeIntegrationError, RuntimeProfileConfigurationError,
+                            RuntimeCoordinatorError,
                             ValidationError, ValueError, WorkflowEngineError):
                         issue = ApplicationRecoveryIssueCode.CHECKPOINT_INVALID
                     if issue is None:

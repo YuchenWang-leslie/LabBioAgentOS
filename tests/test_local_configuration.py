@@ -199,6 +199,15 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
         assert assemblies[WorkflowStage.UNDERSTAND].required_capabilities == ()
         assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ()
         assert assemblies[WorkflowStage.REPORT].required_capabilities == ("report_submit",)
+        assert 'CONTROL_STATE_REQUIRED_CAPABILITIES=["artifact_list"]' in (
+            assemblies[WorkflowStage.INTAKE].capability_prompt_values["protocol"]
+        )
+        assert "CONTROL_STATE_REQUIRED_CAPABILITIES" not in (
+            assemblies[WorkflowStage.UNDERSTAND].capability_prompt_values["protocol"]
+        )
+        assert 'CONTROL_STATE_REQUIRED_CAPABILITIES=["report_submit"]' in (
+            assemblies[WorkflowStage.REPORT].capability_prompt_values["protocol"]
+        )
         assert not application.execution_policy.allow_network
         assert application.execution_capability.minimum_queryable_output_count == 1
         assert application.execution_capability.available_python_modules == ("numpy",)

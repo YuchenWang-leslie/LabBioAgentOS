@@ -323,6 +323,13 @@ def build_application(
         capability_prompt_values={"protocol": (
             shared_context + profile.capability_common.format(stage=stage.stage.value)
             + " " + stage.capability_protocol
+            + (
+                " CONTROL_STATE_REQUIRED_CAPABILITIES="
+                + json.dumps(stage.required_capabilities)
+                + ". Complete every listed capability successfully before ending "
+                "capability mode; allowed capabilities not listed here remain optional."
+                if stage.required_capabilities else ""
+            )
         )} if stage.capabilities else {},
         finalization_prompt_values={"protocol": (
             shared_context + profile.finalization_protocol.format(stage=stage.stage.value)

@@ -240,8 +240,8 @@ class NativeKernelStageInvoker:
         evidence = None
         if self.assembly.capability_phase_enabled:
             evidence = await self._run_capability(stage_input)
-            self._validate_required_capabilities(evidence)
             self._observe("capability_evidence", evidence)
+            self._validate_required_capabilities(evidence)
         result = await self._finalize(
             stage_input, capability_evidence=evidence
         )
@@ -606,8 +606,9 @@ class NativeKernelStageInvoker:
             if item not in completed
         )
         if missing:
-            raise RuntimeProfileConfigurationError(
-                "Required stage capabilities did not complete: " + ", ".join(missing)
+            raise RuntimeIntegrationError(
+                "MALFORMED_RUNTIME_RESULT",
+                "Native runtime ended capability mode without completing required capabilities.",
             )
 
     def _validate_catalog_binding(self) -> None:

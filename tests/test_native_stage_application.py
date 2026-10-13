@@ -296,6 +296,75 @@ async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
 
 
 @pytest.mark.asyncio
+async def test_missing_required_capability_is_a_malformed_result_after_evidence_boundary(tmp_path):
+    class NoToolProvider:
+        binding = WorkflowProvider.binding
+
+        async def generate(self, _request):
+            return ModelTurn(
+                content="Capability inspection complete.",
+                finish_reason=FinishReason.STOP,
+                usage=TokenUsage(total_tokens=2),
+            )
+
+    stage_input = _stage_input()
+    fixture = _toolset(tmp_path, stage_input)
+    observed = []
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+            required_capabilities=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), lambda _model: NoToolProvider()),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        boundary_observer=lambda kind, value: observed.append((kind, value)),
+    )
+
+    with pytest.raises(RuntimeIntegrationError) as captured:
+        await invoker.invoke(stage_input)
+
+    assert captured.value.error_code == "MALFORMED_RUNTIME_RESULT"
+    assert [kind for kind, _value in observed] == ["stage_input", "capability_evidence"]
+    assert observed[-1][1].items == ()
+
+
+@pytest.mark.asyncio
+async def test_completed_required_capability_reaches_typed_finalization(tmp_path):
+    stage_input = _stage_input()
+    fixture = _toolset(tmp_path, stage_input)
+    providers = []
+
+    def builder(_model):
+        provider = CapabilityProvider() if not providers else WorkflowProvider([])
+        providers.append(provider)
+        return provider
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+            required_capabilities=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+    )
+
+    result = await invoker.invoke(stage_input)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert providers[0].calls == 2
+
+
+@pytest.mark.asyncio
 async def test_native_stage_stops_after_repeated_host_feedback(tmp_path):
     class RepeatingListProvider:
         binding = WorkflowProvider.binding

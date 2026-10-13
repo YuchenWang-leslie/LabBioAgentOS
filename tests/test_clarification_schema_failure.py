@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 from jsonschema import Draft202012Validator
 
-from labbioagentos import LabBioApplication, NativeKernelStageInvoker, RunStatus, RuntimeIntegrationError, SQLiteRunStateStore, WorkflowStage
+from labbioagentos import CapabilityEvidenceBundle, LabBioApplication, NativeKernelStageInvoker, RunStatus, RuntimeIntegrationError, SQLiteRunStateStore, WorkflowStage
 from labbioagentos.run_state import RunRecoveryState
 from labbioagentos.runtime.contracts import RuntimeWorkflowControlView, runtime_stage_result_format
 from test_clarification_continuation import _started, _answer, _question
@@ -91,6 +91,36 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
     assert (await app.continue_run(handle.run_id, principal=_principal(), workspace=_workspace())).status is RunStatus.FAILED
     assert len(executor.plans) == 1
     assert store.get(handle.run_id).rejected_stage_checkpoint == rejected
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_required_capability_fails_stably_with_completed_empty_evidence(
+    tmp_path, governed_invokers, monkeypatch,
+):
+    async def no_capability_calls(self, stage_input):
+        return CapabilityEvidenceBundle(
+            run_id=stage_input.run_id,
+            stage_id=stage_input.stage_id,
+            invocation_id=stage_input.invocation_id,
+            items=(),
+        )
+
+    monkeypatch.setattr(NativeKernelStageInvoker, "_run_capability", no_capability_calls)
+    path = tmp_path / "state.sqlite"
+    store = SQLiteRunStateStore(path)
+    app = LabBioApplication(_capability_configuration(tmp_path, store))
+    handle = app.create_run(_request())
+
+    result = await app.run(handle)
+
+    assert result.status is RunStatus.FAILED
+    saved = store.get(handle.run_id)
+    assert saved.recovery_state is RunRecoveryState.STABLE
+    assert saved.workflow_run.failure_reason == "MALFORMED_RUNTIME_RESULT"
+    assert saved.rejected_stage_checkpoint.failure_code == "MALFORMED_RUNTIME_RESULT"
+    assert saved.rejected_stage_checkpoint.evidence.items == ()
+    assert saved.inflight_evidence is None
     store.close()
 
 
