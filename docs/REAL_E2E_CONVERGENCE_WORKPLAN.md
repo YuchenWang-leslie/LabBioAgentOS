@@ -7,11 +7,10 @@ legacy runtime adapter or indirect runtime package dependency. Scientific
 methods, parameters, programs, specialist choice, interpretation, and report
 content remain Agent-owned.
 
-GitHub `main` and `feat/native-kernel-p8` were last confirmed at
-`a8c0aa698b07794554bab1d4a5425276a7763b71`. P8 was built from local clean
-source commit `cfce0ec5a99feb6047d570cb9520e699ace1e9f8`. Publishing that fix is
-still pending because the GitHub SSH proxy timed out during the bounded fetch;
-the release receipt preserves the exact source identity.
+GitHub `main` and `feat/native-kernel-p8` contain the P8 source fix and release
+handoff. P8 was built from exact clean source commit
+`cfce0ec5a99feb6047d570cb9520e699ace1e9f8`; the release receipt preserves that
+identity independently of later documentation commits.
 
 The exact clean source tree passed:
 
