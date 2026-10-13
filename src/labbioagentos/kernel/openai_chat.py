@@ -135,9 +135,10 @@ class OpenAICompatibleChatProvider:
         return endpoint + "/chat/completions"
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
+        messages = [self._message(request, item) for item in request.messages]
         payload: dict[str, Any] = {
             "model": self.binding.model,
-            "messages": [self._message(request, item) for item in request.messages],
+            "messages": messages,
             "max_tokens": request.max_output_tokens,
             "n": 1,
             "thinking": {
@@ -152,20 +153,45 @@ class OpenAICompatibleChatProvider:
                         "name": tool.name,
                         "description": tool.description,
                         "parameters": tool.parameters,
-                        "strict": True,
+                        "strict": self.binding.provider_tool_schema_strict,
                     },
                 }
                 for tool in request.tools
             ]
         if request.response_schema is not None:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "structured_output",
-                    "strict": True,
-                    "schema": request.response_schema,
-                },
-            }
+            if self.binding.finalization_json_object:
+                payload["response_format"] = {"type": "json_object"}
+                schema_text = json.dumps(
+                    request.response_schema,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                schema_instruction = (
+                    "Return exactly one JSON object that matches this JSON Schema. "
+                    "Do not add fields or prose outside the object. JSON Schema: "
+                    + schema_text
+                )
+                for message in messages:
+                    if message["role"] == "system":
+                        message["content"] = (
+                            message.get("content", "") + "\n\n" + schema_instruction
+                        )
+                        break
+                else:
+                    messages.insert(0, {
+                        "role": "system",
+                        "content": schema_instruction,
+                    })
+            else:
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "structured_output",
+                        "strict": True,
+                        "schema": request.response_schema,
+                    },
+                }
         return payload
 
     def _message(self, request: ModelRequest, message: PublicMessage) -> dict[str, Any]:

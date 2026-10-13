@@ -97,6 +97,8 @@ def environment_native_provider(model: ModelProfile) -> ModelProvider:
             endpoint=endpoint,
             transport="OPENAI_COMPATIBLE_CHAT",
             thinking_mode="ENABLED" if model.thinking_enabled else "DISABLED",
+            provider_tool_schema_strict=model.provider_tool_schema_strict,
+            finalization_json_object=model.finalization_json_object,
         ),
         api_key=api_key,
     )

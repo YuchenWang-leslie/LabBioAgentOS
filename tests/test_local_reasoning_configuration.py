@@ -3,7 +3,10 @@
 import pytest
 
 from labbioagentos.local_config import build_application, load_settings, runtime_manifest
-from labbioagentos.runtime.native_stage import NativeRuntimeFactory
+from labbioagentos.runtime.native_stage import (
+    NativeRuntimeFactory,
+    environment_native_provider,
+)
 from test_local_configuration import settings_file
 
 
@@ -42,5 +45,35 @@ def test_reasoning_configuration_reaches_native_model_profile(
         assert application.configuration.retry_limit == 1
         assert all(stage.max_capability_turns == 16
                    for stage in application.configuration.stage_assemblies)
+    finally:
+        application.run_state_store.close()
+
+
+def test_provider_wire_compatibility_reaches_native_binding(
+    settings_file, monkeypatch,
+):
+    content = settings_file.read_text().replace(
+        "[provider]",
+        "[provider]\nprovider_tool_schema_strict = false"
+        "\nfinalization_json_object = true",
+    )
+    settings_file.write_text(content)
+    settings = load_settings(settings_file)
+    application = build_application(
+        settings,
+        settings.result_root / "wire-compatibility",
+        load_provider=False,
+    )
+    monkeypatch.setenv("OPENAI_API_BASE", "https://provider.invalid/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "secret-token")
+    try:
+        factory = NativeRuntimeFactory(application.configuration.profile_catalog)
+        _profile, _prompt, model, _schema, provider = factory.resolve(
+            "execution", {"protocol": "Generic protocol fixture."}
+        )
+        assert model.provider_tool_schema_strict is False
+        assert model.finalization_json_object is True
+        assert provider.binding.provider_tool_schema_strict is False
+        assert provider.binding.finalization_json_object is True
     finally:
         application.run_state_store.close()

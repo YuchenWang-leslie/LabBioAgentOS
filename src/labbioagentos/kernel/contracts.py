@@ -207,6 +207,8 @@ class ProviderBinding(KernelModel):
     endpoint: StrictStr = Field(min_length=1, max_length=2_048)
     transport: Literal["OPENAI_COMPATIBLE_CHAT"]
     thinking_mode: Literal["ENABLED", "DISABLED"]
+    provider_tool_schema_strict: bool = True
+    finalization_json_object: bool = False
 
     @field_validator("endpoint")
     @classmethod

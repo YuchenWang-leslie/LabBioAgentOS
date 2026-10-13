@@ -40,13 +40,20 @@ class RecordingTransport:
         return deepcopy(response)
 
 
-def _binding(*, thinking="ENABLED"):
+def _binding(
+    *,
+    thinking="ENABLED",
+    provider_tool_schema_strict=True,
+    finalization_json_object=False,
+):
     return ProviderBinding(
         provider="compatible",
         model="model-a",
         endpoint="https://provider.invalid/v1",
         transport="OPENAI_COMPATIBLE_CHAT",
         thinking_mode=thinking,
+        provider_tool_schema_strict=provider_tool_schema_strict,
+        finalization_json_object=finalization_json_object,
     )
 
 
@@ -133,6 +140,55 @@ async def test_chat_adapter_emits_strict_schema_and_preserves_unknown_usage():
     assert sent["payload"]["tools"][0]["function"]["strict"] is True
     assert sent["payload"]["response_format"]["json_schema"]["strict"] is True
     assert "PRIVATE_REASONING_SENTINEL" not in repr(turn)
+
+
+@pytest.mark.asyncio
+async def test_chat_adapter_honors_provider_wire_compatibility_flags():
+    transport = RecordingTransport(({
+        "id": "request-compatible",
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {"content": '{"result":"complete"}'},
+        }],
+    },))
+    binding = _binding(
+        thinking="DISABLED",
+        provider_tool_schema_strict=False,
+        finalization_json_object=True,
+    )
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+    request = _request(
+        binding,
+        (PublicMessage(role="USER", content="Run."),),
+        tools=(ToolSpec(
+            name="inspect",
+            description="Inspect a bounded object.",
+            parameters={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        ),),
+        schema={
+            "type": "object",
+            "properties": {"result": {"type": "string"}},
+            "required": ["result"],
+            "additionalProperties": False,
+        },
+    )
+
+    await provider.generate(request)
+
+    payload = transport.requests[0]["payload"]
+    assert payload["tools"][0]["function"]["strict"] is False
+    assert payload["response_format"] == {"type": "json_object"}
+    schema_instruction = payload["messages"][0]["content"]
+    assert "Return exactly one JSON object" in schema_instruction
+    assert '"required":["result"]' in schema_instruction
 
 
 @pytest.mark.asyncio
