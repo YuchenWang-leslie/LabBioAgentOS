@@ -29,6 +29,7 @@ from .contracts import (
 from .control import BudgetLedger, InterruptToken
 from .errors import (
     AgentHistoryLimitError,
+    BudgetExceededError,
     FinalizationProtocolError,
     FinalizationRejectedError,
     IncompleteProviderResponseError,
@@ -208,7 +209,22 @@ class AgentLoop:
                     continue
 
                 if turn.tool_calls:
-                    await self._handle_tool_turn(turn)
+                    try:
+                        await self._handle_tool_turn(turn)
+                    except BudgetExceededError as exc:
+                        if exc.dimension not in {"tool_calls", "evidence_entries"}:
+                            raise
+                        self._emit(
+                            KernelEventKind.KERNEL_FINISHED,
+                            status_code="STOPPED",
+                            reason_code="CAPABILITY_EVIDENCE_LIMIT",
+                        )
+                        return self._result(
+                            output={
+                                "capability_stop_reason": "CAPABILITY_EVIDENCE_LIMIT"
+                            },
+                            termination="CAPABILITY_EVIDENCE_LIMIT",
+                        )
                     if self.dispatcher is not None and self.dispatcher.stop_reason is not None:
                         self._emit(
                             KernelEventKind.KERNEL_FINISHED,

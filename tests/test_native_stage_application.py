@@ -464,3 +464,65 @@ async def test_capability_provider_turn_limit_is_the_declared_limit(tmp_path):
         event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
         for event in recorder.events(stage_input.run_id)
     )
+
+
+@pytest.mark.asyncio
+async def test_capability_batch_crossing_evidence_limit_still_finalizes(tmp_path):
+    class CrossingProvider:
+        binding = WorkflowProvider.binding
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            count = 63 if self.calls == 1 else 2
+            start = 0 if self.calls == 1 else 63
+            return ModelTurn(
+                tool_calls=tuple(
+                    ToolCall(
+                        call_id=f"artifact-list-{offset}",
+                        name="artifact_list",
+                        arguments_json=json.dumps({"offset": offset}),
+                    )
+                    for offset in range(start, start + count)
+                ),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(total_tokens=2),
+            )
+
+    stage_input = _stage_input()
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    fixture = _toolset(tmp_path, stage_input, recorder)
+    provider = CrossingProvider()
+    providers = []
+
+    def builder(_model):
+        selected = provider if not providers else WorkflowProvider([])
+        providers.append(selected)
+        return selected
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+            max_capability_turns=4,
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        trace_recorder=recorder,
+    )
+
+    result = await invoker.invoke(stage_input)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert provider.calls == 2
+    assert not any(
+        event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+        for event in recorder.events(stage_input.run_id)
+    )

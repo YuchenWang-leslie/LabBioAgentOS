@@ -418,6 +418,8 @@ class NativeKernelStageInvoker:
             termination_reason=(
                 "REPEATED_NON_RETRYABLE_REQUEST"
                 if result.leader_result.termination == "RUNTIME_STOPPED"
+                else "CAPABILITY_EVIDENCE_LIMIT"
+                if result.leader_result.termination == "CAPABILITY_EVIDENCE_LIMIT"
                 else "PROVIDER_TURN_LIMIT"
                 if result.leader_result.termination == "PROVIDER_TURN_LIMIT"
                 else "MODEL_RETURNED"

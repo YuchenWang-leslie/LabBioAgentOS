@@ -107,7 +107,9 @@ def _limits(
     )
 
 
-def _tool_loop(turns, *, clock=None, no_progress_ms=30_000):
+def _tool_loop(
+    turns, *, clock=None, no_progress_ms=30_000, tool_calls=8
+):
     effects = []
 
     async def record(arguments: RecordArguments):
@@ -121,7 +123,7 @@ def _tool_loop(turns, *, clock=None, no_progress_ms=30_000):
         arguments_model=RecordArguments,
         handler=record,
     )
-    budget = BudgetLedger(_limits())
+    budget = BudgetLedger(_limits(tool_calls=tool_calls))
     provider = FakeProvider(binding=_binding(), turns=turns)
     dispatcher = ToolDispatcher(
         registry,
@@ -137,6 +139,46 @@ def _tool_loop(turns, *, clock=None, no_progress_ms=30_000):
         clock=clock,
     )
     return loop, provider, effects
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_stops_before_batch_crosses_tool_budget():
+    loop, provider, effects = _tool_loop(
+        (
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="within-budget",
+                    name="record_value",
+                    arguments_json='{"value":"kept"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="over-budget",
+                    name="record_value",
+                    arguments_json='{"value":"must-not-run"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+        ),
+        tool_calls=1,
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run within the bound."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "CAPABILITY_EVIDENCE_LIMIT"
+    assert result.output == {
+        "capability_stop_reason": "CAPABILITY_EVIDENCE_LIMIT"
+    }
+    assert effects == [{"value": "kept", "nested": None}]
+    assert result.budget_usage.tool_calls == 1
+    assert len(provider.requests) == 2
+    assert result.events[-1].status_code == "STOPPED"
+    assert result.events[-1].reason_code == "CAPABILITY_EVIDENCE_LIMIT"
 
 
 @pytest.mark.asyncio

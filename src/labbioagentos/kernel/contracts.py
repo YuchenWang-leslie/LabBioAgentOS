@@ -339,6 +339,7 @@ class AgentLoopResult(KernelModel):
         "STRUCTURED_OUTPUT_ACCEPTED",
         "RUNTIME_STOPPED",
         "PROVIDER_TURN_LIMIT",
+        "CAPABILITY_EVIDENCE_LIMIT",
     ]
     messages: tuple[PublicMessage, ...] = Field(max_length=256)
     observations: tuple[ProviderTurnObservation, ...]
