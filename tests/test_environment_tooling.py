@@ -3,7 +3,7 @@
 from dataclasses import replace
 import json
 
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 import pytest
 
 from labbioagentos import LabBioRuntimeToolSet, WorkflowStage

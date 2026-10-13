@@ -44,6 +44,7 @@ from labbioagentos.execution.models import (
     ExecutionDiagnostic,
     ExecutionRuntime,
     ExecutionReceipt,
+    ExecutionResourceRejection,
     ExecutionStatus,
     OutputDeclassificationMode,
     RequestedResources,
@@ -71,8 +72,10 @@ SafeIdentifier = Annotated[
 ]
 
 MAX_CAPABILITY_EVIDENCE_ITEMS = 64
+MAX_CAPABILITY_COMPLETION_CHARS = 64_000
 CapabilityTerminationReason = Literal[
-    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED"
+    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED",
+    "REPEATED_NON_RETRYABLE_REQUEST",
 ]
 
 
@@ -292,7 +295,13 @@ class RuntimeExecutionCapabilityView(BaseModel):
             "their verified image keys are also valid execution choices."
         ),
     )
-    resources: RequestedResources
+    resources: RequestedResources = Field(description=(
+        "Configured preflight resource request; not an implicit grant to execution_submit."
+    ))
+    submission_default_resources: RequestedResources = Field(default_factory=RequestedResources,
+        description="Defaults for omitted execution_submit resource fields; not resource_limits.")
+    resource_limits: RequestedResources | None = Field(default=None,
+        description="Host-enforced maximum per resource, not automatically allocated. Null is an older snapshot.")
     network_required: bool
     max_output_file_bytes: int | None = Field(
         default=None, ge=1,
@@ -377,6 +386,7 @@ class RuntimeExecutionCapabilityView(BaseModel):
             runtime=runtime,
             image_key=image_key,
             resources=resources,
+            resource_limits=execution_policy.resource_limits,
             network_required=network_required,
             max_output_file_bytes=execution_policy.max_output_file_bytes,
             max_collected_output_bytes=execution_policy.max_collected_output_bytes,
@@ -520,6 +530,77 @@ class ScriptValidationDetails(BaseModel):
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(min_length=1, max_length=1)
 
 
+class RevisionValidationIssue(BaseModel):
+    """Allowlisted field locations only; no rejected values or arbitrary keys."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    field: Literal[
+        "request", "execution_id", "expected_script_hash", "edits", "edits.old", "edits.new",
+        "image_key", "requested_outputs", "resources", "resources.cpus", "resources.memory_mb",
+        "resources.pids_limit", "resources.timeout_seconds",
+        "input_artifact_ids", "parameters",
+    ]
+    item_index: int | None = Field(default=None, ge=0)
+    reason: Literal["missing", "extra_forbidden", "invalid_type", "invalid_value"]
+
+
+class RevisionValidationDetails(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    issues: tuple[RevisionValidationIssue, ...] = Field(default=(), max_length=32)
+    truncated: bool = False
+
+
+class ReportEvidenceItem(BaseModel):
+    """Citation identity and coverage, never Artifact contents or storage paths."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    index: int = Field(ge=0, le=255)
+    artifact_id: UUID | None = None
+    status: Literal[
+        "READY", "INVALID_IDENTIFIER", "DUPLICATE_REFERENCE", "ARTIFACT_NOT_FOUND",
+        "INVALID_REFERENCE_KIND", "AUTHORIZATION_DENIED", "REPORT_EVIDENCE_INCOMPLETE",
+    ]
+    reference_kind: StrictStr | None = Field(default=None, max_length=64)
+    record_count: int | None = Field(default=None, ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+
+
+class ReportEvidenceCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    authority: Literal["CONTROL_STATE"] = "CONTROL_STATE"
+    ready: bool
+    items: tuple[ReportEvidenceItem, ...] = Field(default=(), max_length=256)
+
+
+class RepeatedRequestDetails(BaseModel):
+    """A repeated failure after feedback, not a guessed scientific remedy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    previous_capability_invocation_id: UUID
+    reason: Literal[
+        "REQUEST_UNCHANGED",
+        "DENIED_VIEWS_UNCHANGED",
+        "OUTPUT_DECLARATION_UNCHANGED",
+    ]
+    scope: Literal["CURRENT_CAPABILITY_INVOCATION"] = "CURRENT_CAPABILITY_INVOCATION"
+
+
+class ExecutionReview(BaseModel):
+    """Brief public action rationale, not hidden reasoning or scientific approval."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal["MODEL_CONTEXT"] = "MODEL_CONTEXT"
+    rationale: ShortText
+    feedback_invocation_ids: tuple[UUID, ...] = Field(default=(), max_length=8)
+    gold_authorization_ids: tuple[UUID, ...] = Field(default=(), max_length=8)
+
+    @field_validator("rationale")
+    @classmethod
+    def validate_rationale(cls, value: str) -> str:
+        validate_model_visible_json(value, reject_absolute_paths=True)
+        return value
+
+
 class CapabilityErrorDetails(BaseModel):
     """Bounded controlled error feedback retained alongside capability evidence."""
 
@@ -530,6 +611,10 @@ class CapabilityErrorDetails(BaseModel):
     denied_operation: Literal["REMOTE_ARTIFACT_VIEW"] | None = None
     query_constraints: ArtifactQueryConstraints | None = None
     script_validation: ScriptValidationDetails | None = None
+    resource_rejection: ExecutionResourceRejection | None = None
+    revision_validation: RevisionValidationDetails | None = None
+    report_evidence: ReportEvidenceCheck | None = None
+    repeated_request: RepeatedRequestDetails | None = None
 
 
 class CapabilityEvidenceItem(BaseModel):
@@ -548,6 +633,7 @@ class CapabilityEvidenceItem(BaseModel):
     safe_result: JsonValue | None = None
     error_code: SafeIdentifier | None = None
     error_details: CapabilityErrorDetails | None = None
+    execution_review: ExecutionReview | None = None
     correlation_id: UUID | None = None
     artifact_query_request: ArtifactQueryRequestAudit | None = None
     skill_search_request: SkillSearchRequestAudit | None = None
@@ -568,6 +654,8 @@ class CapabilityEvidenceItem(BaseModel):
             raise ValueError("Completed capability evidence cannot contain an error")
         if self.status is CapabilityEvidenceStatus.FAILED and self.error_code is None:
             raise ValueError("Failed capability evidence requires an error code")
+        if self.execution_review is not None and self.capability_name not in {'execution_submit', 'execution_revise'}:
+            raise ValueError('Execution review belongs only to execution tools')
         if (
             self.artifact_query_request is not None
             and self.capability_name != "artifact_query"
@@ -606,7 +694,13 @@ class CapabilityEvidenceBundle(BaseModel):
         default=(), max_length=MAX_CAPABILITY_EVIDENCE_ITEMS
     )
     delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
-    explicit_completion: LongText | None = None
+    # A retained provider handoff is not a stage-summary field. Preserve it
+    # without truncation under its own transport bound and MODEL_CONTEXT label.
+    explicit_completion: Annotated[
+        StrictStr,
+        StringConstraints(strip_whitespace=True, min_length=1,
+                          max_length=MAX_CAPABILITY_COMPLETION_CHARS),
+    ] | None = None
     explicit_completion_authority: Literal[InformationAuthority.MODEL_CONTEXT] = (
         InformationAuthority.MODEL_CONTEXT
     )
@@ -653,7 +747,7 @@ class RuntimeExecutionActivity(BaseModel):
             raise ValueError("Execution activity requires an EXECUTE checkpoint")
         receipts = []
         for item in evidence.items:
-            if item.capability_name != "execution_submit" or item.status is not CapabilityEvidenceStatus.COMPLETED:
+            if item.capability_name not in {"execution_submit", "execution_revise"} or item.status is not CapabilityEvidenceStatus.COMPLETED:
                 continue
             if item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE:
                 raise ValueError("Execution receipt requires authoritative evidence")
@@ -702,6 +796,18 @@ class RuntimeWorkspaceIdentifiers(BaseModel):
     lab_id: SafeIdentifier
 
 
+class RuntimeSkillUseDecisionView(BaseModel):
+    """Identity of the use proposal actually decided, not selected guidance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    proposal_id: UUID
+    skill_id: UUID
+    skill_version: int = Field(ge=1)
+    proposed_mode: Literal["REUSE", "ADAPT", "REFERENCE"]
+    proposed_deviations: tuple[LongText, ...] = Field(default=(), max_length=100)
+
+
 class RuntimeGateDecisionView(BaseModel):
     """Bounded decision correlation presented after a source-stage resume."""
 
@@ -715,6 +821,7 @@ class RuntimeGateDecisionView(BaseModel):
     approved: bool
     domain_reference_id: SafeIdentifier | None = None
     decision_reference_id: SafeIdentifier | None = None
+    skill_use: RuntimeSkillUseDecisionView | None = None
 
     @classmethod
     def from_record(cls, record: GateDecisionRecord) -> "RuntimeGateDecisionView":
@@ -968,6 +1075,20 @@ class RuntimeStageInput(BaseModel):
         default=(),
         max_length=64,
     )
+    selected_gold_context: tuple[dict[str, JsonValue], ...] = Field(
+        default=(), max_length=8,
+        description="Already authorized, read and selected Gold guidance, preserved across stage handoff. "
+        "With skill_view available, the original workflow and section catalog are provided; "
+        "the Agent may read other sections on demand. MODEL_CONTEXT, not scientific evidence "
+        "or a mandatory procedure. Adaptations remain Agent decisions.",
+    )
+
+    @field_validator("selected_gold_context")
+    @classmethod
+    def bounded_gold_context(cls, value):
+        validate_model_visible_json(value, max_serialized_bytes=600_000, max_nodes=32_768)
+        return value
+
     allowed_capabilities: tuple[SafeIdentifier, ...] = Field(
         default=(),
         max_length=64,
@@ -1033,7 +1154,7 @@ class SkillAssessment(_StageBody):
     """Model judgment about candidates actually returned in this invocation."""
 
     status: Literal[
-        "NOT_ASSESSED", "NO_SUITABLE_RETURNED_CANDIDATE", "USE_PROPOSED"
+        "NOT_ASSESSED", "NO_SUITABLE_RETURNED_CANDIDATE", "USE_PROPOSED", "USE_NOT_PURSUED"
     ]
     search_capability_invocation_ids: tuple[UUID, ...] = Field(default=(), max_length=32)
     proposal_id: UUID | None = None
@@ -1051,7 +1172,7 @@ class SkillAssessment(_StageBody):
         ):
             raise PydanticCustomError("skill_candidate_judgment_requires_search_only",
                 "Returned-candidate judgment requires search evidence only")
-        if self.status == "USE_PROPOSED" and self.proposal_id is None:
+        if self.status in {"USE_PROPOSED", "USE_NOT_PURSUED"} and self.proposal_id is None:
             raise PydanticCustomError("skill_use_requires_proposal",
                 "Proposed Skill use requires a proposal identifier")
         return self
@@ -1154,12 +1275,11 @@ _BODY_STAGE = {
 }
 
 
-class RuntimeStageResult(BaseModel):
-    """Common result envelope with a discriminated body and explicit proposal."""
+class RuntimeStageProposal(BaseModel):
+    """Model-owned decisions; durable result identity belongs to the host."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    result_id: UUID = Field(default_factory=uuid4)
     stage_id: WorkflowStage
     summary: LongText
     body: RuntimeStageBody
@@ -1167,7 +1287,7 @@ class RuntimeStageResult(BaseModel):
     next_action: NextActionProposal
 
     @model_validator(mode="after")
-    def body_must_match_stage(self) -> "RuntimeStageResult":
+    def body_must_match_stage(self) -> "RuntimeStageProposal":
         body_stage = _BODY_STAGE[self.body.kind]
         if self.stage_id is not body_stage:
             raise ValueError(
@@ -1175,6 +1295,12 @@ class RuntimeStageResult(BaseModel):
                 f"{self.stage_id.value!r}"
             )
         return self
+
+
+class RuntimeStageResult(RuntimeStageProposal):
+    """Persisted envelope after validation of the model's proposal."""
+
+    result_id: UUID = Field(default_factory=uuid4)
 
 
 _STAGE_BODY_TYPES = {
@@ -1201,7 +1327,7 @@ def _runtime_stage_result_format(
     clarification_available: bool = False,
     continue_stage_available: bool = False,
     clarification_followup_ids: tuple[str, ...] = (),
-) -> type[RuntimeStageResult]:
+) -> type[RuntimeStageProposal]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
     try:
@@ -1228,7 +1354,7 @@ def _runtime_stage_result_format(
         )
     return create_model(
         f"{stage_id.value.title()}RuntimeStageResult",
-        __base__=RuntimeStageResult,
+        __base__=RuntimeStageProposal,
         **fields,
     )
 
@@ -1236,7 +1362,7 @@ def _runtime_stage_result_format(
 def runtime_stage_result_format(
     stage_id: WorkflowStage,
     workflow_control: RuntimeWorkflowControlView | None = None,
-) -> type[RuntimeStageResult]:
+) -> type[RuntimeStageProposal]:
     """Return a stage and, when available, current-control constrained format."""
 
     if workflow_control is None:

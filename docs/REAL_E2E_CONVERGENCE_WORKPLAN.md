@@ -1,5 +1,1067 @@
 # Real E2E Convergence Workplan
 
+## 2026-10-13 — P8 ordinary-user Native task completed after two root fixes
+
+The user authorized root-cause repair and continued validation against the
+previously selected PBMC3k task. The preserved run-06 evidence showed 13
+identical `INVALID_OUTPUT_DECLARATION` failures after feedback. The host had no
+convergence rule for that current, non-retryable execution constraint. The fix
+re-runs the canonical validator first, then stops only when the same queryable-
+output constraint is still unchanged after delivered feedback. It does not add
+an output, alter a program, choose parameters, or convert failure to success.
+The same review fixed a stale-state bug in `artifact_list`: the current
+authorized list is now read before an unchanged result may stop the phase.
+
+Tests then exposed that `max_capability_turns=16` was implemented as 20 turns.
+After making the bound exact, fresh run
+`9e4696aa-dc31-476b-8a2f-e3a94ab925fb` produced successful execution evidence
+but revealed the deeper boundary error: a successful final allowed tool batch
+was followed by an attempted 17th provider reservation and failed as
+`BUDGET_EXCEEDED`. The independently designed Native loop now terminates that
+completed boundary as `PROVIDER_TURN_LIMIT`, retains every completed tool item,
+and invokes the separate typed finalizer. It neither adds budget nor treats the
+evidence as a scientific conclusion. Run 07 is preserved as a failed,
+unrecoverable `VALIDATE / STAGE_IN_FLIGHT` lineage and was not resumed.
+
+Fresh run `5cc1c236-a9fc-41c1-8991-af746919b29a` then completed the same user
+request under the repaired source:
+
+- input SHA-256 remained
+  `14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`;
+- the Agent chose and authored its own method, program, parameters, execution
+  revisions, interpretation, and report; Codex supplied none of them;
+- selected execution `c6c8d2bb-0692-466c-85b4-19db4c8b1f91` exited 0 and
+  registered selected DERIVED output
+  `eae74b44-6b44-42db-a2a2-271d754ba0e0`;
+- EXECUTE used exactly 16/16 provider turns and completed with
+  `PROVIDER_TURN_LIMIT`; VALIDATE, INTERPRET, REPORT, and LEARN then completed;
+- the run is `COMPLETED / LEARN / STABLE`, version 42, with no inflight
+  operation, issue code, writer lock, or remaining container;
+- delivery selected only the successful execution output and retained the
+  earlier successful output under history. `overview_summary.json` has 38
+  bounded records and SHA-256
+  `433865ebd8a4c1acc7d9de8cc3415f2d9e68a43d818cbfcfe9790f6bc11e29b2`;
+- Agent-authored `REPORT.md` is 2,990 bytes with SHA-256
+  `b9638d62bd3d5d7a0d26142e705083f35965aad902224f229915c9433b8541d2`.
+
+Focused runtime/tool/kernel coverage and the complete deterministic suite pass:
+**1338 passed, 10 intentionally skipped**; `git diff --check` passes. The
+ordinary-user execution, governed Agent review/interpretation, final report,
+delivery, and owned-resource cleanup levels are complete for this one bounded
+descriptive task. This is not an independent external scientific peer review
+or a general reliability claim.
+
+Production is unchanged at sealed P5 release
+`native-p5-20261012T043811Z`; its manifest SHA-256 remains
+`bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`.
+The repaired source has not been packaged into an immutable P8 release,
+rollback-rehearsed, deployed, or activated. No profile or Skill was activated
+or promoted. The unique continuation is review and authorization for the P8
+immutable release/rollback scope; production activation remains a separate
+explicit decision.
+
+## 2026-10-12 — Native Kernel P8 partially complete; awaiting user bioinformatics input
+
+The user explicitly authorized P8. Validation has completed through the generic
+provider, collaboration, interruption/recovery, and real Docker layers without
+activating or changing production:
+
+- a Native single-Agent call used `mimo-v2.6-pro`, completed in one provider
+  turn, and returned the exact generic validation marker; kernel run
+  `fd6ef3aa-0bf8-4f34-bbb9-fbd6edfd74f2` terminated with
+  `MODEL_COMPLETED`;
+- a generic Native Leader inspected two visible Specialists and the model
+  selected `verifier` for declared `verification` ownership. Kernel run
+  `879e852b-8fa8-4215-b573-121b40407dca` created child invocation
+  `13232696-1f64-43be-9154-7c967a1e8efb`, one successful task and one
+  successful delegation over four provider turns and two structural tool
+  calls. The runtime did not select the Specialist for the model;
+- a one-stage application run was interrupted only after its real-provider
+  capability checkpoint was durable. Run
+  `1d8da410-e94e-4414-8f95-79c4b01a53f4` persisted `STAGE_IN_FLIGHT` with
+  two provider turns and one completed capability, then a new application
+  instance reconciled it as `FINALIZE_ONLY`. Recovery did not replay the
+  capability and ended `COMPLETED` / `STABLE`. Its retained local evidence is
+  under `WYC/result/p8-interruption-recovery-20261012-01`;
+- the opt-in file-limit suite executed four real containers against immutable
+  image `sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb`.
+  The first run exposed a stale test expectation: directly submitted output
+  with no persisted Agent-selected execution was correctly exported under
+  `historical_outputs`, not `outputs`. Only that integration assertion was
+  corrected; the delivery contract was not weakened. The original and adjacent
+  success, per-file-limit, total-collection-limit, isolation and cleanup cases
+  then passed **4/4**;
+- the complete deterministic suite still passed **1326 tests, 10 skipped**;
+  `git diff --check` passed. No Docker container, execution workspace, writer,
+  lease, or LabBio process remained. The older unrelated September `git push`
+  process trees were observed and left untouched.
+
+P8 is not complete. The user has not selected a biological input or supplied
+the ordinary-user scientific question for this acceptance run. Codex must not
+choose either on the user's or Agent's behalf. Therefore no fresh
+bioinformatics analysis, governed scientific/claim review, final-report export,
+immutable P8 release, rollback rehearsal, deployment, production activation,
+profile activation, or Skill promotion has occurred. The unique continuation
+is for the user to provide the input file path and natural-language scientific
+task; the Agent must then choose methods, tools, parameters and program.
+
+Production remains the unchanged sealed P5 CLI release
+`native-p5-20261012T043811Z`, with `RELEASE_SHA256SUMS` SHA-256
+`bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`.
+Production activation of a future P8 release still requires separate explicit
+authorization.
+
+## 2026-10-12 — Native Kernel P7 complete; Pantheon removed from active source
+
+The user explicitly authorized P7. Active LabBio source now has one runtime:
+the independently implemented Native Kernel. The legacy adapters, backend
+selection branch, Pantheon `ToolSet` inheritance/decorators, temporary
+dependency constraint, and Pantheon-only tests were removed. Governed
+capability operations remain LabBio-owned host code behind strict native
+argument models and dispatch; no Pantheon source was copied, vendored, renamed,
+or wrapped as the replacement kernel.
+
+The provider adapter now uses the declared direct `httpx` dependency. Generated
+`build/`, wheel metadata, and `egg-info` were rebuilt from current source. The
+wheel SHA-256 is `d9b508ada373c29c4f2df7f29f7778ff76bf7caf46208fb1167098ef46699fa6`;
+its metadata and archive members contain no Pantheon dependency or adapter.
+The two legacy implementation inventories are archived under
+`docs/archive/pantheon/` as provenance, not active architecture.
+
+P7 evidence:
+
+- active source has no Pantheon identifier and source/tests have no Pantheon
+  import; the remaining test strings are only negative removal assertions;
+- the complete deterministic suite passed **1326 tests, 10 skipped**;
+- a newly created Python 3.11 Conda environment installed the wheel and all
+  declared dependencies without Pantheon; `pip check` passed and
+  `find_spec("pantheon")` returned `None`;
+- the installed module resolved inside that clean environment, CLI help passed,
+  and installed-wheel `status` plus `export` succeeded against a created,
+  provider-free persisted run;
+- an explicit legacy runtime revision was rejected with
+  `RUNTIME_REVISION_MISMATCH`; no backend switch or fallback exists.
+
+The initial clean-environment attempt against the server's default Anaconda
+channels stopped because their ToS was not accepted. No global acceptance was
+changed; the environment was created through explicit conda-forge instead.
+An intermediate persisted fixture then correctly reported
+`RUNTIME_REVISION_MISMATCH` after a package-source whitespace cleanup changed
+the content fingerprint; the final wheel was reinstalled and a fresh fixture
+passed `status` and `export`.
+
+P7 did not deploy or activate the new source. Production remains the sealed P5
+CLI release `native-p5-20261012T043811Z`; its `RELEASE_SHA256SUMS` SHA-256 is
+`bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`.
+That historical release still contains the temporary legacy wheel but defaults
+to Native. No real-provider application task, Docker task, bioinformatics
+analysis, scientific review, final-report acceptance, profile activation, or
+Skill promotion occurred. The only continuation is user review and separate
+authorization for P8.
+
+## 2026-10-12 — Native Kernel P6 complete; P5 CLI release deployed
+
+The user explicitly authorized deployment and P6. The current source exposes a
+local CLI, not the API/worker/PostgreSQL/Redis service surface found in an older
+read-only backup. Reintroducing that removed stack would have deployed a
+different architecture, so the authorized deployment was bounded to the actual
+current product surface.
+
+The immutable active release is:
+
+- root: `/media/desk16/iy1982/WYC/LabBioAgentOS-production`;
+- current: `releases/native-p5-20261012T043811Z`;
+- release manifest SHA-256:
+  `bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`;
+- LabBio source base: `9608bc1887f97683f14c1a39ac7068352a4958e7`, with the
+  reviewed P0-P5 working-tree snapshot packaged into its own wheel;
+- temporary legacy dependency: clean Pantheon commit
+  `07675c45b538f7d27b9b16b1b7d8b72f37365293`, packaged as a separate wheel;
+- runtime revision under the existing external local configuration:
+  `local-19114eb0bb0c506fa7c3067735c511110c130c72ccf790bfd8d86ad078327a6c`.
+
+The release tree is read-only and `current` is one relative symlink. Manifest
+verification, exact release-local LabBio and Pantheon module loading, CLI help,
+application default, local configuration default, and runtime manifest all
+passed. The server's external runtime configuration is also explicitly pinned
+to `runtime_backend = "native"` without changing the runtime revision. The
+backend checks resolve to `native`; no Pantheon source is
+vendored into the Native Kernel and no fallback is present. This deployment has
+no resident service because the current product has no server entrypoint.
+
+P6 added an explicit differential suite. The two backends receive separate
+synthetic run identities and Artifact roots. The suite compares canonical tool
+schema constraints, scripted call/feedback/effect shape, provider-turn
+observations, strict invalid-JSON rejection, authority/evidence classification,
+model-selected delegation graph and child isolation. It also proves both
+directions of cross-backend recovery fail with `RUNTIME_REVISION_MISMATCH`,
+while rollback creates a distinct fresh legacy run. Provider-specific prefixes,
+timestamps, prose and private object formats are not forced to match.
+
+P6 evidence:
+
+- the focused new differential/configuration suite passed **19 tests**;
+- the focused comparison against the active release packages passed **8 tests**
+  with 11 deselected;
+- the complete deterministic suite passed **1698 tests, 34 skipped**, with the
+  one existing Uvicorn dependency warning, in 33.79 s;
+- `git diff --check` and the sealed release manifest pass;
+- no effectful shared-state A/B task, provider live task, Docker analysis,
+  profile activation or Skill promotion occurred.
+
+P6 is complete at scripted/transcript and deterministic-integration level. It
+does not remove the Pantheon package or legacy adapters; that is P7. It also
+does not constitute real-provider application, real Docker, bioinformatics,
+statistical, biological, final-report or always-on service acceptance. The only
+continuation is user review and explicit authorization for P7.
+
+## 2026-10-12 — Native Kernel P5 complete; native is the new-run default
+
+The user explicitly authorized P5 and added one binding condition: after P5
+debugging, new application runs must default to LabBio's own Native Kernel.
+That condition is now implemented. `ApplicationRuntimeConfiguration` and local
+configuration default to `runtime_backend = "native"`; `pantheon` remains only
+an explicit temporary backend for a fresh rollback run. There is no native-to-
+Pantheon fallback. Backend identity is included in the content-derived runtime
+revision, so a persisted run cannot be recovered through a differently selected
+backend.
+
+`NativeKernelStageInvoker` now implements the existing `StageRuntimeInvoker`
+port. It binds the current stage input, full external Agent instructions,
+per-Agent governed tool registries, actor-attributed evidence, Native
+Leader-Specialist collaboration, existing Skill/execution/report grounding
+schemas, and a separate tool-free typed finalizer. `FINALIZE_ONLY` consumes the
+persisted capability checkpoint and does not recreate the tool loop. Invalid
+native structured output is rejected before any stage result or transition is
+accepted.
+
+The application runtime no longer constructs a Pantheon factory on the native
+path. Skill curation uses a backend-neutral typed model-invocation port and the
+Native finalizer rather than constructing Pantheon Agents. Runtime manifests
+record backend and contract version plus content digests for the Native Kernel,
+provider adapter, native tool schemas, and effective team/profile. Legacy
+adapter tests now select `pantheon` explicitly rather than relying on an
+implicit default.
+
+P5 acceptance evidence with Python 3.11.16:
+
+- a complete nine-stage fake-provider `WorkflowRun` completed through the
+  Native application path;
+- malformed Native output exhausted its bounded correction and left both
+  accepted workflow-stage history and runtime-result history empty;
+- a real governed `artifact_list` capability produced bound evidence, followed
+  by Native typed finalization; a subsequent recovered finalization did not
+  replay the capability;
+- a native-created durable run was rejected with
+  `RUNTIME_REVISION_MISMATCH` when reopened under explicit `pantheon`;
+- the complete deterministic suite passed: **1693 passed, 34 skipped**, with
+  the same one existing Uvicorn dependency warning, in 33.51 s;
+- the accidental 88 KiB temporary `uv` environment created during diagnosis
+  was moved out of the workspace to
+  `/tmp/labbioagentos-p5-accidental-venv-20261012`.
+
+This is source, deterministic integration, and fake-provider application
+acceptance. P5 did not remove `pantheon-agents`, delete the legacy adapters,
+complete P6 differential acceptance, run a real-provider application workflow,
+run Docker or a real bioinformatics task, perform statistical/scientific review,
+deploy, activate a release/profile, or promote a Skill. No production deployment
+was authorized or modified. The bounded server check found no
+`LabBioAgentOS-production/current`, LabBio container, or LabBio API/worker
+process, so there is no production version or service health to report from this
+workspace. The unique continuation is user review and explicit authorization
+for P6.
+
+## 2026-10-12 — Native Kernel P4 complete; stopped before application wiring
+
+The user explicitly authorized Native Kernel P4. LabBio now has independently
+designed dynamic Leader-Specialist collaboration over the P3 loop: exact trusted
+Agent/profile/provider registration, unranked discovery, model-selected
+delegation, a bounded task board, isolated child invocations, shared root
+budgets and interruption, typed child outcomes, and one actor-attributed team
+timeline. No Pantheon collaboration implementation was copied, wrapped or used
+as the new runtime.
+
+`list_specialists` returns configured Specialist metadata in trusted order and
+does not rank or select. `delegate` validates the target, ancestry, output
+ownership, actual foreground tool identity, remaining task/delegation/depth
+budget and interruption before creating child state. Each child sees its full
+external profile instructions and only its current assignment; parent and
+sibling histories are absent. Nested child loops share the exact provider
+binding, absolute deadline, budget ledger and interrupt token.
+
+The task board records legal READY/RUNNING/terminal transitions. Team events are
+globally resequenced while retaining invocation, task, tool and actor identity.
+Child model text is explicitly `AGENT_PROSE`, never evidence. Tool-derived
+evidence references remain separate, and an oversized child envelope is turned
+into a typed failed delegation/task before parent transport. Failed children,
+invalid targets and exhausted bounds do not become successful evidence.
+
+P4 acceptance evidence with Python 3.11.16:
+
+- P4 collaboration tests: **10 passed**;
+- complete Native Kernel plus implementation-independent behavior contracts:
+  **136 passed**;
+- full deterministic suite: **1689 passed, 34 skipped**, with the same one
+  existing Uvicorn dependency warning, in 37.40 s;
+- current-code generic live: the Leader first called `list_specialists`, saw
+  `text_transformer` and `character_counter`, selected `text_transformer`, made
+  one successful delegation, completed one task, and returned a final response;
+  four provider turns, two tool calls and 19 ordered timeline events were
+  recorded;
+- live child output remained `AGENT_PROSE` with zero evidence references. The
+  host performed no request-text inspection or Specialist selection;
+- source/boundary scans and `git diff --check` are part of final closeout.
+
+The architecture skill kept core runtime, governed tools and external behavior
+separate. P4 accepts complete arbitrary external `AgentProfile` instructions
+but contains no scientific role, domain method, preset or routing rule. Wiring
+the existing application profiles and full Skill loading behavior belongs to
+P5, not this phase.
+
+The application default remains the explicit Pantheon legacy backend and
+`pantheon-agents` remains installed and declared. P4 did not connect native
+collaboration to `StageRuntimeInvoker`, switch backend, remove the dependency,
+run application-level generic/data/Docker/statistical/final-report acceptance,
+release, deploy, activate profiles, or promote Skills. No persistent live
+resource or sandbox was created by the generic protocol task. The only
+continuation is user review and explicit P5 authorization. Read-only closeout
+found both expected production `current` pointers absent, no running Docker
+container, and no LabBio API/worker/Redis process. Production release and health
+therefore remain `NOT VERIFIED`. The same two pre-existing 2026-09-12 orphaned
+git-push process trees were not touched.
+
+## 2026-10-12 — Native Kernel P3 complete; stopped before collaboration
+
+The user explicitly authorized Native Kernel P3. LabBio now has an independently
+designed single-Agent runtime rather than a copied, renamed or wrapped Pantheon
+loop: one exact-binding OpenAI-compatible Chat adapter, strict public message and
+tool-call transport, canonical tool replay, foreground execution, paired
+feedback, provider-turn observations, explicit convergence/budget termination,
+and a separate tool-free typed finalizer.
+
+Provider, model, endpoint, transport and thinking mode stay frozen. The adapter
+does one request without retry or fallback, treats absent usage as unknown,
+rejects malformed responses, and keeps compatible-provider private reasoning
+only in invocation-local memory tied to the exact canonical tool-call sequence.
+The loop records the received provider observation before a later token,
+wall-time or evidence budget failure, validates each complete tool batch before
+effects, and preserves completed tool results and safe events. Finalization
+accepts one strict duplicate-free JSON object under the requested schema and
+allows only a bounded generic format correction with no tools or invalid-content
+replay.
+
+P3 acceptance evidence with Python 3.11.16:
+
+- focused native Agent-loop/provider plus dual-backend behavior contracts:
+  **89 passed**;
+- all nine portable Pantheon-derived behavior groups pass through the native
+  contract backend: **35 passed**, with 36 non-native cases deselected;
+- full deterministic suite: **1679 passed, 34 skipped**, with the same one
+  existing Uvicorn dependency warning, in 38.31 s;
+- current-code real-provider protocol smoke: `mimo-v2.6-pro`, two provider
+  turns, one synthetic `echo(PING)` call, one effect, one paired result, two
+  observations, non-empty final content, termination `MODEL_COMPLETED`;
+- source scans found no Pantheon identifier or selected domain/routing term in
+  the kernel; `git diff --check` and the bounded whitespace scan passed.
+
+The live protocol work retained its failed attempts. The first basic response
+returned explicit `tool_calls: null`; the first tool turn returned empty
+assistant content alongside a valid call. Both initially failed closed. P3 then
+added only those narrow wire normalizations and deterministic regressions, and
+reran the final synthetic tool loop successfully. No scientific method, data,
+parameter or interpretation was selected by Codex or encoded in the kernel.
+
+The application default remains the explicit Pantheon legacy backend and
+`pantheon-agents` remains installed and declared. P3 did not implement native
+Leader-Specialist collaboration, wire the loop behind the application runtime,
+switch backend, remove the dependency, run application-level generic live,
+real bioinformatics, Docker, statistical/biological review or final-report
+acceptance, release, deploy, activate profiles, or promote Skills. The only
+continuation is user review and explicit P4 authorization. No persistent live
+resource or sandbox was created by the synthetic protocol smoke. Read-only
+closeout found both expected production `current` pointers absent, no running
+Docker container, and no LabBio API/worker/Redis process. Production release
+and health therefore remain `NOT VERIFIED`. The same two pre-existing
+2026-09-12 orphaned git-push process trees were not touched.
+
+## 2026-10-12 — Native Kernel P2 complete; stopped before Agent loop
+
+The user explicitly authorized Native Kernel P2. LabBio now has an independently
+designed native tool boundary rather than a copied, renamed or wrapped Pantheon
+`ToolSet`: ordered `ToolSpec`/`ToolRegistry`, strict JSON-object transport,
+Pydantic-derived inline schemas, canonical argument replay, complete-batch
+validation, deterministic foreground dispatch, and one complete non-truncating
+model-visible result projector.
+
+The 19 existing LabBio capabilities register through strict native argument
+models and a host-owned operation protocol. Trusted stage allowlists, actor
+identity and information authority are bound outside provider arguments. The
+existing ceiling/authority catalog is shared by the legacy and native paths;
+item-level success/failure evidence preserves its authority and attribution.
+Malformed JSON, duplicate keys, non-finite values, arrays/scalars, invalid
+resource identities, schema violations, denied tools, incomplete responses and
+unsafe host results fail before effects or before model/evidence transport as
+appropriate. Unknown exception text is not returned.
+
+P2 acceptance evidence with Python 3.11.16:
+
+- native tool-layer tests: **20 passed**;
+- Native Kernel plus P0 kernel-contract tests: **73 passed**;
+- selected legacy runtime/authority regressions: **108 passed**;
+- full deterministic suite: **1626 passed, 34 skipped**, with the same one
+  existing Uvicorn dependency warning, in 37.51 s;
+- source scan: no Pantheon import/identifier or selected domain/routing terms in
+  `src/labbioagentos/kernel/`, and no Pantheon import in the native LabBio tool
+  binding or neutral capability catalog;
+- `git diff --check` passed for the P2 source and tests.
+
+The application default remains the explicit Pantheon legacy backend and
+`pantheon-agents` remains installed and declared. P2 did not implement or wire a
+native provider/Agent loop, switch backend, remove the dependency, run live
+provider/Docker/data work, release, deploy, activate profiles, or promote
+Skills. No live resource was created. The only continuation is user review and
+explicit P3 authorization for the native single-Agent provider loop.
+Read-only closeout found both expected production `current` pointers absent,
+no LabBio API/worker/Redis process and no running Docker container, so the
+production release and health remain `NOT VERIFIED`. The unrelated repair API
+and the same two pre-existing 2026-09-12 orphaned git-push process trees were
+not touched.
+
+## 2026-10-12 — Native Kernel P1 complete; stopped before tool migration
+
+The user explicitly authorized Native Kernel P1. A new LabBio-owned production
+package at `src/labbioagentos/kernel/` now defines backend-neutral provider,
+tool, Agent, team, delegation, task, state, budget, interrupt, and event
+contracts plus a deterministic `FakeProvider`. This is an independent contract
+design based on LabBio's required observable semantics; it does not vendor,
+rename, translate, wrap, or monkey-patch Pantheon runtime source.
+
+The contracts freeze provider/model/endpoint/transport/thinking identity,
+preserve missing token usage as unknown, keep root and child correlation
+identities distinct, reject self/ancestor/repeated-chain delegation, validate
+task ownership/dependency acyclicity and legal transitions, reserve all budget
+dimensions atomically, preserve the first explicit interrupt, and structurally
+exclude tools/delegation from finalization mode. Team discovery order is trusted
+configuration order; the framework contains no ranking or automatic specialist
+selection. Safe events expose only typed identities, status/reason codes,
+numeric facts, and references rather than arbitrary provider bodies or private
+reasoning.
+
+P1 acceptance evidence with Python 3.11.16:
+
+- `tests/native_kernel`: **17 passed**;
+- P1 contracts plus P0 kernel behavior contracts and existing stage-port
+  regressions: **87 passed**;
+- full deterministic suite: **1606 passed, 34 skipped**, with the same one
+  existing Uvicorn dependency warning, in 36.92 s;
+- source scan: no Pantheon import/identifier, selected domain vocabulary, or
+  routing heuristic in `src/labbioagentos/kernel/`.
+
+`StageRuntimeInvoker` remains the outer port. The application default remains
+the explicit Pantheon legacy backend and `pantheon-agents` remains installed and
+declared. P1 did not implement native capability dispatch, a production Agent
+loop/provider adapter, backend selection, dependency removal, live provider or
+Docker/data work, release, deployment, profile activation, or Skill/Gold
+promotion. Production release/services/database/queue/health remain
+`NOT VERIFIED`; no live resource was created and no cleanup was required.
+Read-only closeout again found both expected production `current` pointers
+absent, no running Docker container, and no LabBio API/worker/Redis process.
+The same two pre-existing 2026-09-12 orphaned `git push` process trees target a
+different historical branch; P1 did not launch, terminate, or infer an outcome
+from them.
+
+The only continuation is user review and explicit P2 authorization. P2 is the
+bounded native ToolSpec/ToolRegistry, strict argument transport, governed
+capability dispatch, and authoritative model-visible result projector phase.
+Do not switch the default backend or begin later migration/live gates as part of
+P2.
+
+## 2026-10-10 — Native Kernel P0 complete; stopped for review
+
+The user authorized Native Kernel P0, distinct from the superseded Pantheon
+roadmap's historical “Phase 0”. P0 reconciled architecture authority, froze the
+exact dirty behavior candidate, added implementation-independent legacy
+behavior contracts, and stopped before P1. Branch remains
+`fix/gold-approval-handoff` at full HEAD
+`9608bc1887f97683f14c1a39ac7068352a4958e7`; no commit, push, rebase, cleanup,
+release, or deployment was performed.
+
+The pre-P0 tree had 37 tracked modifications and 16 untracked paths. Exact
+content/diff fingerprints, dependency identities, cluster ownership, and
+limitations are in [the P0 baseline](NATIVE_KERNEL_P0_BASELINE.md). Existing
+Gold, checkpoint, finalization, query-convergence, and execution-feedback work
+was preserved. The unrelated example model change to `mimo-v2.6-pro` remains
+unowned and was neither approved nor reverted.
+
+Authority now distinguishes current legacy implementation from approved target:
+`AGENTS.md`, `ARCHITECTURE.md`, `LABBIO_ARCHITECTURE.md`, `OPEN_DECISIONS.md`,
+and `NATIVE_KERNEL_MIGRATION_PLAN.md` retain WorkflowEngine/governance/
+Artifact/Docker/RunState/RunTrace/Gold/Memory while replacing only the in-stage
+provider, Agent, tool, team, and finalizer runtime. Older Pantheon roadmaps and
+integration documents are marked as historical or current-wiring evidence.
+One run has one frozen backend; native failure has no Pantheon fallback, and a
+Pantheon-era run cannot continue on native.
+
+The baseline audit found one public feedback contradiction: an
+`ExecutionRevisionError` told the Agent to use `execution_submit` even though
+`execution_revise.input_artifact_ids` now explicitly replaces inputs. The safe
+message and its focused regression now state replacement, empty-clear, and
+authorization semantics. An initially misplaced assertion failed against the
+different hash-mismatch error and was moved to the real revision-error path;
+that attempt is recorded rather than hidden.
+
+`tests/kernel_contracts/` now has 35 shared backend-neutral cases plus one
+legacy-only characterization. Shared test modules use neutral DTO/Protocol
+interfaces; Pantheon package imports exist only in the legacy adapter. The nine
+fork behavior groups cover provider-turn/no-progress observation, primitive and
+nested schemas, canonical history, reasoning redaction, immutable thinking
+transport, strict tool-call integrity, structured observation, foreground
+dispatch, and private-reasoning isolation. Pantheon's hidden “three idle turns
+then silent normal return” is recorded only as legacy behavior: native parity
+must instead use explicit budgets and observable typed termination.
+
+Final deterministic evidence with the project Python 3.11.16 interpreter:
+
+- contracts plus the focused feedback regression: **37 passed**, one existing
+  Uvicorn dependency warning;
+- full suite: **1589 passed, 34 skipped**, the same single warning, in 37.22 s;
+- `git diff --check`: PASS.
+
+This is source/contract evidence only. The active backend remains Pantheon
+0.6.4 from the clean sibling fork revision
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`; `pantheon-agents` remains a
+dependency and the application default was not switched. Legacy runs and
+persistent state were not resumed or modified. Active provider/model and image
+identity are `NOT VERIFIED`; no active runtime manifest was generated.
+Production release, services, database, queue, and health remain `NOT VERIFIED`.
+
+No provider, data, Docker execution, generic live task, real bioinformatics
+task, statistical/biological review, final-report run, profile activation,
+Skill/Gold promotion, release, deployment, or production mutation occurred. No
+container or live resource was created, so no P0 resource cleanup was required.
+Two pre-existing orphaned `git push` process trees from 2026-09-12 target a
+different historical branch; P0 did not launch, terminate, or infer the remote
+outcome of those user-owned processes.
+P1 production kernel code has not started. The only continuation is user review
+and explicit P1 authorization; do not auto-continue.
+
+## 2026-09-21 — Query convergence and checkpoint revisions; source-only verified
+
+User authorized code changes and passing non-live tests, explicitly no data run.
+See [implementation, evidence and limits](ERROR_CONVERGENCE_CHECKPOINT_REUSE_20260921.md).
+Work remains on `fix/gold-approval-handoff`, HEAD
+`9608bc1887f97683f14c1a39ac7068352a4958e7`, with existing uncommitted work preserved.
+
+- Repeated non-retryable artifact queries after delivered feedback now stop the
+  actual capability loop through Pantheon's existing callback. Current policy
+  is rechecked; legal corrections work. Both failed calls and their relation
+  reach the ordinary tool-free finalizer; no successful result is synthesized.
+- Explicit revision input/parameter overrides permit reuse of registered
+  same-live-run intermediates without resending a whole program. A test exposed
+  the non-zero-exit early return before collection; declared outputs now undergo
+  the same collector checks before the failed receipt is returned. No automatic
+  checkpoint choice, scientific correction, memory resume or success upgrade.
+- Optional bounded execution review records the Agent's public decision with
+  real feedback/approved-accessed Gold references, separate from execution
+  evidence as MODEL_CONTEXT. The builtin profile describes its use; legacy
+  callers remain compatible. No existing Gold or pinned benchmark profile edit.
+
+Verification: 20 new non-live cases; targeted regression 240 passed. Final
+`python -m pytest`: **1553 passed, 34 skipped, one existing Uvicorn warning**
+(38.23 s). Updated one exact execution-schema field assertion for the optional
+review parameter. Real provider/Docker/data tests remained disabled/skipped;
+new execution fixtures use tiny synthetic files and a fake runner. Full suite
+includes existing security, grounding, lineage and stage-handoff regressions.
+
+Source only: no release/deployment, live service restart, profile activation,
+Gold promotion, commit/push or benchmark state change. Production health and
+real scientific/report completion were not re-accepted in this checkpoint.
+Pantheon, Docker service/images, Codex tunnel and global network settings remain
+untouched. Earlier C is still supervisor-stopped, not completed and not better
+than B by these unit tests. No A/B rerun or data/result cleanup was performed.
+
+Next unique entry is the linked source-only note. Any fresh data/provider test
+or activation awaits user authorization; do not automatically resume old C.
+
+## 2026-09-21 — Authorized fresh C feedback retest; B retained
+
+User authorized testing the deferred improvements and another C, aiming to
+improve over B. A favorable result is not assumed. Targeted tests 51 passed;
+full regression 1533 passed / 34 skipped / one existing Uvicorn warning, after
+updating six stale exact capability-list assertions. Benchmark adapter 6 passed.
+No further production behavior change; no live claim from unit tests alone.
+
+Fresh C `3960b7c0-8e03-4de9-ac2a-2670bdac4f71`, directory
+`projects/test/TEST1/projects/GOLDDEMO/runs/benchmark-C-feedback-20260921`, runs
+with explicit `projects/DEMO/comparing/protocol/feedback-profile-20260921.json`.
+Common task/input hashes, model, execution limits and 3M-token budget unchanged.
+Source fingerprint `71a0e0aa056b9acf139167fcf0d2c0bdf00c1c743ca65a1bf699d321e05c9da1`.
+Gate 1 proposal `fffba741-acf2-41cc-93d7-75636d322a61` reviewed and approved under
+the user's existing exact Gold-v1 comparison authority. Guidance is ADAPT, not
+scientific acceptance. Original Agent-authored science and all failed calls kept.
+
+Current entry: `projects/DEMO/comparing/C_FEEDBACK_RETEST_20260921.md`.
+Terminal supervision: **STOPPED, not completed, no C-over-B claim**. Gold v1 was
+approved/read/handed to EXECUTE. Seven actual containers (six failed, one succeeded)
+plus one pre-launch rejection; selected execution
+`5b2fc019-c678-42e3-a48e-871b102c6c44` has 12 registered outputs. They were copied
+with hash checks to comparing/results/C-feedback-20260921-checkpoint, not exported
+as a completed workflow. All analysis and revisions were Agent-authored.
+
+Reviewer repeated queries of the same H5AD despite unchanged allowed_view_types=[]:
+trace 479 METADATA, 497 SCHEMA, 557 repeated SCHEMA, 564 TOP_N. It also successfully
+used file_read; no lack of all reading routes is inferred. Supervisor applied the
+predeclared repeated-unchanged-failure stop rule, SIGINT to its exact owned process.
+Capability phase had ended and VALIDATE finalization was in flight at interruption;
+no typed validation result or formal report was observed. This is not proof that
+eventual completion was impossible. In-flight provider usage is unknown.
+
+Observed usage 1,421,657 tokens is a lower bound, not a saving; active time 1963.3 s
+exceeds complete B's 1484.7 s. EXECUTE alone 889,085 tokens vs B 282,728. No biological
+quality comparison. report_check was not reached, so no live benefit claim.
+SQLite remains RUNNING/STAGE_IN_FLIGHT with no writer; read-only reconcile reports
+FINALIZE_ONLY, uncertain_side_effects=false, automatic continuation disabled.
+Do not overwrite persistent state or automatically resume after supervisor stop.
+
+Next entry is the dated failure packet: resolve repeated non-retryable query
+decisions generically; assess the existing finalization checkpoint only with
+subsequent authorization. No blind CSV rerun. Docker/containerd/socket active,
+no remaining test container. No generic non-bio live or scientific replay this turn.
+Baseline B remains `ff188d20-134e-45cd-8239-9251253d66d5`; no B/A rerun or changes.
+This is a changed-source/profile C-only descriptive comparison, not a causal
+Gold ablation. No production deployment, Pantheon edit, commit/push or Gold
+promotion. No additional live retry was launched; source was frozen during live.
+
+## 2026-09-20 — Gold/correction feedback improvements; tests explicitly deferred
+
+User requested implementing the discussed efficiency improvements **without
+testing yet**. Source-only checkpoint; no live run, deployment, approval, Gold
+rewrite/promotion, commit or push. Earlier B/C results are unchanged; C remains
+incomplete. See [scoped change and verification note](GOLD_EFFICIENCY_FEEDBACK_20260920.md).
+
+- Revision draft validation now reports safe field/index/reason details rather
+  than a generic INVALID_REQUEST. Historical rejected parameters remain unknown.
+- Optional report_check checks all citation identities/coverage without prose;
+  report_submit rechecks and returns all problems. No coverage/authority rules
+  weakened, no IDs substituted and no report written by Codex.
+- Selected Gold handoff retains original workflow/applicability/limits/adaptation
+  and an on-demand section catalog when skill_view is available. No-Gold stays
+  isolated; legacy hosts without the reader retain the full projection.
+- Future Agent curation instructions reduce duplicate lessons and distinguish
+  reusable procedure from fresh choices. Existing Gold content stays immutable.
+
+Only AST/JSON syntax and textual diff review performed. New regression cases are
+written but unexecuted; the earlier 1523-pass result is not this change's status.
+No claim of repaired live completion, lower token usage or scientific superiority.
+Unique next entry: the scoped note's pending regressions, after authorization;
+do not automatically restart C or rerun B. No science, environment, retry/turn/
+token limits, Pantheon source or Codex tunnel changes.
+
+## 2026-09-20 — C resource repair verified; C report still incomplete
+
+Current entry: projects/DEMO/comparing/C_RESOURCE_CHECKPOINT.json and
+C_RESOURCE_FEEDBACK.md. User explicitly retained old B; no B/A rerun.
+
+Minimal generic resource-context/receipt/policy-feedback repair passed 1523 tests
+(34 skipped, one existing Uvicorn warning), external adapter 6 passed. Fresh C
+72ebce2d-7802-40a0-9d6f-72600d4b203b used the identical task/config/profile/Gold v1;
+source differs only by the scoped resource repair. Gold approved/read/handed to
+EXECUTE, authorization 1e3a6540-c88e-4419-b666-90ff42908bdf. Agent selected 24 GiB /
+1500 s itself; CPU canonical value 1. No 512 MiB repeat and no automatic resource
+increase. Four container executions: three distinct program failures, then
+53158775-2cfe-40f0-b5d6-3adfd28a6741 succeeded. Agent authored every revision.
+VALIDATE and INTERPRET submitted typed transitions. Nine registered selected
+outputs copied with hash checks to projects/DEMO/comparing/results/C-analysis-checkpoint.
+Its analysis_report.md is program output, not a formal Coordinator report.
+
+REPORT failures: REPORT_EVIDENCE_INCOMPLETE, then ARTIFACT_NOT_FOUND (trace 874).
+Next complete provider response crossed the unchanged 3M token cap: 3,067,960
+observed tokens / 1,905.9 active seconds, no next tool dispatch. External budget
+stop, not provider quota exhaustion. Read-only reconcile: BLOCKED/STAGE_IN_FLIGHT,
+REPORT, no complete capability checkpoint, uncertain_side_effects=true. Database
+was not overwritten; no unsafe continuation, no formal report, no full C closure.
+
+B remains completed at 1,728,599 tokens / 1,484.7 s. Different source and terminal
+boundaries: descriptive comparison only, NO Gold saving or scientific superiority
+claim. C fixed-program replay and separate generic non-bio live were not performed.
+No production deployment, Git push, Profile activation, Gold promotion, image/data
+deletion or service/tunnel changes. All owned processes exited, no leftover test
+container; Docker/containerd/socket active. Local branch fix/gold-approval-handoff.
+
+Next atomic packet: report reference feedback and safe, budgeted continuation from
+existing selected artifacts. Do not blindly rerun CSVs or force-resume C. The
+earlier requirement to rerun B is superseded by the user's explicit C-only choice.
+
+## 2026-09-20 — User-authorized C-only resource feedback repair and retest
+
+User explicitly requested repairing C and rerunning the identical task, retaining
+the completed B without a rerun. This supersedes the earlier matched-fresh-B/C
+requirement below. Compare descriptively and disclose changed C infrastructure;
+do not attribute all differences to Gold. No A rerun is authorized here.
+
+Confirmed failure packet: C fcfe0173-2f70-47d6-a57b-146e6a47e895 launched three
+plans at 1 CPU/512 MiB/300 s and exited 137; no persisted OOM confirmation or exact
+rejected wire resource object. Capability context conflated preflight resources
+with implicit defaults/ceilings; receipt omitted submitted resources and policy
+exceptions collapsed to CAPABILITY_FAILED. Minimal repair adds separate canonical
+submission defaults and actual policy limits, resources in receipts/planned and
+finished trace, and structured exceeded-field/request/limit feedback. It does not
+change defaults, ceilings, resource intent, code, science, Gold, retries or budgets.
+
+Six new regression cases reproduce omission, partial resource intent, all four
+limit rejections, receipt/trace evidence, explicit correction and revision. With
+related tests: 139 passed. Full regression: 1523 passed / 34 skipped / one existing
+Uvicorn warning; external adapter 6 passed. Fresh C is running, identity
+72ebce2d-7802-40a0-9d6f-72600d4b203b, benchmark-C-resource-feedback-20260920.
+Gate 1 proposal 2a9fb604-1464-4a1a-b3e5-be3401213789 reviewed and approved through
+the ordinary API under existing user authorization. Old C state and B delivery
+remain intact. No actual resource-correction or final-analysis success claim yet.
+Details: projects/DEMO/comparing/C_RESOURCE_FEEDBACK.md. No production deployment.
+
+## 2026-09-20 — Restored-quota terminal checkpoint: B complete, A/C stopped
+
+Current entry: projects/DEMO/comparing/QUOTA_RESTORED_CHECKPOINT.json and
+QUOTA_RESTORED_REPORT.md. Full A/B/C comparison NOT accepted; Gold benefit and
+external scientific acceptance NOT established. Earlier sections are history.
+
+- B ff188d20-134e-45cd-8239-9251253d66d5 completed through LEARN with formal
+  report 49f01496-29b0-4a0f-876e-1a56e8b2c568. Final execution
+  5a809f94-9e5c-4b21-8c2b-eb915acdd20c: 14 verified delivery copies under
+  projects/DEMO/comparing/results/B. 1,728,599 tokens / 1,484.7 active seconds.
+  Agent authored all revisions and report. Unchanged-program/image/input replay
+  exited 0: 13 outputs present, 12 byte-identical, entire H5AD byte-identical and
+  110 datasets equal; qc_violin.png differs. This is technical reproducibility,
+  not scientific validation or a Gold comparison.
+- C fcfe0173-2f70-47d6-a57b-146e6a47e895: exact ADAPT proposal
+  7226cc29-83d3-45d1-8dbe-7787c98c46ac reviewed and approved under confirmed user
+  authorization; grant 054f141a-9a9f-471c-a2a5-5ceaa7bc4f3c. New gate subject
+  projection passed live: direct authorized skill_view, no duplicate approval
+  loop, original Gold guidance actually in EXECUTE (GOLD_HANDOFF PASS). Three
+  containers used 1 CPU/512 MiB and exited 137; two additional failures were
+  pre-launch. OOM unconfirmed. Supervisor interrupted after repeated unchanged
+  allocation, not a proven inability to self-correct. At least 572,802 tokens /
+  1,073.8 active seconds. Persistent STAGE_IN_FLIGHT is not overwritten.
+- A quota-restored-20260920-workspace: observed native notebook timeout after
+  1800 seconds, followed by another pending same-notebook update. No analysis
+  delivery or live kernel; owned container stopped at 09:24:16 UTC. 1,109,103
+  observed tokens / 3,038.3 seconds. Stop-induced exit 137 is not OOM evidence.
+  Native source unchanged; environment/tool-confounded, not a valid performance
+  advantage for LabBio.
+
+Minimal decision-subject repair verified: 1517 passed / 34 skipped / one existing
+Uvicorn warning; external adapter 6 passed. No separate generic non-bio live this
+checkpoint. Source remains local on fix/gold-approval-handoff, no commit/push,
+production release/API/worker deployment or Gold promotion. Pantheon fork/native
+trees clean. All owned processes and test containers exited; Docker/containerd/
+socket active. Raw inputs, images, old failure/cost evidence and bind outputs kept.
+
+Next atomic root-cause packet: actual resource request/default/allocation and
+rejection feedback visible to C; separately native notebook/environment execution.
+Do not blindly resume C or change its database; do not silently select scientific
+parameters/resources for it. If new source is needed, freeze matched fresh B/C
+instead of comparing changed C against old B. No further live run this checkpoint.
+
+## 2026-09-20 — Quota restored; exact C approval applied, resumed PLAN stopped
+
+User confirmed quota restoration and C use authorization. Applied gate 1 of
+d94e60f7-b9ff-4f8e-b00a-9d501df0cd53 through the ordinary gate API; authorization
+0cf55600-e1bd-44f5-ab36-7715d121352d was persisted and skill_view succeeded.
+The resumed PLAN nevertheless created another proposal for the same Skill before
+viewing the approved authorization, and returned to gate 2 (proposal
+4897d7d9-e545-4839-af6d-f578f98d5be3). No repeated approval/resume is being applied.
+No C analysis yet. Its evidence and costs remain intact.
+
+Earliest confirmed handoff gap: gate_decisions showed the proposal/authorization
+IDs but not the decided Skill identity/version/mode/deviations, while the earlier
+PLAN was not a prior_result. The bounded decision projection now resolves that
+exact subject from the scoped store without reading guidance, selecting use,
+or creating an authorization. Tool documentation distinguishes an existing grant
+from a new proposal. Unit/adjacent approved/rejected/scope tests pass; fresh live
+validation pending. Environment queries also failed generically; missing request
+arguments are not reconstructed or assigned a guessed cause.
+
+B read-only reconcile_run confirms BLOCKED, uncertain_side_effects=true, no
+completed capability checkpoint. No database reset/replay. A restarted separately
+in quota-restored-20260920-workspace, native headless/proxy-aligned configuration;
+upstream unchanged. Next B/C must use explicit fresh identities and identical
+new source, retaining all interrupted attempt costs. No production deployment.
+
+## 2026-09-20 — Final checkpoint: comparison BLOCKED by provider quota
+
+**Do not rerun live until MiMo quota is restored.** Provider returned HTTP 429
+`quota exhausted` at 06:45 UTC; no further live requests after final A exited.
+User-requested optimization is implemented locally (1515 passed / 34 skipped,
+one existing warning; external benchmark adapter 5 passed), but A/B/C acceptance
+and Gold benefit are NOT established.
+
+- B cbe3879c-f1cb-4cfb-9563-e2fe3d5d4f16, optimized-v4: 625388 observed
+  tokens / 891 s; EXECUTE interrupted after one successful registered execution
+  f56e82c5-1437-4942-b6d4-74e278eee565. Eight byte-verified output copies are
+  under projects/DEMO/comparing/results/B-unreviewed-execution. No completed
+  Reviewer/report workflow; outputs are not a final accepted delivery. B still
+  has query misuse, and did not invoke execution_revise. Recovery inspection
+  returns STAGE_IN_FLIGHT; do not force resume or rewrite persistent status.
+- C d94e60f7-b9ff-4f8e-b00a-9d501df0cd53, optimized-v4: 128159 tokens /
+  294.8 s, WAITING_FOR_USER. Exact gate :gate:1, domain
+  skill-use:3e982fd5-d30d-4480-9c74-18924e8a085a. Approval requested but not
+  received in this checkpoint. No successful skill_view or EXECUTE Gold handoff.
+- Native A final headless-workspace: zero successful provider calls, four wire
+  HTTP 429s. Earlier A attempts were invalid comparisons: inherited download
+  proxy mismatch, then omission of upstream's built-in one-shot/headless flag.
+  Costs and evidence are retained. Final adapter aligns child download proxy
+  to project build_proxy and uses native PANTHEON_HEADLESS=1. Native upstream
+  5d3d459ac5752ed9d39432232d76ad1581296012 remains clean/unmodified.
+
+Unique continuation entry: projects/DEMO/comparing/BLOCKED_CHECKPOINT.json and
+COMPARISON_REPORT.md. Restore provider quota and obtain exact C approval first;
+assess B's safe recovery/fresh-lineage boundary, not blind replay. Failed
+development attempts and diagnostics are explicitly costed; no performance
+advantage is inferred from unequal stopping stages. The external adapter's
+inspect-error overwrite bug is fixed/tested and disclosed in the checkpoint.
+
+All owned live comparison processes exited; Docker test containers cleaned,
+Docker/containerd/socket active, images/raw inputs retained. No global proxy,
+Codex tunnel, Pantheon fork, production API/worker deployment, Gold promotion,
+main change or Git push. Local source edits remain on fix/gold-approval-handoff.
+
+## 2026-09-20 — User-authorized efficient handoff / Gold transfer / fresh A-B-C
+
+Live checkpoint: final C d94e60f7-b9ff-4f8e-b00a-9d501df0cd53 is
+WAITING_FOR_USER at exact gate d94e60f7-b9ff-4f8e-b00a-9d501df0cd53:gate:1,
+domain skill-use:3e982fd5-d30d-4480-9c74-18924e8a085a (CSV Gold v1, ADAPT).
+No C scientific execution yet. User review requested; B optimized-v4 starts
+while C waits, keeping B/C scientific execution sequential. A remains in native
+environment preparation/download retries; its time is confounded by network.
+
+Current source checkpoint: v3 C 1b9634e4-105a-4d47-a164-b2f3ed783602 again
+stopped before analysis in PLAN (one correction exhausted, invalid result UUID).
+No identical retry: model-owned RuntimeStageProposal is now separate from
+persisted RuntimeStageResult with host-issued result_id. Scientific fields,
+actions, identities in references and validators remain unchanged; existing
+stored results retain IDs. Provider schemas reject host-ID injection. Frozen
+PLAN replay passed once in 43 seconds; no diagnostic state applied. Full suite
+1515 passed / 34 skipped. Fresh formal B/C labels optimized-v4-20260920.
+All earlier live failures remain recorded with cost; no Gold benefit yet claimed.
+
+Latest final source: v2 C ab5ec7a5-911f-4ce2-b6d1-72e6f5b91038 stopped in
+PLAN before analysis: result_id uuid_type error (181056 tokens / 206 s). The
+existing one-correction finalization mechanism only covered truncation. It now
+also exposes safe schema field/type errors for complete invalid responses;
+unchanged maximum two attempts, no tools/rewrite/relaxed validation. Frozen live
+PLAN replay reproduced the error and model-corrected it once into the exact
+pending approval gate, without applying workflow state. Full regression:
+1505 passed / 34 skipped. Formal fresh B/C labels now optimized-v3-20260920.
+Earlier attempts below are retained failed preparation history, not final C.
+
+Latest: second pre-analysis C f0ed96e1-8596-4cc7-be80-646d9633df39 stopped
+in PLAN after Gold proposal at the retained-completion length check (111445
+tokens / 243 s, no analysis). Its exact completion was not persisted. The
+handoff now has its own bounded 64000-character field, not the 8000-character
+stage-summary field; no truncation or authority change. Full regression now
+1503 passed, 34 skipped, one existing warning. Fresh B/C directories are
+benchmark-{B,C}-optimized-v2-20260920; each RUNTIME.json is the exact frozen
+source/config manifest. Native A is running, scientific results remain pending.
+Preparation failures remain recorded separately, not silently replaced.
+
+Additional confirmed protocol root before scientific execution: initial fresh C
+92968dd5-439f-4375-bcbb-76226a05a56a generated 64872 characters, 62157 whitespace,
+in one INTAKE schema-constrained FINALIZE response (16384 output tokens / 256 s).
+The existing correction returned, but the owned worker was interrupted before
+science to diagnose this waste. Its STOP.json retains at least 40447 observed
+tokens; in-flight request cost may be unobserved. No replay of its state.
+
+One alternate generic transport was tested: JSON-object generation with the
+exact schema presented and the same native typed parser plus LabBio grounding.
+Frozen protocol-only request passed (816 output tokens / 20 s); real Pantheon
+adapter also passed (36 s), with no tools/state apply. A LabBio Agent subclass
+changes only the wire response representation. Local settings expose explicit
+finalization_json_object (default true); core ModelProfile default remains schema
+mode. No automatic fallback, JSON repair, scientific instruction or Pantheon
+source change. Final regression 1500 passed / 34 skipped; adapter 4 passed.
+The prior B/C run roots used benchmark-{B,C}-optimized-final-20260920 and identical
+JSON-object settings. Frozen manifests: comparing/preflight/{B,C}-final-runtime.json.
+
+User requested clearing comparing, optimizing handoff and revision cost, making
+selected Gold reach the executing model, and improving output-validation feedback
+before repeating A/B/C with more tokens. Previous comparing reports/adapters were
+already absent on inspection; inactive root-owned runtime remnants were moved to
+`.cleanup-quarantine/comparing-20260920.jiiW3w/comparing` (recoverable). Inputs,
+original TEST1 Gold and previous project run evidence remain untouched.
+
+Generic changes: preserve concise capability conclusions as MODEL_CONTEXT for
+finalization; losslessly deduplicate identical evidence bodies on the finalizer
+wire while retaining every call/failure; carry actually approved/read/selected
+Gold guidance and deviations into specialist input; provide explicit hash-bound
+unique source edits via execution_revise with immutable new execution lineage;
+allow explicit same-run registered intermediate inputs; expose original submitted
+output declarations through execution_inspect without copying source/contracts
+into safe capability trace. Current receipts from either execution entry enter
+the same lineage, grounding and artifact projection paths. No automatic edit,
+method choice, scientific program, evidence fabrication or increased per-stage
+turn/workflow-retry limit. Prior uncommitted Gold gate repairs are preserved.
+
+Full regression: 1499 passed, 34 skipped, one existing Uvicorn warning.
+Four comparison adapter tests pass; upstream native echo-tool smoke passes.
+Pantheon fork remains 07675c45b538f7d27b9b16b1b7d8b72f37365293 unchanged; A uses
+an independent upstream 5d3d459ac5752ed9d39432232d76ad1581296012 worktree.
+Budget: 3M total tokens and 10800 active seconds per arm, approval wait excluded.
+C is the explicitly user-requested Gold reference condition, with real gate and
+exact guidance handoff verification; not an unconstrained skill-selection trial.
+B has no Gold service/tools and shares C's other configuration. Previous native
+auxiliary/MCP differences remain disclosed. No positive Gold benefit assumed.
+
+Fresh experiment entry: projects/DEMO/comparing/README.md and
+protocol/labbio_pilot.py; new B/C run directories are
+test/TEST1/projects/GOLDDEMO/runs/benchmark-{B,C}-optimized-v2-20260920.
+Source is frozen during these local runs. Real scientific completion and final
+reports are PENDING. No production API/worker deployment, Git push or new Gold
+promotion. Production current and PRODUCTIONIZATION_DEBUG_GUIDE/ARCHITECTURE.md
+are absent at instructed paths; current source LABBIO_ARCHITECTURE.md is used.
+Docker/containerd/socket remain active. Do not replay old budget-stopped runs.
+
+## 2026-09-20 — Authorized C2 Gold handoff repair and fresh rerun
+
+User authorized repairing the Gold handoff and one fresh C2 using the previously
+curated CSV Gold 1d03636f-617f-4f98-9056-c992bc25d1e7 v1. Original A/B/C records
+remain immutable. This is not a retroactive claim that old C used Gold.
+
+Root failure: the Agent created a real use proposal, then finalized PLAN as
+NO_SUITABLE_RETURNED_CANDIDATE and transitioned without a runtime approval gate.
+Conversation approval alone did not create an authorization. Skill UUIDs passed
+to skill_view also produced a misleading generic SKILL_NOT_FOUND error.
+The generic repair projects pending/resolved proposal identities, validates the
+matching gate, distinguishes missing authorization from missing Skill, and
+requires successful authorized context access before an approved-use PLAN can
+continue. Explicit USE_NOT_PURSUED preserves the optional-use path. No scientific
+procedure, method, analysis program, candidate ranking or automatic approval is
+injected into production. Pantheon and the original Gold remain unchanged.
+
+Full regression: 1490 passed, 34 skipped, one existing Uvicorn warning. Twelve
+external benchmark tests pass, including C2's experiment-only stop check: no
+analysis begins without the exact approved Gold v1 access and matching PLAN
+assessment. Test evidence is not yet a real C2 completion claim.
+
+C2 entry: projects/DEMO/comparing/protocol/c2_pilot.py. It reuses the frozen pilot
+lifecycle/budget adapter, isolates library/environment state under comparing/C2,
+and explicitly relays the user's requested Skill identity without supplying its
+contents or a scientific solution. Ordinary exact runtime gates remain required.
+Input files, profile, model, image and 1M-token/90-minute budget remain the same;
+the repaired runtime and explicit Gold request differ from historical B, so this
+is an exploratory rerun, not a clean causal estimate of Gold benefit.
+
+First C2 attempt 29f1e6e9-eee7-49bb-8a5a-e0abaccbfac6 was correctly stopped in
+PLAN by skill_pending_use_requires_gate, with zero sandbox executions: 109945
+tokens, 668.47 active seconds. The exact rejected action/domain was not retained;
+do not infer it. Deterministic schema audit reproduced the remaining gap: use
+assessment and next action were individually valid but not coupled on the wire.
+A second generic revision represents pending-use PLAN results as a union coupling
+the proposal and its exact approval action, while preserving explicit non-use.
+No model decision is rewritten. New full regression: 1491 passed, 34 skipped.
+An isolated, tool-free live PLAN replay on frozen evidence passed, returning the
+exact request_user_input/domain_reference_id; it was NOT applied to the failed
+run. Replay cost and schema are retained under comparing/C2/gate-protocol-replay.
+Fresh post-fix attempt entry is c2_pilot.py --attempt 2, with separate data and
+costs under comparing/C2/attempt2 and benchmark-C2-v2-pilot-20260920. No prior
+cost or failure is removed, and no causal Gold benefit is claimed.
+
+Fresh run 39f2f849-a8aa-4380-bbd7-b672e98e469e entered its actual USER_GATE.
+After inspecting exact ADAPT proposal 32308e07-b9c1-4865-80ef-f067c18767cb, Codex
+applied the user's explicit requested-use authority via the ordinary gate, not
+direct database edits. Authorization 65d2b0a7-7ae7-406a-9502-5facece71c84 and
+context access 85686aee-b5be-4450-bce7-dd1c4b84dfe5 are persisted; skill_view
+COMPLETED on 2026-09-20 at 04:26:47 UTC. Workflow/execution/debugging guidance was
+returned. Only limitation_preview was truncated, not the full limitations field.
+One duplicate use proposal was correctly rejected after access; the failure is
+retained. Human-readable proof: comparing/C2/attempt2/GOLD_ACCESS_EVIDENCE.md.
+
+Gold admission passed before EXECUTE with the matching Agent-authored PLAN.
+The fresh run then reached its unchanged token budget: 1036374 tokens, 1996.10
+active seconds, 30 provider turns, eight failed execution receipts and zero
+successful ones. Failures included input-axis errors, a missing dependency
+resolved by the Agent's own environment_build, repeated Harmony shape errors,
+then OUTPUT_NOT_FOUND at output index 11. The last program exited 0 and produced
+15 files, but output registration failed; only analysis_summary.json was
+registered as DERIVED. Exact-byte H5AD/figures/program-report copies are labeled
+UNREGISTERED_DEBUG_ONLY (except that registered summary), not a final delivery.
+Technical H5AD X shape is 6309 x 2000, Harmony 6309 x 50; hashes/PNG decoding pass.
+
+No Reviewer, formal REPORT, final workflow completion, scientific acceptance or
+fixed-program replay. Real Gold use is verified; no benefit is established.
+The known Harmony shape warning was present in the received Gold context but
+did not prevent repeated Agent-code errors. Codex supplied no scientific repair.
+The external stop leaves the persisted application RUNNING/EXECUTE/STAGE_IN_FLIGHT;
+its worker has exited and STOP.json forbids automatic resume. RESULT/GATE JSON
+remain historical approval snapshots, not a live waiting request.
+Final entry: projects/DEMO/comparing/C2/COMPARISON_REPORT.md. All earlier attempts
+and engineering costs remain recorded (1157896 total C2-related provider tokens).
+
+Source branch: fix/gold-approval-handoff; not pushed or deployed to production.
+No API/worker release, global proxy/tunnel change, Docker service change or new
+Skill promotion. Local C2 is stopped, no automatic restart. Deterministic/protocol
+checks and real Gold access/handoff complete; analysis workflow and final report
+did not complete. No owned analysis containers remain; Docker/containerd/socket
+are active. Source was exercised locally, not deployed to production.
+
+## 2026-09-20 — GOLDDEMO pilot closed; no Gold benefit established
+
+User authorized the prepared three-arm pilot and local delivery under
+`projects/DEMO/comparing`: frozen native Pantheon / LabBio without Gold / LabBio
+with TEST1 Gold. No scientific programs, annotations or report conclusions are
+supplied by Codex. B/C composition checks prove B has no Gold service and that
+the profile difference is exactly the three Gold capabilities; normal
+clarification, model, input and execution settings match. C uses a database
+backup, not mutations to the original library. Four adapter tests pass.
+
+Both frozen native and LabBio runtime echo-tool smokes pass with explicit Chat
+Completions. Native default Responses and adapter-recording/setup failures are
+preparation evidence, not scientific failures. Native source remains unchanged.
+The user separately accepted disclosure of native auxiliary-parameter and
+optional MCP environment differences; A is an overall system comparison only,
+and Gold benefit is assessed from C versus B. No benefit is presumed.
+
+B pilot started as `d43eec2a-8388-46a8-b963-299839267c5e` under
+`test/TEST1/projects/GOLDDEMO/runs/benchmark-B-pilot-20260920`.
+B stopped at 1,026,874 tokens / 2,579.11 active seconds in EXECUTE. Six failed
+executions and one SUCCEEDED execution (114104fc-7ef0-4dac-9263-49c04bf79c30)
+are preserved. Its 11 registered outputs were exact-byte packaged as
+PARTIAL_NOT_FINAL, not a recovered/completed workflow. File hashes, PNG decoding
+and H5AD/sample-table counts pass read-only technical checks, not science review.
+A stopped at 1,036,629 tokens / 188.77 seconds with only input inspection and
+an environment note. Native source unchanged, owned container/proxy exited.
+C started as 8e090f08-37d5-40ad-819f-697ef0c964c5. User approved exact ADAPT
+proposal 1117ebbf-7863-4dac-95b3-c1671bb0fa8d for CSV Skill v1. However, the
+Agent finalized PLAN with transition, not waiting-for-approval, and entered
+EXECUTE without successful skill_view. No pending gate exists to resume; do not
+inject Gold or mutate a live library to repair the comparison. Record assigned
+versus actual-use status separately (terminal C-assigned / Gold-unused).
+C stopped in INTERPRET at 1,029,527 tokens / 2,091.31 active seconds, after
+successful execution 4d69a960-a4a9-4156-b97e-795618bc4167 and Reviewer validation.
+Three failed executions and 16 failed capability calls remain recorded. Its 11
+outputs were copied with verified hashes and sample/H5AD count checks. Technical
+audit flags overloaded minimum/maximum fields and reused Artifact IDs with
+misleading EXECUTE labels; these were not repaired inside the frozen experiment.
+No arm completed formal REPORT/LEARN. No fixed-program replay was performed
+under the protocol's successful-final-delivery condition. No arm was restarted
+after its budget stop. This closes one pilot per arm, not three successful
+analyses, a positive Gold evaluation, or scientific acceptance.
+
+Results, original Agent code/logs, human-readable evidence index, cost figure
+and bilingual comparison report are under `projects/DEMO/comparing/`.
+All owned analysis processes/containers have exited. Docker, containerd and
+docker.socket remain active. Four benchmark-adapter tests pass with one existing
+Uvicorn warning; core regression was not rerun because no core code changed.
+Source baseline remains 9608bc1887f97683f14c1a39ac7068352a4958e7; only this workplan
+changed inside the source repository. No release/API/worker deployment or new
+profile/skill activation; production API health is not claimed by this local test.
+Original TEST1 Gold has no current-run proposal/authorization/use records; its
+approved procedures match the experiment snapshot modulo frozenset serialization
+order. The isolated snapshot has one current-run proposal and no grants/views/uses.
+The next unique entry is `projects/DEMO/comparing/COMPARISON_REPORT.md`: user review
+and separate authorization for any lifecycle diagnosis/new comparison. Do not
+restart a pilot or retrofit Gold approval/content into a budget-stopped run.
+No production deployment, source-code/Pantheon patch, Gold promotion, global
+proxy/tunnel change or Docker service change. Results stay local, not GitHub.
+
 ## 2026-09-18 — Publication checkpoint
 
 The user authorized publishing all recent repository changes and merging
@@ -5802,3 +6864,38 @@ Pre-publication regression in the correct project: 1396 passed, 34 skipped,
 one existing Uvicorn warning (32.93 s). An initial parent-directory invocation
 collected unrelated backup/deliverable suites and failed collection; it was
 corrected without changing code and is not a project regression result.
+
+### 2026-10-12: P8 Native PBMC3k ordinary-task validation remains incomplete
+
+The user authorized selection of the prior simple input and request. The selected
+file is `BackUp/PRJ1/data/pbmc3k_raw.h5ad` (SHA256
+`14956d64cb4d99765eef0864610a905a13bfefbaba1c1f38e4f520e4a58391e4`), with
+the bounded task: create a short descriptive overview and Chinese report, without
+annotation or complex analysis; method, parameters, tools and program remain
+Agent-owned. Source/runtime work added a safe Native Kernel cause code for
+capability failures, an explicit per-model-phase limit, and a generic
+post-feedback convergence path: identical non-retryable artifact list/query
+requests now finish capability collection and hand existing evidence to the
+finalizer rather than issuing another provider turn. EXECUTE guidance also
+distinguishes queryable analysis evidence from REPORT-owned final submission.
+
+Focused regression for these boundaries passed **51 tests**. Six fresh run roots
+under `/media/desk16/iy1982/WYC/result/p8-native-pbmc-overview-20261012-01`
+through `-06` are preserved. Runs 01--02 exposed missing safe kernel cause
+projection and insufficient phase time; run 03 exhausted capability budget after
+repeated execution/report attempts; run 04 exposed repeated INTAKE list calls;
+run 05 verified pre-EXECUTE convergence but then hit provider transport in
+EXECUTE. Run 06 verified the dynamic convergence callback reaches EXECUTE, but
+the Agent first received `INVALID_OUTPUT_DECLARATION` and then repeatedly
+submitted zero-queryable-output execution drafts without new persisted evidence;
+after 18 tool turns it ended `PROVIDER_TRANSPORT_ERROR`. No successful Docker
+receipt, DERIVED output, submitted report, delivery, biological conclusion or
+scientific acceptance exists. All six persisted states remain fail-closed
+`RUNNING / EXECUTE / STAGE_IN_FLIGHT` (or their earlier stage) with inactive
+writer locks; these are not live workers and must not be resumed.
+
+No production pointer, profile/Skill activation, promotion, release, or report
+export changed in this work. The next unique continuation is a new root-cause
+scope for Agent-visible execution-output-declaration convergence, beginning from
+run 06's exact safe feedback; do not launch another identical PBMC run or have
+Codex author the Agent's program, output declaration, method or report.

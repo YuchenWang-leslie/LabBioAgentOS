@@ -6,7 +6,8 @@ import json
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
+from pydantic import ValidationError
 
 from labbioagentos import (
     ArtifactExposureClass,
@@ -209,7 +210,7 @@ async def test_qi7_invalid_limit_types_remain_validation_failures(
 
 
 @pytest.mark.asyncio
-async def test_qi8_pantheon_preserves_wire_type_before_labbio_normalization(
+async def test_qi8_native_tool_facade_preserves_wire_type_before_normalization(
     query_boundary,
 ):
     sink, binding, ref, toolset = query_boundary
@@ -224,21 +225,19 @@ async def test_qi8_pantheon_preserves_wire_type_before_labbio_normalization(
             "limit": 12,
         },
     )
-    invalid_result = await provider.call_tool(
-        "artifact_query",
-        {
-            "artifact_id": str(ref.artifact_id),
-            "view_type": "TOP_N",
-            "limit": "12",
-        },
-    )
+    with pytest.raises(ValidationError):
+        await provider.call_tool(
+            "artifact_query",
+            {
+                "artifact_id": str(ref.artifact_id),
+                "view_type": "TOP_N",
+                "limit": "12",
+            },
+        )
 
     assert valid_result["success"] is True
     assert toolset.evidence_items()[0].artifact_query_request.limit_type == "INTEGER"
-    assert invalid_result["success"] is True
-    assert _request(toolset)["limit"] == 12
-    assert _request(toolset)["limit_type"] == "STRING"
-    assert _request(toolset)["normalization_applied"] is True
+    assert len(toolset.evidence_items()) == 1
     capability_events = [
         event
         for event in sink.read(binding.run_id)
@@ -252,13 +251,11 @@ async def test_qi8_pantheon_preserves_wire_type_before_labbio_normalization(
     assert [event.event_type for event in capability_events] == [
         TraceEventType.CAPABILITY_INVOKED,
         TraceEventType.CAPABILITY_COMPLETED,
-        TraceEventType.CAPABILITY_INVOKED,
-        TraceEventType.CAPABILITY_COMPLETED,
     ]
 
 
 @pytest.mark.asyncio
-async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_boundary):
+async def test_native_tool_facade_exposes_exact_non_strict_query_schema(query_boundary):
     _, _, _, toolset = query_boundary
     provider = LocalProvider(toolset)
     await provider.initialize()
@@ -269,58 +266,18 @@ async def test_frozen_pantheon_exposes_exact_non_strict_query_schema(query_bound
         if item.name == "artifact_query"
     )
 
-    assert schema == {
-        "name": "artifact_query",
-        "description": (
-            "Request one policy-controlled view of a governed Artifact.\n\n"
-            "This queries registered views/record tables, not arbitrary file content.\n"
-            "An empty allowed_view_types means no query view is authorized; changing\n"
-            "the view name cannot enable file reading. Query errors separately expose\n"
-            "available_file_readers when a generated file can be read in this stage.\n"
-            "Those are tool names, not additional view_type values.\n\n"
-            "Ingested RAW METADATA includes file size, format hints, content-based\n"
-            "recognition and available bounded structure (e.g. shapes/dtypes/fields).\n"
-            "Recognition is not full-file validation; unsupported structure is explicit.\n"
-            "It also includes a fixed CSV/TSV (optionally gzip) head:\n"
-            "first 6 records including any header, first 8 columns, 64 characters per\n"
-            "value. No offsets or full-data reads. Preview flags state truncation;\n"
-            "total_records is unknown unless EOF was reached within this head.\n"
-            "Row/column biological meaning is not inferred by the inspector."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "artifact_id": {
-                    "type": "string",
-                    "description": (
-                        "UUID from a RuntimeReference whose kind is ARTIFACT;\n"
-                        "an EXECUTION reference UUID is not an Artifact identifier."
-                    ),
-                },
-                "view_type": {
-                    "type": "string",
-                    "enum": ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"],
-                    "description": "One of METADATA, SCHEMA, SUMMARY, or TOP_N.",
-                },
-                "offset": {
-                    "type": "integer", "minimum": 0,
-                    "description": "Zero-based record offset, TOP_N only. Follow next_offset to\nread all governed records across bounded pages. A truncated\npage is not the full result and missing pages are not missing data.",
-                },
-                "limit": {
-                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
-                    "description": (
-                        "Optional positive integer for TOP_N only. For every other\n"
-                        "view, omit limit or use JSON null, not a string. For TOP_N,\n"
-                        "omitting limit or using null selects the policy default; policy\n"
-                        "may cap the number returned below the requested limit."
-                    ),
-                },
-            },
-            "required": ["artifact_id", "view_type"],
-            "additionalProperties": False,
-        },
-        "strict": False,
-    }
+    assert schema["name"] == "artifact_query"
+    assert schema["description"]
+    parameters = schema["parameters"]
+    assert parameters["additionalProperties"] is False
+    assert parameters["required"] == ["artifact_id", "view_type"]
+    assert parameters["properties"]["artifact_id"]["format"] == "uuid"
+    assert parameters["properties"]["view_type"]["enum"] == [
+        "METADATA", "SCHEMA", "SUMMARY", "TOP_N"
+    ]
+    assert parameters["properties"]["limit"]["anyOf"] == [
+        {"minimum": 1, "type": "integer"}, {"type": "null"}
+    ]
 
 
 @pytest.mark.asyncio

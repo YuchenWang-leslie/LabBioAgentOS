@@ -4,7 +4,7 @@ from dataclasses import replace
 import json
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import DockerExecutor, LabBioRuntimeToolSet, WorkflowStage
 from labbioagentos.execution.models import ExecutionStatus, ExecutionFailureClass

@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import ArtifactExposureClass, ArtifactReleaseBasis, ArtifactRepresentation, WorkflowStage
 from test_runtime_milestone_b import boundary, _toolset  # noqa: F401

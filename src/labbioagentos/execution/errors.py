@@ -6,6 +6,7 @@ from labbioagentos.artifacts import ArtifactRef
 
 from .models import (
     ExecutionDiagnostic, ExecutionFailureClass, ExecutionIssue, OutputContractFailureCode,
+    ExecutionResourceRejection,
 )
 
 
@@ -35,6 +36,14 @@ class ExecutionOutputDeclarationError(ExecutionPlanRejected):
         )
         self.minimum_queryable_output_count = minimum_queryable_output_count
         self.declared_queryable_output_count = declared_queryable_output_count
+
+
+class ExecutionResourceLimitError(ExecutionPlanRejected):
+    """An explicit request exceeds one or more trusted numeric policy bounds."""
+
+    def __init__(self, details: ExecutionResourceRejection):
+        super().__init__("Requested resource limits exceed host policy")
+        self.details = details
 
 
 class ExecutionInputSelectionError(ExecutionPlanRejected):

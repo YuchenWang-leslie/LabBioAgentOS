@@ -2,6 +2,19 @@
 
 ## Status and scope
 
+### 2026-10-12 Native Kernel source status
+
+The user has approved replacing Pantheon as the in-stage Agent runtime with a
+LabBio-owned Native Kernel. The target has no Pantheon runtime or package
+dependency. `NATIVE_KERNEL_MIGRATION_PLAN.md` and `OPEN_DECISIONS.md` define the
+forward migration authority; `ARCHITECTURE.md` is the canonical document index.
+
+P7 has removed the Pantheon backend, adapters, and dependency from active
+source. The independently implemented Native Kernel is the only current source
+runtime. The sealed production pointer still targets the older P5 CLI release;
+P7 has not been deployed. Pantheon-specific sections below are retained only as
+pre-migration implementation and acceptance history, not current wiring.
+
 This document records the approved architecture established in Phase 0 and
 preserved through accepted, frozen C12. The C12 source hardening described below
 passed deterministic, real-Docker, and fail-closed provider integration
@@ -23,13 +36,14 @@ The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
 Pantheon revision is
 `07675c45b538f7d27b9b16b1b7d8b72f37365293` (published fork repair, as
-recorded in `UPSTREAM_MODIFICATIONS.md`).
+recorded in `archive/pantheon/UPSTREAM_MODIFICATIONS.md`).
 
 LabBioAgentOS is an independent `src`-layout Python repository/package beside
-PantheonOS. PantheonOS remains an external runtime dependency; LabBio code is not
-placed inside or moved into the PantheonOS repository.
+PantheonOS. At the P0 baseline Pantheon remains an external legacy runtime
+dependency; the approved migration removes that dependency without moving
+LabBio code into the PantheonOS repository.
 
-## Approved architecture
+## Implemented pre-migration architecture
 
 The optional [local task entrypoint](LOCAL_TASK_ENTRYPOINT.md) composes the
 existing application as `labbio run/status/export`. It accepts explicit input
@@ -80,7 +94,43 @@ Execution / artifact plane
 Cross-cutting: RunTrace/EventBus and user/project/lab scope
 ```
 
+The approved target changes only the stage-runtime layer:
+
+```text
+WorkflowEngine / WorkflowRun
+    |
+    v
+StageRuntimeInvoker
+    |
+    v
+LabBio Native Kernel
+  Leader AgentLoop -> model-selected Specialists
+  ToolRegistry / governed capability dispatcher
+  provider, budget, delegation and invocation-local context contracts
+    |
+    v
+frozen CapabilityEvidenceBundle -> tool-free typed finalizer
+    |
+    v
+RuntimeStageResult -> RuntimeCoordinator -> WorkflowEngine
+
+Retained around the kernel: Principal/Workspace, Artifact/Exposure, Docker,
+RunState, RunTrace, Gold and persistent Memory.
+```
+
+During migration, any legacy/native backend selection is explicit and frozen
+with the run's runtime revision. One run never changes backend, and native
+failure never falls back to Pantheon.
+
 ## C10 durable control-plane boundary
+
+Execution capability context separates the configured preflight resource request,
+canonical submission defaults and actual host policy ceilings. Omitted fields do
+not inherit the preflight request or the ceiling. Receipts and submission trace
+retain canonical per-plan resources; old receipts may report null. Resource-policy
+rejections expose only typed requested values, limits and exceeded field names,
+including in capability evidence. No request is clamped, retried or increased by
+the framework; exit 137 alone is not classified as an out-of-memory diagnosis.
 
 Verified user-owned environment builds retain immutable image identities across
 tasks and restarts. Build/list feedback projects bounded `build_provenance`:
@@ -264,13 +314,24 @@ remains `CONTROL_STATE`.
 
 It must not select scientific methods, specialist agents, biological hypotheses, or task-specific analysis code. It may validate a runtime proposal and choose a valid transition based on typed, explicit results.
 
-### Pantheon agent runtime
+### Stage Agent runtime
 
-`PantheonTeam` remains the reasoning and collaboration runtime inside a stage. `Agent.run`, `list_agents`, `call_agent`, child-memory creation, `execution_context_id`, `parent_tool_call_id`, `chain_path`, depth checks, and loop prevention are upstream mechanisms to preserve.
+The runtime behind `StageRuntimeInvoker` owns reasoning and collaboration inside
+one stage. Pantheon currently implements this boundary; the approved target is
+the LabBio Native Kernel. Provider turns, strict tool calls, Leader-Specialist
+delegation, isolated child contexts, parent/child identities, depth/loop checks,
+and typed finalization are behavior contracts to reimplement, not upstream
+classes that must remain.
 
-A LabBio adapter will provide stage context and return a typed stage result. The adapter may enforce structural policy, but the runtime LLM remains responsible for deciding what scientific work to propose, which allowed agent is useful, what task-specific code to generate, and how to interpret derived results.
+The runtime receives immutable/bounded stage context and returns a typed stage
+proposal/result. Structural policy may constrain legal actions, but the runtime
+LLM remains responsible for scientific work, allowed Specialist selection,
+task-specific code, and interpretation.
 
-`PantheonTeam` must receive no mutable `WorkflowRun` reference. A stage result can propose a next action, but only `WorkflowEngine` may accept it and mutate run state.
+No stage runtime receives a mutable `WorkflowRun` reference. Only
+`WorkflowEngine` may accept a result and mutate workflow state. One invocation
+uses exactly one explicitly configured backend; no backend fallback or
+cross-backend recovery is allowed.
 
 ### Phase 2 WorkflowEngine contract
 
@@ -291,12 +352,16 @@ RunTrace and contains no hidden reasoning trace.
 
 ### Capability plane
 
-Capabilities translate runtime decisions into controlled operations. The preferred implementation order is:
+Capabilities translate runtime decisions into controlled operations. During
+the migration, the current Pantheon adapters remain legacy behavior evidence.
+New forward implementation follows this order:
 
-1. LabBio wrapper or adapter.
-2. `TeamPlugin`, `ToolSet`, or `ToolProvider` extension.
-3. Pantheon subclass where the public extension surface is insufficient.
-4. Minimal Pantheon core modification only after the earlier options are shown inadequate.
+1. Pantheon-independent LabBio capability dispatcher and authority boundary.
+2. Native `ToolSpec`, `ToolRegistry`, schema, and transport contracts.
+3. Provider adapter translating only those neutral contracts.
+
+No new Pantheon patch, copied source, hidden fallback, or task-specific repair
+branch is part of the target design.
 
 Delegation policy is a safety constraint, not a scientific router. It may answer whether caller X can invoke target Y in a given `StageContext`; it must not decide that Y is scientifically appropriate.
 
@@ -676,7 +741,7 @@ is promoted to current-run scientific evidence. REPORT receives model-authored
 interpretation as before; automatic verification of its bibliography is not
 added. Custom external profiles remain explicit, not silently migrated.
 
-The intended stage-level sequence is:
+The implemented legacy stage-level sequence is:
 
 1. `WorkflowEngine` enters a valid stage and creates an immutable/snapshotted `StageContext` containing scope and references, not raw biological data.
 2. A LabBio team adapter invokes an existing `PantheonTeam` with stage instructions and allowed capabilities.
@@ -686,6 +751,13 @@ The intended stage-level sequence is:
 6. `WorkflowEngine` validates that result, records the transition in `RunTrace`, and alone updates `WorkflowRun`.
 
 No fixed Planner -> Specialist -> Reviewer chain is part of the architecture. Such a chain may be used in tests, while real collaboration remains an LLM decision within allowed boundaries.
+
+The native equivalent preserves the same ownership boundary: WorkflowEngine
+creates an exact stage input; a Leader model discovers policy-allowed
+Specialists and chooses whether to delegate; governed tools produce typed
+evidence; a tool-free finalizer returns a typed result; WorkflowEngine alone
+applies a legal transition. The host never selects a Specialist through
+keywords, file suffixes, UI state, or error-text heuristics.
 
 C8 adds only `SingleCellAnalysisSpecialist` and
 `ScientificMethodsReviewer` profile definitions to prove this contract. Their
@@ -730,7 +802,11 @@ outside Phase 4.
 
 ## Memory boundary
 
-Pantheon short-term `Memory` remains valid for an agent/team conversation. A delegated child receives a distinct in-memory `Memory`, while callbacks also project tagged child messages into the parent conversation for display and traceability. Context filtering uses `execution_context_id`.
+Pantheon short-term `Memory` describes the legacy agent/team conversation
+implementation. The native target uses invocation-local working messages: every
+delegated child receives an isolated context and returns only a typed child
+result plus explicit evidence references. Parent history and private reasoning
+are not inherited implicitly.
 
 Long-term LabBio memory, workflow state, artifact metadata, and Gold Skills are
 separate stores with user/project/lab scoping. They must not be placed
@@ -814,6 +890,16 @@ run may still propose the same version. A resolved same-stage domain gate is
 retained in trace/control history but its superseded request result is not
 replayed as an active model prior. Skill and Memory capability items remain
 `MODEL_CONTEXT`; proposal items are `CONTROL_STATE`.
+
+PLAN finalization projects exact pending/resolved use proposals together with
+current successful `skill_view` authorization IDs. A pending `USE_PROPOSED`
+assessment must request its exact domain gate; an approved-use assessment must
+have read the matching authorization. A recorded proposal cannot disappear into
+a no-candidate assessment. `USE_NOT_PURSUED` explicitly permits declining to
+pursue a proposal without forcing Skill use. Resumed gate `decision_reference_id`
+is the `skill_view.authorization_id`, not the Skill UUID; a missing authorization
+is reported separately as `SKILL_AUTHORIZATION_NOT_FOUND`. These are protocol
+consistency checks, not scientific selection or a guarantee of guidance quality.
 
 Search remains an eligibility operation with stable ordering and no score,
 scientific ranking, automatic selection, or use-mode decision. Internal

@@ -13,6 +13,7 @@ from labbioagentos import (
     ApplicationRunStateError,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     ArtifactConsumer,
     ArtifactExposureClass,
     ArtifactQuery,
@@ -28,7 +29,7 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PerInvocationPantheonStageInvoker,
+    NativeKernelStageInvoker,
     PlanStageBody,
     PreflightStageBody,
     Principal,
@@ -120,6 +121,7 @@ def _configuration(tmp_path, *, retry_limit: int = 1):
         artifact_root=tmp_path / "artifacts",
         execution_workspace_root=tmp_path / "executions",
         runtime_revision="c7.3-test-runtime",
+        runtime_backend=RuntimeBackend.NATIVE,
         allowed_input_roots=(input_root,),
         projects=(
             Project(
@@ -302,7 +304,7 @@ async def _run_scenario(
             next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     handle = application.create_run(
         ApplicationRunRequest(
             task_text="Exercise generic retry-aware evidence lineage.",

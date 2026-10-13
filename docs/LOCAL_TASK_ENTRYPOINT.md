@@ -1,5 +1,18 @@
 # 本地自然语言任务入口
 
+> **迁移状态：**P7 已完成源码侧内核剥离；P8 的通用真实 provider、协作、
+> 中断恢复、Docker，以及一个受限 PBMC3k 普通用户任务至最终报告均已通过。
+> 这不等于外部独立科学复核或通用可靠性结论；P8 immutable release 与 rollback
+> 尚未完成。当前源码只接受 LabBio Native Kernel，已无 Pantheon
+> backend、adapter 或包依赖。服务器激活的仍是较早的 P5 不可变 CLI release，
+> P7/P8 源码尚未部署。后续门禁以
+> `NATIVE_KERNEL_MIGRATION_PLAN.md` 为准。
+
+服务器当前激活的不可变 CLI release 为
+`/media/desk16/iy1982/WYC/LabBioAgentOS-production/current`，其命令入口是
+`current/bin/labbio`。当前源码不提供 API/worker 服务，因此该部署不应被描述为
+常驻服务部署。
+
 ## 阶段状态响应截断后的纠正
 
 FINALIZE 的 provider 明确返回 `finish_reason=length`，且严格 JSON 解析失败时，
@@ -33,7 +46,7 @@ stdout/stderr 的 ID，模型自行决定是否读取；不会自动注入全部
 这一反馈不读取文件、不自动换工具，也不跳过实际读取时的哈希与分页检查。
 
 用户提供数据、任务和偏好，不再为每个任务编写 Python 启动脚本。
-本入口调用已有 `LabBioApplication`，不替换 WorkflowEngine、Pantheon、
+本入口调用已有 `LabBioApplication`，不替换 WorkflowEngine、Native Kernel、
 执行器或 Artifact 治理。分析方案、参数、程序与报告由运行中的 Agent 产生。
 
 需要账号、项目隔离和个人 Gold 时，使用[本地托管模式](LOCAL_WORKSPACES.md)。
@@ -53,9 +66,9 @@ stdout/stderr 的 ID，模型自行决定是否读取；不会自动注入全部
 
 ## 一次配置，重复提交
 
-使用已有的项目 Python 环境及文档要求的 Pantheon 修订。
-`UPSTREAM_MODIFICATIONS.md` 中的运行时修订要求仍然适用；普通的
-`pantheon-agents 0.6.4` 并不等同于本地已验证的修订。
+使用已有的项目 Python 环境。当前源码直接声明 Native provider 所需的 HTTP
+transport 依赖，不再安装或选择 Pantheon，也不存在 Native 失败后的 runtime
+fallback。旧非终态运行只能由其原不可变 release 识别，不能由当前源码接管。
 
 安装本项目的命令入口（不更新现有环境依赖）：
 
@@ -244,8 +257,9 @@ REPORT_EVIDENCE_INCOMPLETE，不登记报告。该检查不证明自然语言结
 报告相关阶段可只读 `execution_inspect` 核对真实提交程序，不能提交执行。
 修订入口会同时转移所选输出的原程序来源；旧 receipt 不可用时明确为 null，
 不从源码推断执行成功，也不读取任意 RAW 内容或进程日志。
-配置字段仍名为 max_capability_turns，但 Pantheon 实际累计 assistant 消息和
-工具反馈消息；一轮批量调用多个工具会消耗多条，不等于 16 次模型采样。
+配置字段仍名为 max_capability_turns；Native Kernel 将其作为 capability 阶段的
+provider-turn 上限，并另行约束 tool call、证据字节和 wall-clock。批量工具调用
+仍受整批预校验和逐调用预算约束，不等于可以无限扩大一次模型采样的效果。
 
 稳定状态可通过同一运行时配置重建；源码、profile 或有效配置不同会产生
 明确的 revision mismatch。运行中断若保留 `STAGE_IN_FLIGHT`，入口不会自动
@@ -259,7 +273,8 @@ REPORT_EVIDENCE_INCOMPLETE，不登记报告。该检查不证明自然语言结
 Agent 可在原有权限和预算内自行提交修订版；每版保留独立执行身份和回执。
 `execution_inspect` 允许它分页查看同一 run、同一应用会话内自己此前提交的
 原稿与错误回执，不提供任意 RAW 读取或进程日志读取权限。该原稿索引不支持
-重启恢复；传输会改写的特殊文本明确拒绝，不伪称已完整读取。
+重启恢复；Native JSON transport 对通过大小和安全边界的源码页保持原文，超出
+明确边界时拒绝而不截断，也不伪称已完整读取。
 
 注册输出的原始文件名依赖保留的 JSONL 收集审计；审计缺失时导出明确失败。
 权威流程状态始终来自 SQLite，而不是根据日志推测。
@@ -304,9 +319,9 @@ Docker、containerd、docker.socket 均为 active，没有遗留运行中的任�
 重试限额。启用时使用显式兼容 Chat transport 的私有工具推理连续性；不能只
 开启 provider 开关却删除下一轮协议所需的字段。隐藏推理只在同次运行、同一
 模型的请求之间传递，不写入日志、结果、Memory、其他 Agent 或用户报告。
-此选项需要匹配的 Pantheon fork 修订；`constraints/pantheon-runtime.txt` 已锁定
-发布到用户 fork 的 `07675c45b538f7d27b9b16b1b7d8b72f37365293`，不声称官方
-发布已包含。具体测试、修订身份与发布状态以当前 workplan 为准。
+Native provider adapter 直接生成该兼容 Chat transport 的 thinking wire；配置
+进入 runtime revision，不依赖外部 Agent runtime fork。具体测试、修订身份与
+发布状态以当前 workplan 为准。
 
 ### 仅解读阶段的 thinking 与文献联网（2026-09-15）
 
@@ -366,8 +381,8 @@ thinking 不因此晋升为默认（区别于上节单独配置的解读 Agent�
 `[provider] provider_tool_schema_strict = true` 是独立的服务端工具 schema
 选项，缺省 false。它不是客户端 `strict_tool_arguments` 的别名：显式启用时，
 OpenAI Chat 请求携带 `function.strict=true` 并保留原 schema，不重写参数、
-required 或默认值。其他 transport 不静默降级。该选项需匹配上述 Pantheon
-修订，并须先验证目标 provider 对实际 schema 子集的支持。
+required 或默认值。不支持的 transport 或 schema 能力明确失败，不静默降级；
+启用前须验证目标 provider 对实际 schema 子集的支持。
 
 默认 EXECUTE 不再要求每次进入阶段都重新调用 execution_submit。Agent 可如实
 选择不执行，包括复核后只查已有结果的情况；无当前回执时只能记录
@@ -378,6 +393,13 @@ NOT_EXECUTED、空执行引用和空新输出，不能冒充运行成功。显�
 CAPABILITY 和 FINALIZE 共用有限 provider-turn 观测。结构化响应校验拒绝前也
 记录结束原因、用量、耗时等元数据，不记录响应正文或隐藏推理，也不自动修复
 JSON 或追加调用。历史未记录的响应原因不能据此补推。
+
+Native capability 工具在已将反馈交给模型后，若再次收到完全相同且不可重试的
+artifact list/query 请求，会以持久化的 `REPEATED_NON_RETRYABLE_REQUEST` 结束本轮
+capability phase，再由正常 finalizer 基于已有证据决定后续状态。这个边界不改写
+工具参数、不选择科学方法或下一工具，也不把失败伪装成成功。`[provider]`
+的 `max_model_phase_seconds` 是每个 capability/finalization 模型阶段的显式上限；
+它不增加无新证据的重试资格。
 
 ## 可复用 Python 环境（2026-09-11）
 

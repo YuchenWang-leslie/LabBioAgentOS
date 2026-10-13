@@ -1,5 +1,10 @@
 # Stage Runtime Contracts
 
+> **Migration status:** the typed stage, evidence, authority, and result
+> contracts here remain active. The Native Kernel is now the default new-run
+> backend; Pantheon teams, tools, and delegation names below describe only the
+> explicitly selected legacy adapter during the migration window.
+
 ## Status and common contract
 
 These contracts describe the implemented LabBio runtime boundary. Names ending
@@ -42,12 +47,12 @@ task text and caller assertions are `USER_ASSERTION`. Factual claims must be
 grounded in current governed evidence. Opaque Artifact and execution references
 survive mechanically, while claims do not acquire authority by copying.
 
-In capability mode, every configured team profile receives a separately bound
-ToolSet with its own trusted actor identity and allowlist. Governed root and
+In Native capability mode, every configured team profile receives a separately
+bound tool registry with its own trusted actor identity and allowlist. Governed root and
 child tool outcomes are aggregated into the stage
 `CapabilityEvidenceBundle`; child prose remains `MODEL_CONTEXT`. Team
 membership is configuration, while the runtime model chooses whether and which
-eligible peer to call through Pantheon's native delegation tools.
+eligible peer to call through Native `list_specialists` and `delegate` tools.
 
 ## INTAKE
 

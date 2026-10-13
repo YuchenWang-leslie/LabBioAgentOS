@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 from pydantic import ValidationError
 import pytest
 
@@ -136,6 +136,7 @@ async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
         "requested_outputs",
         "resources",
         "network_required",
+        "review",
     }
     assert set(parameters["required"]) == {"image_key", "script_content"}
 
@@ -266,7 +267,7 @@ async def test_le10c_nested_string_draft_is_not_repaired(execution_boundary):
     provider = LocalProvider(toolset)
     await provider.initialize()
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValidationError):
         await provider.call_tool(
             "execution_submit",
             {"draft": json.dumps(_valid_wire_draft())},

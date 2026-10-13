@@ -279,6 +279,7 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "authoritative_evidence_references",
         "memory_candidate_references",
         "gold_candidate_references",
+        "selected_gold_context",
         "allowed_capabilities",
         "gate_decisions",
         "clarifications",

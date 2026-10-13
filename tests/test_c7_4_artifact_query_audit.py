@@ -6,7 +6,7 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import (
     ArtifactExposureClass,
@@ -408,15 +408,14 @@ async def test_provider_schema_exposes_existing_artifact_query_contract(
     )
     parameters = schema["parameters"]
 
-    assert parameters["properties"]["view_type"] == {
-        "description": "One of METADATA, SCHEMA, SUMMARY, or TOP_N.",
-        "enum": ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"],
-        "type": "string",
-    }
+    assert parameters["properties"]["view_type"]["enum"] == [
+        "METADATA", "SCHEMA", "SUMMARY", "TOP_N"
+    ]
+    assert parameters["properties"]["view_type"]["type"] == "string"
     assert parameters["properties"]["limit"]["anyOf"] == [
         {"type": "integer", "minimum": 1},
         {"type": "null"},
     ]
     assert parameters["required"] == ["artifact_id", "view_type"]
     assert parameters["additionalProperties"] is False
-    assert "EXECUTION" in parameters["properties"]["artifact_id"]["description"]
+    assert "Artifact UUID" in parameters["properties"]["artifact_id"]["description"]

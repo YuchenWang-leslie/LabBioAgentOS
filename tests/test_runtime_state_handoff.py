@@ -5,9 +5,9 @@ import json
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
-from labbioagentos import LabBioRuntimeToolSet, RuntimeReference, RuntimeReferenceKind, WorkflowStage
+from labbioagentos import LabBioRuntimeToolSet, NativeKernelStageInvoker, RuntimeReference, RuntimeReferenceKind, WorkflowStage
 from labbioagentos.runtime.contracts import RuntimeExecutionActivity, RuntimePriorResultView
 from test_c7_4_artifact_query_audit import artifact_query_boundary  # noqa: F401
 from test_execution_result_grounding import _input, _bundle, _receipt
@@ -75,7 +75,6 @@ def test_model_context_cannot_supply_authoritative_execution_activity():
 
 @pytest.mark.asyncio
 async def test_activity_survives_restart_and_is_visible_to_next_stage(tmp_path, governed_invokers, monkeypatch):
-    from labbioagentos.runtime.pantheon import PantheonTypedStageInvoker
     app, store, handle, executor = await _interrupt_after_tools(tmp_path, governed_invokers)
     saved = store.get(handle.run_id)
     activity = saved.last_execution_activity
@@ -87,7 +86,7 @@ async def test_activity_survives_restart_and_is_visible_to_next_stage(tmp_path, 
     async def finalize(self, stage_input, **kwargs):
         observed.append(stage_input)
         return _next_result(stage_input.stage_id)
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     await app.continue_run(handle.run_id, principal=_principal(), workspace=_workspace())
     next_input = next(item for item in observed if item.stage_id is WorkflowStage.VALIDATE)
     assert next_input.last_execution_activity == activity

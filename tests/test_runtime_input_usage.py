@@ -7,17 +7,14 @@ from pydantic import ValidationError
 
 from labbioagentos import (
     ApplicationRunRequest, ArtifactExposureClass, ArtifactReleaseBasis,
-    ArtifactRepresentation, AuthorizationDenied, LabBioApplication, NextAction,
+    ArtifactRepresentation, AuthorizationDenied, LabBioApplication, NativeKernelStageInvoker, NextAction,
     NextActionProposal, Principal, RuntimeStageResult, WorkflowStage, WorkspaceContext,
 )
 from labbioagentos.artifacts import ArtifactApproval, ArtifactConsumer, ArtifactNotFoundError, ArtifactViewType
 from labbioagentos.runtime.contracts import (
     CapabilityErrorDetails, CapabilityEvidenceBundle, CapabilityEvidenceItem,
 )
-from labbioagentos.runtime.pantheon import (
-    PantheonCapabilityStageInvoker, PantheonTypedStageInvoker,
-    RuntimeProfileConfigurationError,
-)
+from labbioagentos.runtime import RuntimeProfileConfigurationError
 from test_application_runtime_c5 import MAIN_PATH, _body, _configuration
 from test_c12_execution_capability_contract import _trusted_view
 
@@ -81,8 +78,8 @@ async def test_usage_visible_in_all_stages_and_both_phases_without_queries(input
         )
         return RuntimeStageResult(stage_id=stage, summary="Synthetic stage", body=_body(stage), next_action=action)
 
-    monkeypatch.setattr(PantheonCapabilityStageInvoker, "invoke", capability)
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalizer)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_run_capability", capability)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalizer)
     await app.run(handle)
     assert len(seen) == 18
     for _, stage_input in seen:
@@ -159,7 +156,7 @@ def test_assembly_rejects_presented_usage_widening(input_run, tamper):
     index = 0 if tamper == "remote_view_types" else 3
     value = (ArtifactViewType.METADATA,) if tamper == "remote_view_types" else True
     items[index] = items[index].model_copy(update={tamper: value})
-    with pytest.raises(RuntimeProfileConfigurationError, match="Artifact usage"):
+    with pytest.raises(RuntimeProfileConfigurationError, match="trusted native assembly binding"):
         invoker._validate_input_binding(stage_input.model_copy(update={"input_artifact_usage": tuple(items)}))
 
 

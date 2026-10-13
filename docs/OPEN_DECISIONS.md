@@ -3,15 +3,65 @@
 This file records unresolved architecture decisions and decisions resolved when
 they directly determine the current repository boundary.
 
-## Resolved — Source/package topology
+## RESOLVED-001 — Source/package topology
 
 Resolved by the user before Phase 1: LabBioAgentOS is an independent Python
-repository/package beside PantheonOS and uses PantheonOS as its runtime dependency.
-LabBio code must not be moved into the PantheonOS repository.
+repository/package beside PantheonOS. LabBio code must not be moved into the
+PantheonOS repository. The original decision also selected Pantheon as the
+runtime dependency; that portion is superseded by RESOLVED-009 while the
+independent repository/package topology remains authoritative.
 
 Phase 1 initializes `/Users/wangyuchen/Coding/LabBioAgentOS` as its own git
 repository and uses the distribution/package name `labbioagentos` with a `src`
 layout. PantheonOS remains in `/Users/wangyuchen/Coding/PantheonOS`.
+
+## RESOLVED-009 — Native kernel ownership and migration boundary
+
+Resolved by the user on 2026-10-10: LabBioAgentOS will replace Pantheon as its
+in-stage Agent runtime with a LabBio-owned Native Kernel. The completed target
+has no Pantheon runtime or package dependency. P7 removed the temporary legacy
+backend from active source; Pantheon remains only archived behavior/provenance
+evidence. Its source was not copied, vendored, renamed, or monkey-patched into
+LabBio.
+
+The migration retains `WorkflowEngine`, stage contracts, Principal/Workspace
+authorization, Artifact/Exposure, Docker execution, RunState, RunTrace, Gold,
+and persistent Memory. The replacement scope is provider transport, the Agent
+tool loop, native tool schema/dispatch, Leader-Specialist delegation and child
+context, provider-turn/budget observation, and typed finalization.
+
+The capability/finalization boundary remains authoritative: capability mode may
+use governed tools and delegation, then freezes exact evidence; finalization is
+tool-free and returns a strict typed proposal/result for the existing
+coordinator and `WorkflowEngine` to validate and apply.
+
+Every run freezes its backend, backend version, and contract revision at
+creation. One run uses one backend. Native failure never falls back to Pantheon,
+another provider, or another model. Pantheon-era nonterminal runs cannot be
+continued by the native backend; rollback means using a previous immutable
+release with a fresh run identity. A legacy record without explicit backend
+identity is treated as Pantheon-era for this decision.
+
+The first native provider scope is the currently required OpenAI-compatible
+Chat transport. The concrete maintained SDK is selected in P1; unsupported
+transport/schema features fail preflight rather than trigger fallback. Tool
+arguments are strict JSON objects: invalid, duplicate-key, non-finite,
+truncated, or filtered inputs are never repaired or executed. Finite acyclic
+nested schemas must preserve their supported constraints. Recursive/cyclic
+schemas that cannot be represented safely are rejected explicitly rather than
+silently degraded to an empty or weaker schema.
+
+All loop bounds must be explicit and observable. Native convergence uses
+configured provider-turn and wall-clock/no-progress budgets; it must not add a
+hidden retry or consecutive-idle allowance. Domain methods, workflows, defaults,
+and Specialist selection remain model-owned behavior expressed through external
+team profiles and Skill Markdown, never keyword/file-suffix/error routing in the
+kernel.
+
+Native Kernel P0 authorizes architecture reconciliation, exact baseline
+evidence, and implementation-independent characterization tests only. It does
+not authorize a production runtime switch, dependency removal, live provider or
+data runs, deployment, or profile/Skill activation.
 
 ## RESOLVED-002 — Structured child-failure contract
 

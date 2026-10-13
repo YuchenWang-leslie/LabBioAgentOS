@@ -13,6 +13,7 @@ from labbioagentos import (
     ApplicationRecoveryIssueCode,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     CapabilityProfile,
     ExecuteStageBody,
     GateUserDecision,
@@ -30,8 +31,8 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PantheonRuntimeFactory,
-    PerInvocationPantheonStageInvoker,
+    NativeRuntimeFactory,
+    NativeKernelStageInvoker,
     PlanStageBody,
     PreflightStageBody,
     Principal,
@@ -158,6 +159,7 @@ def _configuration(
         memory_service=memory_service,
         domain_decision_handlers=((handler,) if handler is not None else ()),
         runtime_revision="runtime-c11-test-v1",
+        runtime_backend=RuntimeBackend.NATIVE,
     )
 
 
@@ -240,7 +242,7 @@ def _install_memory_gate_runtime(monkeypatch, active_application, state):
             )
         return _next(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
 
 
 @pytest.mark.asyncio
@@ -451,7 +453,7 @@ async def test_m30_no_proposal_means_no_memory_and_no_automatic_injection(
         observed.append(stage_input.model_dump_json())
         return _next(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     store = InMemoryMemoryStore()
     service = MemoryGovernanceService(store)
     app = LabBioApplication(

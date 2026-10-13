@@ -92,6 +92,18 @@ class RequestedResources(BaseModel):
     timeout_seconds: float = Field(default=300.0, gt=0)
 
 
+class ExecutionResourceRejection(BaseModel):
+    """Numeric request and exact policy bounds, without exception text or code."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requested: RequestedResources
+    limits: RequestedResources
+    exceeded_fields: tuple[Literal["cpus", "memory_mb", "pids_limit", "timeout_seconds"], ...] = Field(
+        min_length=1, max_length=4
+    )
+
+
 class OutputArtifactSpec(BaseModel):
     """A proposed output path and exposure intent, not an exposure decision."""
 
@@ -146,6 +158,28 @@ ExecutionRequestedOutputs = Annotated[
     tuple[OutputArtifactSpec, ...],
     Field(max_length=128),
 ]
+
+
+class ExecutionSourceEdit(BaseModel):
+    """One exact, unique source replacement explicitly authored by the Agent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    old: StrictStr = Field(min_length=1, max_length=100_000)
+    new: StrictStr = Field(max_length=100_000)
+
+
+class ExecutionRevisionDraft(BaseModel):
+    """Canonical revision intent, also validated for direct local tool dispatch."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    execution_id: UUID
+    expected_script_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    edits: tuple[ExecutionSourceEdit, ...] = Field(default=(), max_length=32)
+    image_key: ExecutionImageKey | None = None
+    requested_outputs: ExecutionRequestedOutputs | None = None
+    resources: RequestedResources | None = None
+    input_artifact_ids: ExecutionInputArtifactIds | None = None
+    parameters: dict[str, JsonValue] | None = None
 
 
 class ExecutionPlan(BaseModel):
@@ -412,6 +446,10 @@ class ExecutionReceipt(BaseModel):
     image_key: StrictStr = Field(min_length=1, max_length=128)
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     exit_code: int | None = None
+    resources: RequestedResources | None = Field(
+        default=None,
+        description="Canonical resources of this submitted plan, not the run ceiling. Null means unavailable in a legacy receipt.",
+    )
     output_artifact_ids: tuple[UUID, ...] = Field(
         default=(),
         description="Output Artifact UUIDs that are queryable by remote runtime models.",
@@ -437,7 +475,8 @@ class ExecutionReceipt(BaseModel):
     retryable: bool = False
 
     @classmethod
-    def from_result(cls, result: ExecutionResult, *, include_generated_file_refs: bool = False) -> "ExecutionReceipt":
+    def from_result(cls, result: ExecutionResult, *, include_generated_file_refs: bool = False,
+                    resources: RequestedResources | None = None) -> "ExecutionReceipt":
         retryable_classes = {
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
@@ -465,6 +504,7 @@ class ExecutionReceipt(BaseModel):
             image_key=result.image_key,
             script_hash=result.script_hash,
             exit_code=result.exit_code,
+            resources=resources,
             output_artifact_ids=tuple(
                 ref.artifact_id
                 for ref in result.output_artifact_refs

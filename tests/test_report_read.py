@@ -5,7 +5,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import (
     ArtifactExposureClass, ArtifactReleaseBasis, ArtifactRepresentation,
@@ -56,55 +56,6 @@ async def test_original_report_pages_survive_handoff_without_entering_trace_even
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", (7, 8000))
-async def test_report_page_reaches_finalizer_after_checkpoint_roundtrip(revision_apps, limit):
-    from types import MethodType, SimpleNamespace
-    from labbioagentos import (
-        CapabilityEvidenceBundle, PantheonRuntimeFactory, PantheonTypedStageInvoker,
-        ResponseSchemaRef, RuntimeInvocationMode, RuntimeStageInput, RuntimeWorkspaceIdentifiers,
-    )
-    from test_runtime_milestone_c2 import _catalog, _profile
-
-    tools, report_id = _tools(revision_apps, stage=WorkflowStage.UNDERSTAND)
-    read = await tools.report_read(str(report_id), limit=limit)
-    assert read["success"]
-    binding = tools.binding
-    evidence = CapabilityEvidenceBundle.model_validate_json(CapabilityEvidenceBundle(
-        run_id=binding.run_id, stage_id=binding.stage_id, invocation_id=binding.invocation_id,
-        items=tools.evidence_items(),
-    ).model_dump_json())
-    stage_input = RuntimeStageInput(
-        run_id=binding.run_id, stage_id=binding.stage_id, invocation_id=binding.invocation_id,
-        instruction="Understand the supplied revision request.",
-        workspace=RuntimeWorkspaceIdentifiers(**binding.workspace.model_dump()),
-        allowed_capabilities=("report_read",),
-    )
-    team, prompts = await PantheonRuntimeFactory(_catalog()).create_team(
-        ("coordinator",), invocation_mode=RuntimeInvocationMode.FINALIZE)
-    seen = []
-
-    async def run(_self, message, **_kwargs):
-        visible = json.loads(message)
-        item = visible["capability_evidence"]["items"][0]
-        assert item["information_authority"] == "MODEL_CONTEXT"
-        assert item["safe_result"] == read["data"]
-        seen.append(item["safe_result"]["content"])
-        return SimpleNamespace(content={
-            "stage_id": "UNDERSTAND", "summary": "Fixture handoff checked.",
-            "body": {"kind": "UNDERSTAND", "requirements": ["Revise the previous report."]},
-            "next_action": {"action": "transition", "target_stage": "PLAN"},
-        })
-
-    team.run = MethodType(run, team)
-    result = await PantheonTypedStageInvoker(team, profile=_profile(), prompt=prompts["coordinator"],
-        response_schema=ResponseSchemaRef(), trace_recorder=tools.services.trace_recorder,
-    ).invoke(stage_input, capability_evidence=evidence)
-    assert result.next_action.target_stage is WorkflowStage.PLAN
-    assert seen == [read["data"]["content"]]
-    assert len(tools.evidence_items()) == 1  # No automatic reread or extra page.
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ("raw", "wrong_type", "wrong_owner", "no_capability", "invalid_limit", "wrong_hash"))
 async def test_report_read_fails_closed(revision_apps, case):
     tools, report_id = _tools(revision_apps, allow=case != "no_capability")
@@ -125,16 +76,6 @@ async def test_report_read_fails_closed(revision_apps, case):
                                      expected_sha256="0" * 64 if case == "wrong_hash" else None)
     assert result["success"] is False
     assert "DO_NOT_RELEASE" not in json.dumps(result)
-
-
-@pytest.mark.asyncio
-async def test_pantheon_filter_cannot_silently_alter_report_page(revision_apps, monkeypatch):
-    tools, report_id = _tools(revision_apps)
-    import pantheon.utils.llm
-    monkeypatch.setattr(pantheon.utils.llm, "filter_base64_in_tool_result", lambda value: {**value, "content": "changed"})
-    result = await tools.report_read(str(report_id))
-    assert not result["success"]
-    assert result["error"]["error_code"] == "REPORT_PAGE_TRANSPORT_UNSUPPORTED"
 
 
 @pytest.mark.asyncio

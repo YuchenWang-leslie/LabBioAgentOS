@@ -3,8 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from labbioagentos import LabBioApplication, NextActionProposal, RunStatus, SQLiteRunStateStore, WorkflowStage
-from labbioagentos.runtime.pantheon import PantheonTypedStageInvoker
+from labbioagentos import LabBioApplication, NativeKernelStageInvoker, NextActionProposal, RunStatus, SQLiteRunStateStore, WorkflowStage
 from test_c10_durable_control_plane import _next_result, _principal, _request, _workspace
 from test_interruption_reconciliation import _capability_configuration, governed_invokers
 from test_runtime_milestone_b import MockExecutor
@@ -42,7 +41,7 @@ async def test_answer_restart_preserves_completed_tools_and_reaches_later_stages
             return result.model_copy(update={"next_action": _question()})
         return result
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     path = tmp_path / "state.sqlite"
     store = SQLiteRunStateStore(path)
     app = LabBioApplication(_capability_configuration(tmp_path, store))
@@ -171,7 +170,7 @@ async def test_new_tools_require_explicit_answer_driven_reentry(tmp_path, govern
                 return result.model_copy(update={"next_action": NextActionProposal(action="continue_stage")})
         return result
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     store = SQLiteRunStateStore(tmp_path / "state.sqlite")
     app = LabBioApplication(_capability_configuration(tmp_path, store))
     executor = MockExecutor(app.artifact_store)
@@ -199,7 +198,7 @@ async def test_disconnect_immediately_after_answer_commit_is_recoverable(tmp_pat
             return result.model_copy(update={"next_action": _question()})
         return result
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     path = tmp_path / "state.sqlite"
     backing = SQLiteRunStateStore(path)
     store = _StopAfterCheckpointStore(backing, lambda record:
@@ -229,12 +228,16 @@ async def test_disconnect_immediately_after_answer_commit_is_recoverable(tmp_pat
 
 
 def test_provider_wire_schema_distinguishes_question_approval_and_new_work():
-    from test_next_action_semantics import _provider_schema, _actions
-
     engine, run = _started()
     def actions():
         control = RuntimeWorkflowControlView.from_run(engine.definition, run)
-        return _actions(_provider_schema(runtime_stage_result_format(run.current_stage, control)))
+        schema = runtime_stage_result_format(run.current_stage, control).model_json_schema()
+        action_ref = schema["properties"]["next_action"]["$ref"].split("/")[-1]
+        mapping = schema["$defs"][action_ref]["discriminator"]["mapping"]
+        return {
+            action: schema["$defs"][reference.split("/")[-1]]
+            for action, reference in mapping.items()
+        }
 
     initial = actions()
     assert "request_clarification" in initial and "request_user_input" in initial
@@ -244,37 +247,3 @@ def test_provider_wire_schema_distinguishes_question_approval_and_new_work():
     engine.apply_proposal(run, _question())
     _answer(engine, run)
     assert "continue_stage" in actions()
-
-
-@pytest.mark.asyncio
-async def test_exact_user_answer_reaches_actual_finalizer_message():
-    import json
-    from types import MethodType, SimpleNamespace
-    from labbioagentos import PantheonRuntimeFactory, ResponseSchemaRef, RuntimeInvocationMode, RuntimeStageInput
-    from test_runtime_milestone_a import _coordinator
-    from test_runtime_milestone_c2 import _catalog, _profile
-
-    coordinator, _ = _coordinator()
-    run = coordinator.engine.create_run()
-    coordinator.engine.start(run)
-    coordinator.engine.apply_proposal(run, _question())
-    answer = '面向初学者；保留 "原结果"。\n数值格式由 Agent 自行决定。'
-    _answer(coordinator.engine, run, answer)
-    stage_input = coordinator.build_stage_input(run, instruction="A synthetic user request.")
-    stage_input = RuntimeStageInput.model_validate_json(stage_input.model_dump_json())
-    team, prompts = await PantheonRuntimeFactory(_catalog()).create_team(
-        ("coordinator",), invocation_mode=RuntimeInvocationMode.FINALIZE)
-    captured = []
-
-    async def invoke(_self, message, **_kwargs):
-        visible = json.loads(message)
-        captured.append(visible["clarifications"][0])
-        assert captured[-1]["answer_text"] == answer
-        assert captured[-1]["answer_authority"] == "USER_ASSERTION"
-        return SimpleNamespace(content=_next_result(WorkflowStage.INTAKE).model_dump(mode="json"))
-
-    team.run = MethodType(invoke, team)
-    result = await PantheonTypedStageInvoker(team, profile=_profile(), prompt=prompts["coordinator"],
-        response_schema=ResponseSchemaRef()).invoke(stage_input)
-    assert result.next_action.target_stage is WorkflowStage.UNDERSTAND
-    assert len(captured) == 1

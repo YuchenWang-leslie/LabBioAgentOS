@@ -6,7 +6,7 @@ import json
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 import pytest
 
 from labbioagentos import LabBioRuntimeToolSet, RuntimeInvocationMode, WorkflowStage
@@ -20,31 +20,20 @@ from test_local_configuration import settings_file  # noqa: F401
 
 @pytest.mark.asyncio
 async def test_only_interpretation_gets_reasoning_and_network(settings_file, monkeypatch):
-    from pantheon.utils import llm_providers
-    monkeypatch.setattr(llm_providers, "OPENAI_COMPATIBLE_PROVIDERS",
-                        dict(llm_providers.OPENAI_COMPATIBLE_PROVIDERS))
-    monkeypatch.setattr(llm_providers, "_RESPONSES_API_UNAVAILABLE",
-                        set(llm_providers._RESPONSES_API_UNAVAILABLE))
     monkeypatch.setenv("OPENAI_API_KEY", "offline-test-key")
     monkeypatch.setenv("OPENAI_API_BASE", "https://example.invalid/v1")
     settings = load_settings(settings_file)
     app = build_application(settings, settings.result_root / "scoped", load_provider=False)
     try:
+        catalog = app.configuration.profile_catalog
         for spec in app.configuration.stage_assemblies:
             interpret = spec.stage_id is WorkflowStage.INTERPRET
             assert ("literature_search" in spec.capability_allowlist) is interpret
-            for mode in RuntimeInvocationMode:
-                agent, _ = await app.runtime_factory.create_agent(
-                    spec.root_profile_key, invocation_mode=mode,
-                    prompt_values=spec.finalization_prompt_values,
-                )
-                assert agent.model_params["thinking"] == {
-                    "type": "enabled" if interpret else "disabled",
-                }
-                assert agent.private_tool_reasoning_continuity is (
-                    interpret and mode is RuntimeInvocationMode.CAPABILITY
-                )
-                assert agent.model_params["max_tokens"] == settings.provider.max_output_tokens
+            agent = catalog.agents[spec.root_profile_key]
+            model = catalog.models[agent.model_profile_key]
+            assert model.thinking_enabled is interpret
+            assert model.private_tool_reasoning_continuity is interpret
+            assert model.max_output_tokens == settings.provider.max_output_tokens
             assert spec.max_capability_turns == 16
         assert app.capability_services.literature_search is not None
         assert not app.execution_policy.allow_network
@@ -244,4 +233,4 @@ async def test_source_instructions_never_become_control(artifact_query_boundary,
     assert result["information_authority"] == result["data"]["content_authority"] == "MODEL_CONTEXT"
     assert result["data"]["items"][0]["abstract"]
     assert result["data"]["items"][0]["doi"] is None
-    assert "execution_submit" not in _tools(artifact_query_boundary).functions
+    assert "execution_submit" not in _tools(artifact_query_boundary).tool_functions

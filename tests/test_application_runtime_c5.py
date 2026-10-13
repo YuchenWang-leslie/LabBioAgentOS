@@ -35,7 +35,7 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PerInvocationPantheonStageInvoker,
+    NativeKernelStageInvoker,
     PlanStageBody,
     PreflightStageBody,
     Principal,
@@ -47,6 +47,7 @@ from labbioagentos import (
     RunRecoveryState,
     RunStatus,
     RuntimeCoordinatorService,
+    RuntimeBackend,
     RuntimeProfileCatalog,
     RuntimeReferenceKind,
     RuntimeStageAssemblySpec,
@@ -130,6 +131,7 @@ def _configuration(
         artifact_root=tmp_path / "artifacts",
         execution_workspace_root=tmp_path / "executions",
         runtime_revision="c5-test-runtime",
+        runtime_backend=RuntimeBackend.NATIVE,
         allowed_input_roots=(input_root,),
         projects=(
             Project(
@@ -196,7 +198,7 @@ async def test_application_drives_all_nine_stages_without_manual_runtime_wiring(
             next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     application = LabBioApplication(_configuration(tmp_path))
     request = ApplicationRunRequest(
         task_text="A generic task with no scientific implementation in the host.",
@@ -270,7 +272,7 @@ async def test_later_stage_receives_new_governed_artifact_and_execution_referenc
             next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     application = LabBioApplication(_configuration(tmp_path))
     handle = application.create_run(
         ApplicationRunRequest(
@@ -477,7 +479,7 @@ async def test_pf1_pf2_pf3_pf4_pf5_pf9_pf11_host_preflight_and_recovery(
         provider_calls.append(stage_input.stage_id)
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     accepted = []
     original_accept = RuntimeCoordinatorService.accept_trusted_stage_result
 
@@ -582,7 +584,7 @@ async def test_pf6_pf7_pf8_host_preflight_failure_is_bounded_and_stable(
         provider_calls.append(stage_input.stage_id)
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     runner = _NoDockerRunner()
     store = InMemoryRunStateStore()
     application = LabBioApplication(
@@ -648,7 +650,7 @@ async def test_pf10_no_execution_profile_preserves_runtime_preflight(
         provider_calls.append(stage_input.stage_id)
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     application = LabBioApplication(_configuration(tmp_path))
     handle = application.create_run(
         ApplicationRunRequest(

@@ -1,5 +1,10 @@
 # First Real Runtime-LLM Vertical Slice Plan
 
+> **Historical validation plan:** this document specifies the earlier
+> Pantheon-backed vertical slice. It remains acceptance provenance, not the
+> forward Native Kernel implementation plan; see
+> `NATIVE_KERNEL_MIGRATION_PLAN.md` for current authority.
+
 ## Purpose
 
 Validate that a real Pantheon model can reason, delegate, generate task-specific
@@ -126,4 +131,3 @@ rules, literature search requirement, real curator intelligence, semantic
 retrieval, R, API/UI layer, database, background queue, or production auth. Its
 only purpose is to prove the accepted control, reasoning, execution, artifact,
 trace, and approval boundaries together.
-

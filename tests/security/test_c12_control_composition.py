@@ -10,6 +10,7 @@ from labbioagentos import (
     AgentProfile,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     CapabilityProfile,
     ExecuteStageBody,
     GateUserDecision,
@@ -25,7 +26,7 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PerInvocationPantheonStageInvoker,
+    NativeKernelStageInvoker,
     PlanStageBody,
     PreflightStageBody,
     Principal,
@@ -159,6 +160,7 @@ def _configuration(tmp_path, run_store, skill_service, memory_service):
             MemoryDomainDecisionHandler(memory_service),
         ),
         runtime_revision="runtime-c12-composition-v1",
+        runtime_backend=RuntimeBackend.NATIVE,
     )
 
 
@@ -361,7 +363,7 @@ async def test_retry_gold_gate_memory_gate_restart_and_finalization_compose_once
             )
         return _next(stage)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
 
     first_runs = SQLiteRunStateStore(run_path)
     first_skills = SQLiteSkillStore(skill_path)

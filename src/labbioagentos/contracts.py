@@ -140,7 +140,7 @@ class DelegationRecord(BaseModel):
 
 
 class StageContext(BaseModel):
-    """Immutable, minimum input supplied to one Pantheon reasoning stage."""
+    """Immutable, minimum input supplied to one Agent reasoning stage."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -151,7 +151,7 @@ class StageContext(BaseModel):
 
 
 class AgentStageResult(BaseModel):
-    """Validated structured result returned by the Pantheon stage runtime."""
+    """Validated structured result returned by the stage Agent runtime."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

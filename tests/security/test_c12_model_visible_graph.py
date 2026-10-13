@@ -145,6 +145,7 @@ def test_recursive_model_visible_object_graph_contains_only_bounded_dtos(tmp_pat
     )
     skill_detail = SkillDetailView(
         **skill_candidate.model_dump(),
+        authorization_id=uuid4(),
         source_run_id=uuid4(),
         applicability="Use only when currently applicable.",
         workflow_outline=("Inspect current governed evidence.",),

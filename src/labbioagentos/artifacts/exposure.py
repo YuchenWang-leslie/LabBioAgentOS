@@ -172,7 +172,6 @@ class ExposurePolicy:
             reason="Exposure class and view type are allowed.",
             effective_limit=effective_limit,
         )
-
     @staticmethod
     def _deny(ref, query, consumer, reason: str) -> ExposureDecision:
         return ExposureDecision(
@@ -427,43 +426,4 @@ class ArtifactExposureService:
             invocation_id=ref.producer_invocation_id,
             status=status,
             payload=payload,
-        )
-
-
-class PantheonArtifactQueryAdapter:
-    """Narrow future ToolProvider boundary that returns only ArtifactView."""
-
-    def __init__(
-        self,
-        service: ArtifactExposureService,
-        *,
-        consumer: ArtifactConsumer = ArtifactConsumer.REMOTE_LLM,
-        principal: Principal | None = None,
-    ):
-        self.service = service
-        self.consumer = consumer
-        self.principal = principal
-
-    async def artifact_query(
-        self,
-        artifact_id: str,
-        query: dict[str, Any],
-        consumer: str | None = None,
-    ) -> ArtifactView:
-        requested_consumer = self.consumer
-        if consumer is not None:
-            try:
-                requested_consumer = ArtifactConsumer(consumer)
-            except ValueError as exc:
-                raise ArtifactQueryError(f"Unsupported artifact consumer: {consumer}") from exc
-            if requested_consumer is not self.consumer:
-                raise ArtifactExposureDenied(
-                    "The Pantheon artifact tool consumer is fixed and cannot be "
-                    "escalated by tool input."
-                )
-        return self.service.artifact_query(
-            artifact_id,
-            query,
-            requested_consumer,
-            principal=self.principal,
         )

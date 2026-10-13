@@ -14,6 +14,7 @@ from labbioagentos import (
     ApplicationRunRecord,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     ArtifactExposureClass,
     ArtifactRepresentation,
     AuthorizationDenied,
@@ -30,7 +31,7 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PerInvocationPantheonStageInvoker,
+    NativeKernelStageInvoker,
     PlanStageBody,
     PreflightStageBody,
     Principal,
@@ -214,6 +215,7 @@ def _configuration(
         domain_decision_handlers=domain_decision_handlers,
         run_state_store=store,
         runtime_revision=revision,
+        runtime_backend=RuntimeBackend.NATIVE,
     )
 
 
@@ -414,7 +416,7 @@ def test_d3_d22_d24_created_run_recovers_without_model_call(tmp_path, monkeypatc
         calls.append(stage_input)
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     database = tmp_path / "run-state.sqlite3"
     first_store = SQLiteRunStateStore(database)
     first = LabBioApplication(_configuration(tmp_path, first_store))
@@ -458,7 +460,7 @@ async def test_d4_d8_stable_running_boundary_restores_retry_and_prior_results(
             )
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     durable = InMemoryRunStateStore()
     stopping = _StopAfterCheckpointStore(
         durable,
@@ -512,7 +514,7 @@ async def test_d5_d6_waiting_gate_survives_restart_and_resumes_normally(
             )
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     database = tmp_path / "run-state.sqlite3"
     first_store = SQLiteRunStateStore(database)
     first = LabBioApplication(_configuration(tmp_path, first_store))
@@ -637,7 +639,7 @@ async def test_d13_stage_inflight_is_not_replayed_after_restart(tmp_path, monkey
         calls.append(stage_input)
         raise RuntimeError("simulated provider disconnect")
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     store = InMemoryRunStateStore()
     first = LabBioApplication(_configuration(tmp_path, store))
     handle = first.create_run(_request())
@@ -677,7 +679,7 @@ async def test_d14_uncertain_execute_side_effect_is_never_duplicated(
             raise _SimulatedProcessLoss
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     durable = InMemoryRunStateStore()
     stop_at_execute = _StopAfterCheckpointStore(
         durable,
@@ -741,7 +743,7 @@ async def test_d15_gate_decision_inflight_is_not_reapplied(tmp_path, monkeypatch
             )
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     effects = []
     store = InMemoryRunStateStore()
     first_handler = _EffectThenStopHandler(effects)
@@ -806,7 +808,7 @@ async def test_d16_d18_terminal_run_recovers_without_replay(
             )
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     store = InMemoryRunStateStore()
     first = LabBioApplication(_configuration(tmp_path, store))
     handle = first.create_run(_request())
@@ -888,7 +890,7 @@ async def test_d23_recovered_artifact_reference_has_no_storage_locator(
             ),
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     store = InMemoryRunStateStore()
     first = LabBioApplication(_configuration(tmp_path, store))
     artifact = first.artifact_store.register(
@@ -973,7 +975,7 @@ async def test_d7_d21_c9_sqlite_skill_gate_approves_after_application_restart(
             )
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     skill_database = tmp_path / "skills.sqlite3"
     first_skill_store = SQLiteSkillStore(skill_database)
     first_service = GoldSkillService(

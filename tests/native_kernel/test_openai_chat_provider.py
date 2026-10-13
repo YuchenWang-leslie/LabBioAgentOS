@@ -1,0 +1,317 @@
+"""P3 acceptance for the sole OpenAI-compatible Chat provider adapter."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from uuid import uuid4
+
+import pytest
+
+from labbioagentos.kernel import (
+    FinishReason,
+    ModelRequest,
+    OpenAICompatibleChatProvider,
+    ProviderBinding,
+    ProviderProtocolError,
+    ProviderTransportError,
+    PublicMessage,
+    ToolCall,
+    ToolSpec,
+)
+
+
+class RecordingTransport:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.requests = []
+
+    async def post_json(self, *, url, headers, payload, timeout_seconds):
+        self.requests.append(
+            {
+                "url": url,
+                "headers": deepcopy(headers),
+                "payload": deepcopy(payload),
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return deepcopy(response)
+
+
+def _binding(*, thinking="ENABLED"):
+    return ProviderBinding(
+        provider="compatible",
+        model="model-a",
+        endpoint="https://provider.invalid/v1",
+        transport="OPENAI_COMPATIBLE_CHAT",
+        thinking_mode=thinking,
+    )
+
+
+def _request(binding, messages, *, turn=1, tools=(), schema=None):
+    return ModelRequest(
+        binding=binding,
+        messages=messages,
+        tools=tools,
+        response_schema=schema,
+        max_output_tokens=512,
+        deadline_monotonic=10_000_000_000.0,
+        kernel_run_id=uuid4(),
+        invocation_id=uuid4(),
+        turn_index=turn,
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_adapter_emits_strict_schema_and_preserves_unknown_usage():
+    response = {
+        "id": "request-1",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "PRIVATE_REASONING_SENTINEL",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "inspect",
+                                "arguments": '{"view":"SUMMARY"}',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 9},
+    }
+    transport = RecordingTransport((response,))
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+    spec = ToolSpec(
+        name="inspect",
+        description="Inspect a bounded object.",
+        parameters={
+            "type": "object",
+            "properties": {"view": {"type": "string"}},
+            "additionalProperties": False,
+        },
+    )
+    schema = {
+        "type": "object",
+        "properties": {"result": {"type": "string"}},
+        "required": ["result"],
+        "additionalProperties": False,
+    }
+    request = _request(
+        binding,
+        (PublicMessage(role="USER", content="Inspect."),),
+        tools=(spec,),
+        schema=schema,
+    )
+
+    turn = await provider.generate(request)
+
+    assert turn.finish_reason is FinishReason.TOOL_CALLS
+    assert turn.private_reasoning_present is True
+    assert turn.usage.input_tokens == 9
+    assert turn.usage.output_tokens is None
+    assert turn.usage.total_tokens is None
+    sent = transport.requests[0]
+    assert sent["url"] == "https://provider.invalid/v1/chat/completions"
+    assert sent["headers"]["Authorization"] == "Bearer secret-token"
+    assert sent["payload"]["thinking"] == {"type": "enabled"}
+    assert sent["payload"]["tools"][0]["function"]["strict"] is True
+    assert sent["payload"]["response_format"]["json_schema"]["strict"] is True
+    assert "PRIVATE_REASONING_SENTINEL" not in repr(turn)
+
+
+@pytest.mark.asyncio
+async def test_private_reasoning_replays_only_on_exact_bound_tool_history():
+    first = {
+        "id": "request-1",
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": "",
+                    "reasoning_content": "PRIVATE_REASONING_SENTINEL",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "inspect",
+                                "arguments": " { } ",
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    second = {
+        "id": "request-2",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {"content": "complete"},
+            }
+        ],
+    }
+    transport = RecordingTransport((first, second))
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+    initial = _request(binding, (PublicMessage(role="USER", content="Inspect."),))
+    turn = await provider.generate(initial)
+    followup = initial.model_copy(
+        update={
+            "turn_index": 2,
+            "messages": (
+                *initial.messages,
+                PublicMessage(role="ASSISTANT", tool_calls=turn.tool_calls),
+                PublicMessage(role="TOOL", content='{"ok":true}', tool_call_id="call-1"),
+            ),
+        }
+    )
+
+    await provider.generate(followup)
+
+    replayed = transport.requests[1]["payload"]["messages"][1]
+    assert replayed["reasoning_content"] == "PRIVATE_REASONING_SENTINEL"
+    provider.clear_invocation(initial.kernel_run_id, initial.invocation_id)
+    assert "PRIVATE_REASONING_SENTINEL" not in repr(provider)
+
+
+@pytest.mark.asyncio
+async def test_empty_tool_turn_content_is_normalized_to_absent_content():
+    transport = RecordingTransport(
+        (
+            {
+                "id": "request-empty-content",
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-empty-content",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "inspect",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+        )
+    )
+    binding = _binding(thinking="DISABLED")
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+
+    turn = await provider.generate(
+        _request(binding, (PublicMessage(role="USER", content="Run."),))
+    )
+
+    assert turn.content is None
+    assert len(turn.tool_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_finish_is_bounded_and_malformed_response_fails_closed():
+    transport = RecordingTransport(
+        (
+            {
+                "id": "request-1",
+                "choices": [
+                    {
+                        "finish_reason": "PRIVATE_PROVIDER_SENTINEL",
+                        "message": {"content": "bounded"},
+                    }
+                ],
+            },
+            {"provider_raw_body": "PRIVATE_BODY_SENTINEL"},
+        )
+    )
+    binding = _binding(thinking="DISABLED")
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+    request = _request(binding, (PublicMessage(role="USER", content="Run."),))
+
+    turn = await provider.generate(request)
+    assert turn.finish_reason is FinishReason.OTHER
+    assert "PRIVATE_PROVIDER_SENTINEL" not in repr(turn)
+    with pytest.raises(ProviderProtocolError) as raised:
+        await provider.generate(request.model_copy(update={"turn_index": 2}))
+    assert "PRIVATE_BODY_SENTINEL" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_tool_calls_means_no_calls():
+    transport = RecordingTransport(
+        (
+            {
+                "id": "request-null-tools",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "complete", "tool_calls": None},
+                    }
+                ],
+            },
+        )
+    )
+    binding = _binding(thinking="DISABLED")
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+
+    turn = await provider.generate(
+        _request(binding, (PublicMessage(role="USER", content="Run."),))
+    )
+
+    assert turn.content == "complete"
+    assert turn.tool_calls == ()
+
+
+@pytest.mark.asyncio
+async def test_transport_failure_is_bounded_and_never_falls_back():
+    transport = RecordingTransport((RuntimeError("PRIVATE_NETWORK_SENTINEL"),))
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=transport,
+    )
+    request = _request(binding, (PublicMessage(role="USER", content="Run."),))
+
+    with pytest.raises(ProviderTransportError) as raised:
+        await provider.generate(request)
+    assert len(transport.requests) == 1
+    assert "PRIVATE_NETWORK_SENTINEL" not in str(raised.value)

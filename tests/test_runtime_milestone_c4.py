@@ -33,7 +33,7 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PerInvocationPantheonStageInvoker,
+    NativeKernelStageInvoker,
     PreflightInputRequirement,
     Principal,
     Project,
@@ -60,6 +60,7 @@ from labbioagentos import (
     WorkspaceContext,
 )
 from labbioagentos.artifacts import ExposurePolicy
+from labbioagentos.runtime.contracts import RuntimeStageProposal
 
 
 def _profile() -> AgentProfile:
@@ -151,114 +152,11 @@ def _result():
 
 
 @pytest.mark.asyncio
-async def test_per_invocation_assembly_uses_fresh_bound_toolsets_and_separates_modes(
-    boundary,
-):
-    _, principal, workspace, store, exposure = boundary
-    made_toolsets = []
-    made_teams = []
-    observed_boundaries = []
-    workflow_state = {"stage": "INTAKE"}
-
-    def toolset_factory(binding, services):
-        value = LabBioRuntimeToolSet(binding, services)
-        made_toolsets.append(value)
-        return value
-
-    from labbioagentos import PantheonRuntimeFactory
-
-    class RecordingFactory(PantheonRuntimeFactory):
-        async def create_team(self, profile_keys, **kwargs):
-            team, prompts = await super().create_team(profile_keys, **kwargs)
-            mode = kwargs.get("invocation_mode")
-            made_teams.append((mode, team))
-            if mode is RuntimeInvocationMode.CAPABILITY:
-                async def run(_self, _message, **_kwargs):
-                    assert workflow_state["stage"] == "INTAKE"
-                    return SimpleNamespace(content="Explicit capability outcome.")
-            else:
-                async def run(_self, _message, **_kwargs):
-                    return SimpleNamespace(content=_result().model_dump(mode="json"))
-            team.run = MethodType(run, team)
-            return team, prompts
-
-    factory = RecordingFactory(_catalog())
-    assembly = RuntimeStageAssemblySpec(
-        stage_id=WorkflowStage.INTAKE,
-        root_profile_key="coordinator",
-        prompt_template_key="runtime-generic",
-        capability_allowlist=("artifact_list",),
-        capability_prompt_values={"protocol": "CAPABILITY tools, no schema"},
-        finalization_prompt_values={"protocol": "FINALIZE strict schema, no tools"},
-        preserve_capability_completion=True,
-    )
-    invoker = PerInvocationPantheonStageInvoker(
-        assembly=assembly,
-        factory=factory,
-        principal=principal,
-        workspace=workspace,
-        services=RuntimeCapabilityServices(
-            artifact_store=store,
-            artifact_exposure=exposure,
-        ),
-        toolset_factory=toolset_factory,
-        boundary_observer=lambda kind, value: observed_boundaries.append(
-            (kind, value)
-        ),
-    )
-    StageRuntimeRegistry(
-        (
-            StageRuntimeSpec(
-                stage_id=WorkflowStage.INTAKE,
-                profile_key="coordinator",
-                prompt_template_key="runtime-generic",
-                capability_allowlist=("artifact_list",),
-                invoker=invoker,
-            ),
-        )
-    )
-    first, second = _input(), _input()
-    assert (await invoker.invoke(first)).stage_id is WorkflowStage.INTAKE
-    assert (await invoker.invoke(second)).stage_id is WorkflowStage.INTAKE
-    assert made_toolsets[0] is not made_toolsets[1]
-    assert [item.binding.invocation_id for item in made_toolsets] == [
-        first.invocation_id,
-        second.invocation_id,
-    ]
-    assert [kind for kind, _ in observed_boundaries] == [
-        "stage_input",
-        "capability_evidence",
-        "stage_result",
-        "stage_input",
-        "capability_evidence",
-        "stage_result",
-    ]
-    capability_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.CAPABILITY]
-    final_teams = [team for mode, team in made_teams if mode is RuntimeInvocationMode.FINALIZE]
-    assert all(team.team_agents[0].response_format is None for team in capability_teams)
-    assert all(
-        issubclass(team.team_agents[0].response_format, RuntimeStageResult)
-        and team.team_agents[0]
-        .response_format.model_json_schema()["properties"]["stage_id"]["const"]
-        == WorkflowStage.INTAKE.value
-        for team in final_teams
-    )
-    assert all(
-        not any(
-            isinstance(provider, LabBioRuntimeToolSet)
-            for provider in team.team_agents[0].providers.values()
-        )
-        for team in final_teams
-    )
-    assert workflow_state == {"stage": "INTAKE"}
-
-
-@pytest.mark.asyncio
 async def test_trusted_binding_and_registry_config_cannot_be_overridden(boundary):
     _, principal, workspace, store, exposure = boundary
-    from labbioagentos import PantheonRuntimeFactory
+    from labbioagentos import NativeRuntimeFactory
 
-    invoker = PerInvocationPantheonStageInvoker(
+    invoker = NativeKernelStageInvoker(
         assembly=RuntimeStageAssemblySpec(
             stage_id=WorkflowStage.INTAKE,
             root_profile_key="coordinator",
@@ -267,7 +165,7 @@ async def test_trusted_binding_and_registry_config_cannot_be_overridden(boundary
             capability_prompt_values={"protocol": "capability"},
             finalization_prompt_values={"protocol": "finalize"},
         ),
-        factory=PantheonRuntimeFactory(_catalog()),
+        factory=NativeRuntimeFactory(_catalog()),
         principal=principal,
         workspace=workspace,
         services=RuntimeCapabilityServices(

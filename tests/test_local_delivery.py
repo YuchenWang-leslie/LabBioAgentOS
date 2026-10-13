@@ -14,7 +14,7 @@ from labbioagentos import (
     ArtifactExposureDenied, ArtifactQuery, ArtifactRepresentation, ArtifactViewType,
     AuthorizationDenied, ExecutionPlan, JsonlTraceSink, LabBioApplication,
     NextAction, NextActionProposal, OutputArtifactSpec, OutputCollector,
-    PerInvocationPantheonStageInvoker, Principal, ReportSubmissionService,
+    NativeKernelStageInvoker, Principal, ReportSubmissionService,
     RuntimeStageResult, SQLiteRunStateStore, WorkflowStage, WorkspaceContext,
 )
 from labbioagentos.local_delivery import LocalDeliveryError, export_run
@@ -98,7 +98,7 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
                 kind=RuntimeReferenceKind.EXECUTION, reference_id=output.metadata["execution_id"])))
         return RuntimeStageResult(stage_id=stage, summary="Synthetic stage", body=body, next_action=action)
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     await application.run(handle)
     directory = tmp_path / "delivery"
     manifest = _export(local_run, directory)
@@ -223,7 +223,7 @@ async def test_incomplete_export_preserves_authoritative_status_without_replay(l
             body=_body(stage_input.stage_id), next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     if state == "PROVIDER_FAILURE":
         with pytest.raises(RuntimeError):
             await application.run(handle)

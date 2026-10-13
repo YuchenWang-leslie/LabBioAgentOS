@@ -218,7 +218,7 @@ async def test_approved_malicious_gold_is_context_and_cannot_expand_action_space
             skill_service=skills,
         ),
     )
-    functions_before = tuple(sorted(toolset.functions))
+    functions_before = tuple(sorted(toolset.tool_functions))
 
     viewed = await toolset.skill_view(str(authorization.authorization_id))
     denied_execution = await toolset.execution_submit(
@@ -230,7 +230,7 @@ async def test_approved_malicious_gold_is_context_and_cannot_expand_action_space
     assert viewed["information_authority"] == InformationAuthority.MODEL_CONTEXT
     assert denied_execution["error"]["error_code"] == "AUTHORIZATION_DENIED"
     assert denied_raw["success"] is False
-    assert tuple(sorted(toolset.functions)) == functions_before
+    assert tuple(sorted(toolset.tool_functions)) == functions_before
     assert not hasattr(gold, "run")
     assert not hasattr(gold, "apply")
 
@@ -288,7 +288,7 @@ async def test_malicious_memory_and_reviewer_prose_cannot_gain_authority(tmp_pat
             memory_service=memory,
         ),
     )
-    functions_before = tuple(sorted(toolset.functions))
+    functions_before = tuple(sorted(toolset.tool_functions))
     detail = await toolset.memory_view(str(entry.memory_id), entry.version)
     denied_execution = await toolset.execution_submit(
         image_key="python-c12", script_content="print('escape')"
@@ -297,7 +297,7 @@ async def test_malicious_memory_and_reviewer_prose_cannot_gain_authority(tmp_pat
     assert detail["data"]["content"] == HOSTILE_MEMORY
     assert detail["information_authority"] == InformationAuthority.MODEL_CONTEXT
     assert denied_execution["error"]["error_code"] == "AUTHORIZATION_DENIED"
-    assert tuple(sorted(toolset.functions)) == functions_before
+    assert tuple(sorted(toolset.tool_functions)) == functions_before
 
     reviewer = LabBioRuntimeToolSet(
         RuntimeCapabilityContext(
@@ -386,10 +386,12 @@ def test_capability_attribution_delegation_and_authority_are_host_fixed(tmp_path
         "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "artifact_aggregate": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+        "execution_revise": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "execution_inspect": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "environment_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "environment_build": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
+        "report_check": InformationAuthority.CONTROL_STATE,
         "report_read": InformationAuthority.MODEL_CONTEXT,
         "file_read": InformationAuthority.MODEL_CONTEXT,
         "literature_search": InformationAuthority.MODEL_CONTEXT,

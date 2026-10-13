@@ -8,7 +8,7 @@ import socket
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import (
     ArtifactRepresentation, AuthorizationDenied, CAPABILITY_CEILINGS, ExecutionPlanDraft,
@@ -353,17 +353,16 @@ async def test_successor_inspection_requires_explicit_original_program_and_hash(
     r"# CONTROL_SOURCE_CANARY literal \x1b[31m" + "\npass\n",
     "# CONTROL_SOURCE_CANARY data:image/png;base64,iVBORw0KGgo" + "A" * 120 + "\npass\n",
 ])
-async def test_transport_unsupported_source_fails_without_release_or_completed_evidence(
+async def test_native_json_transport_preserves_control_like_source_exactly(
     inspection, boundary, source,
 ):
     receipt = await _submit(inspection, boundary, source)
     tools, provider = await _inspection_provider(inspection, boundary)
     result = await provider.call_tool("execution_inspect", {"execution_id": str(receipt.execution_id)})
-    assert result["success"] is False
-    assert result["error"]["error_code"] == "EXECUTION_SOURCE_TRANSPORT_UNSUPPORTED"
-    assert tools.evidence_items()[-1].status.value == "FAILED"
-    encoded = json.dumps([result, *[item.model_dump(mode="json") for item in tools.evidence_items()],
-        *[event.model_dump(mode="json") for event in boundary[0].read(inspection[2])]])
+    assert result["success"] is True
+    assert result["data"]["submitted_program"]["source"] == source
+    assert tools.evidence_items()[-1].status.value == "COMPLETED"
+    encoded = json.dumps([item.model_dump(mode="json") for item in tools.evidence_items()])
     assert "CONTROL_SOURCE_CANARY" not in encoded
     assert '"source":' not in encoded
     assert _inspect(inspection, boundary, receipt.execution_id)["submitted_program"]["source"] == source
@@ -394,25 +393,6 @@ async def test_transport_large_escaped_page_can_be_requested_smaller_without_exe
     assert page["script_hash"] == receipt.script_hash
     assert [item.status.value for item in tools.evidence_items()] == ["FAILED", "COMPLETED"]
     assert len(inspection[1].plans) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["# ASCII\npass\n", "# CRLF\r\npass\r\n", "# 中文注释\npass\n"])
-async def test_supported_source_survives_actual_pantheon_pure_transport_filters(
-    inspection, boundary, source,
-):
-    from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
-
-    receipt = await _submit(inspection, boundary, source)
-    _, provider = await _inspection_provider(inspection, boundary)
-    result = await provider.call_tool("execution_inspect", {"execution_id": str(receipt.execution_id)})
-    assert result["success"] is True
-    original = json.dumps(result, ensure_ascii=False)
-    filtered = filter_base64_in_tool_result(json.loads(original))
-    messages = filter_tool_messages([{"role": "tool", "content": json.dumps(filtered, ensure_ascii=False)}])
-    assert messages[0]["content"] == original
-    assert json.loads(messages[0]["content"])["data"]["submitted_program"]["source"] == source
-    assert result["data"]["submitted_program"]["complete"] is True
 
 
 @pytest.mark.asyncio

@@ -97,8 +97,6 @@ from .run_state import (
 from .runtime import (
     CapabilityEvidenceBundle,
     CapabilityEvidenceStatus,
-    PantheonRuntimeFactory,
-    PerInvocationPantheonStageInvoker,
     PreflightStageBody,
     ReportSubmissionService,
     RuntimeCapabilityServices,
@@ -115,10 +113,15 @@ from .runtime import (
     StageRuntimeRegistry,
     StageRuntimeSpec,
 )
-from .runtime.assembly import BoundaryObserver, PluginFactory
+from .runtime.assembly import BoundaryObserver
 from .runtime.coordinator import RuntimeCoordinatorError, RuntimeCoordinatorService
 from .runtime.contracts import RuntimeInputArtifactUsage, RuntimeExecutionActivity
-from .runtime.pantheon import PantheonRuntimeIntegrationError, RuntimeProfileConfigurationError
+from .runtime.errors import RuntimeIntegrationError, RuntimeProfileConfigurationError
+from .runtime.native_stage import (
+    NativeKernelStageInvoker,
+    NativeProviderBuilder,
+    NativeRuntimeFactory,
+)
 from .runtime.reporting import ReportReceipt
 from .skills import GoldSkillService, SkillUserDecision
 from .trace import InMemoryTraceSink, RunTraceRecorder, TraceEvent, TraceSink
@@ -143,6 +146,12 @@ class ApplicationRunStateError(RuntimeError):
 
 
 _EXECUTION_PREFLIGHT_FAILURE_CODE = "EXECUTION_PREFLIGHT_FAILED"
+
+
+class RuntimeBackend(StrEnum):
+    """Trusted backend selection frozen into the runtime revision."""
+
+    NATIVE = "native"
 
 
 class ApplicationRecoveryIssueCode(StrEnum):
@@ -534,18 +543,6 @@ class ApplicationReconciliationStatus(BaseModel):
 
 
 @dataclass(frozen=True)
-class ApplicationStagePlugin:
-    """Trusted exact-stage plugin factory; it performs no task-content routing."""
-
-    stage_id: WorkflowStage
-    factory: PluginFactory
-
-    def __post_init__(self) -> None:
-        if not callable(self.factory):
-            raise TypeError("Application stage plugin factory must be callable")
-
-
-@dataclass(frozen=True)
 class ApplicationRuntimeConfiguration:
     """Trusted process configuration used to assemble one application instance."""
 
@@ -554,6 +551,8 @@ class ApplicationRuntimeConfiguration:
     profile_catalog: RuntimeProfileCatalog
     stage_assemblies: tuple[RuntimeStageAssemblySpec, ...]
     runtime_revision: str
+    runtime_backend: RuntimeBackend = RuntimeBackend.NATIVE
+    native_provider_builder: NativeProviderBuilder | None = None
     projects: tuple[Project, ...] = ()
     allowed_input_roots: tuple[str | Path, ...] = ()
     approved_images: tuple[ApprovedImage, ...] = ()
@@ -567,7 +566,6 @@ class ApplicationRuntimeConfiguration:
         default_factory=AuthorizationPolicy
     )
     exposure_policy: ExposurePolicy = field(default_factory=ExposurePolicy)
-    stage_plugins: tuple[ApplicationStagePlugin, ...] = ()
     trace_sink: TraceSink | None = None
     run_state_store: RunStateStore | None = None
     process_runner: DockerProcessRunner | None = None
@@ -585,6 +583,20 @@ class ApplicationRuntimeConfiguration:
     max_stage_invocations: int = 64
 
     def __post_init__(self) -> None:
+        try:
+            backend = RuntimeBackend(self.runtime_backend)
+        except (TypeError, ValueError) as exc:
+            raise ApplicationConfigurationError(
+                "runtime_backend must be 'native'"
+            ) from exc
+        object.__setattr__(self, "runtime_backend", backend)
+        if (
+            self.native_provider_builder is not None
+            and not callable(self.native_provider_builder)
+        ):
+            raise ApplicationConfigurationError(
+                "native_provider_builder must be callable"
+            )
         if (
             not isinstance(self.runtime_revision, str)
             or not self.runtime_revision.strip()
@@ -615,15 +627,6 @@ class ApplicationRuntimeConfiguration:
         if configured_main != required_main:
             raise ApplicationConfigurationError(
                 "Application stage assemblies must exactly cover configured main stages"
-            )
-        plugin_stages = tuple(item.stage_id for item in self.stage_plugins)
-        if len(set(plugin_stages)) != len(plugin_stages):
-            raise ApplicationConfigurationError(
-                "Application stage plugin bindings must be unique"
-            )
-        if not set(plugin_stages).issubset(configured_main):
-            raise ApplicationConfigurationError(
-                "Application stage plugin bindings require a configured stage"
             )
         if any(
             not isinstance(handler, ApplicationDomainDecisionHandler)
@@ -787,11 +790,11 @@ class LabBioApplication:
             trace_recorder=self.trace_recorder,
         )
 
-        self.runtime_factory = PantheonRuntimeFactory(configuration.profile_catalog)
-        self._plugin_factories = {
-            binding.stage_id: binding.factory
-            for binding in configuration.stage_plugins
-        }
+        self.runtime_factory = NativeRuntimeFactory(
+            configuration.profile_catalog,
+            **({"provider_builder": configuration.native_provider_builder}
+               if configuration.native_provider_builder is not None else {}),
+        )
         self.workflow_engine = WorkflowEngine(
             configuration.workflow_definition,
             trace_recorder=self.trace_recorder,
@@ -1201,7 +1204,7 @@ class LabBioApplication:
             session.coordinator.accept_trusted_stage_result(
                 session.run, result, stage_input.invocation_id,
             )
-        except (InvalidProposalError, PantheonRuntimeIntegrationError) as exc:
+        except (InvalidProposalError, RuntimeIntegrationError) as exc:
             self._fail_rejected_stage(session, exc)
             return await self.run(handle)
         self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
@@ -1283,7 +1286,7 @@ class LabBioApplication:
         for item in evidence.items if evidence else ():
             if item.status is not CapabilityEvidenceStatus.COMPLETED:
                 continue
-            if item.capability_name == "execution_submit":
+            if item.capability_name in {"execution_submit", "execution_revise"}:
                 receipt = ExecutionReceipt.model_validate_json(json.dumps(item.safe_result))
                 produced_ids.update(receipt.output_artifact_ids)
             elif item.capability_name == "report_submit":
@@ -1357,7 +1360,7 @@ class LabBioApplication:
                         body=body,
                         invocation_id=invocation_id,
                     )
-                except (InvalidProposalError, PantheonRuntimeIntegrationError) as exc:
+                except (InvalidProposalError, RuntimeIntegrationError) as exc:
                     self._fail_rejected_stage(session, exc)
                     break
             self._checkpoint(session, recovery_state=RunRecoveryState.STABLE)
@@ -1371,7 +1374,7 @@ class LabBioApplication:
 
     def _fail_rejected_stage(self, session, error):
         """Close only a known invalid result after completed tool work, not a crash."""
-        if isinstance(error, PantheonRuntimeIntegrationError):
+        if isinstance(error, RuntimeIntegrationError):
             if error.error_code != "MALFORMED_RUNTIME_RESULT":
                 raise error
             code = "MALFORMED_RUNTIME_RESULT"
@@ -1724,18 +1727,18 @@ class LabBioApplication:
 
         specs = []
         for assembly in self.configuration.stage_assemblies:
-            invoker = PerInvocationPantheonStageInvoker(
-                assembly=assembly,
-                factory=self.runtime_factory,
-                principal=principal,
-                workspace=workspace,
-                services=self.capability_services,
-                trace_recorder=self.trace_recorder,
-                execution_capability=execution_capability,
-                input_usage_provider=input_usage_provider,
-                plugin_factory=self._plugin_factories.get(assembly.stage_id),
-                boundary_observer=observe_boundary,
-            )
+            common = {
+                "assembly": assembly,
+                "factory": self.runtime_factory,
+                "principal": principal,
+                "workspace": workspace,
+                "services": self.capability_services,
+                "trace_recorder": self.trace_recorder,
+                "execution_capability": execution_capability,
+                "input_usage_provider": input_usage_provider,
+                "boundary_observer": observe_boundary,
+            }
+            invoker = NativeKernelStageInvoker(**common)
             specs.append(
                 StageRuntimeSpec(
                     stage_id=assembly.stage_id,
@@ -2051,7 +2054,6 @@ __all__ = [
     "ApplicationRunResult",
     "ApplicationRunStateError",
     "ApplicationRuntimeConfiguration",
-    "ApplicationStagePlugin",
     "LabBioApplication",
     "SkillDomainDecisionHandler",
     "MemoryDomainDecisionHandler",

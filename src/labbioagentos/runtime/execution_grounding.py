@@ -32,7 +32,8 @@ class ExecutionGroundingError(ValueError):
 
 
 def requires_execution_grounding(stage_input: RuntimeStageInput) -> bool:
-    return stage_input.stage_id is WorkflowStage.EXECUTE and "execution_submit" in stage_input.allowed_capabilities
+    return stage_input.stage_id is WorkflowStage.EXECUTE and bool(
+        {"execution_submit", "execution_revise"}.intersection(stage_input.allowed_capabilities))
 
 
 def execution_result_control(
@@ -45,7 +46,7 @@ def execution_result_control(
         raise ValueError("Execution evidence does not match the current invocation")
     receipts = []
     for item in evidence.items if evidence is not None else ():
-        if item.capability_name != "execution_submit" or item.status is not CapabilityEvidenceStatus.COMPLETED:
+        if item.capability_name not in {"execution_submit", "execution_revise"} or item.status is not CapabilityEvidenceStatus.COMPLETED:
             continue
         if item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE:
             raise ValueError("Execution receipt requires authoritative evidence")

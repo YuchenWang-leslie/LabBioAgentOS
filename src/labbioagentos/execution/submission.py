@@ -23,7 +23,7 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import (
     ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
-    ExecutionReceipt, ExecutionResult, ExecutionScriptLocation,
+    ExecutionReceipt, ExecutionResult, ExecutionScriptLocation, ExecutionSourceEdit,
 )
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 
@@ -40,12 +40,21 @@ class ExecutionInspectionError(ExecutionSubmissionError):
     """An original submission could not be verified for source inspection."""
 
 
+class ExecutionRevisionError(ExecutionInspectionError):
+    """A fixed mechanical reason, never source or rejected replacement content."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__('Explicit execution revision was rejected')
+
+
 @dataclass(frozen=True)
 class _SubmittedExecution:
     script_ref: ArtifactRef
     source_hash: str
     source_bytes: int
     receipt: ExecutionReceipt | None
+    draft: ExecutionPlanDraft | None = None
 
 
 class ExecutionSubmissionService:
@@ -77,13 +86,22 @@ class ExecutionSubmissionService:
         stage_id: WorkflowStage,
         invocation_id: UUID,
         mountable_input_artifact_ids: tuple[UUID, ...] | None = None,
+        revision_of: UUID | None = None,
     ) -> ExecutionReceipt:
         self._authorize_binding(principal, workspace, run_id)
         # None preserves direct callers without an advertised run-input contract;
         # an explicit empty tuple permits no inputs. Never widen or infer the set.
+        # Explicitly selected, already registered outputs from this exact live
+        # run are also valid checkpoint inputs. No discovery of other runs or
+        # unregistered scratch files, and no automatic choice of an intermediate.
+        registered = {
+            artifact_id for submission in self._submitted_executions.values()
+            if submission.script_ref.run_id == run_id and submission.receipt is not None
+            for artifact_id in submission.receipt.registered_outputs
+        }
         if mountable_input_artifact_ids is not None and not set(
             draft.input_artifact_ids
-        ).issubset(mountable_input_artifact_ids):
+        ).issubset(set(mountable_input_artifact_ids) | registered):
             raise ExecutionInputSelectionError()
         try:
             ast.parse(draft.script_content)
@@ -117,6 +135,8 @@ class ExecutionSubmissionService:
                 "execution_id": str(plan.execution_id),
                 "image_key": plan.image_key,
                 "input_artifact_ids": [str(item) for item in plan.input_artifact_ids],
+                "revision_of": str(revision_of) if revision_of is not None else None,
+                "resources": plan.resources.model_dump(mode="json"),
             },
         )
         result = self.executor.execute(plan)
@@ -126,13 +146,14 @@ class ExecutionSubmissionService:
             raise ExecutionSubmissionError("Executor returned an invalid result contract")
         self._validate_result(result, plan, workspace)
         receipt = ExecutionReceipt.from_result(result,
-            include_generated_file_refs=self.allow_generated_file_read)
+            include_generated_file_refs=self.allow_generated_file_read, resources=plan.resources)
         source_bytes = plan.script_content.encode("utf-8")
         self._submitted_executions[result.execution_id] = _SubmittedExecution(
             script_ref=result.script_ref,
             source_hash=sha256(source_bytes).hexdigest(),
             source_bytes=len(source_bytes),
             receipt=receipt,
+            draft=draft,
         )
         self._emit(
             run_id,
@@ -147,6 +168,7 @@ class ExecutionSubmissionService:
             {
                 "execution_id": str(receipt.execution_id),
                 "script_hash": receipt.script_hash,
+                "resources": plan.resources.model_dump(mode="json"),
                 "diagnostics": [
                     item.model_dump(mode="json") for item in receipt.diagnostics
                 ],
@@ -163,6 +185,47 @@ class ExecutionSubmissionService:
             },
         )
         return receipt
+
+    async def revise(
+        self, execution_id: UUID, expected_script_hash: str,
+        edits: tuple[ExecutionSourceEdit, ...], *, principal, workspace, run_id,
+        stage_id, invocation_id, mountable_input_artifact_ids=None,
+        image_key=None, requested_outputs=None, resources=None,
+        input_artifact_ids=None, parameters=None,
+    ) -> ExecutionReceipt:
+        """Apply explicit unique edits, then re-enter the unchanged execution boundary.
+
+        This is a new execution, not in-place mutation or automatic repair. Null
+        overrides reuse the original intent. The exact base must be in this run.
+        """
+        self._authorize_binding(principal, workspace, run_id)
+        submission = self._submitted_executions.get(execution_id)
+        if submission is None or submission.draft is None:
+            raise ExecutionRevisionError('REVISION_BASE_UNAVAILABLE')
+        # inspect checks run/scope and hashes the stored bytes. Do not trust only
+        # the in-memory program when the durable source has changed.
+        page = self.inspect(execution_id, principal=principal, workspace=workspace,
+                            run_id=run_id, source_limit=1)
+        if page['submitted_program']['script_hash'] != expected_script_hash:
+            raise ExecutionRevisionError('REVISION_HASH_MISMATCH')
+        source = submission.draft.script_content
+        if len(edits) > 32:
+            raise ExecutionRevisionError('REVISION_EDIT_LIMIT')
+        for edit in edits:
+            if source.count(edit.old) != 1:
+                raise ExecutionRevisionError('REVISION_MATCH_NOT_UNIQUE')
+            source = source.replace(edit.old, edit.new, 1)
+        values = submission.draft.model_dump(mode='python')
+        values['script_content'] = source
+        for key, value in (('image_key', image_key), ('requested_outputs', requested_outputs),
+                           ('resources', resources), ('input_artifact_ids', input_artifact_ids),
+                           ('parameters', parameters)):
+            if value is not None:
+                values[key] = value
+        draft = ExecutionPlanDraft.model_validate(values)
+        return await self.submit(draft, principal=principal, workspace=workspace,
+            run_id=run_id, stage_id=stage_id, invocation_id=invocation_id,
+            mountable_input_artifact_ids=mountable_input_artifact_ids, revision_of=execution_id)
 
     def inspect(
         self,
@@ -265,6 +328,8 @@ class ExecutionSubmissionService:
             offset += len(line)
         return {
             "receipt": submission.receipt.model_dump(mode="json") if submission.receipt else None,
+            "submitted_contract": (submission.draft.model_dump(mode='json', exclude={'script_content'})
+                                   if submission.draft is not None else None),
             "execution_id": str(execution_id),
             "producer_run_id": str(ref.run_id),
             "submitted_program": {

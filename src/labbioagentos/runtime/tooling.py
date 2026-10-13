@@ -1,14 +1,14 @@
-"""Pantheon ToolSet exposing only host-bound, governed LabBio capabilities."""
+"""Host-bound, governed LabBio capability operations."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import json
 import re
 from typing import Annotated, Any, Callable, Literal
 from uuid import UUID, uuid4
 
-from pantheon.toolset import ToolSet, tool
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -45,14 +45,17 @@ from labbioagentos.execution import (
 from labbioagentos.execution.errors import (
     ExecutionInputSelectionError,
     ExecutionOutputDeclarationError,
+    ExecutionResourceLimitError,
 )
 from labbioagentos.execution.models import (
     ExecutionImageKey,
     ExecutionInputArtifactIds,
     ExecutionRequestedOutputs,
+    ExecutionRevisionDraft,
+    ExecutionSourceEdit,
     ExecutionScriptContent,
 )
-from labbioagentos.execution.submission import ExecutionInspectionError
+from labbioagentos.execution.submission import ExecutionInspectionError, ExecutionRevisionError
 from labbioagentos.execution.environments import EnvironmentService, EnvironmentRequestError
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.literature import (
@@ -92,10 +95,16 @@ from .contracts import (
     CapabilityErrorDetails,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
+    RepeatedRequestDetails,
+    ReportEvidenceCheck,
+    ReportEvidenceItem,
+    RevisionValidationDetails,
+    RevisionValidationIssue,
     ExecutionAuditWireType,
     ExecutionDraftField,
     ExecutionSubmitRequestAudit,
     ExecutionSubmitValidationStatus,
+    ExecutionReview,
     SkillSearchRequestAudit,
     ScriptValidationDetails,
     RuntimeReference,
@@ -103,55 +112,26 @@ from .contracts import (
 )
 from .reporting import ReportSubmissionService, read_report_page
 from .files import authorize_generated_file, read_generated_file
-
-
-CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
-    WorkflowStage.INTAKE: ("artifact_list", "artifact_query", "report_read", "file_read"),
-    WorkflowStage.UNDERSTAND: (
-        "artifact_list", "artifact_query", "report_read", "file_read", "skill_search", "skill_view",
-        "memory_search", "memory_view",
-    ),
-    WorkflowStage.PLAN: (
-        "artifact_query", "report_read", "file_read", "skill_search", "skill_view", "skill_propose_use",
-        "memory_search", "memory_view", "environment_list",
-    ),
-    WorkflowStage.PREFLIGHT: ("artifact_query", "report_read", "file_read"),
-    WorkflowStage.EXECUTE: (
-        "artifact_query", "report_read", "file_read", "execution_submit", "execution_inspect",
-        "environment_list", "environment_build",
-    ),
-    WorkflowStage.VALIDATE: ("artifact_query", "artifact_aggregate", "report_read", "file_read", "execution_inspect"),
-    WorkflowStage.INTERPRET: ("artifact_query", "artifact_aggregate", "report_read", "file_read", "literature_search", "execution_inspect"),
-    WorkflowStage.REPORT: ("artifact_query", "artifact_aggregate", "report_read", "file_read", "report_submit", "execution_inspect"),
-    WorkflowStage.LEARN: (
-        "skill_search", "skill_view", "memory_search", "memory_view",
-        "memory_propose_update",
-    ),
-}
-ALL_CAPABILITIES = frozenset(
-    capability for values in CAPABILITY_CEILINGS.values() for capability in values
+from .capability_catalog import (
+    ALL_CAPABILITIES,
+    CAPABILITY_CEILINGS,
+    CAPABILITY_INFORMATION_AUTHORITY,
 )
-CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
-    "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "artifact_aggregate": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "execution_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "execution_inspect": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "environment_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "environment_build": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "report_submit": InformationAuthority.AUTHORITATIVE_EVIDENCE,
-    "report_read": InformationAuthority.MODEL_CONTEXT,
-    "file_read": InformationAuthority.MODEL_CONTEXT,
-    "literature_search": InformationAuthority.MODEL_CONTEXT,
-    "skill_search": InformationAuthority.MODEL_CONTEXT,
-    "skill_view": InformationAuthority.MODEL_CONTEXT,
-    "memory_search": InformationAuthority.MODEL_CONTEXT,
-    "memory_view": InformationAuthority.MODEL_CONTEXT,
-    "skill_propose_use": InformationAuthority.CONTROL_STATE,
-    "memory_propose_update": InformationAuthority.CONTROL_STATE,
+
+
+# Existing procedure fields, not scientific routing or newly authored guidance.
+SkillSection = Literal[
+    "workflow_outline", "collaboration_guidance", "execution_guidance", "parameter_guidance",
+    "known_failure_modes", "debug_lessons", "validation_expectations", "limitations",
+    "reusable_principles", "adaptation_points",
+]
+SKILL_SECTION_FIELDS = {
+    "workflow_outline": "workflow_outline", "collaboration_guidance": "agent_collaboration_guidance",
+    "execution_guidance": "execution_guidance", "parameter_guidance": "parameter_guidance",
+    "known_failure_modes": "known_failure_modes", "debug_lessons": "debug_lessons",
+    "validation_expectations": "validation_expectations", "limitations": "known_limitations",
+    "reusable_principles": "reusable_principles", "adaptation_points": "adaptation_points",
 }
-if frozenset(CAPABILITY_INFORMATION_AUTHORITY) != ALL_CAPABILITIES:
-    raise RuntimeError("Capability information-authority mapping is incomplete")
 _SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 _CANONICAL_INTEGER_WIRE_TOKEN = re.compile(r"(?:0|-?[1-9][0-9]{0,127})")
 _EXECUTION_VALIDATION_PATH_PARTS = frozenset(
@@ -195,6 +175,11 @@ class _ArtifactQueryFailure(ValueError):
         self.query_constraints = query_constraints
 
 
+class _RepeatedCapabilityRequest(ValueError):
+    def __init__(self, previous_capability_invocation_id: UUID):
+        self.previous_capability_invocation_id = previous_capability_invocation_id
+
+
 class _InvalidExecutionDraft(ValueError):
     """execution_submit received a draft rejected by its canonical model."""
 
@@ -203,9 +188,44 @@ class _InvalidExecutionDraft(ValueError):
         super().__init__(hint or "draft validation failed")
 
 
+class _InvalidExecutionRevision(ValueError):
+    def __init__(self, error: ValidationError):
+        issues = []
+        roots = set(ExecutionRevisionDraft.model_fields)
+        for item in error.errors(include_input=False, include_context=False, include_url=False):
+            location = item['loc']
+            root = location[0] if location and location[0] in roots else 'request'
+            field = root
+            if root == 'edits' and len(location) > 2 and location[2] in {'old', 'new'}:
+                field = f'edits.{location[2]}'
+            if root == 'resources' and len(location) > 1 and location[1] in RequestedResources.model_fields:
+                field = f'resources.{location[1]}'
+            reason = item['type']
+            reason = (reason if reason in {'missing', 'extra_forbidden'} else
+                      'invalid_type' if reason.endswith('_type') else 'invalid_value')
+            issues.append(RevisionValidationIssue(field=field,
+                item_index=location[1] if root in {'edits', 'requested_outputs'}
+                and len(location) > 1 and type(location[1]) is int else None, reason=reason))
+        self.details = RevisionValidationDetails(issues=tuple(issues[:32]), truncated=len(issues) > 32)
+        super().__init__('Invalid revision request')
+
+
+class _ExecutionReviewRejected(ValueError):
+    pass
+
+
 class _NonArtifactReference(ValueError):
     def __init__(self, kind: RuntimeReferenceKind):
         self.kind = kind
+
+
+class _SkillAuthorizationNotFound(ValueError):
+    """The requested authorization, not the Skill itself, is absent."""
+
+
+class _SkillSectionError(ValueError):
+    def __init__(self, code, message):
+        self.code, self.safe_message = code, message
 
 
 class _ExecutionSourceTransportError(RuntimeError):
@@ -213,10 +233,9 @@ class _ExecutionSourceTransportError(RuntimeError):
 
 
 class _ReportEvidenceIncomplete(ValueError):
-    def __init__(self, artifact_id, next_offset):
-        self.artifact_id = artifact_id
-        self.next_offset = next_offset
-        super().__init__("Cited record evidence is incomplete")
+    def __init__(self, check: ReportEvidenceCheck):
+        self.check = check
+        super().__init__("Cited record evidence is incomplete or invalid")
 
 
 class _ArtifactPageTransportError(ValueError):
@@ -238,6 +257,7 @@ class ToolResult(BaseModel):
     information_authority: InformationAuthority
     data: JsonValue | None = None
     error: ToolError | None = None
+    capability_invocation_id: UUID | None = None
 
 
 class ArtifactListItem(BaseModel):
@@ -325,6 +345,7 @@ class SkillCandidatePage(BaseModel):
 
 
 class SkillDetailView(SkillCandidateView):
+    authorization_id: UUID
     source_run_id: UUID
     parent_skill_id: UUID | None = None
     parent_version: int | None = None
@@ -458,24 +479,29 @@ class RuntimeCapabilityServices:
     literature_search: LiteratureSearchService | None = None
 
 
-class LabBioRuntimeToolSet(ToolSet):
-    """One filtered ToolSet; allowed tools are available but never auto-invoked."""
+class LabBioRuntimeToolSet:
+    """LabBio-owned capability operations bound to trusted host authority.
+
+    The Native Kernel owns schema publication, argument parsing and dispatch.
+    This class contains only the governed business operations and their
+    evidence/trace binding.
+    """
 
     def __init__(self, binding: RuntimeCapabilityContext, services: RuntimeCapabilityServices):
         self.binding = binding
         self.services = services
         self._evidence_items: list[CapabilityEvidenceItem] = []
-        super().__init__(
-            name=(
-                f"labbio-{binding.stage_id.value.lower()}-"
-                f"{binding.actor_profile_key}"
-            )
-        )
-        allowed = frozenset(binding.capability_allowlist)
-        self.functions = {
-            name: value
-            for name, value in self.functions.items()
-            if name in allowed or name == "list_tools"
+        self.stop_reason: str | None = None
+        self._feedback_boundary: int | None = None
+        self._artifact_list_requests: list[tuple[int, int, UUID, int]] = []
+
+    @property
+    def tool_functions(self) -> dict[str, Callable[..., Any]]:
+        """Return only operations allowed by the trusted capability binding."""
+
+        return {
+            name: getattr(self, name)
+            for name in self.binding.capability_allowlist
         }
 
     def _guard(self, capability: str) -> None:
@@ -483,6 +509,134 @@ class LabBioRuntimeToolSet(ToolSet):
             raise AuthorizationDenied(
                 f"Capability {capability!r} is not available in this stage"
             )
+
+    def mark_feedback_delivered(self) -> None:
+        """Pin results available before the next model response's tool batch."""
+        self._feedback_boundary = len(self._evidence_items)
+
+    def _review_execution(self, value: ExecutionReview | dict) -> ExecutionReview:
+        try:
+            review = ExecutionReview.model_validate(value)
+            available = {item.capability_invocation_id for item in self._evidence_items[:self._feedback_boundary]}
+            if not set(review.feedback_invocation_ids).issubset(available):
+                raise _ExecutionReviewRejected()
+            for identity in review.gold_authorization_ids:
+                service = self.services.skill_service
+                if service is None:
+                    raise _ExecutionReviewRejected()
+                authorization = service.store.get_authorization(identity)
+                if (not authorization.approved or
+                    (authorization.run_id, authorization.authorized_user_id,
+                     authorization.project_id, authorization.lab_id) !=
+                    (self.binding.run_id, self.binding.principal.user_id,
+                     self.binding.workspace.project_id, self.binding.workspace.lab_id) or
+                    not any(access.authorization_id == identity for access in
+                            service.store.accesses_for_run(self.binding.run_id))):
+                    raise _ExecutionReviewRejected()
+            return review
+        except (ValidationError, SkillNotFoundError):
+            raise _ExecutionReviewRejected() from None
+
+    def _query_repeat_feedback(
+        self, error: ToolError, request: ArtifactQueryRequestAudit | None,
+    ) -> ToolError:
+        # Recheck real authorization/query state first. No cached failure may
+        # deny a newly legal query. Only the per-capability safe audit is matched.
+        if (
+            self._feedback_boundary is None
+            or request is None
+            or not isinstance(request.artifact_id, UUID)
+        ):
+            return error
+        if error.retryable or error.error_code not in {
+            'INVALID_ENUM_VALUE', 'INVALID_QUERY_SHAPE', 'ARTIFACT_EXPOSURE_DENIED',
+            'ARTIFACT_NOT_FOUND', 'INVALID_REFERENCE_KIND', 'AUTHORIZATION_DENIED',
+        }:
+            return error
+        for prior in reversed(self._evidence_items[:self._feedback_boundary]):
+            previous, details = prior.artifact_query_request, prior.error_details
+            if (prior.capability_name != 'artifact_query' or previous is None or details is None
+                    or prior.error_code != error.error_code or details.retryable
+                    or previous.artifact_id != request.artifact_id
+                    or details.query_constraints != error.query_constraints):
+                continue
+            denied = (error.error_code == 'ARTIFACT_EXPOSURE_DENIED'
+                      and error.query_constraints is not None)
+            # Redacted invalid scalars are not exact request identities.
+            comparable = (request.limit is None or type(request.limit) is int) and (
+                previous.limit is None or type(previous.limit) is int)
+            same = (comparable and request.offset != 'INVALID_VALUE'
+                    and request.view_type != 'INVALID_VALUE'
+                    and (request.view_type, request.limit, request.offset) ==
+                        (previous.view_type, previous.limit, previous.offset))
+            if denied or same:
+                return self._repeated_error(
+                    error,
+                    prior.capability_invocation_id,
+                    reason=(
+                        'DENIED_VIEWS_UNCHANGED' if denied else 'REQUEST_UNCHANGED'
+                    ),
+                    safe_message=(
+                        'Repeated non-retryable query after feedback with unchanged '
+                        'request/constraints. No data was read. The capability phase is '
+                        'stopping; finalize from recorded evidence and unresolved '
+                        'limitations, without claiming the failed query succeeded or '
+                        'repeating it.'
+                    ),
+                )
+        return error
+
+    def _execution_output_repeat_feedback(
+        self, error: ToolError, failure_details: dict[str, JsonValue] | None,
+    ) -> ToolError:
+        """Stop only after the current validator repeats an unchanged hard constraint."""
+
+        if (
+            self._feedback_boundary is None
+            or error.retryable
+            or error.error_code != "INVALID_OUTPUT_DECLARATION"
+            or failure_details is None
+        ):
+            return error
+        for prior in reversed(self._evidence_items[:self._feedback_boundary]):
+            if (
+                prior.capability_name == "execution_submit"
+                and prior.error_code == error.error_code
+                and prior.error_details is not None
+                and not prior.error_details.retryable
+                and prior.safe_result == failure_details
+            ):
+                return self._repeated_error(
+                    error,
+                    prior.capability_invocation_id,
+                    reason="OUTPUT_DECLARATION_UNCHANGED",
+                    safe_message=(
+                        "The current execution validator again rejected the unchanged "
+                        "queryable-output declaration after that constraint was delivered. "
+                        "No execution started. The capability phase is stopping; finalize "
+                        "from recorded evidence and unresolved limitations without claiming "
+                        "execution succeeded or selecting an output declaration on the "
+                        "Agent's behalf."
+                    ),
+                )
+        return error
+
+    def _repeated_error(
+        self,
+        error: ToolError,
+        previous_capability_invocation_id: UUID,
+        *,
+        reason: str,
+        safe_message: str,
+    ) -> ToolError:
+        self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
+        return error.model_copy(update={
+            "safe_message": safe_message,
+            "repeated_request": RepeatedRequestDetails(
+                previous_capability_invocation_id=previous_capability_invocation_id,
+                reason=reason,
+            ),
+        })
 
     async def _call(
         self,
@@ -493,12 +647,14 @@ class LabBioRuntimeToolSet(ToolSet):
         artifact_query_request: ArtifactQueryRequestAudit | None = None,
         skill_search_request: SkillSearchRequestAudit | None = None,
         execution_submit_request: ExecutionSubmitRequestAudit | None = None,
+        execution_review: ExecutionReview | dict | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
         information_authority = CAPABILITY_INFORMATION_AUTHORITY[capability]
         trace_event_ids: list[UUID] = []
         bounded_ids = self._bounded_identifiers(request_ids or {})
         request_audit_payload: dict[str, JsonValue] = {}
+        reviewed = None
         if artifact_query_request is not None:
             request_audit_payload["artifact_query_request"] = (
                 artifact_query_request.model_dump(mode="json")
@@ -513,6 +669,9 @@ class LabBioRuntimeToolSet(ToolSet):
             )
         try:
             self._guard(capability)
+            if execution_review is not None:
+                reviewed = self._review_execution(execution_review)
+                request_audit_payload['execution_review'] = reviewed.model_dump(mode='json')
             event = self._emit(
                 TraceEventType.CAPABILITY_INVOKED,
                 capability,
@@ -548,6 +707,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 value = [item.model_dump(mode="json", by_alias=True) for item in value]
             result = ToolResult(
                 success=True,
+                capability_invocation_id=capability_invocation_id,
                 information_authority=information_authority,
                 data=value,
             )
@@ -563,14 +723,9 @@ class LabBioRuntimeToolSet(ToolSet):
                     )
                 }
         except Exception as exc:
+            if isinstance(exc, _RepeatedCapabilityRequest):
+                self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
             error = self._safe_error(exc)
-            error_details = CapabilityErrorDetails(
-                safe_message=error.safe_message,
-                retryable=error.retryable,
-                denied_operation=error.denied_operation,
-                query_constraints=error.query_constraints,
-                script_validation=error.script_validation,
-            )
             failure_details = None
             if capability == "execution_submit" and isinstance(
                 exc, ExecutionOutputDeclarationError
@@ -586,6 +741,21 @@ class LabBioRuntimeToolSet(ToolSet):
                         "declared_queryable_output_count": exc.declared_queryable_output_count,
                     },
                 }
+            if capability == 'artifact_query':
+                error = self._query_repeat_feedback(error, artifact_query_request)
+            elif capability == "execution_submit":
+                error = self._execution_output_repeat_feedback(error, failure_details)
+            error_details = CapabilityErrorDetails(
+                safe_message=error.safe_message,
+                retryable=error.retryable,
+                denied_operation=error.denied_operation,
+                query_constraints=error.query_constraints,
+                script_validation=error.script_validation,
+                resource_rejection=error.resource_rejection,
+                revision_validation=error.revision_validation,
+                report_evidence=error.report_evidence,
+                repeated_request=error.repeated_request,
+            )
             event = self._emit(
                 TraceEventType.CAPABILITY_FAILED,
                 capability,
@@ -618,10 +788,12 @@ class LabBioRuntimeToolSet(ToolSet):
                     artifact_query_request=artifact_query_request,
                     skill_search_request=skill_search_request,
                     execution_submit_request=execution_submit_request,
+                    execution_review=reviewed,
                 )
             )
             return ToolResult(
                 success=False,
+                capability_invocation_id=capability_invocation_id,
                 information_authority=information_authority,
                 data=failure_details,
                 error=error,
@@ -652,6 +824,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 artifact_query_request=artifact_query_request,
                 skill_search_request=skill_search_request,
                 execution_submit_request=execution_submit_request,
+                execution_review=reviewed,
             )
         )
         return result.model_dump(mode="json", by_alias=True)
@@ -661,7 +834,6 @@ class LabBioRuntimeToolSet(ToolSet):
 
         return tuple(self._evidence_items)
 
-    @tool
     async def literature_search(self, query: LiteratureQuery, limit: LiteratureLimit = 3) -> dict:
         """Search public biomedical literature in Europe PMC (including PubMed).
 
@@ -691,7 +863,6 @@ class LabBioRuntimeToolSet(ToolSet):
             raise AuthorizationDenied("Environment owner does not match the bound user")
         return service
 
-    @tool
     async def environment_list(
         self, requirements: list[str] = [], offset: int = 0, limit: int = 10,
     ) -> dict:
@@ -711,7 +882,6 @@ class LabBioRuntimeToolSet(ToolSet):
             )
         ))
 
-    @tool
     async def environment_build(
         self, base_image_key: ExecutionImageKey, requirements: list[str],
         import_modules: list[str] = [],
@@ -737,12 +907,33 @@ class LabBioRuntimeToolSet(ToolSet):
             )
         ))
 
-    @tool
     async def artifact_list(self, offset: int = 0, limit: int = 20) -> dict:
         """List bounded metadata for artifacts in the bound workspace."""
-        return await self._call("artifact_list", lambda: self._artifact_list(offset, limit))
+        prior = None
+        if self._feedback_boundary is not None:
+            prior = next((item for item in reversed(self._artifact_list_requests)
+                          if item[0] == offset and item[1] == limit
+                          and item[3] < self._feedback_boundary), None)
 
-    @tool
+        def list_current_state():
+            current = [
+                item.model_dump(mode="json", by_alias=True)
+                for item in self._artifact_list(offset, limit)
+            ]
+            if prior is not None:
+                previous = self._evidence_items[prior[3]].safe_result
+                if current == previous:
+                    raise _RepeatedCapabilityRequest(prior[2])
+            return current
+
+        result = await self._call("artifact_list", list_current_state)
+        if result["success"]:
+            self._artifact_list_requests.append((
+                offset, limit, UUID(result["capability_invocation_id"]),
+                len(self._evidence_items) - 1,
+            ))
+        return result
+
     async def artifact_query(
         self,
         artifact_id: str,
@@ -796,7 +987,6 @@ class LabBioRuntimeToolSet(ToolSet):
             ),
         )
 
-    @tool
     async def execution_inspect(
         self, execution_id: str,
         source_offset: Annotated[int, Field(strict=True, ge=0)] = 0,
@@ -824,6 +1014,10 @@ class LabBioRuntimeToolSet(ToolSet):
         those return producer identity and hash, with receipt null when the live
         receipt is unavailable. Source shows submitted methods, not scientific
         success or proof that every line executed. Never infer methods from plans.
+        submitted_contract contains the exact original output declarations and
+        settings (null for imported scripts). Match output_issues.output_index
+        to that requested_outputs list; paths there are the Agent's own intent,
+        not discovered files. A missing output is not repaired by changing status.
         """
         page = None
 
@@ -836,24 +1030,9 @@ class LabBioRuntimeToolSet(ToolSet):
                 source_offset=source_offset, source_limit=source_limit,
                 imported_source_artifact_ids=self.binding.mountable_input_artifact_ids or (),
             )
-            # Use the actual pure transport filters on a copy. Never invoke the
-            # truncator, which can write full tool bodies to externalized files.
-            from pantheon.settings import get_settings
-            from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
-            from pantheon.utils.token_optimization import get_per_tool_limit
-
             serialized = json.dumps(page, ensure_ascii=False)
-            transport_limit = get_per_tool_limit(
-                "execution_inspect", get_settings().max_tool_content_length,
-            )
-            if len(serialized) > transport_limit - 2_000:
+            if len(serialized.encode("utf-8")) > 58_000:
                 raise _ExecutionSourceTransportError("EXECUTION_SOURCE_PAGE_TOO_LARGE")
-            filtered = json.dumps(
-                filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False,
-            )
-            filtered = filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"]
-            if filtered != serialized:
-                raise _ExecutionSourceTransportError("EXECUTION_SOURCE_TRANSPORT_UNSUPPORTED")
             # The provider may revisit its own source; durable capability evidence
             # keeps only the exact receipt and page identity/completeness facts.
             return {"receipt": page["receipt"],
@@ -874,7 +1053,60 @@ class LabBioRuntimeToolSet(ToolSet):
             return {**result, "data": page}
         return result
 
-    @tool
+    async def execution_revise(
+        self, execution_id: str,
+        expected_script_hash: Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")],
+        edits: Annotated[tuple[ExecutionSourceEdit, ...], Field(max_length=32)] = (),
+        image_key: ExecutionImageKey | None = None,
+        requested_outputs: ExecutionRequestedOutputs | None = None,
+        resources: RequestedResources | None = None,
+        input_artifact_ids: ExecutionInputArtifactIds | None = None,
+        parameters: dict[str, JsonValue] | None = None,
+        review: ExecutionReview | None = None,
+    ) -> dict:
+        """Run an explicit revision of this run's original submitted program.
+
+        Each edit replaces old with new, in sequence; old must match exactly once.
+        Ambiguous/missing matches or a stale hash fail without execution. No fuzzy
+        edits, inferred corrections or internal retry. Null overrides reuse the
+        original image, outputs, resources, inputs and parameters; supplied lists
+        or parameters replace the entire original field (empty means empty).
+        Runtime/network stay unchanged. Every new input is reauthorized.
+        Use execution_inspect to read exact source and submitted_contract when
+        needed. This creates a fresh sandbox execution and immutable source; it
+        does NOT resume Python memory or skip computation. To avoid recomputing,
+        explicitly replace input_artifact_ids with registered intermediates and
+        revise the program to load them instead of recomputing their producers.
+        Original inputs not selected are not mounted. An intermediate must have
+        been written, declared and registered; Python variables/scratch are not
+        checkpoints. Registration does not prove completeness or scientific validity.
+        Only the Agent decides the repair or which intermediate to reuse.
+        review records a brief public decision (not hidden reasoning, source or
+        data): what the feedback changes, what guidance is adopted/adapted, and
+        why selected checkpoints are adequate or recomputation is necessary.
+        Its feedback_invocation_ids are earlier tool response capability_invocation_id
+        values in this invocation; gold_authorization_ids must be approved and read.
+        References are checked, not the scientific correctness of the rationale.
+        """
+        async def revise():
+            service = self._required(self.services.execution_submission, "execution")
+            try:
+                draft = ExecutionRevisionDraft.model_validate(dict(
+                    execution_id=execution_id, expected_script_hash=expected_script_hash,
+                    edits=edits, image_key=image_key, requested_outputs=requested_outputs,
+                    resources=resources, input_artifact_ids=input_artifact_ids, parameters=parameters))
+                return await service.revise(draft.execution_id, draft.expected_script_hash, draft.edits,
+                    principal=self.binding.principal, workspace=self.binding.workspace,
+                    run_id=self.binding.run_id, stage_id=self.binding.stage_id,
+                    invocation_id=self.binding.invocation_id,
+                    mountable_input_artifact_ids=self.binding.mountable_input_artifact_ids,
+                    image_key=draft.image_key, requested_outputs=draft.requested_outputs, resources=draft.resources,
+                    input_artifact_ids=draft.input_artifact_ids, parameters=draft.parameters)
+            except ValidationError as exc:
+                raise _InvalidExecutionRevision(exc) from None
+        return await self._call("execution_revise", revise,
+                                request_ids={"execution_id": execution_id}, execution_review=review)
+
     async def execution_submit(
         self,
         image_key: ExecutionImageKey,
@@ -885,13 +1117,17 @@ class LabBioRuntimeToolSet(ToolSet):
         requested_outputs: ExecutionRequestedOutputs = (),
         resources: RequestedResources = {},
         network_required: bool = False,
+        review: ExecutionReview | None = None,
     ) -> dict:
         """Submit one governed execution intent through canonical draft fields.
 
         Only Artifact UUIDs explicitly supplied in ``input_artifact_ids`` are
         mounted. CRITICAL: copy each UUID verbatim from
         input_artifact_usage[].artifact_id (where execution_input_eligible is
-        true) or execution_capability.mountable_input_artifact_ids. Each must
+        true), execution_capability.mountable_input_artifact_ids, or an earlier
+        same-run receipt's registered_outputs keys. Registered intermediates
+        can be explicitly reused to avoid recomputing; unregistered scratch
+        files and outputs from other runs are not eligible. Each must
         be a complete 8-4-4-4-12 hex UUID string. Passing original_filename,
         truncated values, or non-UUID strings causes INVALID_EXECUTION_DRAFT
         and no files are mounted. The JSON object named by
@@ -944,8 +1180,16 @@ class LabBioRuntimeToolSet(ToolSet):
                 UUIDs are not mounted. If no inputs are needed, pass an empty list.
             parameters: Optional JSON-compatible execution parameters.
             requested_outputs: Declared relative output files and exposure intent.
-            resources: Requested resources within the current trusted envelope.
+            resources: Per-execution request bounded by execution_capability.resource_limits.
+                Omitted fields use execution_capability.submission_default_resources,
+                NOT execution_capability.resources (the preflight request) or the
+                maximum. The receipt records this execution's canonical resources.
             network_required: Whether the program requires network access.
+            review: Brief public pre-execution decision, not hidden reasoning or code.
+                State adopted/adapted guidance, relevant feedback and the intended
+                computation scope. Cite actual earlier capability_invocation_id
+                values and approved/read Gold authorization IDs when applicable.
+                The framework validates those references, not scientific merit.
         """
 
         draft = {
@@ -1010,13 +1254,13 @@ class LabBioRuntimeToolSet(ToolSet):
         return await self._call(
             "execution_submit",
             submit,
+            execution_review=review,
             execution_submit_request=self._execution_submit_request_audit(
                 draft,
                 validation_status=ExecutionSubmitValidationStatus.VALID,
             ),
         )
 
-    @tool
     async def skill_search(
         self,
         offset: int = 0,
@@ -1055,20 +1299,36 @@ class LabBioRuntimeToolSet(ToolSet):
             ),
         )
 
-    @tool
-    async def skill_view(self, authorization_id: str) -> dict:
+    async def skill_view(
+        self, authorization_id: str, section: SkillSection | None = None,
+        offset: Annotated[int, Field(strict=True, ge=0)] = 0,
+        limit: Annotated[int, Field(strict=True, ge=1, le=8)] = 4,
+    ) -> dict:
         """View the exact Skill version bound to an approved run authorization.
 
         Guidance is reference context, not a mandatory procedure or current-task
         evidence. truncated_fields explicitly names any partially returned fields.
+        authorization_id is the approved gate's decision_reference_id, not the
+        Skill UUID from search or the pending proposal ID.
+        Omit section for the initial full bounded view. After that access, section
+        reads page exact stored entries by item offset/limit, including entries
+        omitted by full-view bounds. Later stage handoffs retain the workflow and
+        section catalog; choose any additional sections needed for your work.
+        With section omitted, leave offset/limit at their defaults (0/4).
+        No section is selected by task keywords and no Skill content is rewritten.
         """
+        def read():
+            if section is None:
+                if type(offset) is not int or offset != 0 or type(limit) is not int or limit != 4:
+                    raise _SkillSectionError("INVALID_SKILL_SECTION", "Pagination requires a named section. For the full bounded view leave offset/limit at 0/4.")
+                return self._skill_view(UUID(authorization_id))
+            return self._skill_section(UUID(authorization_id), section, offset, limit)
         return await self._call(
             "skill_view",
-            lambda: self._skill_view(UUID(authorization_id)),
+            read,
             request_ids={"authorization_id": authorization_id},
         )
 
-    @tool
     async def skill_propose_use(
         self,
         skill_id: str,
@@ -1078,6 +1338,10 @@ class LabBioRuntimeToolSet(ToolSet):
         proposed_deviations: list[str] | None = None,
     ) -> dict:
         """Create a pending Skill-use proposal; this cannot approve or execute it.
+
+        Existing decisions in gate_decisions identify their exact skill_use
+        subject and mode. An approved decision_reference_id can be read with
+        skill_view; it does not need another proposal to become usable.
 
         Args:
             skill_id: Exact UUID returned by skill_search.
@@ -1095,7 +1359,6 @@ class LabBioRuntimeToolSet(ToolSet):
             request_ids={"skill_id": skill_id, "skill_version": version},
         )
 
-    @tool
     async def memory_search(
         self,
         offset: int = 0,
@@ -1121,7 +1384,6 @@ class LabBioRuntimeToolSet(ToolSet):
             "memory_search", lambda: self._memory_search(offset, limit, kind, scope)
         )
 
-    @tool
     async def memory_view(self, memory_id: str, version: int) -> dict:
         """View one authorized immutable Memory version."""
         return await self._call(
@@ -1130,7 +1392,6 @@ class LabBioRuntimeToolSet(ToolSet):
             request_ids={"memory_id": memory_id, "memory_version": version},
         )
 
-    @tool
     async def memory_propose_update(
         self,
         target_scope: Literal["PERSONAL", "PROJECT", "LAB"],
@@ -1168,7 +1429,6 @@ class LabBioRuntimeToolSet(ToolSet):
             ),
         )
 
-    @tool
     async def file_read(
         self, artifact_id: str,
         offset: Annotated[int, Field(strict=True, ge=0)] = 0,
@@ -1195,22 +1455,13 @@ class LabBioRuntimeToolSet(ToolSet):
                 coerce_artifact_id(artifact_id), **self._generated_read_context(),
                 offset=offset, limit=limit, expected_sha256=expected_sha256,
             )
-            from pantheon.settings import get_settings
-            from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
-            from pantheon.utils.token_optimization import get_per_tool_limit
-
             serialized = json.dumps(page, ensure_ascii=False)
-            transport_limit = get_per_tool_limit("file_read", get_settings().max_tool_content_length)
-            if len(serialized) > transport_limit - 2_000:
+            if len(serialized.encode("utf-8")) > 58_000:
                 raise _ReportPageTransportError("REPORT_PAGE_TOO_LARGE")
-            filtered = json.dumps(filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False)
-            if filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"] != serialized:
-                raise _ReportPageTransportError("REPORT_PAGE_TRANSPORT_UNSUPPORTED")
             return page
 
         return await self._call("file_read", read, request_ids={"artifact_id": artifact_id})
 
-    @tool
     async def report_read(
         self, artifact_id: str,
         offset: Annotated[int, Field(strict=True, ge=0)] = 0,
@@ -1247,18 +1498,9 @@ class LabBioRuntimeToolSet(ToolSet):
                     identifier, **self._generated_read_context(),
                     offset=offset, limit=limit, expected_sha256=expected_sha256,
                 )
-            from pantheon.settings import get_settings
-            from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
-            from pantheon.utils.token_optimization import get_per_tool_limit
-
             serialized = json.dumps(page, ensure_ascii=False)
-            transport_limit = get_per_tool_limit("report_read", get_settings().max_tool_content_length)
-            if len(serialized) > transport_limit - 2_000:
+            if len(serialized.encode("utf-8")) > 58_000:
                 raise _ReportPageTransportError("REPORT_PAGE_TOO_LARGE")
-            filtered = json.dumps(filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False)
-            filtered = filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"]
-            if filtered != serialized:
-                raise _ReportPageTransportError("REPORT_PAGE_TRANSPORT_UNSUPPORTED")
             # Preserve the exact page the Agent selected across finalization
             # and restart, at MODEL_CONTEXT authority. Trace events still carry
             # identifiers only; no unread page is fetched or inferred.
@@ -1266,7 +1508,6 @@ class LabBioRuntimeToolSet(ToolSet):
 
         return await self._call("report_read", read, request_ids={"artifact_id": artifact_id})
 
-    @tool
     async def artifact_aggregate(
         self, artifact_id: str, operation: Literal["SUM", "COUNT"],
         field: Annotated[str | None, Field(min_length=1, max_length=128)] = None,
@@ -1294,17 +1535,33 @@ class LabBioRuntimeToolSet(ToolSet):
         return await self._call("artifact_aggregate", calculate,
             request_ids={"artifact_id": artifact_id})
 
-    @tool
+    async def report_check(
+        self, evidence_artifact_ids: Annotated[list[str], Field(max_length=256)]
+    ) -> dict:
+        """Check all proposed report references without writing or reading content.
+
+        Returns each supplied index/UUID, registration/access status and first
+        unread table offset in this invocation. READY is mechanical coverage,
+        not scientific validation. Unknown or wrong-kind references remain errors;
+        nothing is substituted. No prose is needed and no report is registered.
+        report_submit rechecks these same conditions before registration.
+        """
+        return await self._call("report_check", lambda: self._report_evidence_check(evidence_artifact_ids))
+
     async def report_submit(
-        self, title: str, report_text: str, evidence_artifact_ids: list[str] | None = None
+        self, title: str, report_text: str,
+        evidence_artifact_ids: Annotated[list[str] | None, Field(max_length=256)] = None,
     ) -> dict:
         """Submit evidence-grounded prose. Cited record tables require complete
         paginated reading in this reporting invocation; prior plans and summaries
         are not performed methods. This checks coverage, not scientific truth.
+        report_check can check reference identities and coverage without prose.
         """
         def submit():
-            ids = tuple(UUID(item) for item in evidence_artifact_ids or [])
-            self._require_report_evidence_coverage(ids)
+            check = self._report_evidence_check([] if evidence_artifact_ids is None else evidence_artifact_ids)
+            if not check.ready:
+                raise _ReportEvidenceIncomplete(check)
+            ids = tuple(item.artifact_id for item in check.items)
             return self._required(self.services.report_submission, "report").submit(
                 title=title, report_text=report_text, evidence_artifact_ids=ids,
                 principal=self.binding.principal, workspace=self.binding.workspace,
@@ -1316,14 +1573,43 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     def _require_report_evidence_coverage(self, artifact_ids):
-        for artifact_id in artifact_ids:
-            ref = self.services.artifact_exposure.artifact_ref(
-                artifact_id, principal=self.binding.principal)
-            if (ref.project_id, ref.lab_id) != (self.binding.workspace.project_id, self.binding.workspace.lab_id):
-                raise AuthorizationDenied("Report evidence is outside the workspace")
-            count = self.services.artifact_store.load_for_view(artifact_id).representation.record_count
-            if not count:
+        check = self._report_evidence_check(artifact_ids)
+        if not check.ready:
+            raise _ReportEvidenceIncomplete(check)
+
+    def _report_evidence_check(self, artifact_ids):
+        if not isinstance(artifact_ids, (list, tuple)) or len(artifact_ids) > 256:
+            raise ValueError("Evidence references must be a bounded list")
+        items = []
+        seen = set()
+        for index, value in enumerate(artifact_ids):
+            try:
+                artifact_id = coerce_artifact_id(value)
+            except ArtifactIdentifierError:
+                items.append(ReportEvidenceItem(index=index, status="INVALID_IDENTIFIER"))
                 continue
+            fields = dict(index=index, artifact_id=artifact_id)
+            if artifact_id in seen:
+                items.append(ReportEvidenceItem(**fields, status="DUPLICATE_REFERENCE"))
+                continue
+            seen.add(artifact_id)
+            try:
+                ref = self.services.artifact_exposure.artifact_ref(
+                    artifact_id, principal=self.binding.principal)
+                if (ref.project_id, ref.lab_id) != (self.binding.workspace.project_id, self.binding.workspace.lab_id):
+                    raise AuthorizationDenied("Report evidence is outside the workspace")
+            except ArtifactNotFoundError:
+                reference = next((item for item in self.binding.context_references
+                    if item.reference_id == str(artifact_id) and item.kind is not RuntimeReferenceKind.ARTIFACT), None)
+                items.append(ReportEvidenceItem(**fields,
+                    status="INVALID_REFERENCE_KIND" if reference else "ARTIFACT_NOT_FOUND",
+                    reference_kind=reference.kind.value if reference else None))
+                continue
+            except AuthorizationDenied:
+                items.append(ReportEvidenceItem(**fields, status="AUTHORIZATION_DENIED"))
+                continue
+            # No structural facts from inaccessible or foreign Artifacts enter feedback.
+            count = self.services.artifact_store.load_for_view(artifact_id).representation.record_count
             ranges = []
             for item in self._evidence_items:
                 data = item.safe_result
@@ -1338,8 +1624,11 @@ class LabBioRuntimeToolSet(ToolSet):
                 if start > end:
                     break
                 end = max(end, stop)
-            if end < count:
-                raise _ReportEvidenceIncomplete(artifact_id, end)
+            incomplete = bool(count and end < count)
+            items.append(ReportEvidenceItem(**fields,
+                status="REPORT_EVIDENCE_INCOMPLETE" if incomplete else "READY",
+                record_count=count, next_offset=end if incomplete else None))
+        return ReportEvidenceCheck(ready=all(item.status == "READY" for item in items), items=tuple(items))
 
     def _artifact_list(self, offset: int, limit: int) -> list[ArtifactListItem]:
         if offset < 0 or limit < 1 or limit > 100:
@@ -1443,14 +1732,8 @@ class LabBioRuntimeToolSet(ToolSet):
                 principal=self.binding.principal,
             )
             if view.view_type is ArtifactViewType.TOP_N:
-                from pantheon.settings import get_settings
-                from pantheon.utils.llm import filter_base64_in_tool_result, filter_tool_messages
-                from pantheon.utils.token_optimization import get_per_tool_limit
                 serialized = json.dumps(view.model_dump(mode="json", by_alias=True), ensure_ascii=False)
-                cap = get_per_tool_limit("artifact_query", get_settings().max_tool_content_length)
-                filtered = json.dumps(filter_base64_in_tool_result(json.loads(serialized)), ensure_ascii=False)
-                filtered = filter_tool_messages([{"role": "tool", "content": filtered}])[0]["content"]
-                if len(serialized) > min(40_000, cap - 2_000) or filtered != serialized:
+                if len(serialized.encode("utf-8")) > 40_000:
                     raise _ArtifactPageTransportError()
             return view
         except ArtifactExposureDenied as exc:
@@ -1509,14 +1792,45 @@ class LabBioRuntimeToolSet(ToolSet):
         )
 
     def _skill_view(self, authorization_id: UUID):
-        skill = self._required(
-            self.services.skill_service, "skill"
-        ).get_authorized_context(
-            authorization_id,
-            run_id=self.binding.run_id,
-            project_id=self.binding.workspace.project_id,
-            principal=self.binding.principal,
-        )
+        service = self._required(self.services.skill_service, "skill")
+        try:
+            service.store.get_authorization(authorization_id)
+        except SkillNotFoundError:
+            raise _SkillAuthorizationNotFound() from None
+        skill = service.get_authorized_context(authorization_id,
+            run_id=self.binding.run_id, project_id=self.binding.workspace.project_id,
+            principal=self.binding.principal)
+        return self.skill_detail(skill, authorization_id)
+
+    def _skill_section(self, authorization_id, section, offset, limit):
+        service = self._required(self.services.skill_service, "skill")
+        if not isinstance(section, str) or section not in SKILL_SECTION_FIELDS or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8:
+            raise _SkillSectionError("INVALID_SKILL_SECTION", "Use a section from the catalog, nonnegative item offset and limit 1 through 8.")
+        if not any(access.authorization_id == authorization_id
+                   for access in service.store.accesses_for_run(self.binding.run_id)):
+            raise _SkillSectionError("SKILL_FULL_VIEW_REQUIRED", "No prior full Skill view exists in this run. Use the approved authorization_id with section omitted first.")
+        skill = service.get_authorized_context(authorization_id,
+            run_id=self.binding.run_id, project_id=self.binding.workspace.project_id,
+            principal=self.binding.principal)
+        values = skill.procedure.model_dump(mode="json")[SKILL_SECTION_FIELDS[section]]
+        if offset > len(values):
+            raise _SkillSectionError("INVALID_SKILL_SECTION", "The item offset exceeds this section's total_items.")
+        end = min(offset + limit, len(values))
+        page = dict(authority="MODEL_CONTEXT", authorization_id=str(authorization_id),
+            skill_id=str(skill.skill_id), version=skill.version, source_run_id=str(skill.source_run_id),
+            section=section, offset=offset, total_items=len(values), items=values[offset:end],
+            next_offset=end if end < len(values) else None,
+            section_sha256=sha256(json.dumps(values, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest())
+        # Do not mark an oversized page as a delivered original.
+        serialized = json.dumps(page, ensure_ascii=False)
+        if len(serialized.encode("utf-8")) > 40_000:
+            raise _SkillSectionError("SKILL_SECTION_TRANSPORT_LIMIT", "This section page cannot be delivered intact. Request a smaller item limit; an individually oversized entry requires author revision, not silent truncation.")
+        return page
+
+    @staticmethod
+    def skill_detail(skill, authorization_id: UUID):
+        """One bounded projection shared by authorized reads and stage handoff."""
         procedure = skill.procedure
         # Keep the established per-field bounds; expose partialness rather than
         # implying that a bounded view contains the entire stored Skill.
@@ -1532,7 +1846,7 @@ class LabBioRuntimeToolSet(ToolSet):
             "reusable_principles": (procedure.reusable_principles, 16),
             "adaptation_points": (procedure.adaptation_points, 16),
         }
-        candidate = self._skill_candidate(skill).model_dump()
+        candidate = LabBioRuntimeToolSet._skill_candidate(skill).model_dump()
         partial = [name for name, (values, limit) in fields.items() if len(values) > limit]
         for name, values in (
             ("description", skill.description), ("tags", procedure.tags),
@@ -1546,6 +1860,7 @@ class LabBioRuntimeToolSet(ToolSet):
                 partial.append(name)
         detail = SkillDetailView(
             **candidate,
+            authorization_id=authorization_id,
             source_run_id=skill.source_run_id,
             parent_skill_id=skill.parent_skill_id,
             parent_version=skill.parent_version,
@@ -1723,6 +2038,26 @@ class LabBioRuntimeToolSet(ToolSet):
 
     @staticmethod
     def _safe_error(exc: Exception) -> ToolError:
+        if isinstance(exc, _RepeatedCapabilityRequest):
+            return ToolError(
+                error_code="REPEATED_NON_RETRYABLE_REQUEST",
+                safe_message=(
+                    "The identical artifact list was already delivered after the preceding "
+                    "tool feedback. No new state was read. The capability phase is stopping; "
+                    "finalize from recorded evidence and unresolved limitations without "
+                    "repeating the request."
+                ),
+                repeated_request=RepeatedRequestDetails(
+                    previous_capability_invocation_id=exc.previous_capability_invocation_id,
+                    reason="REQUEST_UNCHANGED",
+                ),
+            )
+        if isinstance(exc, _ExecutionReviewRejected):
+            return ToolError(error_code='INVALID_EXECUTION_REVIEW', safe_message=(
+                'No execution started. review requires a brief nonempty rationale and only '
+                'real prior tool response capability_invocation_id values from this invocation; '
+                'Gold authorization IDs must be approved and already read in this run. '
+                'Omit absent references; do not invent them. Review is MODEL_CONTEXT, not approval.'))
         if isinstance(exc, ArtifactArithmeticError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, _ArtifactPageTransportError):
@@ -1730,10 +2065,13 @@ class LabBioRuntimeToolSet(ToolSet):
                 "The requested record page cannot be transported intact. Request a smaller "
                 "TOP_N limit at the same offset. It was not counted as delivered evidence."))
         if isinstance(exc, _ReportEvidenceIncomplete):
-            return ToolError(error_code="REPORT_EVIDENCE_INCOMPLETE", safe_message=(
-                f"Cited Artifact {exc.artifact_id} is incomplete; first unread offset {exc.next_offset}. Read all pages "
-                "of each cited table using TOP_N offset/next_offset before submission; "
-                "an unread page is not missing data. No report was registered."))
+            first = next(item for item in exc.check.items if item.status != "READY")
+            return ToolError(error_code=first.status, safe_message=(
+                "No report was registered. report_evidence lists every supplied citation's identity "
+                "and status, including unread table offsets. Coverage requires all TOP_N pages "
+                "in this reporting invocation; plans and prior summaries are not those pages. "
+                "report_check accepts references without resending report prose. No reference was changed."),
+                report_evidence=exc.check)
         if isinstance(exc, LiteratureSearchError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, EnvironmentRequestError):
@@ -1803,6 +2141,15 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="SKILL_APPROVAL_REQUIRED",
                 safe_message="Exact user approval is required for Skill context access.",
             )
+        if isinstance(exc, _SkillAuthorizationNotFound):
+            return ToolError(
+                error_code="SKILL_AUTHORIZATION_NOT_FOUND",
+                safe_message=("No Skill-use authorization exists for this authorization_id. "
+                    "This does not mean the Skill is missing. Search Skill IDs and pending proposal IDs "
+                    "are not authorizations; an approved gate provides decision_reference_id for skill_view."),
+            )
+        if isinstance(exc, _SkillSectionError):
+            return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, SkillNotFoundError):
             return ToolError(
                 error_code="SKILL_NOT_FOUND",
@@ -1856,6 +2203,18 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="INVALID_EXECUTION_DRAFT",
                 safe_message=message,
             )
+        if isinstance(exc, _InvalidExecutionRevision):
+            return ToolError(error_code="INVALID_EXECUTION_REVISION", safe_message=(
+                "No revision was executed. revision_validation identifies rejected fields and edit "
+                "indices. Each edits entry requires old and new strings; an empty new string deletes "
+                "the exact old match. See the tool schema for the unchanged contract. "
+                "No source, overrides or matches were repaired."), revision_validation=exc.details)
+        if isinstance(exc, ExecutionRevisionError):
+            return ToolError(error_code=exc.code, safe_message=(
+                "No revision was executed. Inspect the exact same-run execution and script_hash; "
+                "each edit.old must match once in sequential order. Null overrides retain the original "
+                "submitted_contract. Explicit input_artifact_ids and parameters replace those original "
+                "fields, while empty values clear them; selected inputs must remain authorized."))
         if isinstance(exc, ExecutionInspectionError):
             return ToolError(
                 error_code="EXECUTION_SUBMISSION_UNAVAILABLE",
@@ -1912,9 +2271,18 @@ class LabBioRuntimeToolSet(ToolSet):
                 error_code="INVALID_EXECUTION_INPUT",
                 safe_message=(
                     "No execution started. Selected input Artifact IDs must be a subset "
-                    "of the current execution capability's mountable_input_artifact_ids. "
+                    "of the current execution capability's mountable_input_artifact_ids or "
+                    "registered_outputs keys from same-run execution receipts. "
                     "Workspace visibility alone does not authorize execution input use."
                 ),
+            )
+        if isinstance(exc, ExecutionResourceLimitError):
+            return ToolError(
+                error_code="EXECUTION_RESOURCE_LIMIT_EXCEEDED",
+                safe_message=("No execution started. resource_rejection identifies the "
+                    "requested values, policy limits and exceeded fields. Submit an explicit "
+                    "request within these limits; no resources were changed or retried."),
+                resource_rejection=exc.details,
             )
         if isinstance(exc, ValidationError):
             return ToolError(

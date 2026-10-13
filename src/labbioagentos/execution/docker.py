@@ -494,6 +494,18 @@ class DockerExecutor:
                 error_context=(bounded_error_context(outcome.stderr)
                     if self.execution_policy.include_error_context else None),
             )
+        # A terminated program may have written declared checkpoints before
+        # failing. Apply the same collection/security checks as a successful
+        # process, while retaining its non-zero exit as the primary failure.
+        collection_error = None
+        try:
+            collected = self.output_collector.collect(plan, workspace.output_root)
+            output_refs = tuple(item.ref for item in collected)
+            issues = tuple(item.issue for item in collected if item.issue is not None)
+        except OutputCollectionError as exc:
+            collection_error = exc
+            output_refs = exc.output_artifact_refs
+            issues = exc.issues
         if outcome.exit_code != 0:
             message = f"Docker process exited with code {outcome.exit_code}."
             self._emit_failure(
@@ -516,6 +528,8 @@ class DockerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.NON_ZERO_EXIT,
                 error_message=message,
+                output_refs=output_refs,
+                issues=issues,
                 error_context=(bounded_error_context(outcome.stderr)
                     if self.execution_policy.include_error_context else None),
                 diagnostics=self._safe_python_diagnostics(
@@ -528,15 +542,6 @@ class DockerExecutor:
                 ),
             )
 
-        collection_error = None
-        try:
-            collected = self.output_collector.collect(plan, workspace.output_root)
-            output_refs = tuple(item.ref for item in collected)
-            issues = tuple(item.issue for item in collected if item.issue is not None)
-        except OutputCollectionError as exc:
-            collection_error = exc
-            output_refs = exc.output_artifact_refs
-            issues = exc.issues
         queryable_output_count = sum(
             ref.exposure_class is not ArtifactExposureClass.RAW
             for ref in output_refs

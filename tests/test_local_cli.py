@@ -210,22 +210,3 @@ def test_inflight_failure_remains_visible_without_replay(local_cli, monkeypatch,
     assert cli.main(["export", "--run-dir", str(directory)]) == 1
     assert calls == ["stage"]
     assert observed["provider_modes"] == [True, False, False]
-
-
-def test_console_entrypoint_does_not_leak_library_diagnostics():
-    result = subprocess.run([sys.executable, "-B", "-c", '''
-from labbioagentos import cli
-from pantheon.utils.log import logger
-def command():
-    try:
-        raise RuntimeError("PRIVATE_EXCEPTION_BODY")
-    except RuntimeError:
-        logger.exception("SECRET_PROVIDER_BODY")
-    return 0
-cli.main = command
-raise SystemExit(cli.entrypoint())
-'''], capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0
-    assert "runtime_diagnostic" in result.stderr
-    assert "PRIVATE_EXCEPTION_BODY" not in result.stdout + result.stderr
-    assert "SECRET_PROVIDER_BODY" not in result.stdout + result.stderr

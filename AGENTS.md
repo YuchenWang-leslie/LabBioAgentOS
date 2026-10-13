@@ -2,13 +2,23 @@
 
 ## Project Objective
 
-This repository is a controlled extension of PantheonOS for building a bioinformatics multi-agent platform.
+This repository builds a governed bioinformatics multi-agent platform.
 
-PantheonOS remains the underlying multi-agent runtime. Preserve and reuse its existing Agent, PantheonTeam, call_agent delegation, execution context, child-memory isolation, delegation-chain tracking, plugin lifecycle, and provider abstractions wherever practical.
+The user-approved direction from 2026-10-10 is to replace PantheonOS as the
+in-stage Agent runtime with a LabBio-owned native kernel. The end state has no
+Pantheon runtime or package dependency. Pantheon remains only the explicit
+legacy implementation and behavior baseline during the bounded migration.
 
-The project adds a higher-level workflow, safe execution, artifact, trace, memory, and Gold Skill layer around PantheonOS.
+Preserve LabBio's existing workflow, safe execution, Artifact, trace, Memory,
+Gold Skill, identity, and recovery boundaries. Reimplement only the provider,
+Agent loop, tool transport, Leader-Specialist delegation, child-context, and
+typed-finalization behavior that LabBio actually uses. Do not vendor, rename,
+copy, or monkey-patch Pantheon into the new kernel.
 
-The goal is NOT to rewrite PantheonOS.
+The current migration authority is
+`docs/NATIVE_KERNEL_MIGRATION_PLAN.md`. `docs/ARCHITECTURE.md` identifies the
+active architecture documents. Older Pantheon reuse plans are historical
+implementation evidence, not forward design authority.
 
 ---
 
@@ -23,11 +33,16 @@ The system has three major planes:
    * owns retry, branch, pause, resume, user gates
    * deterministic where possible
 
-2. Pantheon Agent Runtime
+2. Stage Agent Runtime
 
-   * performs reasoning inside workflow stages
-   * uses PantheonTeam and call_agent()
-   * agents may collaborate dynamically subject to delegation policy
+   * performs reasoning inside workflow stages behind `StageRuntimeInvoker`
+   * target implementation is the LabBio Native Kernel
+   * current Pantheon implementation remains an explicit legacy backend until
+     the migration gates pass
+   * Leader and Specialist agents may collaborate dynamically subject to
+     structural delegation policy
+   * a run freezes backend, backend version, and contract revision at creation
+   * a native failure never falls back to Pantheon or another provider/model
 
 3. Data / Execution Plane
 
@@ -138,7 +153,10 @@ Do not expand scope merely because nearby code could be improved.
 
 Do not perform unrelated refactors.
 
-Do not rewrite a Pantheon subsystem when an adapter, subclass, wrapper, plugin, or extension point can solve the problem.
+During the native-kernel migration, rewrite only the behavior named by the
+approved kernel contracts. Do not redesign `WorkflowEngine`, governance,
+Artifact, Docker, RunState, RunTrace, Gold, or persistent Memory merely because
+nearby runtime code is changing.
 
 If the same implementation issue fails twice after materially different fixes:
 
@@ -156,50 +174,46 @@ If an architectural decision is missing:
 
 ---
 
-## Upstream Preservation Rule
+## Legacy Pantheon And Clean Replacement Rule
 
-Prefer:
+Treat the pinned Pantheon checkout as a read-only legacy behavior baseline
+during migration. Do not add new Pantheon patches to make the native migration
+pass. Convert required behavior into implementation-independent contracts and
+implement those contracts in LabBio.
 
-LabBio extension
-↓
-adapter / plugin / wrapper
-↓
-PantheonOS
+Do not:
 
-Avoid:
+* vendor or copy Pantheon source into LabBio
+* monkey-patch Pantheon at LabBio import time
+* infer that every Pantheon feature must be recreated
+* keep a hidden Pantheon fallback after selecting the native backend
+* continue a Pantheon-era run with the native backend
 
-large invasive changes inside Pantheon core.
-
-Pantheon core modifications require a clear reason.
-
-For every direct modification under existing Pantheon core modules, record:
-
-* why an extension was insufficient
-* exact behavior changed
-* upstream compatibility risk
-
-Keep the diff against upstream small.
+Rollback uses the previous immutable release and a fresh run identity. It does
+not change the backend of an existing run.
 
 ---
 
-## Primary Pantheon Components To Reuse
+## Native Kernel Contracts To Preserve
 
-Preserve unless a roadmap phase explicitly requires otherwise:
+Preserve semantics, not Pantheon classes:
 
-* pantheon.agent.Agent
-* pantheon.team.PantheonTeam
-* list_agents()
-* call_agent()
-* execution_context_id
-* parent_tool_call_id
-* chain_path
-* delegation depth protection
-* delegation loop protection
-* child memory isolation
-* TeamPlugin lifecycle
-* provider/tool abstractions
+* exact provider/model binding with no silent transport switch
+* bounded provider-turn and no-progress observation
+* strict tool schemas and strict JSON-object arguments without repair
+* canonical replay only after successful parsing
+* foreground governed tool execution
+* Leader-selected `list_specialists` / `delegate` behavior
+* parent/child invocation and tool-call identities
+* delegation chain, depth, self, ancestor, and loop protection
+* isolated child working context
+* typed child results and actor-attributed evidence
+* capability evidence followed by tool-free typed finalization
+* private reasoning isolation from trace, Memory, evidence, and reports
 
-SequentialTeam and SwarmTeam are not the primary LabBio workflow engine.
+Do not recreate unused Pantheon MCP, RemoteAgent, Swarm, notebook, background
+task, UI, or learning subsystems unless a later user-approved phase adds an
+independent requirement.
 
 ---
 
@@ -223,11 +237,14 @@ Auxiliary capabilities:
 * DEBUG
 * USER_GATE
 
-WorkflowEngine owns run state.
+`WorkflowEngine` owns run state.
 
-PantheonTeam owns reasoning and collaboration within a stage.
+The runtime configured behind `StageRuntimeInvoker` owns reasoning and
+collaboration within one stage. During migration this may be the explicit
+legacy Pantheon backend or the native candidate, but never both for one run.
 
-PantheonTeam may return structured proposals but may not directly mutate workflow run state.
+The stage runtime may return typed proposals but may not directly mutate
+workflow run state.
 
 ---
 
@@ -266,7 +283,7 @@ RunTrace should record reproducible high-value execution history, especially:
 * stage transitions
 * agent invocation graph
 * caller/callee relationships
-* Pantheon execution_context_id
+* kernel run and Agent invocation IDs
 * parent_tool_call_id
 * chain_path
 * important rendered instructions/prompts
@@ -362,7 +379,8 @@ Prefer testing contracts and boundaries over implementation trivia.
 Important test areas:
 
 * WorkflowEngine state ownership
-* PantheonTeam stage invocation
+* backend-neutral stage-runtime invocation
+* provider/tool/Agent/team native-kernel contracts
 * delegation policy
 * RunTrace correctness
 * artifact exposure policy
@@ -397,3 +415,10 @@ Do not automatically begin the next roadmap phase.
 Do not spend time polishing non-blocking details after acceptance criteria pass.
 
 Working and architecturally correct is more important than locally perfect.
+
+For Native Kernel P0 specifically, work is limited to exact baseline evidence,
+authority/document reconciliation, and implementation-independent
+characterization tests. Do not begin P1 production kernel code, switch the
+default backend, remove `pantheon-agents`, run live provider/data tasks, deploy,
+or activate profiles/Skills until P0 is reviewed and the user authorizes the
+next phase.

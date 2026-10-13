@@ -1,8 +1,17 @@
-# LabBioAgentOS — PantheonOS Modification Roadmap
+# LabBioAgentOS — Historical PantheonOS Modification Roadmap
 
-## Architectural Goal
+> **Historical status (superseded 2026-10-10):** this roadmap records the
+> completed Pantheon-extension phases and the provenance of the current legacy
+> implementation. Its instruction to extend rather than replace Pantheon is no
+> longer forward architecture authority. The approved target and current phase
+> are defined by `docs/NATIVE_KERNEL_MIGRATION_PLAN.md`. The "Phase 0" below is
+> the old Pantheon inspection phase, not Native Kernel P0. Retain this file as
+> behavior and acceptance history; do not use it to block or design the native
+> kernel migration.
 
-Extend PantheonOS rather than replace it.
+## Historical Architectural Goal
+
+The superseded direction was to extend PantheonOS rather than replace it.
 
 Target architecture:
 
@@ -49,9 +58,9 @@ Inspect, do not redesign:
 Create:
 
 * docs/LABBIO_ARCHITECTURE.md
-* docs/PANTHEON_REUSE_MAP.md
+* docs/archive/pantheon/PANTHEON_REUSE_MAP.md
 * docs/OPEN_DECISIONS.md
-* docs/UPSTREAM_MODIFICATIONS.md
+* docs/archive/pantheon/UPSTREAM_MODIFICATIONS.md
 
 PANTHEON_REUSE_MAP must classify important components as:
 

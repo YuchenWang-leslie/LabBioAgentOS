@@ -248,15 +248,16 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
     from dataclasses import replace
     from uuid import UUID
 
-    from labbioagentos import NextAction, NextActionProposal, RuntimeStageResult
+    from labbioagentos import NativeKernelStageInvoker, NextAction, NextActionProposal, RuntimeStageResult
     from labbioagentos import local_config
     from labbioagentos.runtime.contracts import CapabilityEvidenceBundle, RuntimeReference
-    from labbioagentos.runtime.pantheon import PantheonCapabilityStageInvoker, PantheonTypedStageInvoker
     from test_application_runtime_c5 import _body
     from test_c9_gold_skill_lifecycle import _toolset
     from test_local_gold import _gold
 
     _, _, workspace, _, _, observed = managed_cli
+    settings = managed_cli[4]
+    monkeypatch.setattr(cli, "load_settings", lambda _path: settings)
     state = {"applications": [], "view": None, "proposal": None, "final_inputs": [],
              "failures": [], "provider_loads": []}
 
@@ -333,8 +334,8 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
     monkeypatch.setenv("OPENAI_API_KEY", "fixture-only-no-network-key")
     monkeypatch.setenv("OPENAI_API_BASE", "https://fixture.invalid/v1")
     monkeypatch.setattr(LabBioApplication, "run", fixture_run)
-    monkeypatch.setattr(PantheonCapabilityStageInvoker, "invoke", capability)
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalizer)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_run_capability", capability)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalizer)
     directory = workspace.result_root / "run"
     assert cli.main(_run(managed_cli)) == 2, state["failures"]
     assert not (directory / "delivery").exists()

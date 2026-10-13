@@ -13,7 +13,6 @@ from .exposure import (
     ArtifactExposureService,
     ArtifactQueryError,
     ExposurePolicy,
-    PantheonArtifactQueryAdapter,
 )
 from .models import (
     ArtifactApproval,
@@ -64,5 +63,4 @@ __all__ = [
     "InMemoryArtifactApprovalStore",
     "SQLiteArtifactApprovalStore",
     "LocalArtifactStore",
-    "PantheonArtifactQueryAdapter",
 ]

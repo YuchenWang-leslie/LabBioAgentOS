@@ -4,10 +4,9 @@ import json
 
 import pytest
 
-from labbioagentos import LabBioApplication, NextActionProposal, WorkflowStage, cli
+from labbioagentos import LabBioApplication, NativeKernelStageInvoker, NextActionProposal, WorkflowStage, cli
 from labbioagentos.local_conversations import read_run_record
-from labbioagentos.runtime import CapabilityEvidenceBundle
-from labbioagentos.runtime.pantheon import PantheonCapabilityStageInvoker, PantheonTypedStageInvoker, PantheonRuntimeFactory
+from labbioagentos.runtime import CapabilityEvidenceBundle, CapabilityEvidenceItem
 from test_local_cli import local_cli, _REAL_APPLICATION_RUN
 from test_c10_durable_control_plane import _next_result
 from test_clarification_continuation import _question
@@ -16,14 +15,21 @@ from test_clarification_continuation import _question
 @pytest.fixture
 def waiting_cli(local_cli, monkeypatch, capsys):
     settings, source, directory, _ = local_cli
+    monkeypatch.setattr(cli, "load_settings", lambda _path: settings)
     observed = {"provider": 0, "capability": 0, "finalize": 0}
 
     async def capability(self, stage_input):
         observed["capability"] += 1
         assert stage_input.stage_id is WorkflowStage.INTAKE
-        await self.evidence_sources[0].artifact_list()
         return CapabilityEvidenceBundle(run_id=stage_input.run_id, stage_id=stage_input.stage_id,
-            invocation_id=stage_input.invocation_id, items=self.evidence_sources[0].evidence_items())
+            invocation_id=stage_input.invocation_id, items=(CapabilityEvidenceItem(
+                actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent",
+                capability_name="artifact_list",
+                information_authority="AUTHORITATIVE_EVIDENCE",
+                status="COMPLETED",
+                safe_result={"items": [], "next_offset": None},
+            ),))
 
     async def finalize(self, stage_input, *, capability_evidence=None):
         observed["finalize"] += 1
@@ -40,9 +46,8 @@ def waiting_cli(local_cli, monkeypatch, capsys):
         observed["provider"] += 1
 
     monkeypatch.setattr(LabBioApplication, "run", _REAL_APPLICATION_RUN)
-    monkeypatch.setattr(PantheonCapabilityStageInvoker, "invoke", capability)
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
-    monkeypatch.setattr(PantheonRuntimeFactory, "_configure_transport", staticmethod(lambda model: model.model_identifier))
+    monkeypatch.setattr(NativeKernelStageInvoker, "_run_capability", capability)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     monkeypatch.setattr("labbioagentos.local_config._load_provider", load_provider)
     assert cli.main(["run", "--conversation", "dialogue", "--data", str(source),
                      "--task", "Synthetic software task", "--output", str(directory)]) == 2

@@ -1,17 +1,3 @@
-"""Team runtime adapters."""
+"""Historical team adapters were removed with the native-kernel cutover."""
 
-from .delegation import DelegationPolicyPlugin
-from .pantheon import (
-    InstructionRecordValidationError,
-    PantheonStageAdapter,
-    StageInvocationError,
-    StageResultValidationError,
-)
-
-__all__ = [
-    "DelegationPolicyPlugin",
-    "InstructionRecordValidationError",
-    "PantheonStageAdapter",
-    "StageInvocationError",
-    "StageResultValidationError",
-]
+__all__: list[str] = []

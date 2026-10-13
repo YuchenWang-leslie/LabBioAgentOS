@@ -6,7 +6,7 @@ import json
 from uuid import UUID, uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 from pydantic import ValidationError
 
 from labbioagentos import (
@@ -289,7 +289,7 @@ async def test_m8_m9_m18_m19_m20_m21_m22_m23_catalog_and_authority(boundary):
 
 @pytest.mark.asyncio
 async def test_m24_m31_m32_control_state_and_typed_system_separation(boundary):
-    functions_before = tuple(sorted(boundary["toolset"].functions))
+    functions_before = tuple(sorted(boundary["toolset"].tool_functions))
     receipt = await boundary["toolset"].memory_propose_update(
         target_scope="PERSONAL",
         proposed_kind="OPERATING_NOTE",
@@ -304,9 +304,9 @@ async def test_m24_m31_m32_control_state_and_typed_system_separation(boundary):
         "status",
     }
     assert boundary["memory_store"].entries() == ()
-    assert tuple(sorted(boundary["toolset"].functions)) == functions_before
+    assert tuple(sorted(boundary["toolset"].tool_functions)) == functions_before
     assert CAPABILITY_INFORMATION_AUTHORITY["memory_view"] is InformationAuthority.MODEL_CONTEXT
-    assert "skill_search" not in boundary["toolset"].functions
+    assert "skill_search" not in boundary["toolset"].tool_functions
 
 
 @pytest.mark.asyncio
@@ -453,7 +453,7 @@ async def test_provider_schema_is_typed_and_excludes_trusted_fields(boundary):
     ]
     assert proposal["properties"]["action"]["enum"] == ["UPSERT", "RETIRE"]
     assert proposal["properties"]["target_version"]["anyOf"] == [
-        {"type": "integer"}, {"type": "null"}
+        {"type": "integer", "minimum": 1}, {"type": "null"}
     ]
     for trusted in (
         "owner_user_id",

@@ -378,16 +378,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def entrypoint() -> int:
-    # CLI owns its process. Library diagnostics can contain full provider bodies;
-    # retain their occurrence, never their unstructured content or traceback.
-    from pantheon.utils.log import logger
-
-    def diagnostic(message) -> None:
-        print(json.dumps({"event": "runtime_diagnostic",
-                          "level": message.record["level"].name}), file=sys.stderr)
-
-    logger.remove()
-    logger.add(diagnostic, level="WARNING", backtrace=False, diagnose=False)
     return main()
 
 

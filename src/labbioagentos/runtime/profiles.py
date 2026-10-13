@@ -1,4 +1,4 @@
-"""Versioned, architecture-neutral configuration for Pantheon runtimes."""
+"""Versioned, backend-neutral runtime configuration."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from .contracts import (
     RuntimeWorkflowControlView,
     runtime_stage_result_format,
 )
+from .errors import RuntimeProfileConfigurationError
 
 
 Key = Annotated[
@@ -42,7 +43,6 @@ class ProviderTransport(StrEnum):
 class ProviderThinkingWireFormat(StrEnum):
     """Trusted mapping from LabBio thinking intent to provider wire syntax."""
 
-    PANTHEON_SHORTHAND = "PANTHEON_SHORTHAND"
     TYPE_OBJECT = "TYPE_OBJECT"
 
 
@@ -63,10 +63,9 @@ class ModelProfile(BaseModel):
     thinking_enabled: bool = False
     private_tool_reasoning_continuity: bool = False
     provider_tool_schema_strict: bool = False
-    thinking_wire_format: ProviderThinkingWireFormat = (
-        ProviderThinkingWireFormat.PANTHEON_SHORTHAND
-    )
+    thinking_wire_format: ProviderThinkingWireFormat = ProviderThinkingWireFormat.TYPE_OBJECT
     max_output_tokens: int | None = Field(default=None, ge=256, le=32_768)
+    finalization_json_object: bool = False
 
 
 class ResponseSchemaRef(BaseModel):
@@ -164,6 +163,49 @@ class AgentProfile(BaseModel):
     model_profile_key: Key
     capability_profile_key: Key
     delegation_enabled: bool = True
+
+
+class RuntimeProfileCatalog:
+    """Validated profile lookup for the LabBio Native Kernel."""
+
+    def __init__(
+        self,
+        *,
+        agents: tuple[AgentProfile, ...],
+        prompts: tuple[PromptProfile, ...],
+        models: tuple[ModelProfile, ...],
+        schemas: tuple[ResponseSchemaRef, ...],
+        capabilities: tuple[CapabilityProfile, ...],
+    ):
+        self.agents = self._index(agents, "profile_key")
+        self.prompts = self._index(prompts, "template_id")
+        self.models = self._index(models, "profile_key")
+        self.schemas = self._index(schemas, "schema_id")
+        self.capabilities = self._index(capabilities, "profile_key")
+        for agent in agents:
+            for key, collection, label in (
+                (agent.prompt_profile_key, self.prompts, "prompt"),
+                (agent.model_profile_key, self.models, "model"),
+                (agent.response_schema_key, self.schemas, "response schema"),
+                (agent.capability_profile_key, self.capabilities, "capability"),
+            ):
+                if key not in collection:
+                    raise RuntimeProfileConfigurationError(
+                        f"Agent profile {agent.profile_key!r} references missing "
+                        f"{label} {key!r}"
+                    )
+
+    @staticmethod
+    def _index(values, key):
+        result = {}
+        for value in values:
+            identifier = getattr(value, key)
+            if identifier in result:
+                raise RuntimeProfileConfigurationError(
+                    f"Duplicate profile key {identifier!r}"
+                )
+            result[identifier] = value
+        return result
 
 
 def default_agent_profiles() -> tuple[AgentProfile, ...]:

@@ -13,8 +13,8 @@ from pydantic import (
     model_validator,
 )
 
-from .errors import ExecutionPlanRejected, ImageNotApprovedError
-from .models import ExecutionPlan, ExecutionRuntime, RequestedResources
+from .errors import ExecutionPlanRejected, ExecutionResourceLimitError, ImageNotApprovedError
+from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, RequestedResources
 
 
 class ApprovedImage(BaseModel):
@@ -162,6 +162,11 @@ class ExecutionPolicy(BaseModel):
             has_local_inputs=bool(plan.input_artifact_ids),
         )
 
+    @property
+    def resource_limits(self) -> RequestedResources:
+        return RequestedResources(cpus=self.max_cpus, memory_mb=self.max_memory_mb,
+            pids_limit=self.max_pids, timeout_seconds=self.max_timeout_seconds)
+
     def validate_request(
         self,
         requested: RequestedResources,
@@ -172,14 +177,12 @@ class ExecutionPolicy(BaseModel):
     ) -> None:
         """Validate a script-free resource/network request during preflight."""
 
-        if requested.cpus > self.max_cpus:
-            raise ExecutionPlanRejected("Requested CPU limit exceeds host policy")
-        if requested.memory_mb > self.max_memory_mb:
-            raise ExecutionPlanRejected("Requested memory limit exceeds host policy")
-        if requested.pids_limit > self.max_pids:
-            raise ExecutionPlanRejected("Requested pids limit exceeds host policy")
-        if requested.timeout_seconds > self.max_timeout_seconds:
-            raise ExecutionPlanRejected("Requested timeout exceeds host policy")
+        limits = self.resource_limits
+        exceeded = tuple(field for field in RequestedResources.model_fields
+                         if getattr(requested, field) > getattr(limits, field))
+        if exceeded:
+            raise ExecutionResourceLimitError(ExecutionResourceRejection(
+                requested=requested, limits=limits, exceeded_fields=exceeded))
         if network_required and has_local_inputs:
             raise ExecutionPlanRejected(
                 "Network is prohibited when local input Artifacts are mounted"

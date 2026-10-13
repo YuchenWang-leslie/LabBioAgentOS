@@ -2,22 +2,33 @@
 
 **A research-stage framework for reproducible, governed bioinformatics agents.**
 
-LabBioAgentOS connects natural-language scientific tasks to a structured workflow, local analysis execution, and traceable results. It is designed to keep biological data, model reasoning, and system control within explicit boundaries so that a run can be inspected, resumed where safe, and reviewed by a human.
+LabBioAgentOS connects natural-language scientific tasks to a structured
+workflow, local analysis execution, traceable evidence, and user-visible
+delivery. It keeps biological data, Agent reasoning, and system control within
+explicit boundaries so that a run can be inspected, safely continued where
+allowed, and reviewed by a human.
 
-> **中文简介：** LabBioAgentOS 是一个面向生物信息学研究的智能体框架。它将自然语言任务、分阶段工作流、本地受控执行、结果溯源和人工审核连接起来。目前仍处于研究与开发阶段，生成的分析和科学结论需要研究人员核查。
+> **中文简介：** LabBioAgentOS 是一个本地优先、证据受控、可中断恢复的生信
+> 多 Agent 运行系统。科学方法、参数、分析程序、解释和报告由运行中的 Agent
+> 决定；平台负责工作流、权限、执行、Artifact、持久状态与审计边界。项目仍处于
+> 研究开发阶段，生成的分析与科学结论需要研究人员核查。
 
-## The idea
+The active source uses an independently designed and implemented **LabBio
+Native Kernel**. PantheonOS is no longer a runtime or package dependency. Its
+remaining documents are archived migration provenance—not code copied,
+renamed, wrapped, or used as a hidden fallback.
 
-Bioinformatics tasks rarely end with a single model response. They involve selecting inputs, choosing an analysis strategy, running code, checking outputs, interpreting evidence, and reporting limitations. LabBioAgentOS gives these steps a common control and record-keeping structure while leaving task-specific scientific choices to the runtime agent.
+## Architecture
 
 ```mermaid
 flowchart TD
-    U[Researcher and local data] --> C[Task entry point]
-    C --> W[Workflow control]
-    W --> A[Agent reasoning and collaboration]
+    U[Researcher and local data] --> C[CLI and task entry point]
+    C --> W[WorkflowEngine]
+    W --> K[LabBio Native Kernel]
+    K --> A[Agent reasoning and dynamic collaboration]
     A --> P[Policy-governed capabilities]
     P --> E[Local Docker execution]
-    P --> R[Artifact access and exposure rules]
+    P --> R[Artifact and exposure rules]
     E --> R
     R --> W
     W --> O[Results and report for human review]
@@ -25,70 +36,137 @@ flowchart TD
     P -. approved procedures .-> G[Gold Skills and governed memory]
 ```
 
-The workflow follows a staged path:
+The default workflow is:
 
 `INTAKE → UNDERSTAND → PLAN → PREFLIGHT → EXECUTE → VALIDATE → INTERPRET → REPORT → LEARN`
 
-The control layer owns run state and checks transitions. Agents work within a stage and propose the next step. The execution and artifact layers enforce local data access, resource limits, and what can be shown to a remote model.
+- `WorkflowEngine` is the sole authority for run state and stage transitions.
+- The Native Kernel owns within-stage provider calls, strict tool transport,
+  bounded Agent loops, Leader–Specialist collaboration, and typed finalization.
+  It cannot directly mutate workflow state.
+- The host binds identity, project, authorization, and execution policy. Model
+  tool arguments cannot override those facts.
+- Raw biological data stays in the local Artifact/execution plane. A remote
+  model receives only policy-approved metadata, bounded previews, or derived
+  results.
+- Scientific strategy and specialist selection remain Agent-owned. The kernel
+  has no keyword router or task-specific pipeline that substitutes for those
+  decisions.
 
-## What is in the repository
+## Repository capabilities
 
-- **Workflow and runtime integration:** typed stage results, explicit transitions, agent collaboration, and bounded tool access.
-- **Local execution:** policy-controlled Docker execution with registered inputs, outputs, and execution receipts.
-- **Artifact governance:** scoped artifact identities, exposure decisions, and bounded views of derived results.
-- **Trace and continuation:** persisted run state, event records, status inspection, and guarded continuation or revision of earlier runs.
-- **Researcher oversight:** user decisions for sensitive workflow actions and user-approved, reusable Gold Skills.
-- **Local entry points:** a `labbio` command-line interface for submitting tasks and inspecting results, with an optional managed local workspace mode.
+- **Governed workflow:** typed stage proposals, explicit transitions, bounded
+  recovery, user gates, and frozen runtime identity.
+- **Native multi-Agent runtime:** exact provider binding, strict schemas,
+  foreground tool dispatch, dynamic delegation, isolated child context,
+  budgets, interruption, and typed outcomes.
+- **Local execution:** policy-controlled Docker runs with registered inputs,
+  declared outputs, resource ceilings, and immutable receipts.
+- **Artifact governance:** scoped identities, exposure decisions, bounded views,
+  lineage, and content hashes.
+- **Trace and continuation:** persisted run state, event records, safe status
+  inspection, clarification, continuation, and revision.
+- **Researcher oversight:** explicit decisions for governed actions and
+  user-approved reusable Gold Skills.
 
-These are framework capabilities, not a catalogue of validated biological pipelines. The agent's analysis strategy, generated code, and interpretation depend on the configured model, data, tools, and human review.
+These are framework capabilities, not a catalogue of validated biological
+pipelines. Results depend on the configured model, data, tools, Agent decisions,
+and independent human review.
 
-## Try the local entry point
+## Current status
 
-The current setup expects Python 3.11+, a configured model provider, and a local Docker environment with a suitable scientific image. Review the [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) and [runtime requirements](docs/UPSTREAM_MODIFICATIONS.md) before installing; the runtime requires a specific development revision that the package version range alone does not select.
+As of 2026-10-13:
 
-After configuring an allowed input directory, result directory, provider credentials, and Docker image outside the repository, a task looks like this:
+- active source and tests contain no Pantheon import or adapter, and package
+  metadata has no `pantheon-agents` dependency;
+- the deterministic test snapshot is **1338 passed, 10 skipped**;
+- a bounded PBMC3k ordinary-user task completed real-provider interaction,
+  Docker execution, governed Agent validation and interpretation, and Chinese
+  report export;
+- that single task demonstrates the bounded end-to-end path only. It does not
+  establish independent scientific peer review, repeat-run reliability, or
+  correctness for arbitrary tasks.
+
+The P8 source has not yet become a rollback-rehearsed immutable deployment
+release and has not been activated in production. No profile or Skill was
+automatically promoted by this migration. See the
+[Native Kernel migration plan](docs/NATIVE_KERNEL_MIGRATION_PLAN.md) and
+[real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md) for the
+evidence ladder and remaining gates.
+
+## Install and verify
+
+Use Python 3.11+ in an isolated environment rather than a system or base
+environment.
+
+```bash
+python -m pip install -e '.[test]'
+python -m pytest -q
+labbio --help
+```
+
+A real task additionally requires:
+
+1. an OpenAI-compatible Chat provider with credentials stored outside the
+   repository;
+2. an existing, deployment-approved immutable Docker image;
+3. an external `runtime.toml` defining identity, allowed input roots, result
+   root, resource limits, provider binding, and execution settings.
+
+Start from `examples/local-runtime.toml`. The configuration references secret
+environment variables; it must not contain API keys. See the
+[local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the complete contract.
+
+## Submit a task
 
 ```bash
 labbio run \
-  --data /path/to/allowed/input.h5ad \
+  --data /allowed/path/input.h5ad \
   --format h5ad \
-  --task "Summarize this dataset, save the results, and report limitations."
+  --task "Summarize this dataset, save the results, and report limitations." \
+  --preference "Keep the explanation concise and preserve uncertainty." \
+  --output /configured/result/root/my-task
 ```
 
-The command submits a request; it does not guarantee that a model will complete a valid analysis. See the [local workspace guide](docs/LOCAL_WORKSPACES.md) for project-scoped use and the [conversation guide](docs/CONVERSATION_CONTINUATION.md) for history, clarification, continuation, and revision.
+Read-only status and export operations do not call the model:
 
-## Project status
+```bash
+labbio status --run-dir /configured/result/root/my-task
+labbio export --run-dir /configured/result/root/my-task
+```
 
-LabBioAgentOS is an active research prototype. Its core architecture and local execution path have been tested, including an end-to-end sandbox-to-report run. It has **not** been released as a production service, and framework checks do not establish scientific correctness. Provider behavior, data quality, analysis methods, and reported conclusions require independent evaluation. Current boundaries are documented in [Known Limitations](docs/KNOWN_LIMITATIONS.md).
+Run directories retain the request, frozen runtime identity, authoritative
+SQLite state, trace, Artifacts, execution evidence, and delivery files. The
+framework does not choose a final result by filename or modification time, and
+it does not author scientific report text on the Agent's behalf.
 
-## Architecture and development notes
+For project-scoped use, see the [local workspace guide](docs/LOCAL_WORKSPACES.md).
+For history, clarification, continuation, and revision, see the
+[conversation guide](docs/CONVERSATION_CONTINUATION.md).
 
-- [Architecture](docs/LABBIO_ARCHITECTURE.md)
-- [Roadmap](Roadmap.md)
-- [Runtime integration and capability map](docs/RUNTIME_INTEGRATION_MAP.md)
+## Documentation
+
+- [Architecture index](docs/ARCHITECTURE.md)
+- [Native Kernel migration plan](docs/NATIVE_KERNEL_MIGRATION_PLAN.md)
+- [Native Kernel P0 baseline](docs/NATIVE_KERNEL_P0_BASELINE.md)
+- [Stage runtime contracts](docs/STAGE_RUNTIME_CONTRACTS.md)
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
+- [Engineering guardrails](AGENTS.md)
 
-## Citation & Attribution
+Historical Pantheon implementation inventories live under
+`docs/archive/pantheon/` for provenance only.
 
-LabBioAgentOS is an open-source framework for autonomous bioinformatics research, with particular emphasis on traceable research workflows, reproducible execution, and reusable procedural knowledge through Gold Skills.
+## Citation and attribution
 
-If you use LabBioAgentOS in your research, publications, or software development, we strongly request that you acknowledge and cite our work.
+If LabBioAgentOS contributes to research methodology, analysis, publications,
+or derivative software, please acknowledge the project and retain the original
+copyright and license notices where required. Formal citation information will
+be added when available.
 
-### In particular:
-
-Academic research: If LabBioAgentOS contributes to your research methodology, analysis, or results, please cite the corresponding publication.
-
-Framework reuse and derivative development: If you reuse, adapt, or extend LabBioAgentOS, especially its traceability mechanisms, provenance management, or Gold Skills architecture, please provide clear attribution to the original project and reference the corresponding publication in relevant documentation.
-
-Redistribution: When redistributing code derived from LabBioAgentOS, you must retain the original copyright and license notices as required by the MIT License.
-
-### How to Cite
-
-The citation information for LabBioAgentOS will be provided here upon publication.
-
-Project repository: https://github.com/YuchenWang-leslie/LabBioAgentOS
+Project repository: <https://github.com/YuchenWang-leslie/LabBioAgentOS>
 
 ## License
 
-LabBioAgentOS is distributed under the MIT License. The academic citation and attribution requests above reflect our expectations for responsible scientific reuse and do not impose additional legal restrictions beyond the MIT License.
-
+LabBioAgentOS is distributed under the [MIT License](LICENSE). Citation and
+attribution requests express expectations for responsible scientific reuse and
+do not add restrictions beyond that license.

@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "labbioagentos"
 version = "0.1.0"
-description = "Architecture-first bioinformatics agent system extending PantheonOS"
+description = "Governed bioinformatics multi-agent system with a LabBio-owned Native Kernel"
 requires-python = ">=3.11"
 dependencies = [
     "anndata>=0.12,<0.13",
     "h5py>=3.10,<4",
-    "pantheon-agents>=0.6.4,<0.7",
+    "httpx>=0.27,<1",
     "packaging>=24,<27",
     "pydantic>=2,<3",
     "python-dotenv>=1,<2",

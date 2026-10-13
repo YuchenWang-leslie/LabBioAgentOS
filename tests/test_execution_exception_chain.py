@@ -134,7 +134,7 @@ def test_probe_reads_static_import_at_exact_line_only(tmp_path):
 @pytest.mark.asyncio
 async def test_tool_receipt_evidence_and_inspection_keep_same_chain(inspection, boundary, monkeypatch):
     from dataclasses import replace
-    from pantheon.providers import LocalProvider
+    from native_test_provider import LocalProvider
     from labbioagentos import LabBioRuntimeToolSet, WorkflowStage
     from test_runtime_milestone_b import _toolset
 

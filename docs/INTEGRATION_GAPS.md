@@ -1,5 +1,10 @@
 # Integration Gaps
 
+> **Historical/current-wiring status:** this document records how the earlier
+> Pantheon-backed integration gaps were closed. Instructions to continue a
+> Pantheon invoker describe that legacy implementation, not the forward Native
+> Kernel design; migration authority is `NATIVE_KERNEL_MIGRATION_PLAN.md`.
+
 ## Overall finding
 
 The historical integration blockers below were resolved through the C2-C4

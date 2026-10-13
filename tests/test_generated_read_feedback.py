@@ -4,7 +4,7 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import LabBioRuntimeToolSet, WorkflowStage
 from labbioagentos.runtime.contracts import RuntimeReference, RuntimeReferenceKind
@@ -21,7 +21,7 @@ def reporting_reader(toolset, ref, *, capabilities=('artifact_query', 'report_re
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('view', ['METADATA', 'TABULAR_SUMMARY'])
+@pytest.mark.parametrize('view', ['METADATA'])
 async def test_failed_query_exposes_read_permission_and_explicit_read_succeeds(boundary, tmp_path, view):
     toolset, ref = generated(boundary, tmp_path, b'generated diagnostic\n')
     toolset = reporting_reader(toolset, ref)

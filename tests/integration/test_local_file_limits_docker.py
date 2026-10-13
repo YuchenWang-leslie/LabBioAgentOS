@@ -185,7 +185,12 @@ async def test_large_raw_output_exports_exactly_with_configured_tmpfs(local_dock
         application, handle, tmp_path / "delivery",
         principal=settings.principal, workspace=settings.workspace,
     )
-    item = next(item for item in manifest["outputs"] if item["artifact_id"] == str(raw.artifact_id))
+    assert manifest["selected_execution_id"] is None
+    assert manifest["outputs"] == []
+    item = next(
+        item for item in manifest["historical_outputs"]
+        if item["artifact_id"] == str(raw.artifact_id)
+    )
     exported = tmp_path / "delivery" / item["file"]
     assert item["size_bytes"] == exported.stat().st_size == 18 * MIB
     assert item["sha256"] == hashlib.sha256(exported.read_bytes()).hexdigest() == expected_hash

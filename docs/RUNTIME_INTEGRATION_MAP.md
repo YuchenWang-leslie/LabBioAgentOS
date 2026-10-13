@@ -1,5 +1,12 @@
 # Runtime Integration Map
 
+> **Pre-migration implementation map:** this document records the legacy
+> Pantheon integration boundary and its historical evidence. It is not the
+> approved Native Kernel target. Forward architecture is defined by
+> `NATIVE_KERNEL_MIGRATION_PLAN.md`; the WorkflowEngine, authority, evidence,
+> Artifact, execution, and trace boundaries recorded here remain inputs to that
+> migration.
+
 ## Review conclusion
 
 The Phase 1–8 architecture can support a real Pantheon/runtime-LLM loop without
@@ -10,8 +17,9 @@ integration layer, governed execution wiring, model-safe tool adapters, and
 typed stage results are still required. Those gaps are enumerated in
 `INTEGRATION_GAPS.md`.
 
-This document describes the target integration. It does not authorize or
-implement runtime agents, prompts, providers, tools, or scientific workflows.
+This document describes the historical target integration for the implemented
+Pantheon-backed runtime. It does not define the Native Kernel target or
+authorize runtime agents, prompts, providers, tools, or scientific workflows.
 
 ## Ownership boundary
 

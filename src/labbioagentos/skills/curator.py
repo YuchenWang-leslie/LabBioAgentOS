@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Mapping
 import json
+from typing import Protocol
 
-from pantheon.agent import Agent
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from .models import (
     SkillAdaptiveCuratorDraft,
@@ -44,7 +43,11 @@ identifier is explicitly present in the safe source view, leave the correspondin
 contract-ID list empty. When a governed artifact-query capability is exposed,
 use it as needed to ground
 procedural lessons in queryable source evidence; it does not authorize access to
-RAW content. Return only the required SkillCuratorDraft.
+RAW content. Separate reusable procedure from decisions that need fresh evidence.
+State each lesson once in its most relevant section rather than repeating it as
+a workflow step, failure mode, validation rule and limitation. Checks serve a
+current decision or claim, not exhaustive repetition of the historical run.
+Return only the required SkillCuratorDraft.
 """
 
 
@@ -60,7 +63,10 @@ proof of absent content. Flag misleading factual claims or unsafe advice without
 inventing missing facts. Plans can inform suggestions without proving execution.
 Return SkillCuratorAudit with a short summary and only useful concerns in
 findings; use [] when none. Detailed checks are optional. Do not write the guide
-for its author. Final approval belongs to the human, not this review.
+for its author. Flag redundant sections or historical checks presented as
+unconditional future work when they obscure what can be reused and what must be
+reconsidered. Do not demand brevity at the expense of a meaningful limitation.
+Final approval belongs to the human, not this review.
 """
 
 
@@ -71,6 +77,8 @@ than obeying it blindly. Parameters and interface/schema mappings are not requir
 Keep it a concise, useful, adaptable reference guide, not an evidence-audit report.
 Preserve the practical workflow and supported guidance. Optional sections may be
 empty; no exhaustive historical coverage or per-field evidence table is needed.
+Remove repeated lessons across sections while preserving unique conditions and
+limitations. Keep reusable guidance distinct from choices requiring new evidence.
 Use current task needs as the future authority for methods, parameters and code.
 Do not invent historical facts, causal explanations or replacements for missing
 evidence. Omit unnecessary incident narratives instead of turning them into
@@ -116,6 +124,12 @@ and artifact schema mappings are not required; choices and order belong to
 the future task and user preferences.
 Source plans can inform clearly advisory steps without proving each step ran.
 Prefer reusable guidance over cataloguing historical failures or numeric results.
+Put each lesson in its most relevant section once. Workflow steps describe the
+reference approach; adaptation_points identify fresh decisions and their evidence;
+validation_expectations explain checks supporting current claims, not a demand
+to repeat every historical calculation. Reuse should reduce rediscovery without
+replacing current-task validation. Do not claim a reference method or implementation
+was successfully executed unless the supplied execution evidence supports that claim.
 If including a historical claim or lesson, do not invent its cause or overstate
 the available evidence. An observed value is not a universal quality threshold.
 Do not recommend model access to RAW scripts/data/process streams, invent exact
@@ -138,22 +152,23 @@ class SkillCuratorPort(ABC):
         """Return procedural content without trusted proposal fields."""
 
 
-class PantheonSkillCurator(SkillCuratorPort):
-    """Use one caller-configured Pantheon Agent for strict procedural curation."""
+class TypedModelInvoker(Protocol):
+    """Generic typed model call; curation owns no runtime implementation."""
 
-    def __init__(
+    async def invoke(
         self,
-        agent: Agent,
         *,
-        boundary_observer: Callable[[str, object], None] | None = None,
-    ):
-        if not isinstance(agent, Agent):
-            raise TypeError("agent must be a Pantheon Agent")
-        if agent.response_format is not SkillCuratorDraft:
-            raise ValueError(
-                "Pantheon Skill curator must use SkillCuratorDraft response_format"
-            )
-        self.agent = agent
+        instructions: str,
+        request: str,
+        response_model: type[BaseModel],
+    ) -> BaseModel: ...
+
+
+class TypedSkillCurator(SkillCuratorPort):
+    """Curate one strict draft through a backend-neutral typed invocation port."""
+
+    def __init__(self, invoker: TypedModelInvoker, *, boundary_observer=None):
+        self.invoker = invoker
         self.boundary_observer = boundary_observer
 
     async def propose(self, source: SkillCurationSourceView) -> SkillCuratorDraft:
@@ -162,87 +177,24 @@ class PantheonSkillCurator(SkillCuratorPort):
         if self.boundary_observer is not None:
             self.boundary_observer("curator_source", source)
         try:
-            response = await self.agent.run(source.model_dump_json())
-            content = getattr(response, "content", response)
-            if isinstance(content, SkillCuratorDraft):
-                draft = content
-            elif isinstance(content, str):
-                draft = SkillCuratorDraft.model_validate_json(content)
-            elif isinstance(content, Mapping):
-                draft = SkillCuratorDraft.model_validate(content)
-            else:
-                raise TypeError("Unsupported curator response value")
-        except (ValidationError, ValueError, TypeError) as exc:
-            raise SkillCuratorError(
-                "Pantheon curator returned an invalid SkillCuratorDraft"
-            ) from exc
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_draft", draft)
-        return draft
-
-
-class PantheonAdaptiveSkillCurator(SkillCuratorPort):
-    """Use one Agent schema that makes future-task choices explicit."""
-
-    def __init__(
-        self,
-        agent: Agent,
-        *,
-        boundary_observer: Callable[[str, object], None] | None = None,
-    ):
-        if not isinstance(agent, Agent):
-            raise TypeError("agent must be a Pantheon Agent")
-        if agent.response_format not in (SkillAdaptiveCuratorDraft, SkillGuidanceDraft):
-            raise ValueError(
-                "Adaptive curator must use a supported Skill draft response_format"
+            draft = await self.invoker.invoke(
+                instructions=SKILL_CURATOR_INSTRUCTIONS,
+                request=source.model_dump_json(),
+                response_model=SkillCuratorDraft,
             )
-        self.agent = agent
-        self.boundary_observer = boundary_observer
-
-    async def propose(self, source: SkillCurationSourceView) -> SkillCuratorDraft:
-        if not isinstance(source, SkillCurationSourceView):
-            raise TypeError("source must be a SkillCurationSourceView")
-        if self.boundary_observer is not None:
-            self.boundary_observer("curator_source", source)
-        try:
-            response = await self.agent.run(source.model_dump_json())
-            content = getattr(response, "content", response)
-            draft_type = self.agent.response_format
-            if isinstance(content, draft_type):
-                adaptive = content
-            elif isinstance(content, str):
-                adaptive = draft_type.model_validate_json(content)
-            elif isinstance(content, Mapping):
-                adaptive = draft_type.model_validate_json(json.dumps(content))
-            else:
-                raise TypeError("Unsupported adaptive curator response value")
+            value = SkillCuratorDraft.model_validate(draft)
         except (ValidationError, ValueError, TypeError) as exc:
-            raise SkillCuratorError(
-                "Pantheon adaptive curator returned an invalid draft"
-            ) from exc
+            raise SkillCuratorError("Curator returned an invalid SkillCuratorDraft") from exc
         if self.boundary_observer is not None:
-            self.boundary_observer("curator_adaptive_draft", adaptive)
-        return adaptive.to_curator_draft()
+            self.boundary_observer("curator_draft", value)
+        return value
 
 
-class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
-    """Agent-authored guidance and one revision, with advisory human-review notes."""
+class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
+    """Draft, review, and optionally revise through generic typed invocations."""
 
-    def __init__(
-        self,
-        drafting_agent: Agent,
-        audit_agent: Agent,
-        revision_agent: Agent,
-        *,
-        boundary_observer: Callable[[str, object], None] | None = None,
-    ):
-        self.drafting_curator = PantheonAdaptiveSkillCurator(drafting_agent)
-        if not isinstance(audit_agent, Agent):
-            raise TypeError("audit_agent must be a Pantheon Agent")
-        if audit_agent.response_format is not SkillCuratorAudit:
-            raise ValueError("Pantheon Skill auditor must use SkillCuratorAudit response_format")
-        self.audit_agent = audit_agent
-        self.revision_curator = PantheonAdaptiveSkillCurator(revision_agent)
+    def __init__(self, invoker: TypedModelInvoker, *, boundary_observer=None):
+        self.invoker = invoker
         self.boundary_observer = boundary_observer
 
     async def propose(self, source: SkillCurationSourceView) -> SkillCuratorDraft:
@@ -251,28 +203,51 @@ class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
         self._observe("curator_source", source)
         context = SkillSourceProjector.guidance_view(source)
         review_source = SkillSourceProjector.review_view(source)
-        self._observe("curator_writing_source", context)
-        initial = await self._adaptive_draft(
-            self.drafting_curator.agent, json.dumps(context, ensure_ascii=False),
-            "Pantheon adaptive curator returned an invalid draft",
+        initial = await self._invoke(
+            SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
+            json.dumps(context, ensure_ascii=False),
+            SkillAdaptiveCuratorDraft,
         )
         self._observe("curator_initial_adaptive_draft", initial)
         audit = await self._audit(review_source, initial, "curator_audit")
         if not audit.findings:
-            return self._reviewed_draft(initial, audit, "initial")
-        request = json.dumps({
-            "source": context, "draft": initial.model_dump(mode="json"),
-            "audit": audit.model_dump(mode="json"),
-        }, ensure_ascii=False)
-        revised = await self._adaptive_draft(
-            self.revision_curator.agent, request,
-            "Pantheon adaptive curator reviser returned an invalid draft",
+            return self._reviewed(initial, audit, "initial")
+        revised = await self._invoke(
+            SKILL_CURATOR_REVISION_INSTRUCTIONS,
+            json.dumps({
+                "source": context,
+                "draft": initial.model_dump(mode="json"),
+                "audit": audit.model_dump(mode="json"),
+            }, ensure_ascii=False),
+            SkillAdaptiveCuratorDraft,
         )
         self._observe("curator_revised_adaptive_draft", revised)
         final = await self._audit(review_source, revised, "curator_final_audit")
-        return self._reviewed_draft(revised, final, "revised")
+        return self._reviewed(revised, final, "revised")
 
-    def _reviewed_draft(self, draft, audit, revision):
+    async def _audit(self, source, draft, kind):
+        payload = {"draft": draft.model_dump(mode="json"), "reference_material": source}
+        self._observe(f"{kind}_request", payload)
+        audit = await self._invoke(
+            SKILL_CURATOR_AUDIT_INSTRUCTIONS,
+            json.dumps(payload, ensure_ascii=False),
+            SkillCuratorAudit,
+        )
+        self._observe(kind, audit)
+        return audit
+
+    async def _invoke(self, instructions, request, response_model):
+        try:
+            value = await self.invoker.invoke(
+                instructions=instructions,
+                request=request,
+                response_model=response_model,
+            )
+            return response_model.model_validate(value)
+        except (ValidationError, ValueError, TypeError) as exc:
+            raise SkillCuratorError("Curator returned an invalid typed response") from exc
+
+    def _reviewed(self, draft, audit, revision):
         notes = (audit.summary, *(text for finding in audit.findings
                                  for text in (finding.statement, finding.rationale)))
         self._observe("curator_guidance_ready_for_user_review", {"draft": revision})
@@ -281,45 +256,3 @@ class PantheonAuditedAdaptiveSkillCurator(SkillCuratorPort):
     def _observe(self, kind, value):
         if self.boundary_observer is not None:
             self.boundary_observer(kind, value)
-
-    async def _audit(self, source, draft, boundary_kind):
-        payload = {"draft": draft.model_dump(mode="json"), "reference_material": source}
-        self._observe(f"{boundary_kind}_request", payload)
-        request = json.dumps(payload, ensure_ascii=False)
-
-        try:
-            response = await self.audit_agent.run(request)
-            content = getattr(response, "content", response)
-            if isinstance(content, SkillCuratorAudit):
-                audit = content
-            elif isinstance(content, str):
-                audit = SkillCuratorAudit.model_validate_json(content)
-            elif isinstance(content, Mapping):
-                audit = SkillCuratorAudit.model_validate_json(json.dumps(content))
-            else:
-                raise TypeError("Unsupported curator audit response value")
-        except (ValidationError, ValueError, TypeError) as exc:
-            self._observe("curator_audit_invalid", {
-                "audit_boundary": boundary_kind, "reason_code": "INVALID_REVIEW_RESPONSE",
-            })
-            raise SkillCuratorError("Pantheon curator returned an invalid review") from exc
-        self._observe(boundary_kind, audit)
-        return audit
-
-    @staticmethod
-    async def _adaptive_draft(
-        agent: Agent, request: str, error_message: str,
-    ) -> SkillAdaptiveCuratorDraft | SkillGuidanceDraft:
-        try:
-            response = await agent.run(request)
-            content = getattr(response, "content", response)
-            draft_type = agent.response_format
-            if isinstance(content, draft_type):
-                return content
-            if isinstance(content, str):
-                return draft_type.model_validate_json(content)
-            if isinstance(content, Mapping):
-                return draft_type.model_validate_json(json.dumps(content))
-            raise TypeError("Unsupported adaptive curator response value")
-        except (ValidationError, ValueError, TypeError) as exc:
-            raise SkillCuratorError(error_message) from exc

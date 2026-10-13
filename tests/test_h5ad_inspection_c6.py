@@ -15,6 +15,7 @@ from labbioagentos import (
     AgentProfile,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     ArtifactConsumer,
     ArtifactExposureClass,
     ArtifactExposureDenied,
@@ -208,6 +209,7 @@ def _application(tmp_path, *, bioformat_inspectors=()) -> LabBioApplication:
             artifact_root=tmp_path / "artifacts",
             execution_workspace_root=tmp_path / "executions",
             runtime_revision="c6-test-runtime",
+            runtime_backend=RuntimeBackend.NATIVE,
             allowed_input_roots=(input_root,),
             projects=(
                 Project(

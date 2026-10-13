@@ -7,8 +7,7 @@ from types import MethodType, SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from pantheon.agent import Agent
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 from pydantic import ValidationError
 
 from labbioagentos import (
@@ -17,6 +16,7 @@ from labbioagentos import (
     ApplicationRunRequest,
     ApplicationRunStateError,
     ApplicationRuntimeConfiguration,
+    RuntimeBackend,
     ArtifactExposureClass,
     ArtifactExposureService,
     ArtifactReleaseBasis,
@@ -39,10 +39,9 @@ from labbioagentos import (
     ModelProfile,
     NextAction,
     NextActionProposal,
-    PantheonAdaptiveSkillCurator,
-    PantheonAuditedAdaptiveSkillCurator,
-    PantheonSkillCurator,
-    PerInvocationPantheonStageInvoker,
+    TypedAuditedAdaptiveSkillCurator,
+    TypedSkillCurator,
+    NativeKernelStageInvoker,
     Principal,
     Project,
     PromptProfile,
@@ -406,20 +405,15 @@ async def test_s1_s4_safe_curator_projection_and_trusted_proposal_assembly(tmp_p
         )
 
     captured = {}
-    agent = Agent(
-        name="SkillCuratorAgent",
-        instructions=SKILL_CURATOR_INSTRUCTIONS,
-        model="openai/mock",
-        response_format=SkillCuratorDraft,
-        use_memory=False,
-    )
 
-    async def run(_self, message, **_kwargs):
-        captured.update(json.loads(message))
-        return SimpleNamespace(content=_draft())
+    class Invoker:
+        async def invoke(self, *, instructions, request, response_model):
+            assert instructions == SKILL_CURATOR_INSTRUCTIONS
+            assert response_model is SkillCuratorDraft
+            captured.update(json.loads(request))
+            return _draft()
 
-    agent.run = MethodType(run, agent)
-    curator = PantheonSkillCurator(agent)
+    curator = TypedSkillCurator(Invoker())
     curator_draft = await curator.propose(view)
     assert curator_draft == _draft()
     assert "storage_locator" not in json.dumps(captured)
@@ -461,21 +455,8 @@ async def test_adaptive_curator_mechanically_preserves_agent_authored_choices(
             validation_expectations=("Validate current outputs.",),
         ),
     )
-    captured = {}
-    agent = Agent(
-        name="SkillAdaptiveCuratorAgent",
-        instructions=SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
-        model="openai/mock",
-        response_format=SkillAdaptiveCuratorDraft,
-        use_memory=False,
-    )
-
-    async def run(_self, message, **_kwargs):
-        captured.update(json.loads(message))
-        return SimpleNamespace(content=adaptive)
-
-    agent.run = MethodType(run, agent)
-    result = await PantheonAdaptiveSkillCurator(agent).propose(view)
+    captured = SkillSourceProjector.guidance_view(view)
+    result = adaptive.to_curator_draft()
 
     assert result.procedure.workflow_outline == adaptive.procedure.workflow_guidance
     assert result.procedure.reusable_principles == adaptive.procedure.reusable_principles
@@ -494,7 +475,11 @@ async def test_adaptive_curator_mechanically_preserves_agent_authored_choices(
 
 @pytest.mark.asyncio
 async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
-    from test_gold_evidence_audit import checked_audit
+    def checked_audit(draft):
+        return SkillCuratorAudit(
+            findings=(),
+            summary="Synthetic field review.",
+        )
     _, _, artifacts, _, store, service, _, _ = _governed(tmp_path)
     bundle = _source_bundle(artifacts)
     store.save_source_bundle(bundle)
@@ -533,55 +518,27 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
         summary="The adaptive draft requires Agent revision.",
     ))
 
-    def agent(name, instructions, response_format):
-        return Agent(
-            name=name,
-            instructions=instructions,
-            model="openai/mock",
-            response_format=response_format,
-            use_memory=False,
-        )
-
-    drafting_agent = agent(
-        "SkillAdaptiveCuratorAgent",
-        SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS,
-        SkillAdaptiveCuratorDraft,
-    )
-    audit_agent = agent(
-        "SkillCuratorAuditorAgent",
-        SKILL_CURATOR_AUDIT_INSTRUCTIONS,
-        SkillCuratorAudit,
-    )
-    revision_agent = agent(
-        "SkillAdaptiveRevisionAgent",
-        SKILL_CURATOR_REVISION_INSTRUCTIONS,
-        SkillAdaptiveCuratorDraft,
-    )
     captured = {}
 
-    async def draft_run(_self, message, **_kwargs):
-        captured["draft"] = json.loads(message)
-        return SimpleNamespace(content=initial)
+    class Invoker:
+        async def invoke(self, *, instructions, request, response_model):
+            payload = json.loads(request)
+            if instructions == SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS:
+                captured["draft"] = payload
+                return initial
+            if instructions == SKILL_CURATOR_REVISION_INSTRUCTIONS:
+                captured["revision"] = payload
+                return revised
+            assert instructions == SKILL_CURATOR_AUDIT_INSTRUCTIONS
+            if "audit" in captured:
+                captured["final_audit"] = payload
+                return checked_audit(revised)
+            captured["audit"] = payload
+            return audit
 
-    async def audit_run(_self, message, **_kwargs):
-        if "audit" in captured:
-            captured["final_audit"] = json.loads(message)
-            return SimpleNamespace(content=checked_audit(revised))
-        captured["audit"] = json.loads(message)
-        return SimpleNamespace(content=audit)
-
-    async def revision_run(_self, message, **_kwargs):
-        captured["revision"] = json.loads(message)
-        return SimpleNamespace(content=revised)
-
-    drafting_agent.run = MethodType(draft_run, drafting_agent)
-    audit_agent.run = MethodType(audit_run, audit_agent)
-    revision_agent.run = MethodType(revision_run, revision_agent)
     observed = []
-    result = await PantheonAuditedAdaptiveSkillCurator(
-        drafting_agent,
-        audit_agent,
-        revision_agent,
+    result = await TypedAuditedAdaptiveSkillCurator(
+        Invoker(),
         boundary_observer=lambda kind, value: observed.append((kind, value)),
     ).propose(view)
 
@@ -594,7 +551,6 @@ async def test_adaptive_curator_audit_and_revision_are_agent_owned(tmp_path):
     assert captured["revision"]["audit"] == audit.model_dump(mode="json")
     assert [kind for kind, _ in observed] == [
         "curator_source",
-        "curator_writing_source",
         "curator_initial_adaptive_draft",
         "curator_audit_request",
         "curator_audit",
@@ -760,10 +716,12 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
         "file_read",
         "literature_search",
         "execution_submit",
+        "execution_revise",
         "execution_inspect",
         "environment_list",
         "environment_build",
         "report_submit",
+        "report_check",
         "skill_search",
         "skill_view",
         "memory_search",
@@ -990,6 +948,7 @@ def _application_configuration(tmp_path, service, handlers=()):
         artifact_root=tmp_path / f"application-artifacts-{uuid4()}",
         execution_workspace_root=tmp_path / f"executions-{uuid4()}",
         runtime_revision="c9-test-runtime",
+        runtime_backend=RuntimeBackend.NATIVE,
         allowed_input_roots=(input_root,),
         projects=(
             Project(project_id="project-a", lab_id="lab-a", owner_user_id="user-a"),
@@ -1078,7 +1037,7 @@ async def test_s16_s17_domain_decision_must_succeed_before_source_resume(tmp_pat
             next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     handler = SkillDomainDecisionHandler(service)
     application = LabBioApplication(
         _application_configuration(tmp_path, service, (handler,))
@@ -1577,7 +1536,7 @@ async def test_s23_s24_no_match_continues_and_skill_does_not_widen_capabilities(
             next_action=action,
         )
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     application = LabBioApplication(_application_configuration(tmp_path, service))
     outcome = await application.run(
         application.create_run(

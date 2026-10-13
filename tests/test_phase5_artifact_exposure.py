@@ -26,7 +26,6 @@ from labbioagentos import (
     InMemoryArtifactApprovalStore,
     InMemoryTraceSink,
     LocalArtifactStore,
-    PantheonArtifactQueryAdapter,
     RunTraceRecorder,
     TraceEventType,
     WorkflowStage,
@@ -352,35 +351,6 @@ def test_artifact_exposure_works_without_tracing(tmp_path):
     )
     assert view.summary == {"synthetic_count": 12}
     assert sink.read() == ()
-
-
-@pytest.mark.asyncio
-async def test_pantheon_facing_adapter_returns_only_artifact_view(tmp_path):
-    store, _, service, _ = _components(tmp_path)
-    ref = _register(
-        store,
-        ArtifactExposureClass.DERIVED,
-        records=({"item": "safe synthetic result"},),
-    )
-    adapter = PantheonArtifactQueryAdapter(service)
-
-    result = await adapter.artifact_query(
-        str(ref.artifact_id),
-        {"view_type": "TOP_N", "limit": 1},
-        consumer="REMOTE_LLM",
-    )
-
-    assert isinstance(result, ArtifactView)
-    assert not isinstance(result, ArtifactRef)
-    assert result.records == ({"item": "safe synthetic result"},)
-    assert "storage_locator" not in result.model_dump(mode="json")
-
-    with pytest.raises(ArtifactExposureDenied, match="cannot be escalated"):
-        await adapter.artifact_query(
-            str(ref.artifact_id),
-            {"view_type": "TOP_N", "limit": 1},
-            consumer="SYSTEM",
-        )
 
 
 def test_artifact_ref_rejects_embedded_content_metadata():

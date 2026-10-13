@@ -11,8 +11,7 @@ from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from pantheon.agent import Agent
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 from pydantic import ValidationError
 
 from labbioagentos import (
@@ -56,9 +55,7 @@ from labbioagentos import (
     MountResolver,
     NextAction,
     NextActionProposal,
-    PantheonRuntimeFactory,
-    PantheonRuntimeIntegrationError,
-    PantheonTypedStageInvoker,
+    NativeRuntimeFactory,
     OutputCollector,
     OutputDeclassificationMode,
     Principal,
@@ -145,25 +142,6 @@ def _catalog(model_identifier="mock/provider-model"):
     )
 
 
-@pytest.mark.asyncio
-async def test_three_profiles_assemble_and_model_is_configuration_driven():
-    factory = PantheonRuntimeFactory(_catalog("configured/mock-model"))
-    team, prompts = await factory.create_team(
-        ("coordinator", "execution", "reviewer"),
-        prompt_values={
-            key: {"boundary": "synthetic contracts only"}
-            for key in ("coordinator", "execution", "reviewer")
-        },
-    )
-    assert [agent.name for agent in team.team_agents] == [
-        "CoordinatorAgent", "ExecutionAgent", "ReviewerAgent"
-    ]
-    assert all(agent.models == ["configured/mock-model"] for agent in team.team_agents)
-    assert all(agent.response_format is RuntimeStageResult for agent in team.team_agents)
-    assert set(prompts) == {"coordinator", "execution", "reviewer"}
-    assert not any("route" in profile.role_description.lower() for profile in default_agent_profiles())
-
-
 def test_prompt_is_versioned_hashed_bounded_and_rejects_bad_input():
     prompt = PromptProfile(template_id="generic", version="2", template_text="Hello {value}")
     rendered = prompt.render({"value": "bounded"})
@@ -202,99 +180,6 @@ def _intake_input():
             user_id="user-a", project_id="project-a", lab_id="lab-a"
         ),
     )
-
-
-@pytest.mark.asyncio
-async def test_typed_invoker_records_prompt_metadata_and_validates_result():
-    sink = InMemoryTraceSink()
-    recorder = RunTraceRecorder(sink)
-    factory = PantheonRuntimeFactory(_catalog())
-    team, rendered = await factory.create_team(
-        ("coordinator",), prompt_values={"coordinator": {"boundary": "bounded"}}
-    )
-    stage_input = _intake_input()
-    result = RuntimeStageResult(
-        stage_id=WorkflowStage.INTAKE,
-        summary="Synthetic typed result.",
-        body=IntakeStageBody(interpreted_goal="Synthetic goal."),
-        next_action=NextActionProposal(
-            action=NextAction.TRANSITION, target_stage=WorkflowStage.UNDERSTAND
-        ),
-    )
-
-    async def run(_self, _message, *, process_turn_observation):
-        assert callable(process_turn_observation)
-        return SimpleNamespace(content=result.model_dump(mode="json"))
-
-    team.run = MethodType(run, team)
-    invoker = PantheonTypedStageInvoker(
-        team,
-        profile=_catalog().agents["coordinator"],
-        prompt=rendered["coordinator"],
-        response_schema=ResponseSchemaRef(),
-        trace_recorder=recorder,
-    )
-    assert await invoker.invoke(stage_input) == result
-    instruction = next(event for event in sink.read() if event.event_type is TraceEventType.INSTRUCTION_RECORDED)
-    record = instruction.payload["instruction"]
-    assert (record["template_id"], record["template_version"]) == ("runtime-generic", "1")
-    assert record["template_hash"] == rendered["coordinator"].template_hash
-
-
-@pytest.mark.asyncio
-async def test_malformed_runtime_result_is_bounded_and_raw_body_not_traced():
-    sink = InMemoryTraceSink()
-    recorder = RunTraceRecorder(sink)
-    factory = PantheonRuntimeFactory(_catalog())
-    team, rendered = await factory.create_team(
-        ("coordinator",), prompt_values={"coordinator": {"boundary": "bounded"}}
-    )
-    secret = "RAW_PROVIDER_BODY_SHOULD_NOT_APPEAR"
-
-    async def run(_self, _message, *, process_turn_observation):
-        assert callable(process_turn_observation)
-        return SimpleNamespace(content={"unexpected": secret})
-
-    team.run = MethodType(run, team)
-    invoker = PantheonTypedStageInvoker(
-        team,
-        profile=_catalog().agents["coordinator"],
-        prompt=rendered["coordinator"],
-        response_schema=ResponseSchemaRef(),
-        trace_recorder=recorder,
-    )
-    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
-        await invoker.invoke(_intake_input())
-    assert caught.value.error_code == "MALFORMED_RUNTIME_RESULT"
-    encoded = json.dumps([event.model_dump(mode="json") for event in sink.read()])
-    assert secret not in encoded
-    failed = next(
-        event for event in sink.read() if event.event_type is TraceEventType.AGENT_FAILED
-    )
-    assert "stage_id" in failed.payload["validation_error_field_paths"]
-    assert failed.payload["validation_error_types"]
-
-
-@pytest.mark.asyncio
-async def test_pantheon_native_validation_failure_is_classified_as_malformed():
-    factory = PantheonRuntimeFactory(_catalog())
-    team, rendered = await factory.create_team(
-        ("coordinator",), prompt_values={"coordinator": {"boundary": "bounded"}}
-    )
-
-    async def run(_self, _message, **kwargs):
-        RuntimeStageResult.model_validate({"invalid": "provider value"})
-
-    team.run = MethodType(run, team)
-    invoker = PantheonTypedStageInvoker(
-        team,
-        profile=_catalog().agents["coordinator"],
-        prompt=rendered["coordinator"],
-        response_schema=ResponseSchemaRef(),
-    )
-    with pytest.raises(PantheonRuntimeIntegrationError) as caught:
-        await invoker.invoke(_intake_input())
-    assert caught.value.error_code == "MALFORMED_RUNTIME_RESULT"
 
 
 def _toolset(boundary, stage, capabilities, **service_overrides):
@@ -354,10 +239,10 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
         (WorkflowStage.UNDERSTAND, {"artifact_list", "artifact_query", "skill_search", "skill_view", "memory_search", "memory_view"}),
         (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view", "environment_list"}),
         (WorkflowStage.PREFLIGHT, {"artifact_query"}),
-        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_inspect", "environment_list", "environment_build"}),
-        (WorkflowStage.VALIDATE, {"artifact_query", "artifact_aggregate", "execution_inspect"}),
-        (WorkflowStage.INTERPRET, {"artifact_query", "artifact_aggregate", "literature_search", "execution_inspect"}),
-        (WorkflowStage.REPORT, {"artifact_query", "artifact_aggregate", "report_submit", "execution_inspect"}),
+        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_revise", "execution_inspect", "environment_list", "environment_build", "skill_view"}),
+        (WorkflowStage.VALIDATE, {"artifact_query", "artifact_aggregate", "execution_inspect", "skill_view"}),
+        (WorkflowStage.INTERPRET, {"artifact_query", "artifact_aggregate", "literature_search", "execution_inspect", "skill_view"}),
+        (WorkflowStage.REPORT, {"artifact_query", "artifact_aggregate", "report_check", "report_submit", "execution_inspect", "skill_view"}),
         (WorkflowStage.LEARN, {"skill_search", "skill_view", "memory_search", "memory_view", "memory_propose_update"}),
     ),
 )
@@ -368,12 +253,12 @@ def test_stage_capability_ceiling_is_exact(stage, expected):
 
 
 @pytest.mark.asyncio
-async def test_pantheon_tool_schema_contains_only_stage_allowed_functions(boundary):
+async def test_native_tool_schema_contains_only_stage_allowed_functions(boundary):
     toolset = _toolset(
         boundary, WorkflowStage.INTAKE, ("artifact_list", "artifact_query")
     )
-    description = await toolset.list_tools()
-    assert {item["name"] for item in description["tools"]} == {
+    description = await LocalProvider(toolset).list_tools()
+    assert {item.name for item in description} == {
         "artifact_list", "artifact_query"
     }
 
@@ -386,24 +271,6 @@ async def test_disallowed_tool_cannot_be_invoked(boundary):
     )
     assert result["success"] is False
     assert result["error"]["error_code"] == "AUTHORIZATION_DENIED"
-
-
-@pytest.mark.asyncio
-async def test_native_pantheon_delegation_is_separate_from_labbio_tools(boundary):
-    factory = PantheonRuntimeFactory(_catalog())
-    toolset = _toolset(boundary, WorkflowStage.INTAKE, ("artifact_list",))
-    team, _ = await factory.create_team(
-        ("coordinator", "execution"),
-        prompt_values={
-            "coordinator": {"boundary": "bounded"},
-            "execution": {"boundary": "bounded"},
-        },
-        toolsets={"coordinator": toolset},
-        invocation_mode=RuntimeInvocationMode.CAPABILITY,
-    )
-    await team.async_setup()
-    assert {"list_agents", "call_agent"}.issubset(team.team_agents[0].functions)
-    assert "call_agent" not in toolset.tool_functions
 
 
 @pytest.mark.asyncio

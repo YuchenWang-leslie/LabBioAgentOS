@@ -1,5 +1,10 @@
 # Runtime Tool Surface
 
+> **Migration status:** the governed capability and trusted-binding contracts in
+> this document remain active. References to Pantheon `ToolSet`, `TeamPlugin`,
+> and `LocalProvider` describe the legacy implementation only; the approved
+> Native Kernel replaces that wiring without weakening these contracts.
+
 ## Design rule
 
 Every model-visible tool is a narrow capability adapter. It accepts untrusted
@@ -7,10 +12,11 @@ intent, binds trusted identity and correlation data outside the model-visible
 schema, calls a governed service, and returns a bounded DTO. A tool is not a
 service-object escape hatch.
 
-The future implementation can use LabBio `ToolSet` classes injected through
-`TeamPlugin.get_toolsets()` or attached with `Agent.toolset()`. Pantheon already
-wraps local ToolSets in `LocalProvider`, so no Pantheon provider patch is
-needed.
+The current legacy implementation uses LabBio `ToolSet` classes injected
+through `TeamPlugin.get_toolsets()` or attached with `Agent.toolset()`, then
+wrapped by Pantheon `LocalProvider`. The native target separates these governed
+capabilities from a backend-neutral `ToolRegistry` and dispatcher; it does not
+add another Pantheon patch.
 
 ## Trusted binding for every LabBio tool
 
@@ -75,6 +81,16 @@ failed authorization and foreign workspaces do not expose this projection.
 Requests and failures remain unchanged; the tool does not fix parameters, query
 again, choose the next capability, or treat remote-view denial as execution denial.
 
+After feedback delivery, an unchanged non-retryable query failure (including
+another denied view under the same exposure constraints) ends the current
+capability phase with `REPEATED_NON_RETRYABLE_REQUEST`. The actual authorization
+and query checks run first, so changed facts and legal corrections still work.
+The current tool batch finishes; no next provider turn starts. Both failures
+remain in evidence, including the earlier invocation identity. Finalization
+receives the unresolved state; no successful result or repair is synthesized.
+This comparison uses only safe query fields within the current invocation, not
+raw provider arguments or a persistent blacklist.
+
 ### Execution capabilities
 
 | Tool | Untrusted model input | Safe result |
@@ -89,12 +105,46 @@ same scope. It does not pass model-supplied Docker flags or paths. The current
 `ExecutionResult` is internal because nested `ArtifactRef.storage_locator`
 values reveal host paths.
 
+`execution_revise` validates its canonical revision draft even on direct local
+provider dispatch. Shape rejection returns safe allowlisted field/index/reason
+details as `INVALID_EXECUTION_REVISION`, retained in trace/evidence. It never
+records rejected source text or guesses a correction; exact hash/unique-match
+and original execution-policy checks remain authoritative.
+
+Optional `input_artifact_ids` and `parameters` on `execution_revise` replace the
+respective original fields; null/omission inherits, empty clears. Inputs include
+explicitly selected registered outputs of this same live run, subject to normal
+authorization. Non-zero-exit processes now pass through the existing declared
+output collector, preserving registered intermediates and collection issues
+without changing the failure status. Checkpoint suitability and code edits are
+Agent decisions; nothing resumes Python memory or silently skips computation.
+
+Execution tools also accept optional `review` with a bounded public `rationale`,
+`feedback_invocation_ids` and `gold_authorization_ids`. Governed tool responses
+expose their own `capability_invocation_id`. Feedback references must be already
+available in this invocation; Gold references require scoped approval and an
+actual recorded context access. An invalid review returns
+`INVALID_EXECUTION_REVIEW` before launch. Accepted reviews remain MODEL_CONTEXT
+in trace/evidence, not scientific approval or proof of following a Skill.
+Legacy calls without review remain valid. See the
+[source-only change and limitations](ERROR_CONVERGENCE_CHECKPOINT_REUSE_20260921.md).
+
+### Report reference feedback
+
+Optional `report_check` accepts only proposed evidence IDs, without report text.
+It returns all supplied citation identities/statuses and unread record offsets
+as CONTROL_STATE. It does not register a report or give scientific approval.
+`report_submit` runs the same check again and returns the full bounded problem
+list on rejection. Same-invocation complete table coverage is unchanged; neither
+an aggregate nor a prior check supplies reading credit. References are never
+silently dropped, repaired or converted from execution IDs.
+
 ### Gold Skill capabilities
 
 | Tool | Untrusted model input | Safe result |
 |---|---|---|
 | `skill_search` | page offset/limit, optional exact tag/type filters, and LAB inclusion | stable page of visible latest-version candidate IDs/versions, bounded fit metadata, and completeness counts; no full procedure, score, rank, or mode |
-| `skill_view` | exact approved authorization ID for the current run | immutable full procedural MODEL_CONTEXT and lineage references; access is durably recorded |
+| `skill_view` | exact approved authorization ID; optional section and item offset/limit after initial access | original bounded procedure or exact section page as MODEL_CONTEXT with lineage; scope is rechecked |
 | `skill_propose_use` | exact ID/version, runtime-chosen `REUSE`/`ADAPT`/`REFERENCE`, reason, deviations | proposal ID and `USER_APPROVAL_REQUIRED` state |
 
 No tool executes a Skill or approves/publishes it. User decisions enter through
@@ -102,6 +152,15 @@ the trusted application/domain-gate boundary before workflow resumption, not
 through a model tool. Search alone, a pending proposal, or approval without a
 full `skill_view` access never creates a usage receipt. Skill capability results
 are `MODEL_CONTEXT`; `skill_propose_use` is `CONTROL_STATE`.
+
+For already read/selected/authorized Gold, stages with `skill_view` receive the
+original workflow, applicability, limitations and adaptation points plus a
+section catalog. The Agent chooses additional sections; omitted fields are
+explicit and still retrievable. There is no task-keyword or scientific routing.
+Hosts without the reader keep the original full projection. Initial full-view
+bounds are unchanged; section pages can reach entries beyond those bounds but
+reject oversized or transport-altered pages. Existing Skill versions are not
+rewritten. These changes are implemented but untested at the 2026-09-20 checkpoint.
 
 The runtime tool is catalog-oriented and has no free-form task-text filter.
 With unknown exact tags/types it browses without filters, compares the returned

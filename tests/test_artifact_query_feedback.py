@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import (
     AccessService, ArtifactExposureClass, ArtifactReleaseBasis, ArtifactRepresentation,
@@ -196,7 +196,7 @@ async def test_actual_provider_schema_shares_nullable_positive_limit_contract(ar
         {"type": "integer", "minimum": 1}, {"type": "null"}]
     assert schema["required"] == ["artifact_id", "view_type"]
     assert schema["additionalProperties"] is False
-    assert "EXECUTION" in schema["properties"]["artifact_id"]["description"]
+    assert "Artifact UUID" in schema["properties"]["artifact_id"]["description"]
     # Policy caps returned rows. It is not a maximum on a legal request limit.
     assert "maximum" not in schema["properties"]["limit"]["anyOf"][0]
 

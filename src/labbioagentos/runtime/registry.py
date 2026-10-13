@@ -21,7 +21,7 @@ class StageRuntimeNotConfiguredError(StageRuntimeRegistryError):
 
 
 class StageRuntimeInvoker(Protocol):
-    """Port implemented by a mock now and a Pantheon adapter later."""
+    """Backend-neutral outer port for one stage-runtime invocation."""
 
     async def invoke(
         self,

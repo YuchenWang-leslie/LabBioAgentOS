@@ -128,28 +128,19 @@ def gold_export(settings) -> dict:
 
 def configured_curator(application):
     """Compose Agent-authored advisory guidance and review, without task answers."""
-    from pantheon.agent import Agent
-    from .runtime.pantheon import PantheonRuntimeFactory
-    from .skills import (
-        PantheonAuditedAdaptiveSkillCurator, SkillCuratorAudit,
-    )
-    from .skills.models import SkillAdaptiveCuratorDraft
-    from .skills.curator import (
-        SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS, SKILL_CURATOR_AUDIT_INSTRUCTIONS,
-        SKILL_CURATOR_REVISION_INSTRUCTIONS,
-    )
+    from .application import RuntimeBackend
+    from .runtime.native_stage import NativeRuntimeFactory, NativeTypedModelInvoker
+    from .skills import TypedAuditedAdaptiveSkillCurator
 
+    if application.configuration.runtime_backend is not RuntimeBackend.NATIVE:
+        raise ValueError(
+            "Gold curation requires the Native Kernel; start a fresh native application"
+        )
     model = application.configuration.profile_catalog.models["runtime-default"]
-    identifier = PantheonRuntimeFactory._configure_transport(model)
-    agents = [Agent(name=name, model=identifier, instructions=instructions,
-                    response_format=schema, use_memory=False,
-                    model_params={"thinking": PantheonRuntimeFactory._thinking_model_param(model),
-                                  "max_tokens": model.max_output_tokens})
-              for name, instructions, schema in (
-                  ("GoldDraft", SKILL_CURATOR_ADAPTIVE_INSTRUCTIONS, SkillAdaptiveCuratorDraft),
-                  ("GoldAudit", SKILL_CURATOR_AUDIT_INSTRUCTIONS, SkillCuratorAudit),
-                  ("GoldRevision", SKILL_CURATOR_REVISION_INSTRUCTIONS, SkillAdaptiveCuratorDraft),
-              )]
-    return PantheonAuditedAdaptiveSkillCurator(
-        *agents, boundary_observer=application.configuration.boundary_observer,
+    factory = application.runtime_factory
+    if not isinstance(factory, NativeRuntimeFactory):
+        raise ValueError("Native runtime factory is unavailable")
+    return TypedAuditedAdaptiveSkillCurator(
+        NativeTypedModelInvoker(model=model, provider_builder=factory.provider_builder),
+        boundary_observer=application.configuration.boundary_observer,
     )

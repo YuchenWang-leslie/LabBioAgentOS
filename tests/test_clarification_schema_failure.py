@@ -5,23 +5,25 @@ from uuid import uuid4
 import pytest
 from jsonschema import Draft202012Validator
 
-from labbioagentos import LabBioApplication, RunStatus, SQLiteRunStateStore, WorkflowStage
+from labbioagentos import LabBioApplication, NativeKernelStageInvoker, RunStatus, RuntimeIntegrationError, SQLiteRunStateStore, WorkflowStage
 from labbioagentos.run_state import RunRecoveryState
 from labbioagentos.runtime.contracts import RuntimeWorkflowControlView, runtime_stage_result_format
-from labbioagentos.runtime.pantheon import PantheonRuntimeIntegrationError, PantheonTypedStageInvoker
 from test_clarification_continuation import _started, _answer, _question
 from test_c10_durable_control_plane import _next_result, _principal, _request, _workspace
 from test_interruption_reconciliation import _capability_configuration, governed_invokers  # noqa: F401
-from test_next_action_semantics import _provider_schema
 from test_runtime_milestone_b import MockExecutor
+
+
+def _provider_schema(response_model):
+    return response_model.model_json_schema()
 
 
 def accepts_question(engine, run, question):
     control = RuntimeWorkflowControlView.from_run(engine.definition, run)
     schema = _provider_schema(runtime_stage_result_format(run.current_stage, control))
-    result = _next_result(run.current_stage).model_dump(mode="json")
+    result = _next_result(run.current_stage).model_dump(mode="json", exclude={"result_id"})
     result["next_action"] = question.model_dump(mode="json")
-    return not list(Draft202012Validator(schema).iter_errors({"result": result}))
+    return not list(Draft202012Validator(schema).iter_errors(result))
 
 
 def test_first_question_provider_schema_rejects_explanation_in_followup_id():
@@ -54,11 +56,11 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
         result = _next_result(stage_input.stage_id)
         if stage_input.stage_id is WorkflowStage.EXECUTE:
             if failure == "schema_result":
-                raise PantheonRuntimeIntegrationError("MALFORMED_RUNTIME_RESULT", "PRIVATE_ERROR_MESSAGE")
+                raise RuntimeIntegrationError("MALFORMED_RUNTIME_RESULT", "PRIVATE_ERROR_MESSAGE")
             return result.model_copy(update={"next_action": _question(followup="This is a first question, not an ID.")})
         return result
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     path = tmp_path / "state.sqlite"
     store = SQLiteRunStateStore(path)
     app = LabBioApplication(_capability_configuration(tmp_path, store))
@@ -101,7 +103,7 @@ async def test_recovered_finalization_rejection_preserves_evidence_without_repla
         return _next_result(stage_input.stage_id).model_copy(update={
             "next_action": _question(followup="First question explanation is not an ID.")})
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", invalid)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", invalid)
     result = await app.continue_run(handle.run_id, principal=_principal(), workspace=_workspace())
     assert result.status is RunStatus.FAILED
     assert store.get(handle.run_id).recovery_state is RunRecoveryState.STABLE

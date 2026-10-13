@@ -9,13 +9,10 @@ from pydantic import ValidationError
 from labbioagentos import (
     ApplicationRecoveryError, ApplicationRecoveryIssueCode, LabBioApplication,
     ApplicationRunRecord, AuthorizationDenied,
-    NextAction, NextActionProposal, PerInvocationPantheonStageInvoker,
+    LabBioRuntimeToolSet, NextAction, NextActionProposal, NativeKernelStageInvoker,
     RunStatus, RuntimeProfileCatalog, SQLiteRunStateStore, WorkflowStage,
 )
-from labbioagentos.runtime import CapabilityEvidenceBundle
-from labbioagentos.runtime.pantheon import (
-    PantheonCapabilityStageInvoker, PantheonTypedStageInvoker,
-)
+from labbioagentos.runtime import CapabilityEvidenceBundle, RuntimeCapabilityContext
 from test_c10_durable_control_plane import (
     _configuration, _next_result, _principal, _request, _SimulatedProcessLoss,
     _workspace,
@@ -46,7 +43,28 @@ def governed_invokers(monkeypatch):
 
     async def capability(self, stage_input):
         calls["capability"].append(stage_input.invocation_id)
-        tools = self.evidence_sources[0]
+        profile = self.factory.catalog.agents[self.assembly.root_profile_key]
+        tools = LabBioRuntimeToolSet(
+            RuntimeCapabilityContext(
+                principal=self.principal,
+                workspace=self.workspace,
+                run_id=stage_input.run_id,
+                stage_id=stage_input.stage_id,
+                invocation_id=stage_input.invocation_id,
+                actor_profile_key=profile.profile_key,
+                actor_agent_name=profile.agent_name,
+                capability_allowlist=self.assembly.capability_allowlist,
+                context_references=(
+                    *stage_input.model_context_references,
+                    *stage_input.authoritative_evidence_references,
+                ),
+                mountable_input_artifact_ids=(
+                    self.execution_capability.mountable_input_artifact_ids
+                    if self.execution_capability is not None else None
+                ),
+            ),
+            self.services,
+        )
         await tools.artifact_query(artifact_id="malformed-identifier", view_type="SUMMARY")
         result = await tools.execution_submit(
             image_key="approved", script_content="print('PRIVATE_PROGRAM_MARKER')",
@@ -61,8 +79,8 @@ def governed_invokers(monkeypatch):
         calls["finalize"].append((stage_input.stage_id, stage_input.invocation_id, capability_evidence))
         return _next_result(stage_input.stage_id)
 
-    monkeypatch.setattr(PantheonCapabilityStageInvoker, "invoke", capability)
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", finalize)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_run_capability", capability)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", finalize)
     return calls
 
 
@@ -153,7 +171,7 @@ async def test_repeated_finalization_interruptions_keep_original_capability_chec
 ):
     app, store, handle, executor = await _interrupt_after_tools(tmp_path, governed_invokers)
     before = store.get(handle.run_id)
-    original = PantheonTypedStageInvoker.invoke
+    original = NativeKernelStageInvoker._finalize
 
     async def disconnect(self, stage_input, *, capability_evidence=None):
         if stage_input.stage_id is WorkflowStage.EXECUTE:
@@ -161,12 +179,12 @@ async def test_repeated_finalization_interruptions_keep_original_capability_chec
             raise _SimulatedProcessLoss
         return await original(self, stage_input, capability_evidence=capability_evidence)
 
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", disconnect)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", disconnect)
     with pytest.raises(_SimulatedProcessLoss):
         await app.continue_run(handle.run_id, principal=_principal(), workspace=_workspace())
     assert store.get(handle.run_id).inflight_evidence == before.inflight_evidence
     store.close()
-    monkeypatch.setattr(PantheonTypedStageInvoker, "invoke", original)
+    monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", original)
     store = SQLiteRunStateStore(tmp_path / "runs.sqlite")
     restarted = LabBioApplication(_capability_configuration(tmp_path, store))
     result = await restarted.continue_run(handle.run_id, principal=_principal(), workspace=_workspace())
@@ -218,7 +236,7 @@ async def test_returned_stage_result_survives_crash_and_is_not_reinvoked(tmp_pat
         if kind == "stage_result" and value.stage_id is WorkflowStage.EXECUTE:
             raise _SimulatedProcessLoss
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     path = tmp_path / "runs.sqlite"
     store = SQLiteRunStateStore(path)
     first = LabBioApplication(replace(_configuration(tmp_path, store), boundary_observer=stop))
@@ -248,7 +266,7 @@ async def test_mid_capability_has_unknown_effect_and_is_never_replayed(tmp_path,
         calls.append(stage_input.stage_id)
         raise _SimulatedProcessLoss
 
-    monkeypatch.setattr(PerInvocationPantheonStageInvoker, "invoke", invoke)
+    monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
     store = SQLiteRunStateStore(tmp_path / "runs.sqlite")
     config = _configuration(tmp_path, store)
     config = replace(config, stage_assemblies=tuple(

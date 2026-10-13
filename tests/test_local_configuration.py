@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from labbioagentos import ApplicationRunRequest, ArtifactExposureClass, SQLiteRunStateStore, WorkflowStage
+from labbioagentos import (
+    ApplicationRecoveryError,
+    ApplicationRunRequest,
+    ArtifactExposureClass,
+    SQLiteRunStateStore,
+    WorkflowStage,
+)
 from labbioagentos import local_config
 from labbioagentos.local_config import build_application, load_settings, runtime_manifest
 
@@ -43,10 +49,12 @@ timeout_seconds = 60.0
 
 def test_settings_are_explicit_relative_and_frozen(settings_file):
     settings = load_settings(settings_file)
+    assert settings.runtime_backend == "native"
     assert settings.default_format == "raw"
     assert settings.result_root == settings_file.parent / "results"
     assert settings.input_roots == (settings_file.parent / "inputs",)
     assert settings.provider.env_file == settings_file.parent / "provider.env"
+    assert settings.provider.max_model_phase_seconds == 300
     assert settings.principal.user_id == settings.workspace.user_id == "user-local"
     assert settings.workspace.project_id == "project-local"
     with pytest.raises(ValidationError):
@@ -116,10 +124,40 @@ def test_manifest_reads_no_provider_values_and_changes_with_effective_config(set
     assert runtime_manifest(settings) == first
     changed = settings.model_copy(update={"provider": settings.provider.model_copy(update={"max_output_tokens": 8192})})
     assert runtime_manifest(changed)["runtime_revision"] != first["runtime_revision"]
+    extended = settings.model_copy(update={"provider": settings.provider.model_copy(update={"max_model_phase_seconds": 900})})
+    assert runtime_manifest(extended)["runtime_revision"] != first["runtime_revision"]
     encoded = json.dumps(first)
     assert "PRIVATE_SECRET_SENTINEL" not in encoded
     assert first["profile"]["output_contract"]["allowed_fields"] == sorted(first["profile"]["output_contract"]["allowed_fields"])
     assert first["configuration"]["provider"]["api_key_env"] == "LOCAL_TEST_KEY"
+    assert first["runtime_backend"] == "native"
+    assert "pantheon_sha256" not in first["source"]
+    assert {
+        "native_kernel_sha256",
+        "native_provider_sha256",
+        "native_tool_schema_sha256",
+        "team_profile_sha256",
+    } <= set(first["source"])
+
+
+@pytest.mark.parametrize("seconds", [29, 1801])
+def test_model_phase_budget_is_explicitly_bounded(settings_file, seconds):
+    content = settings_file.read_text(encoding="utf-8").replace(
+        'model_identifier = "test-provider-model"',
+        f'model_identifier = "test-provider-model"\nmax_model_phase_seconds = {seconds}',
+    )
+    settings_file.write_text(content, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_settings(settings_file)
+
+
+def test_removed_backend_configuration_is_rejected(settings_file):
+    settings_file.write_text(
+        'runtime_backend = "pantheon"\n' + settings_file.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        load_settings(settings_file)
 
 
 def test_source_and_profile_digests_use_contents_not_labels(settings_file, tmp_path, monkeypatch):
@@ -219,6 +257,32 @@ def test_raw_only_input_can_create_a_run_without_inspection_or_provider(settings
         reopened.run_state_store.close()
 
 
+def test_existing_legacy_revision_fails_explicitly(settings_file):
+    settings = load_settings(settings_file)
+    root = settings.result_root / "backend-frozen"
+    native = build_application(settings, root, load_provider=False)
+    try:
+        handle = native.create_run(ApplicationRunRequest(
+            task_text="Freeze this run to its selected backend.",
+            principal=settings.principal,
+            workspace=settings.workspace,
+        ))
+        record = native.run_state_store.get(handle.run_id)
+        native.run_state_store.update(
+            record.model_copy(update={"runtime_revision": "legacy-runtime-revision"}),
+            expected_version=record.record_version,
+        )
+        native._sessions.pop(handle.run_id)
+        with pytest.raises(ApplicationRecoveryError, match="RUNTIME_REVISION_MISMATCH"):
+            native.recover_run(
+                handle.run_id,
+                principal=settings.principal,
+                workspace=settings.workspace,
+            )
+    finally:
+        native.run_state_store.close()
+
+
 @pytest.mark.parametrize("selected_format", ["raw", "h5ad"])
 def test_both_model_phases_see_the_configured_capability_owners(settings_file, selected_format):
     settings = load_settings(settings_file).model_copy(update={"default_format": selected_format})
@@ -243,6 +307,12 @@ def test_both_model_phases_see_the_configured_capability_owners(settings_file, s
                 assert "RAW inputs are local execution inputs" in text
                 assert "does not grant tools in the current phase" in text
         assert expected["execution_submit"] == ["EXECUTE"]
+        execute = next(s for s in config.stage_assemblies if s.stage_id is WorkflowStage.EXECUTE)
+        execute_prompt = config.profile_catalog.prompts[execute.prompt_template_key].render(
+            execute.capability_prompt_values
+        ).sanitized_text
+        assert "EXECUTE owns analysis evidence, not final user-report submission" in execute_prompt
+        assert "REPORT owns final report creation and submission" in execute_prompt
         # This is a description of configured ownership, never additional grants.
         understand = next(s for s in config.stage_assemblies if s.stage_id is WorkflowStage.UNDERSTAND)
         assert "execution_submit" not in understand.capability_allowlist

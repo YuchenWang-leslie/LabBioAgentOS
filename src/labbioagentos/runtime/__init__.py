@@ -35,11 +35,7 @@ from .contracts import (
     UnderstandStageBody,
     ValidateStageBody,
 )
-from .assembly import (
-    PerInvocationPantheonStageInvoker,
-    RuntimeAgentCapabilitySpec,
-    RuntimeStageAssemblySpec,
-)
+from .assembly import RuntimeAgentCapabilitySpec, RuntimeStageAssemblySpec
 from .coordinator import (
     RuntimeCoordinatorError,
     RuntimeCoordinatorService,
@@ -52,14 +48,11 @@ from .registry import (
     StageRuntimeRegistryError,
     StageRuntimeSpec,
 )
-from .pantheon import (
-    PantheonCapabilityStageInvoker,
-    PantheonRuntimeFactory,
-    PantheonRuntimeIntegrationError,
-    PantheonTypedStageInvoker,
-    PantheonTwoModeStageInvoker,
-    RuntimeProfileCatalog,
-    RuntimeProfileConfigurationError,
+from .errors import RuntimeIntegrationError, RuntimeProfileConfigurationError
+from .native_stage import (
+    NativeKernelStageInvoker,
+    NativeRuntimeFactory,
+    NativeTypedModelInvoker,
 )
 from .profiles import (
     AgentProfile,
@@ -72,6 +65,7 @@ from .profiles import (
     RenderedPrompt,
     ResponseSchemaRef,
     RuntimeInvocationMode,
+    RuntimeProfileCatalog,
     default_agent_profiles,
     scientific_specialist_profiles,
 )
@@ -119,12 +113,6 @@ __all__ = [
     "MemoryCandidateView",
     "MemoryDetailView",
     "ModelProfile",
-    "PantheonRuntimeFactory",
-    "PantheonCapabilityStageInvoker",
-    "PantheonRuntimeIntegrationError",
-    "PantheonTypedStageInvoker",
-    "PantheonTwoModeStageInvoker",
-    "PerInvocationPantheonStageInvoker",
     "PlanStageBody",
     "PreflightStageBody",
     "ReportStageBody",
@@ -156,6 +144,10 @@ __all__ = [
     "ProviderThinkingWireFormat",
     "ProviderTransport",
     "RuntimeInvocationMode",
+    "RuntimeIntegrationError",
+    "NativeKernelStageInvoker",
+    "NativeRuntimeFactory",
+    "NativeTypedModelInvoker",
     "RuntimeAgentCapabilitySpec",
     "RenderedPrompt",
     "ReportReceipt",

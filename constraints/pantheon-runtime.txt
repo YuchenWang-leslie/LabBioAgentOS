@@ -1,3 +1,0 @@
-# Exact development/runtime source; not an upstream release pin.
-# Published fork revision: see docs/UPSTREAM_MODIFICATIONS.md for provenance.
-pantheon-agents @ git+https://github.com/YuchenWang-leslie/PantheonOS.git@07675c45b538f7d27b9b16b1b7d8b72f37365293

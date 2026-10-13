@@ -69,7 +69,7 @@ async def test_aggregation_does_not_bypass_exposure_or_workspace(artifact_query_
 
 @pytest.mark.asyncio
 async def test_provider_schema_and_unknown_field_feedback(artifact_query_boundary):
-    from pantheon.providers import LocalProvider
+    from native_test_provider import LocalProvider
     tools, identifier = setup_table(artifact_query_boundary, [{"n": 0.1}, {"n": 0.2}])
     provider = LocalProvider(tools)
     await provider.initialize()

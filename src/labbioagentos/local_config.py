@@ -22,7 +22,7 @@ from labbioagentos import (
     LabBioApplication, ModelProfile, Principal, Project, PromptProfile,
     ProviderConfigRef, ProviderThinkingWireFormat, ProviderTransport,
     RequestedResources, ResponseSchemaRef, RuntimeProfileCatalog,
-    RuntimeStageAssemblySpec, SQLiteRunStateStore, StructuredOutputContract,
+    RuntimeBackend, RuntimeStageAssemblySpec, SQLiteRunStateStore, StructuredOutputContract,
     WorkflowStage, WorkspaceContext, default_agent_profiles,
 )
 
@@ -40,6 +40,8 @@ class LocalProviderSettings(_SettingsModel):
     interpretation_thinking_enabled: bool = True
     provider_tool_schema_strict: bool = False
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
+    max_model_phase_seconds: int = Field(default=300, ge=30, le=1_800)
+    finalization_json_object: bool = True
 
 
 class LocalExecutionSettings(_SettingsModel):
@@ -87,6 +89,7 @@ class LocalEnvironmentSettings(_SettingsModel):
 
 
 class LocalSettings(_SettingsModel):
+    runtime_backend: Literal["native"] = "native"
     result_root: Path
     input_roots: tuple[Path, ...] = Field(min_length=1, max_length=64)
     identity: WorkspaceContext
@@ -165,10 +168,12 @@ def _source_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def runtime_manifest(settings: LocalSettings) -> dict:
     """Content-derived identity; provider env values are neither read nor retained."""
-    import pantheon
-
     profile_bytes = _profile_bytes(settings)
     profile = _LocalProfile.model_validate_json(profile_bytes)
     if settings.gold_root is not None:
@@ -181,6 +186,14 @@ def runtime_manifest(settings: LocalSettings) -> dict:
                 "user_input_enabled": True,
             }) if stage.stage is WorkflowStage.PLAN else stage
             for stage in profile.stages
+        )})
+        profile = profile.model_copy(update={"stages": tuple(
+            stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
+                *stage.capabilities, "skill_view",
+            )))}) if stage.stage in {
+                WorkflowStage.EXECUTE, WorkflowStage.VALIDATE,
+                WorkflowStage.INTERPRET, WorkflowStage.REPORT,
+            } else stage for stage in profile.stages
         )})
     if settings.environment is not None:
         environment_tools = {
@@ -203,15 +216,24 @@ def runtime_manifest(settings: LocalSettings) -> dict:
     # Set iteration order must not change the revision across process restarts.
     for field in ("allowed_fields", "required_fields"):
         effective_profile["output_contract"][field] = sorted(effective_profile["output_contract"][field])
+    source_root = Path(__file__).parent
+    runtime_source = {
+        "labbio_sha256": _source_digest(source_root),
+        "native_kernel_sha256": _source_digest(source_root / "kernel"),
+        "native_provider_sha256": _file_digest(source_root / "kernel" / "openai_chat.py"),
+        "native_tool_schema_sha256": _file_digest(source_root / "runtime" / "native_tools.py"),
+        "team_profile_sha256": hashlib.sha256(
+            json.dumps(effective_profile, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
     manifest = {
         "format_version": 1,
+        "runtime_backend": settings.runtime_backend,
+        "runtime_contract_version": 1,
         "configuration": settings.model_dump(mode="json"),
         "profile": effective_profile,
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
-        "source": {
-            "labbio_sha256": _source_digest(Path(__file__).parent),
-            "pantheon_sha256": _source_digest(Path(pantheon.__file__).parent),
-        },
+        "source": runtime_source,
     }
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     manifest["runtime_revision"] = "local-" + hashlib.sha256(encoded).hexdigest()
@@ -273,6 +295,7 @@ def build_application(
             provider_tool_schema_strict=settings.provider.provider_tool_schema_strict,
             thinking_wire_format=ProviderThinkingWireFormat.TYPE_OBJECT,
             max_output_tokens=settings.provider.max_output_tokens,
+            finalization_json_object=settings.provider.finalization_json_object,
         ) for key, thinking in (
             ("runtime-default", settings.provider.thinking_enabled),
             ("runtime-interpretation", settings.provider.interpretation_thinking_enabled),
@@ -305,8 +328,11 @@ def build_application(
             shared_context + profile.finalization_protocol.format(stage=stage.stage.value)
         )},
         capability_phase_enabled=bool(stage.capabilities),
+        preserve_capability_completion=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
-        max_capability_turns=16, retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
+        max_capability_turns=16,
+        max_no_progress_seconds=settings.provider.max_model_phase_seconds,
+        retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
         user_input_enabled=stage.user_input_enabled,
         clarification_enabled=stage.clarification_enabled,
     ) for stage in profile.stages)
@@ -347,6 +373,7 @@ def build_application(
         application = LabBioApplication(ApplicationRuntimeConfiguration(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
+            runtime_backend=RuntimeBackend(settings.runtime_backend),
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,

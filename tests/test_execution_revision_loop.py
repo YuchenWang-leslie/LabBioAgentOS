@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from pantheon.providers import LocalProvider
+from native_test_provider import LocalProvider
 
 from labbioagentos import LabBioRuntimeToolSet, TraceEventType, WorkflowStage
 from labbioagentos.execution.models import (

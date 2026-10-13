@@ -2,7 +2,6 @@
 
 import json
 import sqlite3
-from types import MethodType, SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -99,25 +98,41 @@ def test_failed_application_construction_closes_both_stores(settings_file, monke
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revise", [False, True])
-async def test_existing_curator_protocol_uses_configured_provider_not_task_text(
+async def test_native_curator_protocol_uses_configured_provider_not_task_text(
     settings_file, monkeypatch, revise,
 ):
     from labbioagentos.contracts import RunStatus
     from labbioagentos.local_workspace_cli import configured_curator
-    from labbioagentos.runtime.pantheon import PantheonRuntimeFactory
     from labbioagentos.skills import SkillCuratorAudit
-    from labbioagentos.skills.models import SkillAdaptiveCuratorDraft, SkillCurationSourceView
-    from test_gold_evidence_audit import _draft
+    from labbioagentos.skills.models import (
+        SkillAdaptationPoint,
+        SkillAdaptiveCuratorDraft,
+        SkillAdaptiveProcedureDraft,
+        SkillCurationSourceView,
+    )
 
     settings = load_settings(settings_file)
     application = build_application(settings, settings.result_root / "curator", load_provider=False)
-    monkeypatch.setattr(PantheonRuntimeFactory, "_configure_transport", lambda model: "openai/mock")
     try:
         curator = configured_curator(application)
-        assert curator.drafting_curator.agent.response_format is SkillAdaptiveCuratorDraft
-        assert curator.audit_agent.response_format is SkillCuratorAudit
-        assert curator.revision_curator.agent.response_format is SkillAdaptiveCuratorDraft
-        initial = _draft()
+        assert curator.invoker.model == application.configuration.profile_catalog.models["runtime-default"]
+        assert curator.invoker.model.max_output_tokens == settings.provider.max_output_tokens
+        assert curator.invoker.model.thinking_enabled is False
+        initial = SkillAdaptiveCuratorDraft(
+            proposed_name="Synthetic adaptable guidance",
+            description="Agent-authored synthetic reference.",
+            procedure=SkillAdaptiveProcedureDraft(
+                applicability="Use only for a compatible current task.",
+                workflow_guidance=("Inspect current governed evidence.",),
+                reusable_principles=("Keep claims bounded by current evidence.",),
+                adaptation_points=(SkillAdaptationPoint(
+                    decision="Choose the current task approach.",
+                    evidence_requirements=("Current input structure.",),
+                    selection_considerations=("Current objective and constraints.",),
+                    revalidation_requirements=("Validate current outputs.",),
+                ),),
+            ),
+        )
         revised = initial.model_copy(update={"description": "Agent-revised synthetic reference."})
         review = SkillCuratorAudit.model_validate_json(json.dumps({
             "summary": "Synthetic advisory review.",
@@ -126,30 +141,29 @@ async def test_existing_curator_protocol_uses_configured_provider_not_task_text(
                         if revise else [],
         }))
         final_review = SkillCuratorAudit(summary="Synthetic final review.", findings=())
-        outputs = {
-            "GoldDraft": [initial.model_dump_json()],
-            "GoldAudit": [review.model_dump_json(), final_review.model_dump_json()],
-            "GoldRevision": [revised.model_dump(mode="json")],
-        }
+        outputs = [initial, review]
+        if revise:
+            outputs.extend((revised, final_review))
         captured = []
 
-        async def run(agent, message, **kwargs):
-            captured.append((agent.name, json.loads(message)))
-            return SimpleNamespace(content=outputs[agent.name].pop(0))
+        async def invoke(*, instructions, request, response_model):
+            value = outputs.pop(0)
+            assert isinstance(value, response_model)
+            label = (
+                "GoldAudit" if response_model is SkillCuratorAudit
+                else "GoldRevision" if captured else "GoldDraft"
+            )
+            captured.append((label, json.loads(request), instructions, response_model))
+            return value
 
-        for agent in (curator.drafting_curator.agent, curator.audit_agent,
-                      curator.revision_curator.agent):
-            assert agent.model_params["max_tokens"] == settings.provider.max_output_tokens
-            assert agent.model_params["thinking"] == {"type": "disabled"}
-            assert agent.use_memory is False
-            monkeypatch.setattr(agent, "run", MethodType(run, agent))
+        monkeypatch.setattr(curator.invoker, "invoke", invoke)
         source = SkillCurationSourceView(source_bundle_id=uuid4(), source_run_id=uuid4(),
                                         final_status=RunStatus.COMPLETED, workflow_stage_path=())
         result = await curator.propose(source)
         assert result.procedure == (revised if revise else initial).to_curator_draft().procedure
         assert result.description == (revised if revise else initial).description
         assert result.review_notes == ((final_review if revise else review).summary,)
-        assert [name for name, _ in captured] == (
+        assert [item[0] for item in captured] == (
             ["GoldDraft", "GoldAudit", "GoldRevision", "GoldAudit"] if revise
             else ["GoldDraft", "GoldAudit"]
         )
