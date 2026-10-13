@@ -208,6 +208,9 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
         assert 'CONTROL_STATE_REQUIRED_CAPABILITIES=["report_submit"]' in (
             assemblies[WorkflowStage.REPORT].capability_prompt_values["protocol"]
         )
+        execute_protocol = assemblies[WorkflowStage.EXECUTE].capability_prompt_values["protocol"]
+        assert "Do not run diagnostic probes to rediscover those supplied facts" in execute_protocol
+        assert "A diagnostic or environment-probe output is not a task result" in execute_protocol
         assert not application.execution_policy.allow_network
         assert application.execution_capability.minimum_queryable_output_count == 1
         assert application.execution_capability.available_python_modules == ("numpy",)
