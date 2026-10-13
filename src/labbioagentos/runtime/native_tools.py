@@ -114,9 +114,22 @@ class ExecutionReviseArguments(NativeToolArguments):
     expected_script_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
     edits: tuple[ExecutionSourceEdit, ...] = Field(default=(), max_length=32)
     image_key: ExecutionImageKey | None = None
-    requested_outputs: ExecutionRequestedOutputs | None = None
+    requested_outputs: ExecutionRequestedOutputs | None = Field(
+        default=None,
+        description=(
+            "Replacement output declarations, when needed, using the approved "
+            "output contracts from execution_capability. Null preserves the "
+            "original execution declarations."
+        ),
+    )
     resources: RequestedResources | None = None
-    input_artifact_ids: ExecutionInputArtifactIds | None = None
+    input_artifact_ids: ExecutionInputArtifactIds | None = Field(
+        default=None,
+        description=(
+            "Replacement Artifact UUID selections from execution_capability."
+            "mountable_input_artifact_ids. Null preserves the original selection."
+        ),
+    )
     parameters: dict[str, JsonValue] | None = None
     review: ExecutionReview | None = None
 
@@ -358,10 +371,20 @@ _CAPABILITY_DESCRIPTIONS = {
 }
 _CAPABILITY_DESCRIPTIONS["execution_submit"] = (
     "Submit one complete program for governed execution. Explicitly select task "
-    "inputs by UUID, read their container paths from LABBIO_INPUT_MANIFEST_PATH, "
+    "inputs by UUID. LABBIO_INPUT_MANIFEST_PATH names a JSON object whose keys "
+    "are the selected UUID strings and whose values are their absolute read-only "
+    "container path strings; load it and access a path directly as "
+    "manifest[str(artifact_uuid)] without probing for entries or alternate shapes. "
     "write every declared relative output beneath LABBIO_OUTPUT_DIR, and use the "
     "approved output contract and limits supplied in execution_capability. "
     "Technical execution or registration alone does not establish task completion."
+)
+_CAPABILITY_DESCRIPTIONS["execution_revise"] = (
+    "Revise an exact prior execution program using its execution_id and script "
+    "hash. Preserve or explicitly replace its selected input UUIDs and output "
+    "declarations. LABBIO_INPUT_MANIFEST_PATH always names a direct JSON mapping "
+    "from each selected UUID string to its absolute read-only container path "
+    "string; it has no entries wrapper and does not require a diagnostic probe."
 )
 
 

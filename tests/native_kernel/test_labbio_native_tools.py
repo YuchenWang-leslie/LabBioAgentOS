@@ -139,7 +139,14 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     )
     descriptions = {spec.name: spec.description for spec in registry.specs}
     assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_submit"]
+    assert "manifest[str(artifact_uuid)]" in descriptions["execution_submit"]
     assert "LABBIO_OUTPUT_DIR" in descriptions["execution_submit"]
+    execution_revise = schemas["execution_revise"]["properties"]
+    assert "preserves the original selection" in (
+        execution_revise["input_artifact_ids"]["description"]
+    )
+    assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_revise"]
+    assert "direct JSON mapping" in descriptions["execution_revise"]
 
 
 @pytest.mark.asyncio
