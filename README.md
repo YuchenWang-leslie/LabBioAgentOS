@@ -14,9 +14,7 @@ allowed, and reviewed by a human.
 > 研究开发阶段，生成的分析与科学结论需要研究人员核查。
 
 The active source uses an independently designed and implemented **LabBio
-Native Kernel**. PantheonOS is no longer a runtime or package dependency. Its
-remaining documents are archived migration provenance—not code copied,
-renamed, wrapped, or used as a hidden fallback.
+Native Kernel**.
 
 ## Architecture
 
@@ -73,26 +71,6 @@ These are framework capabilities, not a catalogue of validated biological
 pipelines. Results depend on the configured model, data, tools, Agent decisions,
 and independent human review.
 
-## Current status
-
-As of 2026-10-13:
-
-- active source and tests contain no Pantheon import or adapter, and package
-  metadata has no `pantheon-agents` dependency;
-- the deterministic test snapshot is **1338 passed, 10 skipped**;
-- a bounded PBMC3k ordinary-user task completed real-provider interaction,
-  Docker execution, governed Agent validation and interpretation, and Chinese
-  report export;
-- that single task demonstrates the bounded end-to-end path only. It does not
-  establish independent scientific peer review, repeat-run reliability, or
-  correctness for arbitrary tasks.
-
-The P8 source has not yet become a rollback-rehearsed immutable deployment
-release and has not been activated in production. No profile or Skill was
-automatically promoted by this migration. See the
-[Native Kernel migration plan](docs/NATIVE_KERNEL_MIGRATION_PLAN.md) and
-[real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md) for the
-evidence ladder and remaining gates.
 
 ## Install and verify
 
@@ -153,8 +131,6 @@ For history, clarification, continuation, and revision, see the
 - [Known limitations](docs/KNOWN_LIMITATIONS.md)
 - [Engineering guardrails](AGENTS.md)
 
-Historical Pantheon implementation inventories live under
-`docs/archive/pantheon/` for provenance only.
 
 ## Citation and attribution
 
