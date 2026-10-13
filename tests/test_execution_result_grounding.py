@@ -18,7 +18,7 @@ from labbioagentos.execution.models import ExecutionReceipt, ExecutionStatus
 from labbioagentos.runtime.contracts import CapabilityEvidenceItem, CapabilityEvidenceStatus
 
 
-def _input(*, minimum_outputs=0, retry_available=False):
+def _input(*, minimum_outputs=0, retry_available=False, mountable_inputs=()):
     return RuntimeStageInput(run_id=uuid4(), invocation_id=uuid4(),
         stage_id=WorkflowStage.EXECUTE, instruction="Work from current task evidence.",
         workspace=RuntimeWorkspaceIdentifiers(user_id="fixture-user", lab_id="fixture-lab", project_id="fixture-project"),
@@ -32,13 +32,15 @@ def _input(*, minimum_outputs=0, retry_available=False):
             runtime=ExecutionRuntime.PYTHON, image_key="fixture-image",
             resources=RequestedResources(), network_required=False,
             minimum_queryable_output_count=minimum_outputs,
+            mountable_input_artifact_ids=mountable_inputs,
         ))
 
 
-def _receipt(status=ExecutionStatus.FAILED, outputs=()):
+def _receipt(status=ExecutionStatus.FAILED, outputs=(), inputs=()):
     return ExecutionReceipt(execution_id=uuid4(), status=status, image_key="fixture-image",
         script_hash="a" * 64, exit_code=1 if status is ExecutionStatus.FAILED else 0,
-        output_artifact_ids=outputs, issue_messages=("MODEL_CONTEXT_SENTINEL",))
+        input_artifact_ids=inputs, output_artifact_ids=outputs,
+        issue_messages=("MODEL_CONTEXT_SENTINEL",))
 
 
 def test_execution_receipt_preserves_selected_input_identities():
@@ -110,6 +112,33 @@ def test_successful_receipt_with_required_output_can_advance():
 
     assert result.next_action.root.action.value == "transition"
     assert result.body.output_artifact_references[0].reference_id == str(output_id)
+
+
+def test_data_bearing_run_cannot_advance_from_an_empty_input_execution():
+    input_id = uuid4()
+    output_id = uuid4()
+    stage_input = _input(
+        minimum_outputs=1,
+        retry_available=True,
+        mountable_inputs=(input_id,),
+    )
+    empty_input_receipt = _receipt(
+        status=ExecutionStatus.SUCCEEDED,
+        outputs=(output_id,),
+    )
+
+    with pytest.raises(ValidationError):
+        _format(stage_input, empty_input_receipt).model_validate(
+            _payload(empty_input_receipt)
+        )
+
+    selected_input_receipt = empty_input_receipt.model_copy(
+        update={"input_artifact_ids": (input_id,)}
+    )
+    result = _format(stage_input, selected_input_receipt).model_validate(
+        _payload(selected_input_receipt)
+    )
+    assert result.next_action.root.action.value == "transition"
 
 
 def test_required_transition_must_select_the_qualifying_receipt_and_outputs():

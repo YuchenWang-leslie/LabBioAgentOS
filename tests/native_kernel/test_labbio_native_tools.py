@@ -207,6 +207,7 @@ def test_required_output_count_is_projected_into_current_submit_schema():
         resources=RequestedResources(),
         network_required=False,
         minimum_queryable_output_count=1,
+        mountable_input_artifact_ids=(uuid4(),),
     )
 
     schemas = {
@@ -215,6 +216,10 @@ def test_required_output_count_is_projected_into_current_submit_schema():
     }
 
     assert "requested_outputs" in schemas["execution_submit"]["required"]
+    assert "input_artifact_ids" in schemas["execution_submit"]["required"]
+    assert schemas["execution_submit"]["properties"]["input_artifact_ids"][
+        "minItems"
+    ] == 1
     requested_outputs = schemas["execution_submit"]["properties"]["requested_outputs"]
     assert requested_outputs["minItems"] == 1
     assert set(requested_outputs["items"]["required"]) == {

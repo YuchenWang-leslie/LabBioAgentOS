@@ -41,7 +41,7 @@ class LocalProviderSettings(_SettingsModel):
     provider_tool_schema_strict: bool = False
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
     max_model_phase_seconds: int = Field(default=300, ge=30, le=1_800)
-    finalization_json_object: bool = True
+    finalization_json_object: bool = False
 
 
 class LocalExecutionSettings(_SettingsModel):

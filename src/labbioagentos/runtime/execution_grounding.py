@@ -59,19 +59,27 @@ def execution_result_control(
             raise ValueError("Completed execution evidence requires a valid typed receipt") from None
         receipts.append({"capability_invocation_id": str(item.capability_invocation_id),
             "execution_id": str(receipt.execution_id), "status": receipt.status.value,
+            "input_artifact_ids": list(map(str, receipt.input_artifact_ids)),
             "output_artifact_ids": list(map(str, receipt.output_artifact_ids))})
     minimum_queryable_output_count = (
         stage_input.execution_capability.minimum_queryable_output_count
         if stage_input.execution_capability is not None else 0
     )
+    minimum_selected_input_count = int(
+        minimum_queryable_output_count > 0
+        and stage_input.execution_capability is not None
+        and bool(stage_input.execution_capability.mountable_input_artifact_ids)
+    )
     qualifying_execution_ids = [
         item["execution_id"] for item in receipts
         if item["status"] == ExecutionStatus.SUCCEEDED.value
+        and len(item["input_artifact_ids"]) >= minimum_selected_input_count
         and len(item["output_artifact_ids"]) >= minimum_queryable_output_count
     ]
     return {
         "authority": "CONTROL_STATE",
         "completed_execution_receipts": receipts,
+        "minimum_selected_input_count": minimum_selected_input_count,
         "minimum_queryable_output_count": minimum_queryable_output_count,
         "qualifying_execution_ids": qualifying_execution_ids,
         "workflow_control": (
@@ -89,7 +97,9 @@ def execution_result_control(
             "identities retain kind EXECUTION, including in issue_references and references. "
             "A failed execution remains a valid technical outcome; this does not judge "
             "scientific results. When the minimum queryable output count is not satisfied "
-            "by a successful current receipt, do not advance to a downstream stage."
+            "by a successful current receipt, do not advance to a downstream stage. "
+            "When the run has mountable task inputs and requires queryable output, the "
+            "selected successful receipt must include at least one of those task inputs."
         ),
     }
 

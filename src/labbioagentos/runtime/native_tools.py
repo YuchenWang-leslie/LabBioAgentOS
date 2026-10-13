@@ -477,10 +477,8 @@ def build_labbio_tool_registry(
                     max_length=128,
                 ),
             ]
-            arguments_model = create_model(
-                "OutputRequiredExecutionSubmitArguments",
-                __base__=ExecutionSubmitArguments,
-                requested_outputs=(
+            required_fields = {
+                "requested_outputs": (
                     queryable_outputs,
                     Field(
                         description=(
@@ -491,6 +489,25 @@ def build_labbio_tool_registry(
                         min_length=execution_capability.minimum_queryable_output_count,
                     ),
                 ),
+            }
+            if execution_capability.mountable_input_artifact_ids:
+                required_fields["input_artifact_ids"] = (
+                    tuple[UUID, ...],
+                    Field(
+                        min_length=1,
+                        max_length=128,
+                        description=(
+                            "Required nonempty task input selection because this "
+                            "data-bearing run requires queryable execution output. "
+                            "Copy UUIDs from execution_capability."
+                            "mountable_input_artifact_ids."
+                        ),
+                    ),
+                )
+            arguments_model = create_model(
+                "OutputRequiredExecutionSubmitArguments",
+                __base__=ExecutionSubmitArguments,
+                **required_fields,
             )
         registry.register(
             name=capability_name,

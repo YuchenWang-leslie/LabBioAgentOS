@@ -55,6 +55,7 @@ def test_settings_are_explicit_relative_and_frozen(settings_file):
     assert settings.input_roots == (settings_file.parent / "inputs",)
     assert settings.provider.env_file == settings_file.parent / "provider.env"
     assert settings.provider.max_model_phase_seconds == 300
+    assert settings.provider.finalization_json_object is False
     assert settings.principal.user_id == settings.workspace.user_id == "user-local"
     assert settings.workspace.project_id == "project-local"
     with pytest.raises(ValidationError):
