@@ -1,5 +1,37 @@
 # Real E2E Convergence Workplan
 
+## 2026-10-13 — Native Kernel source and GitHub README published
+
+The user authorized publication of the important P0-P8 source changes and an
+updated GitHub README. Live remote `main` had independently advanced from the
+local migration base `9608bc1` to `d7931a4` by adding README, MIT LICENSE, and
+SECURITY files. The migration was therefore replayed onto that exact remote
+head rather than overwriting or force-pushing it. The only content conflict was
+README; the resolved version preserves the public project/citation/license
+material while replacing the obsolete Pantheon dependency instructions with
+the Native Kernel architecture, current acceptance evidence, and explicit
+non-deployment limits.
+
+Source/README publication commit `c60e586e6b19cd3f1412b1395a0509fa13d71443`
+was atomically pushed to both `main` and `feat/native-kernel-p8`. Remote ref
+verification returned the same commit for both, and the remote raw README
+SHA-256 matched the committed bytes:
+`608834f63b3d94d266fbd80896538201be4f97f7edea45c59b4041444071ed8e`.
+The exact clean publication tree passed **1338 tests, 10 skipped**, CLI help,
+wheel build, and metadata inspection with no Pantheon dependency. Active
+source/tests contain no Pantheon import. Historical C6/C8-C12 acceptance and
+conversation documents remain in the published tree; only the two explicit
+Pantheon implementation inventories moved under `docs/archive/pantheon/`.
+
+This is source publication, not the pending immutable P8 deployment release.
+Production was rechecked and remains the sealed P5 release
+`native-p5-20261012T043811Z`; its manifest SHA-256 is still
+`bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`,
+all manifest entries verify, and CLI help succeeds with the existing Uvicorn
+deprecation warning. No production activation, profile/Skill promotion, or
+rollback rehearsal occurred. The unique continuation remains the separately
+authorized immutable P8 release and rollback rehearsal.
+
 ## 2026-10-13 — P8 ordinary-user Native task completed after two root fixes
 
 The user authorized root-cause repair and continued validation against the
