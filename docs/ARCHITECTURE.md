@@ -101,15 +101,16 @@ filename or modification time.
 
 ## Current evidence boundary
 
-The deterministic suite currently passes 1338 tests with 10 intentional skips.
+The deterministic suite currently passes 1340 tests with 10 intentional skips.
 Generic live model behavior, dynamic collaboration, interruption/recovery,
 Docker execution, and one bounded ordinary-user PBMC3k task through an
 Agent-authored report have been observed. This does not establish independent
 scientific review or general repeatability.
 
-The active production pointer remains the earlier sealed P5 release. The
-current source has been published but has not yet completed immutable P8
-release construction, rollback rehearsal, or production activation.
+Immutable P8 release `native-p8-20261013T052836Z` completed isolated runtime,
+packaged live, manifest, and rollback-rehearsal verification. The active
+production pointer remains the earlier sealed P5 release; P8 production
+activation is a separate authorization boundary.
 
 ## Related documents
 

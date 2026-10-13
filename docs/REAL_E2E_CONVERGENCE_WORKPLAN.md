@@ -7,14 +7,15 @@ legacy runtime adapter or indirect runtime package dependency. Scientific
 methods, parameters, programs, specialist choice, interpretation, and report
 content remain Agent-owned.
 
-GitHub `main` and `feat/native-kernel-p8` were published at source commit
-`c60e586e6b19cd3f1412b1395a0509fa13d71443`, followed by documentation commit
-`5ea1a6413d55ed05f8fcda198b3f7bc6ae5678c6`. The published README hash was
-`608834f63b3d94d266fbd80896538201be4f97f7edea45c59b4041444071ed8e`.
+GitHub `main` and `feat/native-kernel-p8` were last confirmed at
+`a8c0aa698b07794554bab1d4a5425276a7763b71`. P8 was built from local clean
+source commit `cfce0ec5a99feb6047d570cb9520e699ace1e9f8`. Publishing that fix is
+still pending because the GitHub SSH proxy timed out during the bounded fetch;
+the release receipt preserves the exact source identity.
 
 The exact clean source tree passed:
 
-- 1338 deterministic tests with 10 intentional skips;
+- 1340 deterministic tests with 10 intentional skips;
 - CLI help;
 - wheel construction and metadata inspection;
 - a repository scan with no legacy runtime import or package requirement.
@@ -29,19 +30,25 @@ Validation reached these distinct levels:
 4. governed Docker execution and cleanup;
 5. one bounded ordinary-user PBMC3k task through successful execution;
 6. Agent-owned validation, interpretation, Chinese report export, and delivery.
+7. a fresh packaged-release small-table smoke through `COMPLETED / LEARN /
+   STABLE`, followed by provider-free status and export from the same release.
 
 The final bounded run reached `COMPLETED / LEARN / STABLE`. The Agent selected
 and authored the method, parameters, program, revisions, interpretation, and
 report. Codex supplied none of that scientific content. This one run is not an
 independent scientific peer review or evidence of general repeatability.
 
-Two root causes were fixed during live validation:
+Three root causes were fixed during live validation:
 
 - repeated unchanged non-retryable output declarations now converge only after
   the canonical validator runs and feedback has been delivered;
 - a successful tool batch on the final allowed capability turn is retained and
   handed to the separate finalizer instead of attempting an extra provider
   reservation.
+- a provider tool batch that would cross the remaining capability evidence
+  budget is now rejected before effects and converges through
+  `CAPABILITY_EVIDENCE_LIMIT`; it no longer becomes an unrecoverable
+  `NATIVE_CAPABILITY_FAILED` stage.
 
 ## Cleanup completed
 
@@ -65,6 +72,12 @@ The documentation set was reduced to current architecture, runtime contracts,
 operation, limitations, and this handoff. Historical milestone, gap, acceptance,
 migration, snapshot, and duplicate architecture documents were deleted.
 
+P8 construction created two bounded smoke runs: the first exposed the evidence
+budget root cause and the fresh successor completed after the fix. Both run
+directories, their conversation index, clean-install environments, failed
+candidate, build worktrees, logs, and temporary rollback pointer were removed
+after receipts were sealed. The result root is empty and no container remains.
+
 ## Production and release boundary
 
 Production remains unchanged at sealed P5 release
@@ -73,21 +86,25 @@ Production remains unchanged at sealed P5 release
 all manifest entries passed, and CLI help succeeded with one existing Uvicorn
 deprecation warning.
 
-The current source is published but is not yet an immutable P8 deployment
-release. No production pointer, profile, or Skill was activated or promoted.
+Immutable P8 release `native-p8-20261013T052836Z` is sealed read-only from
+source commit `cfce0ec5a99feb6047d570cb9520e699ace1e9f8`. Its 11,814-entry
+manifest passed in staging and again after the atomic move; manifest SHA-256 is
+`05061ea43525818a370d67c213c60a05d5e34882c40d3600948d9cf7783c77f2`.
+The release-local isolated Python environment exposes no legacy kernel
+distribution, path, content, adapter, dependency, or fallback.
+
+The isolated pointer rehearsal passed `P5 -> P8 -> P5 -> P8`, with exact
+manifest and CLI verification at every step. Its receipt SHA-256 is
+`8f57a10a809337450efcec6175258cfd602badba8bd2c5af834a3227a525f16c`.
+The rehearsal pointer was removed. Production `current` never changed from P5;
+no profile or Skill was activated or promoted.
 
 ## Unique continuation
 
-The next bounded task is:
-
-1. build an immutable P8 release from an exact clean commit;
-2. install and validate it in a clean environment;
-3. verify manifest, direct dependencies, CLI, status/export, and focused live
-   smoke behavior from the packaged release;
-4. rehearse rollback on an isolated pointer while preserving sealed P5;
-5. record release and rollback receipts;
-6. stop for separate production-activation authorization.
-
-Do not build from the current dirty working tree. Do not treat source
-publication as deployment, or the bounded PBMC3k result as general scientific
+P8 construction and rollback rehearsal are complete. The only next production
+task is separately authorized activation: first publish the source and docs,
+confirm no active work, atomically switch `current` from P5 to the sealed P8
+path, verify identity/manifest/CLI and a fresh active-release smoke, and roll
+back to P5 on any failed gate. Do not activate a profile or Skill as part of
+that switch, and do not treat either bounded live task as general scientific
 acceptance.

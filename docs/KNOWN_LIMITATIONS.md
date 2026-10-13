@@ -61,7 +61,7 @@ the service does not self-grade scientific quality.
 
 ## Release status
 
-The current source is published and its deterministic suite is green, but it is
-not yet the active immutable production release. P8 release construction,
-clean-install verification, isolated rollback rehearsal, and separate
-production activation remain outstanding.
+The deterministic suite is green and immutable P8 release
+`native-p8-20261013T052836Z` passed clean-install, packaged live, manifest, and
+isolated rollback verification. Production still points to sealed P5. P8
+activation and post-switch verification require separate authorization.

@@ -78,7 +78,7 @@ As of 2026-10-13:
 
 - active source and tests use only the LabBio Native Kernel, and package
   metadata declares its transport dependency directly;
-- the deterministic test snapshot is **1338 passed, 10 skipped**;
+- the deterministic test snapshot is **1340 passed, 10 skipped**;
 - a bounded PBMC3k ordinary-user task completed real-provider interaction,
   Docker execution, governed Agent validation and interpretation, and Chinese
   report export;
@@ -86,8 +86,9 @@ As of 2026-10-13:
   establish independent scientific peer review, repeat-run reliability, or
   correctness for arbitrary tasks.
 
-The P8 source has not yet become a rollback-rehearsed immutable deployment
-release and has not been activated in production. No profile or Skill was
+Immutable release `native-p8-20261013T052836Z` has passed clean-install,
+packaged live, manifest, and isolated rollback rehearsal. Production still
+points to sealed P5; P8 has not been activated, and no profile or Skill was
 automatically promoted. See the
 [real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md) for the
 evidence ladder and remaining gates.
