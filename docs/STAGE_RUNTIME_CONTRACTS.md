@@ -1,287 +1,106 @@
 # Stage Runtime Contracts
 
-> **Migration status:** the typed stage, evidence, authority, and result
-> contracts here remain active. The Native Kernel is now the default new-run
-> backend; Pantheon teams, tools, and delegation names below describe only the
-> explicitly selected legacy adapter during the migration window.
+## Outer boundary
 
-## Status and common contract
+`StageRuntimeInvoker` is the only runtime port used by the application. It
+receives a trusted `RuntimeStageInput` and returns a typed
+`RuntimeStageResult`. The invoker may reason, use allowed capabilities, and
+delegate inside the stage, but it cannot mutate `WorkflowRun`.
 
-These contracts describe the implemented LabBio runtime boundary. Names ending
-in `Result` below may be conceptual stage labels where the code uses the common
-typed `RuntimeStageResult` envelope.
+`RuntimeCoordinator` validates the returned proposal, evidence identity,
+grounding, and legal next action before `WorkflowEngine` changes state.
 
-The current `StageContext` contains only `run_id`, `stage`, `instruction`, and
-free-form JSON metadata. The current `AgentStageResult` contains a summary and
-free-form payload, while `NextActionProposal` is separate. Before a real model
-loop, use one common, discriminated envelope:
+## Identity
 
-```text
-RuntimeStageInput
-  run_id, stage_id, invocation_id
-  user_goal_ref / sanitized instruction
-  workspace identifiers (read-only presentation)
-  prior_result_refs
-  artifact_ids and bounded views
-  candidate Memory/Gold IDs or views
-  stage-specific body
+Keep these identities distinct:
 
-RuntimeStageResult
-  stage_id
-  summary
-  stage-specific typed body
-  artifact/result references
-  explicit NextActionProposal
-```
+| Identity | Scope |
+|---|---|
+| `thread_id` | long-lived user/project conversation |
+| `workflow_run_id` | one complete task attempt |
+| `kernel_run_id` | one stage runtime execution |
+| `task_id` | one Leader-authored collaboration task |
+| `invocation_id` | one Leader or Specialist Agent loop |
+| `tool_invocation_id` | one governed capability call |
 
-The principal, mutable run, policy objects, stores, and host paths are not
-fields. The coordinator binds them out of band. Each stage body must reject
-unknown fields and bound strings, collections, and nested JSON. This prevents a
-free-form payload from becoming an accidental raw-data or trace channel.
+Child events retain root run, parent invocation, parent tool call, depth, and
+chain path. Correlation identity never grants authority.
 
-The common input also carries a fixed evidence-grounding control. Model-authored
-prior results are `MODEL_CONTEXT`, never evidence merely because their schema
-validated. Governed `ArtifactView`, capability results, and execution receipts
-are `AUTHORITATIVE_EVIDENCE`; workflow/gate/capability facts are `CONTROL_STATE`;
-task text and caller assertions are `USER_ASSERTION`. Factual claims must be
-grounded in current governed evidence. Opaque Artifact and execution references
-survive mechanically, while claims do not acquire authority by copying.
+## Provider contract
 
-In Native capability mode, every configured team profile receives a separately
-bound tool registry with its own trusted actor identity and allowlist. Governed root and
-child tool outcomes are aggregated into the stage
-`CapabilityEvidenceBundle`; child prose remains `MODEL_CONTEXT`. Team
-membership is configuration, while the runtime model chooses whether and which
-eligible peer to call through Native `list_specialists` and `delegate` tools.
+`ModelProvider.generate(ModelRequest) -> ModelTurn` uses an exact trusted
+provider/model binding. Requests contain bounded public messages, strict tool
+schemas, response mode, limits, deadline, and correlation identity. Turns
+contain public content, normalized tool calls, finish reason, usage when known,
+and safe provider observations.
 
-## INTAKE
+The runtime does not silently switch provider, model, protocol, endpoint, or
+thinking mode. Missing usage is unknown rather than zero. Truncation, filtering,
+malformed messages, and binding mismatch are explicit failures.
 
-- **Controller:** WorkflowEngine plus LabBio coordinator; hybrid stage.
-- **Runtime intelligence:** interpret the user's stated goal, restate scope and
-  constraints, and identify missing information. It does not choose a
-  scientific method merely from request keywords.
-- **Inputs:** sanitized user-request reference, submitted artifact IDs with
-  metadata/schema views, workspace IDs, explicit user constraints.
-- **Runtime team:** a configurable general coordinator profile. A fixed
-  scientific specialist is not selected by platform code.
-- **Allowed capabilities:** `artifact_list`, bounded `artifact_query`; optional
-  Memory/Skill candidate discovery. Native delegation may be available if the
-  configured team contains eligible peers.
-- **Structured output:** `IntakeResult` with interpreted goal, declared
-  constraints, unresolved questions, relevant input references, and explicit
-  next-action proposal.
-- **Artifacts:** references and STRUCTURAL views only by default; no raw file
-  contents.
-- **Memory/Gold:** bounded candidates may be surfaced, but no use decision is
-  made deterministically.
-- **Trace:** run/stage entry, instruction reference, agent/delegation events,
-  result reference, transition or user-gate event.
-- **Possible user gate:** ambiguous goal, missing required input, or consent for
-  an operation that policy marks as approval-bearing.
+## Capability mode
 
-## UNDERSTAND
+Capabilities are assembled from a trusted stage profile. Before dispatch:
 
-- **Controller:** WorkflowEngine plus coordinator; Pantheon reasoning inside a
-  deterministic shell.
-- **Runtime intelligence:** develop task understanding, inspect allowed data
-  shape/schema, identify uncertainties, and decide whether search or specialist
-  advice is useful.
-- **Inputs:** accepted intake result, authorized artifact IDs/views, user
-  constraints, bounded Memory/Gold candidates when requested.
-- **Runtime team:** general understanding/planning profile with optional peers.
-- **Allowed capabilities:** artifact list/query, skill search/view, memory
-  search/view, optional search, native list/call agent.
-- **Structured output:** `UnderstandingResult` with requirements, assumptions,
-  evidence references, uncertainties, and next action.
-- **Artifacts:** metadata, schema, aggregate or explicitly authorized views.
-- **Memory/Gold:** context only. Relevance remains a runtime-model judgment.
-- **Trace:** queried reference IDs and view types, candidate IDs, delegations,
-  instruction/result, transition or gate.
-- **Possible user gate:** a material unresolved ambiguity or a proposed Skill
-  use requiring confirmation.
+1. the complete tool-call batch is parsed;
+2. top-level arguments must be one strict JSON object;
+3. duplicate keys, non-finite values, unknown fields, and schema violations are
+   rejected;
+4. batch count, policy, budget, and interruption are checked;
+5. only then may foreground side effects begin.
 
-## PLAN
+Trusted identity and scope fields never come from model arguments. Each result
+is projected once into a bounded observation and a typed evidence item. Failed
+calls remain evidence and are not rewritten as successes.
 
-- **Controller:** WorkflowEngine plus coordinator; Pantheon reasoning inside a
-  deterministic shell.
-- **Runtime intelligence:** choose analysis strategy and methods, decide which
-  agents or search are useful, define expected inputs/outputs and validation
-  expectations, and propose Skill use if relevant.
-- **Inputs:** understanding result, controlled evidence/views, eligible
-  Memory/Gold context, explicit constraints.
-- **Runtime team:** configurable planner/coordinator profile. `list_agents` and
-  `call_agent` let the model select an allowed specialist dynamically.
-- **Allowed capabilities:** artifact query, skill/memory search and view,
-  `skill_propose_use`, optional search, native delegation. No direct execution
-  is required at this stage.
-- **Structured output:** `AnalysisPlanResult` containing a typed procedural plan,
-  required artifact references, proposed execution requirements/output
-  contracts, validation expectations, uncertainties, and next action. It is a
-  proposal, not an executable pipeline.
-- **Artifacts:** references to inputs and evidence; optionally a registered plan
-  artifact after deterministic validation.
-- **Memory/Gold:** model may reference candidates or submit a use proposal; it
-  may not approve or execute a Skill.
-- **Trace:** planning instruction/result references, candidate/use proposal IDs,
-  delegation tree, transition or gate.
-- **Possible user gate:** Skill use, consequential plan choice, expanded data
-  exposure, network request, or resource request requiring user approval.
+Repeated non-retryable requests may converge only after the canonical current
+validator runs and the unchanged failure has already been delivered to the
+Agent. A changed request or changed authority is evaluated normally.
 
-## PREFLIGHT
+## Collaboration
 
-- **Controller:** WorkflowEngine plus deterministic LabBio services; hybrid.
-- **Runtime intelligence:** explain constraints and revise/propose a plan when
-  preflight identifies a problem. It does not override policy.
-- **Inputs:** validated plan proposal, input artifact IDs, proposed image key,
-  resource/output contract requests, approvals already obtained.
-- **Runtime team:** planner or execution profile only when a revision is needed;
-  pure successful checks need no extra LLM call.
-- **Allowed capabilities:** bounded artifact metadata/query; a read-only
-  preflight capability if exposed. No Docker CLI or mutable policy.
-- **Structured output:** `PreflightResult` with structural validity, bounded
-  issues, approved references/constraints, required user actions, and next
-  action. “Valid” here is technical/authorization validity, not scientific
-  validity.
-- **Artifacts:** verified input IDs and approved output contract IDs.
-- **Memory/Gold:** read-only planning context; no store mutation.
-- **Trace:** authorization/preflight decision references, denials, revision
-  result, transition or gate.
-- **Possible user gate:** network, resource, artifact exposure, or other policy
-  decision requiring explicit approval.
+The Leader may call `list_specialists` and `delegate`. Trusted configuration
+defines eligible peers and output ownership; the model chooses whether and whom
+to delegate to. The host enforces self, ancestor, loop, depth, target, task,
+budget, interruption, and child-failure rules.
 
-## EXECUTE
+A child receives isolated working context and only the capabilities allowed for
+that invocation. Its typed result, public events, and actor-attributed evidence
+return to the parent; private reasoning does not.
 
-- **Controller:** WorkflowEngine plus governed execution adapter; hybrid.
-- **Runtime intelligence:** generate task-specific Python and an
-  `ExecutionPlanDraft`, choose among allowed inputs/output contracts, and react
-  to structured technical outcomes.
-- **Inputs:** approved analysis plan, preflight constraints, input Artifact IDs,
-  container-visible path mapping contract, approved image/resource/output
-  contract keys.
-- **Runtime team:** execution profile with optional model-selected specialist
-  delegation.
-- **Allowed capabilities:** `execution_submit`, artifact query for authorized
-  inputs/results, and native delegation. No filesystem, shell, Docker, or direct
-  ArtifactStore tool.
-- **Structured output:** `ExecuteStageResult` with a model-safe execution receipt,
-  output artifact IDs, technical issues, and next action. The internal
-  `ExecutionResult` is not returned directly because its ArtifactRefs contain
-  storage locators.
-- **Artifacts:** generated script, stdout, and stderr are internal RAW
-  ArtifactRefs; declared outputs are registered conservatively; the model sees
-  IDs and controlled views only.
-- **Memory/Gold:** may inform code generation as procedural context but cannot
-  execute or mutate the run.
-- **Trace:** execution submitted/started/completed/failed, image key and script
-  hash, output reference IDs, technical issues, agent/delegation events. No full
-  script or unrestricted streams in event payloads.
-- **Possible user gate:** only a policy-defined approval not already satisfied;
-  the agent cannot self-approve it.
+## Finalization mode
 
-## VALIDATE
+After capability mode ends, the host freezes the exact evidence bundle and
+starts a separate tool-free finalizer. The finalizer returns the stage body,
+next-action proposal, reasons, unresolved items, and evidence references under
+the configured response schema.
 
-- **Controller:** WorkflowEngine plus validation services; hybrid.
-- **Runtime intelligence:** use controlled derived views to assess whether the
-  result addresses the plan, state scientific limitations, and propose retry,
-  debug, continuation, or failure.
-- **Inputs:** plan and execution receipts, technical validation records,
-  authorized output views, prior retry history.
-- **Runtime team:** validation profile, optionally delegating to an eligible
-  reviewer chosen by the runtime model.
-- **Allowed capabilities:** artifact query, optional search, native delegation;
-  execution submission only through an explicitly entered retry/debug path.
-- **Structured output:** `ValidationResult` separating deterministic technical
-  status from runtime-provided scientific assessment, evidence IDs,
-  limitations, and explicit next action.
-- **Artifacts:** bounded derived/aggregate result views and validation report
-  references.
-- **Memory/Gold:** reference context only; no automatic judgment from prior
-  success.
-- **Trace:** validation records, evidence IDs, delegation, failure, retry
-  requested/started, or transition.
-- **Possible user gate:** acceptance of a material deviation or a policy-bearing
-  rerun. Retry limits remain deterministic.
-- **Reviewer boundary:** this stage reviews evidence available after execution;
-  it does not validate the future REPORT prose and must not be described as a
-  final-report factual-correctness guarantee.
+Finalization cannot replay capabilities or invent evidence. One bounded
+correction may be allowed for a clearly truncated structured response; it uses
+the same frozen input and schema and does not repair JSON locally.
 
-## INTERPRET
+## Stage responsibilities
 
-- **Controller:** WorkflowEngine plus coordinator; Pantheon reasoning inside a
-  deterministic shell.
-- **Runtime intelligence:** interpret validated derived results, distinguish
-  evidence from hypothesis, and describe uncertainty.
-- **Inputs:** validated result, controlled ArtifactViews, user goal, plan and
-  validation references, optional search evidence.
-- **Runtime team:** interpretation profile with model-selected specialist or
-  reviewer delegation when permitted.
-- **Allowed capabilities:** artifact query, optional search, native delegation;
-  no execution by default.
-- **Structured output:** `InterpretationResult` with findings, evidence links,
-  limitations, hypotheses clearly labelled as such, and next action.
-- **Artifacts:** derived/aggregate/user-approved views only.
-- **Memory/Gold:** contextual evidence, never treated as current-task proof.
-- **Trace:** view/reference IDs, explicit interpretation result, delegations,
-  transition or gate. Hidden chain-of-thought is excluded.
-- **Possible user gate:** only when user clarification or acceptance is actually
-  required; ordinary interpretation should proceed without a gate.
+| Stage | Agent responsibility | Host responsibility |
+|---|---|---|
+| INTAKE | understand the request and missing facts | bind identity and registered inputs |
+| UNDERSTAND | form a task understanding | enforce exposure and validate structure |
+| PLAN | choose scientific approach and collaboration | validate proposal and permissions |
+| PREFLIGHT | identify required execution assumptions | enforce trusted environment and policy |
+| EXECUTE | author and revise the analysis program | execute in Docker and register evidence |
+| VALIDATE | assess produced evidence and limitations | preserve immutable receipts and checks |
+| INTERPRET | interpret allowed derived results | enforce evidence scope and claim boundary |
+| REPORT | author the report and citations | validate references and export exact content |
+| LEARN | propose reusable knowledge | require governed review before persistence |
 
-## REPORT
+`USER_GATE`, workflow retry, run completion, and production release are host
+control operations, never model-owned stage transitions.
 
-- **Controller:** WorkflowEngine plus deterministic artifact registration;
-  hybrid.
-- **Runtime intelligence:** compose a report from typed results and controlled
-  evidence, preserving limitations and provenance.
-- **Inputs:** intake through interpretation result references, artifact IDs,
-  trace-derived provenance summary, requested report constraints.
-- **Runtime team:** reporting profile; optional reviewer selected by the model.
-- **Allowed capabilities:** artifact query, optional search for already-approved
-  citations, native delegation; a narrow report-submission capability if needed.
-- **Structured output:** `ReportResult` with report content or a bounded draft,
-  cited evidence/reference IDs, registered report artifact ID, and next action.
-- **Artifacts:** deterministically registered report and optional structured
-  summary; no host path in the runtime result.
-- **Memory/Gold:** may inform format/procedure, not facts without current evidence.
-- **Trace:** report instruction/result, report artifact ID/hash, delegations,
-  transition.
-- **Possible user gate:** approval for an external publication/export, which is
-  outside the first slice; local report creation needs none.
+## Recovery invariants
 
-## LEARN
-
-- **Controller:** WorkflowEngine plus Gold/Memory governance services; hybrid.
-- **Runtime intelligence:** propose persistent Memory updates and, optionally,
-  provide a curator proposal from successful procedural evidence.
-- **Inputs:** successful RunTrace projection, final status, report and artifact
-  references, existing candidate IDs, explicit user preference.
-- **Runtime team:** learning/curator profile only when the user requests or
-  permits a proposal. A deterministic source-bundle projection may run without
-  an LLM.
-- **Allowed capabilities:** memory search/view/propose update, skill
-  search/view/propose creation; no direct store mutation or execution.
-- **Structured output:** `LearnResult` with proposal IDs, source-bundle ID,
-  approval state references, and `finish` proposal. It contains no automatic
-  promotion decision.
-- **Artifacts:** trace, instruction, execution, validation, and report references;
-  no raw artifact content.
-- **Memory/Gold:** immutable versions are created only after matching explicit
-  user decisions.
-- **Trace:** source/proposal/approval/rejection/usage and memory proposal/decision
-  references, followed by run completion.
-- **Possible user gate:** Gold creation/use and persistent Memory update. Agents
-  cannot approve their own proposals.
-
-## Auxiliary stages and gate semantics
-
-`SEARCH` and `DEBUG` may be graph nodes or bounded capabilities. They are not
-keyword-routed pipelines. A runtime result proposes entering them and the
-WorkflowEngine validates the configured edge. `DEBUG` diagnoses and proposes a
-repair; deterministic code only accounts for retries. `SEARCH` returns cited,
-bounded evidence and does not decide scientific relevance.
-
-`USER_GATE` is never a Pantheon-controlled stage transition. LabBio records the
-pending gate, suspends the run, validates an external typed decision, performs
-the corresponding governed service decision where applicable, and only then
-resumes through an allowed graph edge. The current default graph does not
-contain these auxiliary nodes or edges; a reviewed runtime workflow definition
-is required before approval-bearing integration.
+- Runtime revision is frozen for a run.
+- A terminal predecessor is never reopened or mutated.
+- In-flight external effects fail closed until reconciled.
+- Capability evidence and finalization results persist before the next action.
+- A successful execution is selected by persisted identity, not recency.
+- Workflow completion is not proof of scientific correctness.

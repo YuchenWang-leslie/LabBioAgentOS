@@ -1,447 +1,131 @@
 # 本地自然语言任务入口
 
-> **迁移状态：**P7 已完成源码侧内核剥离；P8 的通用真实 provider、协作、
-> 中断恢复、Docker，以及一个受限 PBMC3k 普通用户任务至最终报告均已通过。
-> 这不等于外部独立科学复核或通用可靠性结论；P8 immutable release 与 rollback
-> 尚未完成。当前源码只接受 LabBio Native Kernel，已无 Pantheon
-> backend、adapter 或包依赖。服务器激活的仍是较早的 P5 不可变 CLI release，
-> P7/P8 源码尚未部署。后续门禁以
-> `NATIVE_KERNEL_MIGRATION_PLAN.md` 为准。
+`labbio` 将用户数据、自然语言任务和偏好提交给现有
+`LabBioApplication`。分析方案、方法、参数、程序、解释与报告由运行中的 Agent
+产生；CLI 只负责可信配置、身份、Artifact、持久状态、执行与交付边界。
 
-服务器当前激活的不可变 CLI release 为
-`/media/desk16/iy1982/WYC/LabBioAgentOS-production/current`，其命令入口是
-`current/bin/labbio`。当前源码不提供 API/worker 服务，因此该部署不应被描述为
-常驻服务部署。
+## 安装
 
-## 阶段状态响应截断后的纠正
-
-FINALIZE 的 provider 明确返回 `finish_reason=length`，且严格 JSON 解析失败时，
-框架记录拒绝事实，并允许模型就同一冻结输入、证据和 schema 重新生成一次状态
-响应。`FINALIZATION_CORRECTION_REQUESTED` 保存原失败的字符数/空白数和模型
-实际收到的安全反馈，不保存被拒正文或隐藏思考。第二次仍失败则正常落盘失败。
-非截断错误、内容过滤、科学/谱系/权限校验失败不会触发此纠正。
-
-该动作不重放 capability、沙盒或报告提交，不应用不完整决策、不修补 JSON，
-也不改变模型科学判断。单次 token、capability turn、工作流 retry 上限不变；
-一次截断会额外消耗一次 FINALIZE 模型调用。这不是保证后续科学任务成功。
-
-## 已授权的生成文件读取
-
-可信部署配置 `[execution].allow_generated_file_read = true` 后，相关阶段提供
-`file_read(artifact_id, offset, limit, expected_sha256)`。这允许 Agent 读取已登记的
-执行报告、程序、stdout/stderr 和结果表，即使其分类仍为 RAW；不重新分类，也不把
-内容认定为已验证的科学结论。原始 RAW_INGESTION 输入不开放直接读取，既有固定
-head 预览规则不变。接口只接受当前运行或显式导入的生成产物 ID，不接受宿主机路径。
-
-文本先进行尽力的密钥/路径脱敏，再按字符分页（单页最多 8000 字符），返回原文件
-和脱敏视图的哈希、后续页偏移。超过 16 MiB 的文本返回明确的未读取状态；二进制
-文件返回格式/结构检查，不声称完整解码或解读图片。生成内容可能包含输入派生值，
-启用该权限不等于保证没有数据披露。原文件与结果不被改写。执行回执会给出已登记
-stdout/stderr 的 ID，模型自行决定是否读取；不会自动注入全部日志。
-
-`report_read` 保留正式报告的原文读取能力，也可在同一权限下读取上述生成文件。
-`artifact_query` 仍只处理已登记的查询视图/记录表，不把文件正文伪装成新视图。
-误用查询接口时，错误中的 `query_constraints.available_file_readers` 列出当前阶段
-确实已开放且范围授权通过的生成文件读取入口；空列表不是提示模型猜另一个视图名。
-这一反馈不读取文件、不自动换工具，也不跳过实际读取时的哈希与分页检查。
-
-用户提供数据、任务和偏好，不再为每个任务编写 Python 启动脚本。
-本入口调用已有 `LabBioApplication`，不替换 WorkflowEngine、Native Kernel、
-执行器或 Artifact 治理。分析方案、参数、程序与报告由运行中的 Agent 产生。
-
-需要账号、项目隔离和个人 Gold 时，使用[本地托管模式](LOCAL_WORKSPACES.md)。
-它复用本入口，增加 SQLite 身份注册、个人凭据与按用户/项目推导的目录。
-
-需要找回历史任务、中断核对或修改旧报告时，使用
-[对话续接与结果修订](CONVERSATION_CONTINUATION.md)。`run --conversation`、
-`history`、`reconcile`、`continue` 和 `revise` 复用同一身份与持久控制边界。
-
-`revise` 默认导入所选成功执行的非报告产物、原始数据/上下文和原执行程序，
-不再自动导入旧报告（包括沙盒注册为 `report` 的文件和继承的报告上下文）。
-报告对照或纯文字修订需要通过 `--artifact-id` 显式选择旧报告；不根据用户文字
-猜测是否需要它。原报告留在原运行中，未删除、重写或降格为结果证据。
-当前阶段之间的协作信息仍保留。Artifact 的可见内容只证明该对象保存了什么，
-不把模型写入的“已修好”记录提升为对其他文件的独立验证。
-`question` / `answer` 支持 Agent 的关键澄清与自然语言回答，并复用上述续接检查点。
-
-## 一次配置，重复提交
-
-使用已有的项目 Python 环境。当前源码直接声明 Native provider 所需的 HTTP
-transport 依赖，不再安装或选择 Pantheon，也不存在 Native 失败后的 runtime
-fallback。旧非终态运行只能由其原不可变 release 识别，不能由当前源码接管。
-
-安装本项目的命令入口（不更新现有环境依赖）：
+使用 Python 3.11+ 的独立环境：
 
 ```bash
-python -m pip install -e . --no-deps --no-build-isolation
+python -m pip install -e '.[test]'
+labbio --help
 ```
 
-以 `examples/local-runtime.toml` 为模板，在仓库外配置
-`~/.config/labbioagent/runtime.toml`。配置内容分为：
+不要把凭据写入仓库。配置文件默认位于
+`~/.config/labbioagent/runtime.toml`，可从
+`examples/local-runtime.toml` 开始。相对路径以配置文件目录为基准。
 
-- 用户、项目、实验室身份，以及允许的输入目录和结果根目录；
-- 模型名称、输出预算，以及外部凭据文件和变量名；
-- 已存在的不可变 Docker 镜像身份、实际模块清单和资源限额。
+## 配置边界
 
-配置不包含密钥。执行任务或经核对允许的续接/修订才加载模型凭据；只读历史和
-中断核对不调用模型。连接设置仅作用于当前进程；
-不会修改 Git、全局代理、Codex 隧道或 Docker 服务，也不安装分析软件。
-本版本只封装现有 OpenAI-compatible chat transport，不承诺兼容所有 provider。
+可信 TOML 包含：
 
-### 本地文件与临时空间额度
+- `result_root`、`input_roots` 和默认输入格式；
+- 用户、项目、实验室身份；
+- provider endpoint/model、输出预算、phase deadline，以及仓库外凭据文件中的
+  环境变量名；
+- 已批准的不可变 Docker 镜像、模块清单、资源限额、输出限额和网络策略；
+- 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
 
-可信 TOML 的 `[execution]` 可显式配置：
-
-```toml
-max_output_file_bytes = 8589934592       # 8 GiB
-max_collected_output_bytes = 34359738368 # 32 GiB
-tmpfs_size_mb = 256
-```
-
-字段必须为正整数，收集合计不能小于单文件上限。未填写时保留旧值：
-单文件 16 MiB、收集合计 64 MiB、`/tmp` 64 MiB。单文件额度同时作用于
-Docker 进程的文件写入硬限制和产物收集，所以落盘的中间文件也受限；
-读取已存在的大输入不受该写入额度限制。`/tmp` 是计入容器内存的 tmpfs，
-不是磁盘；扩大它不会增加容器内存，较大的本地中间文件可使用既有可写输出目录。
-
-收集合计只约束一次执行声明的输出，不是工作目录磁盘配额，也不包含
-Artifact/交付副本及保留的失败版本。应按磁盘余量、内存和并发数设定额度，
-不要把上面的示例视为已验证可运行的最大数据规模。CPU、内存、超时和网络
-策略不变，H5AD 可信检查器的独立输入额度也不随之扩大。
-
-这些额度进入运行 manifest/revision，并作为真实执行能力字段提供给 Agent；
-Agent 不能通过任务文字或工具参数自行提高额度。完整 RAW 文件仍只在本地，
-模型可读 DERIVED 摘要的独立大小和字段合同不变。新配置只用于新任务；
-不要用它恢复配置不匹配的旧运行，也不需要重启 Docker 或修改全局代理。
-
-默认协议保存在包内 `resources/local-default.json`，也可由可信配置中的
-`profile` 显式选择一个外部 JSON 文件。领域经验应进入外部 profile/skill，
-不能在 CLI 中根据任务关键词选方法。此入口没有额外接入 Gold/Memory 服务。
-共享部署上下文由实际配置生成工具归属目录，并同时进入工具调用和阶段决策
-两种模型模式。它只描述平台能力，不新增当前阶段权限或要求某个动作顺序。
-各阶段还接收逐个输入的 `input_artifact_usage`：来源是本次输入还是上下文、
-允许哪些远程视图、是否在本次执行输入名单内。远程可读与执行准入分别判断，
-准入不代表预检已通过。工具的受控错误含义同时保存在执行记录和最终决策证据中。
-
-运行的 `execution_capability` 配置现在也在各阶段一致提供，并标记
-`scope=RUN_CONFIGURATION`；只有真正未配置执行 profile 时才为空。
-当前阶段是否能调用工具仍由 `allowed_capabilities` 等授权决定，不能把
-配置可见当作提前执行许可，或把本阶段无法读取 RAW 当作全流程没有执行配置。
-
-### 经授权的执行错误上下文
-
-可信配置 `[execution] include_error_context = true` 可开放充分的错误取证信息。
-默认关闭，Agent 的工具参数不能开启。2026-09-16 用户授权后，本机托管科学
-运行配置已开启；该值进入运行身份，因此旧运行不能跨配置静默恢复。
-
-失败/超时回执中的 `error_context` 提供 Python traceback（包括异常说明、库
-调用位置和异常链），没有 traceback 时提供 stderr 末段。不再要求先认识某种
-错误枚举。最多扫描末尾64 KiB，返回最多80行、每行1200字符、总计6000字符，
-保留末端错误，明确 `truncated` 和 `redacted`；原stderr哈希绑定本地证据。
-`execution_inspect`、工具证据与持久化事件保留同一投影。stdout、变量遍历和
-任意文件读取仍不开放。进程文本明确为不可信错误证据，不是执行指令或科学结论。
-
-路径、常见凭据字段、Bearer、已识别令牌、URL及私钥块做遮蔽；库调用位置
-保留模块相对名称与行号。此类规则不是通用隐私脱敏保证：异常说明可能包含
-数据值或字段名，启用前须获得相应部署/数据使用授权。完整日志继续仅在本地。
-该开关不修改科学方法、Agent程序、环境依赖、工具预算或重试次数。
-
-### 沙盒中的文件身份
-
-文件登记时在本地保存原文件名，Artifact UUID 是唯一身份。沙盒的
-`LABBIO_INPUT_MANIFEST_PATH` 仍是 UUID 到只读路径的映射；挂载文件的
-basename 是 UUID 加登记原文件名的安全格式后缀（如 `.h5ad`、`.csv.gz`），
-不使用存储内部的 `content`，也不将原文件名当作唯一键。没有原名、没有后缀或
-后缀无法安全用于挂载时只使用 UUID，不推断格式；只读权限与 UUID 映射不变。
-新增只读 `LABBIO_INPUT_IDENTITIES_PATH` 映射同一批已选择 UUID 到
-`{"original_filename": "登记时原名"}`。旧记录没有原名时明确为 `null`，
-不推断或迁移历史身份。两个目录中的同名文件仍有不同 UUID。
-
-原名不参与 Docker 参数或宿主路径解析，不自动加入远程模型元数据；RAW
-边界保持不变。原名只供沙盒内程序访问，如何使用这些事实由 Agent 决定。
-不恢复文件后缀路由，不提供任务专用的合并或注释程序。
+任务文字和工具参数不能修改上述权威值。新任务冻结配置与源码内容身份；不匹配
+的旧运行不能由当前源码静默接管。
 
 ## 提交任务
 
 ```bash
 labbio run \
-  --data /path/to/data.h5ad --format h5ad \
-  --task "请对这份数据做一个简洁概览，实际检查基本情况，保存汇总和中文报告。" \
-  --preference "简洁说明，保留数据局限，不需要复杂分析。" \
-  --output /configured/result/root/my-new-task
+  --data /allowed/path/input.h5ad \
+  --format h5ad \
+  --task "请检查数据，保存有用结果并生成简洁中文报告。" \
+  --preference "保留数据局限，不需要复杂分析。" \
+  --output /configured/result/root/my-task
 ```
 
-`python -m labbioagentos` 与 `labbio` 使用同一入口。可以重复传入 `--data`
-和 `--preference`；`--config /path/runtime.toml` 选择另一份可信本地配置。
-不指定 `--output` 时，在结果根目录下自动创建唯一目录。
-显式输出目录必须尚不存在，且位于配置的结果根目录内。
+- `--data` 可重复，但每个文件必须位于允许的输入根内，且不能是符号链接；
+- `--format h5ad` 显式启用可信结构检查；`raw` 只登记输入；
+- `--output` 必须是结果根下尚不存在的目录；省略时自动创建唯一目录；
+- `--config` 可选择另一个可信 TOML；
+- `--conversation` 可将新任务绑定到显式对话。
 
-数据默认为 `raw`。按 2026-09-15 用户授权，所有已登记输入的
-`artifact_query(METADATA)` 均可提供基本格式信息，不限定 CSV：文件大小、
-后缀提示、内容头部可确认的类型/压缩和可用的有限结构。H5AD/HDF5 提供有限字段名、
-shape/dtype（不读矩阵，不跟随外部链接）；NPY 仅解析数组头部，Matrix Market
-读取维度，JSON 提供顶层名称和类型而非完整值。ZIP/TAR、BAM/CRAM、Parquet/Arrow、
-常见图片/PDF、bzip2/xz 可识别签名；这不等于完整解析或格式校验。未知格式仍显示
-大小、格式提示和可确认的编码事实，不自动猜成某种分析输入。
+## 数据可见性
 
-此外提供固定 head：UTF-8 CSV/TSV（含 gzip）前 6 条逻辑记录（含可能的表头）、
-前 8 列，每格最多 64 个字符；这些少量原始值会进入远程模型上下文。
-返回格式、压缩信息、已观察记录的字段数和截断标记，不猜行列含义；未读到文件末尾时
-总记录数保持未知。不支持分页、任意路径、可选列或提高预览额度。完整数据仍由本地
-沙盒处理；不支持的格式/无效文本会明确返回不可预览，已识别的秘密和路径会遮蔽。
-该遮蔽不等于通用个人信息脱敏。模型查询才触发有界格式读取，文件名后缀只选择
-CSV/TSV 解析器，不选择分析方法或工具顺序。H5AD 的既有安全结构检查
-可以通过 `--format h5ad` 显式启用，或在可信配置设置 `default_format`。
-未支持预览的输入仍可由 Agent 自己编写程序读取；CLI 不代它判断科学含义或概括数据。
-但 RAW 登记能力不等于任意格式的模型行为已获验证；显式 H5AD 与无检查器的
-CSV 分别测试，不能用其中一项的成功替代另一项验收，具体状态见文末。
+完整 RAW 输入只在本地执行平面。模型默认只能看到登记身份和策略允许的元数据、
+固定有界预览或 DERIVED 结果。H5AD 检查不读取表达矩阵。CSV/TSV head 预览有固定
+行列和单元格上限，不支持任意分页或扩大额度。
 
-任务和偏好作为用户原文进入既有 `task_text`；其中的身份、镜像或工具声明
-不能覆盖可信配置。每次运行只绑定用户明确提交的输入，不扫描同目录的其他文件。
+启用 `[execution].allow_generated_file_read = true` 后，相关阶段可通过 Artifact ID
+分页读取已登记的程序、日志、报告和输出。该权限不接受宿主机路径，也不开放原始
+输入正文。密钥/路径遮蔽是尽力而为，不是通用隐私保证。
 
-## 查看结果和状态
+## 执行与输出额度
+
+可信配置可设置：
+
+```toml
+[execution]
+max_output_file_bytes = 16777216
+max_collected_output_bytes = 67108864
+tmpfs_size_mb = 64
+include_error_context = false
+allow_generated_file_read = false
+```
+
+单文件和收集合计必须为正数，合计不能小于单文件上限。`tmpfs` 计入容器内存。
+这些限制不构成工作目录磁盘配额；大量未声明文件仍需操作侧清理。
+
+声明输出只有在收集、登记、哈希和谱系核对后才成为 Artifact。失败执行可以保留
+声明文件作为失败证据，但不会因此变成成功执行。
+
+## 状态、导出与续接
 
 ```bash
-labbio status --run-dir /configured/result/root/my-new-task
-labbio export --run-dir /configured/result/root/my-new-task
+labbio status --run-dir /configured/result/root/my-task
+labbio export --run-dir /configured/result/root/my-task
+
+labbio history --conversation my-analysis
+labbio reconcile --conversation my-analysis --run-id <UUID>
+labbio continue --conversation my-analysis --run-id <UUID>
+labbio question --conversation my-analysis --run-id <UUID>
+labbio answer --conversation my-analysis --run-id <UUID> \
+  --question-id <ID> --text "用户回答"
+
+labbio revise --conversation my-analysis --from-run <UUID> \
+  --task "请基于我明确选择的既有结果进行修订。"
 ```
 
-这两个命令不读取 provider 凭据、不调用模型、不重跑分析。`status` 读取并
-重新授权持久状态；`export` 只在既有恢复边界允许时重建应用对象并复制结果。
-相同快照重复导出保持相同内容；任何文件冲突都会失败，不覆盖用户修改。
+`status` 和 `export` 不加载 provider 凭据或调用模型。恢复前重新验证身份、访问、
+Artifact、工作流状态和 runtime revision。`STAGE_IN_FLIGHT` 等不确定外部副作用
+不会自动重放。
 
-每次任务独立保存：
+`revise` 创建新运行，不改写原运行。它默认导入所选成功执行的非报告产物、原始
+输入/上下文和原执行程序；旧报告需通过 `--artifact-id` 显式选择。
+
+## 运行目录
 
 ```text
-my-new-task/
-  REQUEST.json             用户原始任务、偏好和显式输入路径（仅本地）
-  RUNTIME.json             非秘密配置、有效协议与源码内容指纹
-  RUN.json                 运行 ID
-  state.sqlite             权威持久运行状态
-  run-trace.jsonl           治理事件与执行审计
-  model-boundaries.jsonl    既有类型化模型边界记录
-  artifacts/               本地 Artifact 存储
-  executions/              本地沙盒工作空间和执行证据
+my-task/
+  REQUEST.json
+  RUNTIME.json
+  RUN.json
+  state.sqlite
+  run-trace.jsonl
+  model-boundaries.jsonl
+  artifacts/
+  executions/
   delivery/
-    REPORT.md              Agent 提交的报告原文（存在报告时）
-    outputs/<artifact-id>/ 当前已选成功执行的声明输出副本
-    history/outputs/<artifact-id>/ 历史或未选执行的输出副本（非最终交付）
-    RESULT.json            Artifact 身份、SHA256、大小及真实流程状态
-    README.md              本地结果索引
+    REPORT.md
+    outputs/
+    history/outputs/
+    RESULT.json
+    README.md
 ```
 
-导出报告必须来自 `MODEL_AUTHORED_REPORT`；Codex/CLI 不补写科学报告。
-最终执行来自持久化 EXECUTE 的显式选择，不按文件时间或最近一次尝试猜测。
-RESULT.json 分开记录 outputs、historical_outputs 和 selected_execution_id；
-没有成功执行选择时，不把已有文件冒充最终产物。旧导出不会原地重写。
-输出来自注册记录及匹配的收集审计，并检查内容摘要；不猜测文件名。
-RAW 输出可交给本地用户，但不会因此获得远程模型可读权限。
-原始输入、分析脚本、stdout/stderr 不会自动复制到用户交付目录；它们的本地
-证据仍保留在各自运行目录中。
+最终执行与报告依据持久身份选择，不按文件名或修改时间猜测。CLI 不替 Agent 补写
+报告。工作流完成不等于科学正确。
 
-## 边界与失败
+## 托管模式
 
-这是前台、本地、单运行目录的入口，不是带登录认证的多用户服务。
-当前身份由本机可信配置断言；不能把本地命令直接公开成无认证的远程 API。
-它仍不是网页聊天界面：Gold gate 保持明确 approve/reject；普通关键澄清则使用
-独立的 `question` / `answer`，支持自然语言答复及断点续接，不要求托管 Gold。
-
-保持已有九阶段协议、capability 的 16 条新增消息预算、`retry_limit=1`、离线沙盒及
-真实性/曝光规则。默认配置只声明通用有界汇总输出合同，不提供某项分析答案。
-是否科学正确仍需外部评价；`COMPLETED` 不是科学质量认证。
-
-报告取证支持 `artifact_query` 的 TOP_N offset/next_offset 分页：每页仍有界，
-所有已登记、允许曝光的记录都可以逐页读取。RAW 预览不支持分页扩大读取。
-报告引用的记录表须在当前报告调用中完整读取，缺页提交返回
-REPORT_EVIDENCE_INCOMPLETE，不登记报告。该检查不证明自然语言结论一定正确。
-报告相关阶段可只读 `execution_inspect` 核对真实提交程序，不能提交执行。
-修订入口会同时转移所选输出的原程序来源；旧 receipt 不可用时明确为 null，
-不从源码推断执行成功，也不读取任意 RAW 内容或进程日志。
-配置字段仍名为 max_capability_turns；Native Kernel 将其作为 capability 阶段的
-provider-turn 上限，并另行约束 tool call、证据字节和 wall-clock。批量工具调用
-仍受整批预校验和逐调用预算约束，不等于可以无限扩大一次模型采样的效果。
-
-稳定状态可通过同一运行时配置重建；源码、profile 或有效配置不同会产生
-明确的 revision mismatch。运行中断若保留 `STAGE_IN_FLIGHT`，入口不会自动
-重放可能已经发生的外部操作，也不会伪称已取消。请先查看状态与已有证据。
-禁止在运行期间修改其代码/profile；源码指纹对任何包内 Python 内容变化都敏感。
-
-命令退出码：`0` 表示 `run` 完成或只读命令成功，`2` 表示运行返回了非完成
-的稳定结果，`1` 表示命令失败，`130` 表示用户中断。
-入口捕获的异常仅输出安全类型，不打印可能含有凭据、原始数据或 provider 正文的异常消息。
-失败目录保留，入口不代 Agent 修改程序、增加预算或另起隐藏任务。
-Agent 可在原有权限和预算内自行提交修订版；每版保留独立执行身份和回执。
-`execution_inspect` 允许它分页查看同一 run、同一应用会话内自己此前提交的
-原稿与错误回执，不提供任意 RAW 读取或进程日志读取权限。该原稿索引不支持
-重启恢复；Native JSON transport 对通过大小和安全边界的源码页保持原文，超出
-明确边界时拒绝而不截断，也不伪称已完整读取。
-
-注册输出的原始文件名依赖保留的 JSONL 收集审计；审计缺失时导出明确失败。
-权威流程状态始终来自 SQLite，而不是根据日志推测。
-
-## 本轮实际测试状态（2026-09-07）
-
-通用修复明确了 action schema 的真实效果，并补齐逐输入权限和错误交接。
-`transition` 保持流程运行，`finish` 仅在终点成功结束，`fail` 始终失败终止；
-不会因模型写了 PASS 而覆盖其动作。输出字段越出批准合同现在返回
-`UNDECLARED_RECORD_FIELDS`，仍然拒绝释放，且不回显任意字段名或值。
-
-全量回归为 598 passed、15 skipped；另有 3 项真实 Docker 回归通过。
-
-- 显式 H5AD r3：真实九阶段完成，COMPLETED/STABLE，无工作流重试。
-  两次 Docker 执行中，Agent 自行修订首次被合同拒绝的输出，随后完成最终
-  `report_submit`。人类可读结果在
-  `WYC/result/local-entrypoint-h5ad-overview-20260907-r3/delivery/REPORT.md`。
-- RAW CSV r4：真实九阶段完成，COMPLETED/STABLE，无工作流重试。
-  一次 Docker 执行成功，汇总被合同接受，Agent 提交最终报告至
-  `WYC/result/local-entrypoint-small-table-20260907-r4/delivery/REPORT.md`。
-  新进程状态检查和重复导出通过。6 次远程视图拒绝、1 次未知 Artifact 错误
-  仍保留；旧任务的错误前提、编造内容与重复失败也未删除或改写。
-
-H5AD 在 `f0ca989` 上完成，CSV r4 在错误码修复 `e07ee49` 上完成。两者的新进程
-状态/重复导出均在对应冻结版本验证通过；以后恢复旧运行仍需匹配版本，已导出的
-文件可直接阅读。CSV r4 首次执行就符合合同，未触发新错误码；错误反馈分支由
-确定性回归覆盖，不能把单次 live 成功归因于该错误码，也不代表模型永不编造。
-中途曾有一次因 Codex 误读 C12 的有界字符串许可而提前中断，记录完整保留，
-未因此改动既定释放策略。普通有界科学/样本/条码标签不因类型本身被禁止。
-
-分析程序和最终报告均由运行中的 Agent 产生，科学质量仍由外部评价。
-WorkflowEngine、Pantheon、阶段图、默认 profile 和预算未因本轮修复改变。
-本地 CLI 已使用新源码；未部署生产服务、晋升 Gold/Memory 或推送 GitHub。
-Docker、containerd、docker.socket 均为 active，没有遗留运行中的任务容器。
-本检查点到此停止，下一入口是用户查看上述报告；不自动启动另一个任务或扩大功能。
-
-## 显式模型思考配置（2026-09-09 开发中）
-
-`[provider]` 可设置 `thinking_enabled = true`，共享模型缺省仍为 false。
-2026-09-15 起内置 local-v3 的 INTERPRET 改用独立配置，见下节；其余阶段不变。
-该设置进入运行 manifest/revision，不改变任务文字、方法选择、token 上限或
-重试限额。启用时使用显式兼容 Chat transport 的私有工具推理连续性；不能只
-开启 provider 开关却删除下一轮协议所需的字段。隐藏推理只在同次运行、同一
-模型的请求之间传递，不写入日志、结果、Memory、其他 Agent 或用户报告。
-Native provider adapter 直接生成该兼容 Chat transport 的 thinking wire；配置
-进入 runtime revision，不依赖外部 Agent runtime fork。具体测试、修订身份与
-发布状态以当前 workplan 为准。
-
-### 仅解读阶段的 thinking 与文献联网（2026-09-15）
-
-内置 `local-v3` 将 INTERPRET 绑定到独立 `InterpretationAgent`，而不是修改
-其他阶段共用的 Coordinator。实际发往 provider 的两个解读阶段模式均携带
-`thinking: {"type": "enabled"}`；能力阶段保留所需的私有工具推理连续性，
-不持久化隐藏推理。配置如下（与缺省一致）：
-
-```toml
-[provider]
-thinking_enabled = false
-interpretation_thinking_enabled = true
-```
-
-其他阶段继续使用原 `thinking_enabled`；模型名称、输出预算、能力回合数及
-工作流重试上限不变。当前解释模型与其他 Agent 使用同一已配置模型服务。
-外部自定义 `profile` 不会被自动改写；要采用本配置，须显式把 INTERPRET
-的 root 设为 `interpretation`，并在其 capabilities 中加入 `literature_search`。
-
-`literature_search(query, limit=3)` 仅在 INTERPRET 可用，通过固定 HTTPS
-[Europe PMC 文献接口](https://europepmc.org/RestfulWebService) 检索公开生物医学
-文献（含 PubMed 来源）。Agent 自行决定是否检索、检索词和来源取舍；无固定
-科学检索词、自动重试或代选文献。只发送查询文字，不读取或上传任务文件。
-查询最多 400 字符，一次最多 5 条；每条返回来源 ID、链接、标题、作者、年份、
-DOI（可缺失）和最多 1600 字符的摘要片段。缺失与截断明确标记，不冒称全文。
-每条记录还携带现有 `RuntimeReference` 格式的 `source_reference`：kind 为
-`OTHER`、reference_id 为来源 URL。外部文献不注册为本地 Artifact；其文献
-编号不能传给 `artifact_query`。这是引用身份事实，不替 Agent 选择文献。
-
-返回内容属于不可信外部 `MODEL_CONTEXT`，不是指令、审批或当前实验结果。
-查询、检索时间、来源和摘要片段进入现有能力证据；完成的能力阶段可经既有
-SQLite checkpoint 恢复，FINALIZE_ONLY 不重放检索。普通 trace 仅记录调用
-关联及安全状态，不存外部原始响应或任意工具参数。网络错误返回固定安全错误码，
-不冒充空结果。Agent 负责在解读中保留引用与限制，后续 REPORT 仍接收它的
-MODEL_CONTEXT；本改动没有增加最终报告的自动引用真实性审查。
-
-这是文献联网检索，不是任意网页浏览或全文获取。无需额外 API 密钥；使用
-系统已有 TLS 信任与进程代理，不关闭证书检查、不修改代理设置、不开放 Docker
-网络。新增配置/profile 会改变 runtime revision，只适用于新任务；不能用它
-强行续接旧 revision 的中断任务。当前范围是本地 CLI，不代表生产服务部署。
-
-### 其他执行与模型协议约束
-
-语法预检拒绝现在携带提交 SHA 和安全异常类型/行列，贯通工具反馈及即时审计。
-`execution_submit_request.validation_status=VALID` 仍仅表示字段结构通过，不是
-程序语法、执行结果或科学结论通过。源码、错误消息、路径及数据值仍不回传。
-
-运行期 IndexError 还可返回有限 `reported_index_condition`，区分进程报告的
-普通越界和空轴越界。标准格式以外保持未知；不回传索引、轴、长度、错误文本
-或变量值，也不据此自动改程序。这个字段不是对数据对象的独立事实认证。
-
-2026-09-09 开启共享 thinking 的两个新任务均未通过：一个未修复重复运行错误，
-另一个在 16,384 completion tokens 内没有发出执行工具调用。共享/执行模型的
-thinking 不因此晋升为默认（区别于上节单独配置的解读 Agent），
-也不通过隐藏 fallback 改变运行中的模式；后续显式配置实验及结果见 workplan。
-
-`[provider] provider_tool_schema_strict = true` 是独立的服务端工具 schema
-选项，缺省 false。它不是客户端 `strict_tool_arguments` 的别名：显式启用时，
-OpenAI Chat 请求携带 `function.strict=true` 并保留原 schema，不重写参数、
-required 或默认值。不支持的 transport 或 schema 能力明确失败，不静默降级；
-启用前须验证目标 provider 对实际 schema 子集的支持。
-
-默认 EXECUTE 不再要求每次进入阶段都重新调用 execution_submit。Agent 可如实
-选择不执行，包括复核后只查已有结果的情况；无当前回执时只能记录
-NOT_EXECUTED、空执行引用和空新输出，不能冒充运行成功。显式自定义 profile
-中的 required_capabilities 仍会校验。旧输出保留为历史证据，不自动晋升为
-新一轮结果。retry_limit 限制显式 RETRY，不计所有普通返工迁移。
-
-CAPABILITY 和 FINALIZE 共用有限 provider-turn 观测。结构化响应校验拒绝前也
-记录结束原因、用量、耗时等元数据，不记录响应正文或隐藏推理，也不自动修复
-JSON 或追加调用。历史未记录的响应原因不能据此补推。
-
-Native capability 工具在已将反馈交给模型后，若再次收到完全相同且不可重试的
-artifact list/query 请求，会以持久化的 `REPEATED_NON_RETRYABLE_REQUEST` 结束本轮
-capability phase，再由正常 finalizer 基于已有证据决定后续状态。这个边界不改写
-工具参数、不选择科学方法或下一工具，也不把失败伪装成成功。`[provider]`
-的 `max_model_phase_seconds` 是每个 capability/finalization 模型阶段的显式上限；
-它不增加无新证据的重试资格。
-
-## 可复用 Python 环境（2026-09-11）
-
-`scientific-python` 可作为通用 base，而不是所有任务唯一可用的环境。
-新版 base 增加 Scanpy、Matplotlib、Seaborn、scikit-learn、statsmodels、
-igraph、leidenalg 及匹配的 Numba/llvmlite。构建配方仍位于
-`docker/scientific-scrna/`；`verified-base-20260911.json` 保存实际 base/image ID、
-完整安装版本和受限容器验证结果。直接及 ABI 关键依赖已锁定，镜像 ID 是本机
-不可变身份；它不是已发布到远端、可直接拉取的镜像。
-
-显式启用可选配置：
-
-```toml
-[environment]
-root = "/absolute/local/environment-cache"
-build_timeout_seconds = 600.0
-# build_proxy = "http://127.0.0.1:12199"
-```
-
-认证 managed workspace 后，root 被绑定为当前用户的 `USER/Environments`，
-不使用任务文字中的路径，与 GoldSkills 分开；同一用户不同项目可复用。
-未配置此节时不增加环境工具、不构建镜像，旧调用方式不变。
-
-- `environment_list`：PLAN/EXECUTE 可查看 base 和缓存环境、实际版本与需求
-  匹配事实；不替 Agent 选择环境。不完整清单表示未知，不冒充缺包。
-- `environment_build`：EXECUTE 可自行选择 base、PyPI 包版本约束和待验证
-  import 名称。支持 wheel 包及 extras；不接受任意 Dockerfile、安装命令、
-  URL、本地包路径、pip 参数或环境 marker。
-- 固定构建过程不挂载分析数据；依赖检查及 base/新增模块导入通过后，才登记
-  新 image key 和精确 SHA。Agent 必须自行把返回 key 用于原有 `execution_submit`；
-  框架不改写依赖要求、不自动修正程序或提交分析。
-- 失败反馈包含有界错误码，以及可提取的缺失包/冲突依赖事实，不释放原始构建
-  日志或秘密。失败回执也保留，Agent 可在既有预算内自行修订需求。
-- 相同 base SHA、规范包约束和 import 请求命中持久缓存；新进程恢复相同 key/SHA。
-  清单和缓存恢复不额外探测 Docker 实体是否被外部删除；若镜像被删，后续执行
-  明确失败，不隐藏下载或重建。缓存与镜像均不在任务完成时自动删除。
-
-首期范围是 Python/wheel 环境；R/Bioconductor、额外系统库、CUDA/GPU 和
-远端镜像分发尚未覆盖。基础/派生环境也不保证任意新软件组合都兼容。
-分析沙盒的断网、数据挂载和资源合同保持不变；构建代理只对构建命令生效，
-不修改 Docker daemon、宿主 Python、全局代理或 Codex 隧道。
-
-当前 TEST1 本地验收配置：
-`~/.config/labbioagent/managed-scientific-environments-20260911.toml`。
-它使用已验证的新 base 和用户环境缓存；历史运行配置未覆盖。
+需要本地用户、项目隔离和个人 Gold 时，使用
+[本地工作区](LOCAL_WORKSPACES.md)。托管模式复用同一运行入口，只增加认证、
+目录推导和项目范围授权。

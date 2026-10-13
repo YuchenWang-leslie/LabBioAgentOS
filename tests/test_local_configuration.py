@@ -131,7 +131,6 @@ def test_manifest_reads_no_provider_values_and_changes_with_effective_config(set
     assert first["profile"]["output_contract"]["allowed_fields"] == sorted(first["profile"]["output_contract"]["allowed_fields"])
     assert first["configuration"]["provider"]["api_key_env"] == "LOCAL_TEST_KEY"
     assert first["runtime_backend"] == "native"
-    assert "pantheon_sha256" not in first["source"]
     assert {
         "native_kernel_sha256",
         "native_provider_sha256",
@@ -151,9 +150,9 @@ def test_model_phase_budget_is_explicitly_bounded(settings_file, seconds):
         load_settings(settings_file)
 
 
-def test_removed_backend_configuration_is_rejected(settings_file):
+def test_unsupported_backend_configuration_is_rejected(settings_file):
     settings_file.write_text(
-        'runtime_backend = "pantheon"\n' + settings_file.read_text(encoding="utf-8"),
+        'runtime_backend = "legacy"\n' + settings_file.read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     with pytest.raises(ValidationError):

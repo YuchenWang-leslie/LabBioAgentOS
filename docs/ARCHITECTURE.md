@@ -1,98 +1,120 @@
-# LabBioAgentOS Architecture Index
+# LabBioAgentOS Architecture
 
-## Current authority
+## Purpose
 
-Read the active architecture in this order:
+LabBioAgentOS connects natural-language bioinformatics tasks to an auditable
+workflow, a LabBio-owned multi-Agent runtime, governed local execution, and
+traceable delivery. The framework controls authority and evidence; runtime
+Agents retain scientific judgment.
 
-1. repository `AGENTS.md` for engineering and Agent-sovereignty guardrails;
-2. [Native Kernel Migration Plan](NATIVE_KERNEL_MIGRATION_PLAN.md) for the
-   approved target, migration phases, gates, and stop boundaries;
-3. [LabBio Architecture](LABBIO_ARCHITECTURE.md) for the implemented platform,
-   retained ownership boundaries, and historical acceptance evidence;
-4. [Open Decisions](OPEN_DECISIONS.md) for resolved architecture choices;
-5. [Real E2E Convergence Workplan](REAL_E2E_CONVERGENCE_WORKPLAN.md) for dated
-   execution evidence and the current continuation point.
+## System shape
 
-## 2026-10-13 status
+```text
+User / CLI
+  |
+  v
+WorkflowEngine
+  |
+  v
+StageRuntimeInvoker
+  |
+  v
+Native Kernel
+  +-- Leader AgentLoop
+  +-- dynamic Specialist AgentLoops
+  +-- strict ToolRegistry / Dispatcher
+  +-- provider, budget, interruption, and timeline controls
+  |
+  v
+Frozen CapabilityEvidenceBundle
+  |
+  v
+Tool-free typed finalization
+  |
+  v
+RuntimeStageResult -> RuntimeCoordinator -> WorkflowEngine
+```
 
-Native Kernel P8 real validation has completed through one bounded ordinary-user
-PBMC3k task, successful Docker execution, governed Agent validation and
-interpretation, and an exported final report. This does not constitute an
-independent external scientific peer review or repeat-run reliability claim.
-Immutable P8 release, rollback rehearsal and separately authorized production
-activation remain.
-Active source
-now has only the LabBio-owned Native Kernel; the Pantheon backend, adapters,
-dependency, and constraint have been removed. The immutable CLI release
-`native-p5-20261012T043811Z` remains active under
-`LabBioAgentOS-production/current`; P7 was not deployed, so that older sealed
-release still contains its temporary legacy wheel while defaulting to Native.
-P0 produced authority reconciliation, exact baseline evidence, and
-implementation-independent characterization tests. P1 added the
-LabBio-owned backend-neutral contract package and deterministic FakeProvider
-without connecting them to the application default. P2 added the independently
-designed native tool registry, strict whole-batch argument transport, governed
-LabBio capability binding, item-level evidence, and one non-truncating
-model-visible result projector. P3 added the native single-Agent capability and
-tool-free finalization loops plus one exact-binding OpenAI-compatible Chat
-adapter. P4 added dynamic native Leader-Specialist discovery/delegation,
-bounded task state, isolated child invocations, shared hierarchical controls,
-typed child outcomes and one actor-attributed team timeline. P5 connected that
-runtime behind `StageRuntimeInvoker`, preserved the existing grounding and
-recovery contracts, migrated local Skill curation to a typed native invocation,
-and made native the new-run default. P6 added isolated scripted/transcript
-differential acceptance and two-way cross-backend recovery rejection. P7
-removed the legacy implementation and dependency, rebuilt the wheel, and
-validated it in a clean environment. P8 has validated generic Native live
-behavior, the governed Docker boundary, and fresh ordinary-user run
-`5cc1c236-a9fc-41c1-8991-af746919b29a` through
-`COMPLETED / LEARN / STABLE`, a selected successful execution, a bounded
-summary, and an Agent-authored Chinese report. Earlier invalid-output and
-turn-boundary failures remain preserved evidence. P7/P8 source release and
-deployment, rollback rehearsal, always-on service deployment, and profile/Skill
-promotion are not complete.
+The default workflow is:
 
-The target retains `WorkflowEngine`, Principal/Workspace governance,
-Artifact/Exposure, Docker, RunState, RunTrace, Gold, and persistent Memory while
-replacing the in-stage provider/Agent/tool/team/finalization runtime. One run
-uses one frozen backend and runtime revision. There is no hidden fallback and
-no cross-backend recovery.
+`INTAKE → UNDERSTAND → PLAN → PREFLIGHT → EXECUTE → VALIDATE → INTERPRET → REPORT → LEARN`
 
-The P1-P3 source surface is `src/labbioagentos/kernel/`, plus the neutral
-capability catalog and native LabBio binding in `src/labbioagentos/runtime/`.
-The kernel contains strict public
-contracts for exact provider binding, tool/message transport, Agent/team/task
-identity, delegation ancestry, state transitions, budgets, interrupts, safe
-events, the deterministic provider test double, native schemas, strict parsing,
-foreground dispatch and complete result projection. The runtime binding keeps
-trusted stage, actor and authority fields outside provider arguments. Domain
-behavior and specialist selection are absent from the kernel by design. The P3
-loop adds typed provider observations and termination, strict canonical tool
-replay, bounded evidence, invocation-local private-reasoning continuity, and
-strict tool-free structured finalization. `StageRuntimeInvoker` remains the
-outer substitution port; the native team runtime is now application-wired.
-Trusted full profile instructions are injected from the external behavior
-layer. Specialist discovery preserves trusted configuration order and the
-model selects targets; the core has no domain profiles, ranking, keyword route,
-or automatic selection.
+## Ownership boundaries
 
-## Historical and implementation-reference documents
+### Workflow control plane
 
-- `Roadmap.md` is the superseded Pantheon-extension roadmap.
-- `archive/pantheon/PANTHEON_REUSE_MAP.md` and
-  `archive/pantheon/UPSTREAM_MODIFICATIONS.md` are archived legacy behavior and
-  provenance inventories.
-- `RUNTIME_INTEGRATION_MAP.md` and `RUNTIME_TOOL_SURFACE.md` describe the
-  pre-migration implementation and retained contracts.
-- `STAGE_RUNTIME_CONTRACTS.md` retains active typed stage/evidence contracts;
-  its Pantheon names describe legacy wiring. `LOCAL_TASK_ENTRYPOINT.md` is the
-  current local entrypoint guide.
-- `INTEGRATION_GAPS.md` and `VERTICAL_SLICE_PLAN.md` are historical
-  Pantheon-backed integration and acceptance evidence.
-- C8-C12 gap, threat-model, and acceptance documents remain historical evidence;
-  they are not rewritten to pretend the native kernel already existed.
+`WorkflowEngine` owns the run lifecycle. It validates and applies legal stage
+transitions, retries, branches, user gates, and terminal status. Stage runtime
+objects never receive authority to mutate it directly.
 
-`PRODUCTIONIZATION_DEBUG_GUIDE.md` is not present in the source tree at this
-checkpoint. P0 found no production tree; the P6-authorized CLI deployment now
-provides one sealed `current` release. Historical files must not be
-used to invent current production state.
+### Native Kernel
+
+The Native Kernel owns provider-neutral messages, exact provider/model binding,
+strict tool calls, bounded model loops, dynamic collaboration, child-context
+isolation, interruption, convergence, public observations, and typed
+finalization.
+
+One stage invocation has one kernel run identity. Every Agent and tool call has
+its own correlated identity and parent link. A Leader may inspect eligible
+Specialists and choose a target; the framework enforces target, depth,
+ancestry, loop, budget, and authority constraints without choosing the
+scientific specialist itself.
+
+Private provider reasoning, where supported, is invocation-local transport
+state. It does not enter trace, Memory, Artifact evidence, or reports.
+
+### Governed capability plane
+
+Trusted host composition binds Principal, Workspace, project, run, stage,
+actor, consumer, execution policy, Artifact access, and resource limits.
+Provider arguments contain task choices only and cannot override those trusted
+facts.
+
+Capability results become bounded, safe observations plus typed evidence.
+Finalization consumes a frozen evidence bundle and cannot call tools.
+
+### Data and execution plane
+
+Raw data remains local. Artifact policy decides which metadata, bounded preview,
+or derived result is visible to a remote model. Docker execution receives
+read-only registered inputs, declared writable output locations, resource
+limits, and network policy. Outputs become evidence only after collection,
+registration, hashing, and lineage checks.
+
+### External behavior plane
+
+Profiles and Skills define roles, domain practices, and reusable procedures.
+The kernel remains domain-neutral: it contains no method selection, scientific
+ranking, filename routing, fixed collaboration sequence, or demo-specific
+analysis.
+
+## Persistence and recovery
+
+RunState is authoritative; RunTrace is observational. Recovery reconstructs
+runtime objects from trusted configuration and validates identity, access,
+Artifact availability, workflow state, and frozen runtime revision. In-flight
+external effects fail closed and are not automatically replayed.
+
+Conversations and revisions create explicit lineage. Reports and execution
+outputs are immutable Artifacts; selection uses persisted identity rather than
+filename or modification time.
+
+## Current evidence boundary
+
+The deterministic suite currently passes 1338 tests with 10 intentional skips.
+Generic live model behavior, dynamic collaboration, interruption/recovery,
+Docker execution, and one bounded ordinary-user PBMC3k task through an
+Agent-authored report have been observed. This does not establish independent
+scientific review or general repeatability.
+
+The active production pointer remains the earlier sealed P5 release. The
+current source has been published but has not yet completed immutable P8
+release construction, rollback rehearsal, or production activation.
+
+## Related documents
+
+- [Stage runtime contracts](STAGE_RUNTIME_CONTRACTS.md)
+- [Local task entrypoint](LOCAL_TASK_ENTRYPOINT.md)
+- [Local workspaces](LOCAL_WORKSPACES.md)
+- [Known limitations](KNOWN_LIMITATIONS.md)
+- [Current convergence handoff](REAL_E2E_CONVERGENCE_WORKPLAN.md)
