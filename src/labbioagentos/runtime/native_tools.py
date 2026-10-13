@@ -125,9 +125,24 @@ class ExecutionSubmitArguments(NativeToolArguments):
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
-    input_artifact_ids: ExecutionInputArtifactIds = ()
+    input_artifact_ids: ExecutionInputArtifactIds = Field(
+        default=(),
+        description=(
+            "Explicit Artifact UUIDs selected from execution_capability."
+            "mountable_input_artifact_ids; pass an empty list only when the program "
+            "does not need task inputs."
+        )
+    )
     parameters: dict[str, JsonValue] = Field(default_factory=dict)
-    requested_outputs: ExecutionRequestedOutputs = ()
+    requested_outputs: ExecutionRequestedOutputs = Field(
+        default=(),
+        description=(
+            "Explicit relative output declarations. When the stage requires a "
+            "queryable output, declare at least one DERIVED file with an approved "
+            "output contract from execution_capability; pass an empty list only "
+            "when the authoritative minimum is zero."
+        )
+    )
     resources: RequestedResources = Field(default_factory=RequestedResources)
     network_required: bool = False
     review: ExecutionReview | None = None
@@ -341,6 +356,13 @@ _CAPABILITY_DESCRIPTIONS = {
     name: f"Invoke the governed {name} capability with strict arguments."
     for name in ALL_CAPABILITIES
 }
+_CAPABILITY_DESCRIPTIONS["execution_submit"] = (
+    "Submit one complete program for governed execution. Explicitly select task "
+    "inputs by UUID, read their container paths from LABBIO_INPUT_MANIFEST_PATH, "
+    "write every declared relative output beneath LABBIO_OUTPUT_DIR, and use the "
+    "approved output contract and limits supplied in execution_capability. "
+    "Technical execution or registration alone does not establish task completion."
+)
 
 
 def build_labbio_tool_registry(host: LabBioCapabilityHost) -> ToolRegistry:

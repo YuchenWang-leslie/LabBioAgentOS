@@ -46,6 +46,8 @@ VALID_ARGUMENTS = {
     "execution_submit": {
         "image_key": "scientific-python",
         "script_content": "print('ok')",
+        "input_artifact_ids": [],
+        "requested_outputs": [],
     },
     "file_read": {"artifact_id": IDENTITY},
     "literature_search": {"query": "bounded public query"},
@@ -127,6 +129,17 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     report_submit = schemas["report_submit"]["properties"]
     assert report_submit["title"]["maxLength"] == 256
     assert report_submit["report_text"]["maxLength"] == 64_000
+    execution_submit = schemas["execution_submit"]
+    assert set(execution_submit["required"]) == {"image_key", "script_content"}
+    assert "mountable_input_artifact_ids" in (
+        execution_submit["properties"]["input_artifact_ids"]["description"]
+    )
+    assert "approved output contract" in (
+        execution_submit["properties"]["requested_outputs"]["description"]
+    )
+    descriptions = {spec.name: spec.description for spec in registry.specs}
+    assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_submit"]
+    assert "LABBIO_OUTPUT_DIR" in descriptions["execution_submit"]
 
 
 @pytest.mark.asyncio
