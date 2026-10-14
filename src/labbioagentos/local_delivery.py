@@ -13,7 +13,7 @@ from labbioagentos.application import ApplicationRunHandle, LabBioApplication
 from labbioagentos.artifacts import ArtifactReleaseBasis
 from labbioagentos.governance import AccessAction, AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.trace import TraceEventType
-from labbioagentos.runtime.contracts import ExecuteStageBody
+from labbioagentos.runtime.contracts import ExecuteStageBody, ReportStageBody, RuntimeReferenceKind
 
 
 class LocalDeliveryError(ValueError):
@@ -27,6 +27,20 @@ def selected_execution_id(record):
             body = result.body
             return (body.execution_reference.reference_id
                 if body.execution_status == "SUCCEEDED" and body.execution_reference else None)
+    return None
+
+
+def selected_report_id(record):
+    """Use the persisted Agent-selected report, never registration order."""
+    for result in reversed(record.runtime_results):
+        if isinstance(result.body, ReportStageBody):
+            reference = result.body.report_reference
+            if reference is None or reference.kind is not RuntimeReferenceKind.ARTIFACT:
+                return None
+            try:
+                return UUID(reference.reference_id)
+            except ValueError as exc:
+                raise LocalDeliveryError("Selected report identity is invalid") from exc
     return None
 
 
@@ -125,9 +139,11 @@ def export_run(
         raise LocalDeliveryError("Local delivery destination is not a directory")
     writes: dict[str, bytes | Path] = {}
     reports = []
+    historical_reports = []
     outputs = []
     historical_outputs = []
     selected_execution = selected_execution_id(record)
+    selected_report = selected_report_id(record)
     input_ids = {*record.input_artifact_ids, *record.context_artifact_ids}
     for artifact_id, ref in sorted(refs.items(), key=lambda item: str(item[0])):
         if artifact_id in input_ids:
@@ -147,9 +163,14 @@ def export_run(
             if not isinstance(content, str):
                 raise LocalDeliveryError("Model-authored report content is unavailable")
             data = content.encode("utf-8")
-            filename = "REPORT.md" if not reports else f"REPORT-{artifact_id}.md"
+            is_final = artifact_id == selected_report
+            filename = (
+                "REPORT.md"
+                if is_final
+                else f"history/reports/{artifact_id}/REPORT.md"
+            )
             writes[filename] = data
-            reports.append({
+            (reports if is_final else historical_reports).append({
                 "artifact_id": str(artifact_id), "file": filename,
                 "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
             })
@@ -186,6 +207,9 @@ def export_run(
             "size_bytes": size, "sha256": digest,
         })
 
+    if selected_report is not None and not reports:
+        raise LocalDeliveryError("Selected report Artifact is unavailable in the run store")
+
     manifest = {
         "run_id": str(outcome.run_id), "status": outcome.status.value,
         "final_stage": outcome.final_stage.value if outcome.final_stage else None,
@@ -193,6 +217,7 @@ def export_run(
         "report_artifact_ids": [report["artifact_id"] for report in reports],
         "reports": reports, "outputs": outputs,
         "selected_execution_id": selected_execution,
+        "historical_reports": historical_reports,
         "historical_outputs": historical_outputs,
     }
     writes["RESULT.json"] = (json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
@@ -210,6 +235,11 @@ def export_run(
             "Retained for audit; these are not the selected final results.", ""])
         for item in historical_outputs:
             readme.append(f"- [{item['execution_id']} / {PurePosixPath(item['file']).name}]({quote(item['file'], safe='/')})")
+    if historical_reports:
+        readme.extend(["", "## Historical / unselected reports", "",
+            "Retained for audit; these are not the selected final report.", ""])
+        for item in historical_reports:
+            readme.append(f"- [{item['artifact_id']} / REPORT.md]({quote(item['file'], safe='/')})")
     writes["README.md"] = ("\n".join(readme) + "\n").encode()
     for filename, data in writes.items():
         target = directory / filename

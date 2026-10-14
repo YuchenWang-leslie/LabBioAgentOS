@@ -18,7 +18,12 @@ from labbioagentos import (
     RuntimeStageResult, SQLiteRunStateStore, WorkflowStage, WorkspaceContext,
 )
 from labbioagentos.local_delivery import LocalDeliveryError, export_run
-from labbioagentos.runtime.contracts import ExecuteStageBody, RuntimeReference, RuntimeReferenceKind
+from labbioagentos.runtime.contracts import (
+    ExecuteStageBody,
+    ReportStageBody,
+    RuntimeReference,
+    RuntimeReferenceKind,
+)
 from test_application_runtime_c5 import MAIN_PATH, _body, _configuration
 
 
@@ -84,7 +89,9 @@ def _register_deliverables(local_run, tmp_path):
 async def test_exact_local_output_report_idempotence_and_recovered_export(local_run, tmp_path, monkeypatch):
     application, handle, principal, workspace = local_run
     output, report_id, payload = _register_deliverables(local_run, tmp_path)
-    historical, _, _ = _register_deliverables(local_run, tmp_path / "later-unselected")
+    historical, selected_report_id, _ = _register_deliverables(
+        local_run, tmp_path / "later-unselected"
+    )
     calls = []
 
     async def invoke(_self, stage_input):
@@ -93,9 +100,23 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
         action = NextActionProposal(action=NextAction.FINISH) if stage is WorkflowStage.LEARN else NextActionProposal(
             action=NextAction.TRANSITION, target_stage=MAIN_PATH[MAIN_PATH.index(stage) + 1]
         )
-        body = (_body(stage) if stage is not WorkflowStage.EXECUTE else ExecuteStageBody(
-            execution_status="SUCCEEDED", execution_reference=RuntimeReference(
-                kind=RuntimeReferenceKind.EXECUTION, reference_id=output.metadata["execution_id"])))
+        if stage is WorkflowStage.EXECUTE:
+            body = ExecuteStageBody(
+                execution_status="SUCCEEDED", execution_reference=RuntimeReference(
+                    kind=RuntimeReferenceKind.EXECUTION,
+                    reference_id=output.metadata["execution_id"],
+                ),
+            )
+        elif stage is WorkflowStage.REPORT:
+            body = ReportStageBody(
+                report_summary="Selected report.",
+                report_reference=RuntimeReference(
+                    kind=RuntimeReferenceKind.ARTIFACT,
+                    reference_id=str(selected_report_id),
+                ),
+            )
+        else:
+            body = _body(stage)
         return RuntimeStageResult(stage_id=stage, summary="Synthetic stage", body=body, next_action=action)
 
     monkeypatch.setattr(NativeKernelStageInvoker, "invoke", invoke)
@@ -103,7 +124,10 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
     directory = tmp_path / "delivery"
     manifest = _export(local_run, directory)
     assert manifest["status"] == "COMPLETED"
-    assert str(report_id) in manifest["report_artifact_ids"]
+    assert manifest["report_artifact_ids"] == [str(selected_report_id)]
+    assert [item["artifact_id"] for item in manifest["historical_reports"]] == [
+        str(report_id)
+    ]
     assert len(manifest["outputs"]) == 1
     assert len(manifest["historical_outputs"]) == 1
     assert manifest["historical_outputs"][0]["artifact_id"] == str(historical.artifact_id)
@@ -112,7 +136,7 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
     assert item["file"] == f"outputs/{output.artifact_id}/original cells.tsv"
     assert (directory / item["file"]).read_bytes() == payload
     stored = application.artifact_store.load_for_view(report_id).representation.stored_content
-    exported_report = next(item for item in manifest["reports"] if item["artifact_id"] == str(report_id))
+    exported_report = manifest["historical_reports"][0]
     assert (directory / exported_report["file"]).read_bytes() == stored.encode()
     assert "original%20cells.tsv" in (directory / "README.md").read_text()
     assert json.loads((directory / "RESULT.json").read_text()) == manifest
@@ -132,7 +156,7 @@ async def test_exact_local_output_report_idempotence_and_recovered_export(local_
 
 @pytest.mark.parametrize("collision", ("file", "symlink", "parent_symlink", "parent_file"))
 def test_export_collisions_preserve_existing_files(local_run, tmp_path, collision):
-    _register_deliverables(local_run, tmp_path)
+    _, report_id, _ = _register_deliverables(local_run, tmp_path)
     directory = tmp_path / "delivery"
     directory.mkdir()
     sentinel = tmp_path / "sentinel"
@@ -140,7 +164,9 @@ def test_export_collisions_preserve_existing_files(local_run, tmp_path, collisio
     if collision == "file":
         (directory / "RESULT.json").write_text("DO_NOT_CHANGE")
     elif collision == "symlink":
-        (directory / "REPORT.md").symlink_to(sentinel)
+        report_path = directory / "history" / "reports" / str(report_id) / "REPORT.md"
+        report_path.parent.mkdir(parents=True)
+        report_path.symlink_to(sentinel)
     elif collision == "parent_symlink":
         (directory / "history").symlink_to(tmp_path, target_is_directory=True)
     else:

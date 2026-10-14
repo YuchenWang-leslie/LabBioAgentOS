@@ -31,10 +31,17 @@ def revision_cli(local_cli, monkeypatch):
         run_id=run_id, stage_id=WorkflowStage.REPORT, invocation_id=uuid4(),
     )
     application.cancel_run(handle)
-    export_run(application, handle, directory / "original-delivery",
-               principal=settings.principal, workspace=settings.workspace)
+    delivery = export_run(
+        application,
+        handle,
+        directory / "original-delivery",
+        principal=settings.principal,
+        workspace=settings.workspace,
+    )
     old_artifacts = {path: path.read_bytes() for path in (directory / "artifacts").rglob("*") if path.is_file()}
-    old_report = (directory / "original-delivery" / "REPORT.md").read_bytes()
+    old_report = (
+        directory / "original-delivery" / delivery["historical_reports"][0]["file"]
+    ).read_bytes()
     record = application.run_state_store.get(run_id)
     cli._close(application)
     observed["explicit_provider_loads"] = []
@@ -85,7 +92,15 @@ def test_revision_cli_links_parent_and_keeps_original_data_and_report(revision_c
     assert receipt["selected_artifact_ids"] == [str(report_id)]
     report_receipt = next(item for item in receipt["imports"] if item["artifact_id"] == str(report_id))
     assert report_receipt["snapshot_sha256"] == hashlib.sha256(old_report).hexdigest()
-    assert (original / "original-delivery" / "REPORT.md").read_bytes() == old_report
+    historical_report = (
+        original
+        / "original-delivery"
+        / "history"
+        / "reports"
+        / str(report_id)
+        / "REPORT.md"
+    )
+    assert historical_report.read_bytes() == old_report
     assert all(path.read_bytes() == value for path, value in old_artifacts.items())
     assert read_run_record(original) == source_record
     output = capsys.readouterr().out
