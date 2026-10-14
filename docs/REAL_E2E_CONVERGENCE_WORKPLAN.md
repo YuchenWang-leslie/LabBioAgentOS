@@ -1,109 +1,97 @@
 # Real E2E Convergence Workplan
 
-## Current state — 2026-10-13
+## Current state — 2026-10-14
 
-LabBioAgentOS now uses one LabBio-owned Native Kernel. The active source has no
-legacy runtime adapter or indirect runtime package dependency. Scientific
-methods, parameters, programs, specialist choice, interpretation, and report
-content remain Agent-owned.
+LabBioAgentOS uses one independently designed LabBio Native Kernel. The source,
+wheel, isolated runtime, and active P8 release contain no legacy third-party
+kernel package, adapter, dependency, source path, or runtime fallback. Scientific methods,
+parameters, programs, interpretation, and report content remain Agent-owned.
 
-GitHub `main` and `feat/native-kernel-p8` contain the P8 source fix and release
-handoff. P8 was built from exact clean source commit
-`cfce0ec5a99feb6047d570cb9520e699ace1e9f8`; the release receipt preserves that
-identity independently of later documentation commits.
+Local source commit `e1be8920373749a553bc915e9839b9086d0698b2`
+contains the final-report selection fix. A clean detached worktree passed 1357
+tests with 10 intentional skips. The wheel has 99 entries and no legacy-kernel
+path or content match. GitHub synchronization is not complete: the configured SSH
+proxy and direct SSH paths timed out on 2026-10-14, so the local branch remains
+ahead of its last fetched remote-tracking reference.
 
-The exact clean source tree passed:
+## Root causes closed
 
-- 1340 deterministic tests with 10 intentional skips;
-- CLI help;
-- wheel construction and metadata inspection;
-- a repository scan with no legacy runtime import or package requirement.
+P8 live validation exposed and fixed these generic contract failures:
 
-## Live validation completed
+- provider tool-schema compatibility settings were not bound into the Native
+  provider;
+- JSON-object finalization was too unreliable to be the default;
+- data-bearing runs could qualify an execution that selected no task input;
+- local delivery exported every registered report as final even though the
+  persisted REPORT stage selected exactly one.
 
-Validation reached these distinct levels:
+The report fix does not select by registration order, filename, or mtime. The
+persisted `ReportStageBody.report_reference` is authoritative. Unselected
+reports remain under `history/reports/` as audit evidence. The original
+multi-report failure is covered by a failing-first regression and neighboring
+delivery/revision tests.
 
-1. generic Native single-Agent provider behavior;
-2. dynamic Leader–Specialist collaboration;
-3. interruption and recovery handling;
-4. governed Docker execution and cleanup;
-5. one bounded ordinary-user PBMC3k task through successful execution;
-6. Agent-owned validation, interpretation, Chinese report export, and delivery.
-7. a fresh packaged-release small-table smoke through `COMPLETED / LEARN /
-   STABLE`, followed by provider-free status and export from the same release.
+## Production release
 
-The final bounded run reached `COMPLETED / LEARN / STABLE`. The Agent selected
-and authored the method, parameters, program, revisions, interpretation, and
-report. Codex supplied none of that scientific content. This one run is not an
-independent scientific peer review or evidence of general repeatability.
+Production `current` points to immutable release
+`native-p8-20261014T025522Z`, built from exact clean source commit
+`e1be8920373749a553bc915e9839b9086d0698b2`.
 
-Three root causes were fixed during live validation:
+- release manifest: 6309 entries, all verified;
+- manifest SHA-256:
+  `d06dd6b1532b8251c3b499bb4f2da3cc72df389648b38e5076ee84e094802b4e`;
+- wheel SHA-256:
+  `c211f82e81cd1457b5c7ca1f3b7cd75220d10dab8feb3c83161121aba2cb609d`;
+- release validation receipt SHA-256:
+  `449eceb7c7437b1a244fc23e1e8c7777237da2d8d5a2827d859c1c96cac3625e`;
+- external activation receipt:
+  `/media/desk16/iy1982/WYC/LabBioAgentOS-production/receipts/native-p8-20261014T025522Z/ACTIVATION_RECEIPT.json`.
 
-- repeated unchanged non-retryable output declarations now converge only after
-  the canonical validator runs and feedback has been delivered;
-- a successful tool batch on the final allowed capability turn is retained and
-  handed to the separate finalizer instead of attempting an extra provider
-  reservation.
-- a provider tool batch that would cross the remaining capability evidence
-  budget is now rejected before effects and converges through
-  `CAPABILITY_EVIDENCE_LIMIT`; it no longer becomes an unrecoverable
-  `NATIVE_CAPABILITY_FAILED` stage.
+The first activation attempt rolled back to P5 after a provider transport
+failure that occurred after successful governed execution. That in-flight run
+was preserved and not resumed. A provider health check then returned HTTP 200,
+which supplied new external-state evidence for one fresh attempt.
 
-## Cleanup completed
+The fresh active-current run
+`c41de987-338c-43c3-a7f7-bc92222a92da` completed through `LEARN` with no issue
+codes. It selected one input, execution
+`0cce3153-d018-4d68-b169-dbd072213bc2`, one DERIVED output with 19 queryable
+records, and report `cffbfc8b-a0aa-4613-8ee6-6fb9e28d4f2c`. The report ID
+matches the persisted REPORT reference. Provider-free status and idempotent
+export from active `current` passed.
 
-On 2026-10-13 the user authorized removal of prior test runtime data. Before
-deletion, all targets were verified as owned by the current user with no
-symlink, mount, open handle, active LabBio process, or container reference.
+The initial post-run shell gate incorrectly assumed a demo output filename and
+therefore rolled back a successful run. The gate was corrected to read the
+governed relative path and SHA-256 from `RESULT.json`; no runtime source,
+Agent-owned program, or result was changed.
 
-Deleted from `/media/desk16/iy1982/WYC/result`:
+## Evidence boundary
 
-- `p8-config-preflight`;
-- `p8-interruption-recovery-20261012-01`;
-- eight `p8-native-pbmc-overview-*` attempts from 2026-10-12 and 2026-10-13;
-- the test conversation index.
+Completed evidence levels:
 
-The removed result tree occupied 64,834,855 bytes before deletion. The empty
-result root remains for future runs. Repository build, wheel metadata, pytest,
-and Python bytecode caches were also removed. Raw inputs, production releases,
-Gold/Memory stores, Docker images, and unrelated projects were not touched.
+1. deterministic unit/schema suite;
+2. clean wheel and isolated runtime validation;
+3. generic Native provider and dynamic Leader-Specialist behavior;
+4. governed Docker execution, recovery, and cleanup;
+5. bounded PBMC3k ordinary-user task through Agent-authored report;
+6. fresh simple-table source validation and active-current production smoke;
+7. immutable release activation with tested rollback.
 
-The documentation set was reduced to current architecture, runtime contracts,
-operation, limitations, and this handoff. Historical milestone, gap, acceptance,
-migration, snapshot, and duplicate architecture documents were deleted.
+These runs validate platform behavior, not independent scientific correctness
+or general repeatability. No profile or Skill was activated or promoted during
+P8 activation. There is no API or worker service in this release surface; the
+deployed surface is the local CLI. PostgreSQL and Redis/RQ are therefore not
+part of this activation.
 
-P8 construction created two bounded smoke runs: the first exposed the evidence
-budget root cause and the fresh successor completed after the fix. Both run
-directories, their conversation index, clean-install environments, failed
-candidate, build worktrees, logs, and temporary rollback pointer were removed
-after receipts were sealed. The result root is empty and no container remains.
+## Cleanup and unique continuation
 
-## Production and release boundary
+No active LabBio process or retained task container remained after activation.
+Failed and rolled-back run directories are retained as provenance rather than
+deleted. The temporary build worktree and activation-only source configuration
+were removed after release sealing.
 
-Production remains unchanged at sealed P5 release
-`native-p5-20261012T043811Z`. Its manifest SHA-256 was last verified as
-`bfd790da3a0f685c557c7714feb5d683d19b0d5f05f7006688536af542478fc0`,
-all manifest entries passed, and CLI help succeeded with one existing Uvicorn
-deprecation warning.
-
-Immutable P8 release `native-p8-20261013T052836Z` is sealed read-only from
-source commit `cfce0ec5a99feb6047d570cb9520e699ace1e9f8`. Its 11,814-entry
-manifest passed in staging and again after the atomic move; manifest SHA-256 is
-`05061ea43525818a370d67c213c60a05d5e34882c40d3600948d9cf7783c77f2`.
-The release-local isolated Python environment exposes no legacy kernel
-distribution, path, content, adapter, dependency, or fallback.
-
-The isolated pointer rehearsal passed `P5 -> P8 -> P5 -> P8`, with exact
-manifest and CLI verification at every step. Its receipt SHA-256 is
-`8f57a10a809337450efcec6175258cfd602badba8bd2c5af834a3227a525f16c`.
-The rehearsal pointer was removed. Production `current` never changed from P5;
-no profile or Skill was activated or promoted.
-
-## Unique continuation
-
-P8 construction and rollback rehearsal are complete. The only next production
-task is separately authorized activation: first publish the source and docs,
-confirm no active work, atomically switch `current` from P5 to the sealed P8
-path, verify identity/manifest/CLI and a fresh active-release smoke, and roll
-back to P5 on any failed gate. Do not activate a profile or Skill as part of
-that switch, and do not treat either bounded live task as general scientific
-acceptance.
+The only incomplete handoff item is GitHub synchronization of the local source
+and documentation commits. Retry that exact push when the configured GitHub
+network path is healthy, then verify both `main` and `feat/native-kernel-p8`
+resolve to the documentation commit. Do not rerun the production task or
+reactivate P8 merely to complete GitHub synchronization.

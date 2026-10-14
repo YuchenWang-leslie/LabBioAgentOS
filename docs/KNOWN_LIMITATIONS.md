@@ -62,6 +62,8 @@ the service does not self-grade scientific quality.
 ## Release status
 
 The deterministic suite is green and immutable P8 release
-`native-p8-20261013T052836Z` passed clean-install, packaged live, manifest, and
-isolated rollback verification. Production still points to sealed P5. P8
-activation and post-switch verification require separate authorization.
+`native-p8-20261014T025522Z` passed clean-install, packaged live, manifest,
+rollback, and active-current verification. Production points to that release.
+The active-current task is a bounded runtime validation, not independent
+scientific review or evidence of general repeatability. No profile or Skill
+was activated or promoted with the release.
