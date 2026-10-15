@@ -12,9 +12,6 @@ Frozen Pantheon revision: `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`, as
 recorded by C12 acceptance. Pantheon source was not available on the audit
 machine, so Pantheon-side behavior below is marked unverified where relevant.
 
-Working material: `C13_APPTAINER_IMPLEMENTATION_PLAN.md` (Chinese, file-level
-phases 0-4).
-
 ## Target
 
 On an HPC cluster, Apptainer must provide the same constrained execution that
