@@ -221,23 +221,28 @@ dependency. The primary adapter is a configuration-driven scheduler template;
 Slurm, PBS and LSF ship as bundled templates. A dedicated adapter is added
 only for a scheduler the template cannot express.
 
-### OPEN-C13-D — Resource limits without cgroups
+### DECIDED-C13-6 — Resource limits without cgroups
 
-Apptainer CPU, memory, and process limits need cgroup support that many sites
-do not grant. Proposed: the scheduler allocation is the enforcement point; the
-trusted trace records that the runtime did not enforce them. `/tmp` size has
-no Apptainer equivalent of Docker's tmpfs limit.
+Decided by MOHAN CUI on 2026-10-15: Apptainer CPU, memory, and process limits
+need cgroup support that many sites do not grant, so the scheduler allocation
+is the enforcement point. A site states this explicitly with
+`resource_enforcement = "scheduler"`; `"apptainer-cgroups"` is accepted only
+where the capability probe confirms cgroup limits. The trusted trace records
+whether the runtime enforced the limits. `/tmp` size has no Apptainer
+equivalent of Docker's tmpfs limit.
+
+### DECIDED-C13-7 — Shared filesystem
+
+Decided by MOHAN CUI on 2026-10-15: a filesystem shared between login and
+compute nodes for workspace, SIF store, and job logs is a prerequisite. Job
+completion and exit codes are read from that filesystem. Data staging is out
+of scope.
 
 ### OPEN-C13-E — Unprivileged network isolation
 
 Whether `--net --network none` works unprivileged depends on Apptainer version
 and site configuration. Proposed: probe at startup and fail closed where it
 is unavailable; such sites are unsupported.
-
-### OPEN-C13-F — Shared filesystem
-
-Proposed: a filesystem shared between login and compute nodes for workspace,
-SIF store, and job logs is a prerequisite. Data staging is out of scope.
 
 ### OPEN-C13-H — Cluster environment build tiers
 
