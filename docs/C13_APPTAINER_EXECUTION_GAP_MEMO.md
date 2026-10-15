@@ -8,9 +8,9 @@ authorized by MOHAN CUI on 2026-10-15 (`OPEN_DECISIONS.md` DECIDED-C13-0).
 
 Starting LabBio revision: `df51fbc0d3d1dd4221681fd84609fe803b50ae5b`
 
-Frozen Pantheon revision: `02ba577abd41d8b180a0dbb79fd057d2ca15ae42`, as
-recorded by C12 acceptance. Pantheon source was not available on the audit
-machine, so Pantheon-side behavior below is marked unverified where relevant.
+Frozen Pantheon revision: `07675c45b538f7d27b9b16b1b7d8b72f37365293`, as
+pinned in `constraints/pantheon-runtime.txt` and recorded in
+`UPSTREAM_MODIFICATIONS.md`.
 
 ## Target
 
