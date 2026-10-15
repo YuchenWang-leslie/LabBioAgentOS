@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,7 @@ from labbioagentos.artifacts import (
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
-from .backend import ContainerCommandBuilder, ProcessRunner
+from .backend import ContainerCommandBuilder, ProcessOutcome, ProcessRunner
 from .diagnostic_sources import verified_image_imports
 from .error_context import bounded_error_context
 from .errors import (
@@ -47,7 +49,17 @@ from .python_diagnostics import (
     safe_python_exception,
     script_error_locations,
 )
+from .launchers import JobLauncher, JobSpec, LocalLauncher
 from .registration import OutputCollector
+
+
+@dataclass(frozen=True)
+class _PreparedExecution:
+    started_at: datetime
+    image: ApprovedImage
+    workspace: ExecutionWorkspace
+    script_ref: ArtifactRef
+    argv: tuple[str, ...]
 
 
 class ContainerExecutor:
@@ -67,6 +79,7 @@ class ContainerExecutor:
         trace_recorder: RunTraceRecorder | None = None,
         minimum_queryable_output_count: int = 0,
         isolation_record: Mapping[str, Any] | None = None,
+        launcher: JobLauncher | None = None,
     ):
         self.store = store
         self.image_registry = image_registry
@@ -86,6 +99,9 @@ class ContainerExecutor:
         self.minimum_queryable_output_count = minimum_queryable_output_count
         # Trusted-trace backend isolation summary; never part of a receipt.
         self.isolation_record = None if isolation_record is None else dict(isolation_record)
+        # None means the control-plane host, through the current process runner.
+        self.launcher = launcher
+        self._execution_lock = asyncio.Lock()
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """Prepare the workspace and return deterministic argv without launching."""
@@ -100,6 +116,40 @@ class ContainerExecutor:
         return self.command_builder.build(plan, image, workspace, mounts)
 
     def execute(self, plan: ExecutionPlan) -> ExecutionResult:
+        """Run one plan synchronously through the injected process runner."""
+
+        prepared = self._prepare(plan)
+        try:
+            outcome = self.process_runner.run(
+                prepared.argv,
+                timeout_seconds=plan.resources.timeout_seconds,
+            )
+        except ContainerStartError as exc:
+            return self._start_failure(plan, prepared, exc)
+        return self._finish(plan, prepared, outcome)
+
+    async def execute_async(self, plan: ExecutionPlan) -> ExecutionResult:
+        """Run one plan through the launcher; only the process wait leaves the event loop."""
+
+        # One execution at a time per executor, as the synchronous path always was.
+        async with self._execution_lock:
+            prepared = self._prepare(plan)
+            launcher = self.launcher or LocalLauncher(self.process_runner)
+            try:
+                handle = await launcher.submit(JobSpec(
+                    execution_id=plan.execution_id,
+                    argv=prepared.argv,
+                    timeout_seconds=plan.resources.timeout_seconds,
+                    resources=plan.resources,
+                    workspace_root=prepared.workspace.root,
+                ))
+                await launcher.wait(handle)
+                outcome = await launcher.collect(handle)
+            except ContainerStartError as exc:
+                return self._start_failure(plan, prepared, exc)
+            return self._finish(plan, prepared, outcome)
+
+    def _prepare(self, plan: ExecutionPlan) -> _PreparedExecution:
         started_at = datetime.now(timezone.utc)
         try:
             image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
@@ -176,27 +226,32 @@ class ContainerExecutor:
             "STARTED",
             {"image_key": plan.image_key},
         )
-        try:
-            outcome = self.process_runner.run(
-                argv,
-                timeout_seconds=plan.resources.timeout_seconds,
-            )
-        except ContainerStartError as exc:
-            completed_at = datetime.now(timezone.utc)
-            self._emit_failure(plan, exc.error_class, str(exc))
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=(completed_at - started_at).total_seconds(),
-                error_class=exc.error_class,
-                error_message=str(exc),
-            )
+        return _PreparedExecution(started_at, image, workspace, script_ref, argv)
 
+    def _start_failure(
+        self, plan: ExecutionPlan, prepared: _PreparedExecution, exc: ContainerStartError,
+    ) -> ExecutionResult:
+        completed_at = datetime.now(timezone.utc)
+        self._emit_failure(plan, exc.error_class, str(exc))
+        return self._result(
+            plan,
+            prepared.image,
+            prepared.workspace,
+            prepared.script_ref,
+            status=ExecutionStatus.FAILED,
+            started_at=prepared.started_at,
+            completed_at=completed_at,
+            duration_seconds=(completed_at - prepared.started_at).total_seconds(),
+            error_class=exc.error_class,
+            error_message=str(exc),
+        )
+
+    def _finish(
+        self, plan: ExecutionPlan, prepared: _PreparedExecution, outcome: ProcessOutcome,
+    ) -> ExecutionResult:
+        started_at, image, workspace, script_ref = (
+            prepared.started_at, prepared.image, prepared.workspace, prepared.script_ref,
+        )
         try:
             stdout_ref = self._store_stream(
                 plan,

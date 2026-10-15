@@ -73,6 +73,11 @@ class SubprocessDockerRunner(DockerProcessRunner):
             duration_seconds=time.monotonic() - started,
         )
 
+    def cancel(self, argv: tuple[str, ...]) -> None:
+        """Force-remove the exact governed container started by this argv."""
+
+        self._remove_timed_out_container(argv)
+
     @classmethod
     def _remove_timed_out_container(cls, argv: tuple[str, ...]) -> None:
         try:

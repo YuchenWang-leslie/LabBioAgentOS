@@ -29,6 +29,8 @@ from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 
 
 class ExecutorPort(Protocol):
+    """Executors may also offer ``async execute_async(plan)``; it is preferred when present."""
+
     def execute(self, plan: ExecutionPlan) -> ExecutionResult: ...
 
 
@@ -119,7 +121,9 @@ class ExecutionSubmissionService:
                 "input_artifact_ids": [str(item) for item in plan.input_artifact_ids],
             },
         )
-        result = self.executor.execute(plan)
+        execute_async = getattr(self.executor, "execute_async", None)
+        # The non-blocking path keeps the event loop responsive while a job runs.
+        result = execute_async(plan) if execute_async is not None else self.executor.execute(plan)
         if inspect.isawaitable(result):
             result = await result
         if not isinstance(result, ExecutionResult):

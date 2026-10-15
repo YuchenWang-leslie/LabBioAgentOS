@@ -14,6 +14,15 @@ from .docker import (
     SubprocessDockerRunner,
 )
 from .executor import ContainerExecutor
+from .launchers import (
+    JobHandle,
+    JobLauncher,
+    JobLauncherError,
+    JobNotFoundError,
+    JobSpec,
+    JobState,
+    LocalLauncher,
+)
 from .errors import (
     ContainerStartError,
     ExecutionBoundaryError,
@@ -99,6 +108,13 @@ __all__ = [
     "ExecutionWorkspaceManager",
     "ExecutorPort",
     "ImageNotApprovedError",
+    "JobHandle",
+    "JobLauncher",
+    "JobLauncherError",
+    "JobNotFoundError",
+    "JobSpec",
+    "JobState",
+    "LocalLauncher",
     "MountResolutionError",
     "MountResolver",
     "OutputArtifactSpec",
