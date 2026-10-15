@@ -41,6 +41,7 @@ class JobSpec:
     timeout_seconds: float
     resources: RequestedResources
     workspace_root: Path
+    cleanup_paths: tuple[Path, ...] = ()  # Removed when the job exits.
 
 
 @dataclass(frozen=True)

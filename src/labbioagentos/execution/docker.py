@@ -251,6 +251,9 @@ class DockerCommandBuilder:
             *interpreter_arguments,
         )
 
+    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
+        return ()  # Docker's /tmp is a tmpfs that disappears with the container.
+
     @staticmethod
     def _mount(source: Path, target: PurePosixPath, read_only: bool) -> str:
         source_text = str(source.resolve(strict=True))

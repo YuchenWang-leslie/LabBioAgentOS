@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Protocol
 
 from .images import ApprovedImage
@@ -50,3 +50,6 @@ class ContainerCommandBuilder(Protocol):
         self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
     ) -> tuple[str, ...]:
         """Return argv for a data-free, network-disabled interpreter probe of the image."""
+
+    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
+        """Host directories this backend created for the plan and nothing else uses."""

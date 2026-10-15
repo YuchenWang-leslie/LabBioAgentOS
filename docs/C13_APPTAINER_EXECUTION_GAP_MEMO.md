@@ -176,7 +176,7 @@ LabBio-defined `JobLauncher`: `submit`, `status`, `cancel`, `attach`
 `collect` (exit code and logs into the existing `ProcessOutcome`).
 `SchedulerLauncher` holds the shared logic (job script, ledger, polling,
 collection) and delegates only scheduler differences to a `SchedulerAdapter`.
-After collecting results, the launcher removes the per-execution scratch
+After collecting results, the control plane removes the per-execution scratch
 directory if the job did not.
 Adapters call scheduler CLIs; no Python scheduler dependency. The primary
 adapter is a configuration-driven scheduler template, with Slurm, PBS and LSF
@@ -258,8 +258,8 @@ Phase 3a - scheduler launcher, async execution
 15. Generated job scripts contain no credentials, always disable environment
     export, start Apptainer through `env -i` with an allowlist, take directives
     only from bounded policy, never inline the model-authored script, and
-    remove their per-execution scratch directory on exit; the launcher removes
-    it again after collection. In scheduler mode the Apptainer `binary` must be
+    remove their per-execution scratch directory on exit; the control plane
+    removes it again after collection. In scheduler mode the Apptainer `binary` must be
     an absolute path, or configuration load is refused.
 16. The job ledger persists each submission before polling; after a simulated
     crash, reconciliation finds orphan jobs, cancels running or queued ones,

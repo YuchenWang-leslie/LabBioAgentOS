@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -126,6 +127,8 @@ class ContainerExecutor:
             )
         except ContainerStartError as exc:
             return self._start_failure(plan, prepared, exc)
+        finally:
+            self._remove_cleanup_paths(plan)
         return self._finish(plan, prepared, outcome)
 
     async def execute_async(self, plan: ExecutionPlan) -> ExecutionResult:
@@ -142,12 +145,22 @@ class ContainerExecutor:
                     timeout_seconds=plan.resources.timeout_seconds,
                     resources=plan.resources,
                     workspace_root=prepared.workspace.root,
+                    cleanup_paths=self.command_builder.cleanup_paths(plan),
                 ))
                 await launcher.wait(handle)
                 outcome = await launcher.collect(handle)
             except ContainerStartError as exc:
                 return self._start_failure(plan, prepared, exc)
+            finally:
+                self._remove_cleanup_paths(plan)
             return self._finish(plan, prepared, outcome)
+
+    def _remove_cleanup_paths(self, plan: ExecutionPlan) -> None:
+        """Host-side fallback: the job removes these on exit; never follow a link."""
+
+        for path in self.command_builder.cleanup_paths(plan):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path, ignore_errors=True)
 
     def _prepare(self, plan: ExecutionPlan) -> _PreparedExecution:
         started_at = datetime.now(timezone.utc)

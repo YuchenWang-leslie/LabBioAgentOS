@@ -181,7 +181,7 @@ class ApptainerCommandBuilder:
         if plan.network_required:
             raise ExecutionPlanRejected("Network-enabled execution is unavailable for this backend")
         sif = self._sif(image)
-        scratch = self.scratch_root / plan.execution_id.hex
+        (scratch,) = self.cleanup_paths(plan)
         scratch.mkdir(mode=0o700)
         numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
         argv = [
@@ -226,6 +226,10 @@ class ApptainerCommandBuilder:
             argv.extend(["--bind", self._bind(source, target, read_only)])
         argv.extend([str(sif), *image.executable, str(self.SCRIPT_TARGET)])
         return tuple(argv)
+
+    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
+        # The per-execution --workdir holds the container's /tmp and /var/tmp.
+        return (self.scratch_root / plan.execution_id.hex,)
 
     def import_probe_argv(
         self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
