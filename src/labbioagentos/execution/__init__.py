@@ -1,12 +1,13 @@
-"""Deterministic Docker-isolated execution boundary."""
+"""Deterministic container-isolated execution boundary."""
 
+from .backend import ContainerCommandBuilder, ProcessOutcome, ProcessRunner
 from .docker import (
     DockerCommandBuilder,
     DockerExecutor,
     DockerProcessRunner,
-    ProcessOutcome,
     SubprocessDockerRunner,
 )
+from .executor import ContainerExecutor
 from .errors import (
     ContainerStartError,
     ExecutionBoundaryError,
@@ -61,6 +62,8 @@ __all__ = [
     "ArtifactRegistrationDecision",
     "ArtifactRegistrationPolicy",
     "CollectedOutput",
+    "ContainerCommandBuilder",
+    "ContainerExecutor",
     "ContainerStartError",
     "DockerCommandBuilder",
     "DockerExecutor",
@@ -97,6 +100,7 @@ __all__ = [
     "OutputCollectionError",
     "OutputCollector",
     "ProcessOutcome",
+    "ProcessRunner",
     "PreflightInputRequirement",
     "RequestedResources",
     "ResolvedMount",

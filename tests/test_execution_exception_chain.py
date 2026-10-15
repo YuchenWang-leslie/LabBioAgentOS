@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from labbioagentos import DockerExecutor, ExecutionReceipt, ProcessOutcome
+from labbioagentos import DockerCommandBuilder, DockerExecutor, ExecutionReceipt, ProcessOutcome
 from labbioagentos.execution.diagnostic_sources import IMPORT_PROBE, verified_image_imports
 from test_phase6_docker_execution import FakeDockerRunner, _environment, _image, _plan
 
@@ -110,7 +110,7 @@ def test_receipt_preserves_chain_and_probe_has_no_data_or_network(tmp_path):
 ])
 def test_failed_or_invalid_probe_does_not_release_names(stdout, code, timed_out):
     runner = FakeDockerRunner(stdout=stdout, exit_code=code, timed_out=timed_out)
-    assert verified_image_imports(wrapped_failure(), _image(), runner, "docker") == frozenset()
+    assert verified_image_imports(wrapped_failure(), _image(), runner, DockerCommandBuilder()) == frozenset()
     assert len(runner.calls) == 1
 
 

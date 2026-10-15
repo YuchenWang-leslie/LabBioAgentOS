@@ -2,48 +2,22 @@
 
 from __future__ import annotations
 
-import ast
-import builtins
-import hashlib
 import math
 import os
 import re
 import subprocess
 import time
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from uuid import uuid4
 
-from labbioagentos.artifacts import (
-    ArtifactExposureClass,
-    ArtifactRef,
-    ArtifactRepresentation,
-    ArtifactStore,
-    ArtifactStoreError,
-)
-from labbioagentos.trace import RunTraceRecorder, TraceEventType
+from labbioagentos.artifacts import ArtifactStore
+from labbioagentos.trace import RunTraceRecorder
 
-from .errors import (
-    ContainerStartError,
-    ExecutionBoundaryError,
-    ExecutionOutputDeclarationError,
-    OutputCollectionError,
-)
+from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
+from .errors import ContainerStartError
+from .executor import ContainerExecutor
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
-from .models import (
-    ExecutionDiagnostic,
-    ExecutionDiagnosticCode,
-    ExecutionErrorContext,
-    ExecutionFailureClass,
-    ExecutionIssue,
-    ExecutionPlan,
-    ExecutionResult,
-    ExecutionScriptLocation,
-    ExecutionStatus,
-    OutputContractFailureCode,
-)
+from .models import ExecutionPlan
 from .mounts import (
     ExecutionWorkspace,
     ExecutionWorkspaceManager,
@@ -51,36 +25,17 @@ from .mounts import (
     ResolvedMount,
 )
 from .registration import OutputCollector
-from .diagnostic_sources import traceback_chain, verified_image_imports
-from .error_context import bounded_error_context
 
+# Compatibility names from before the runtime-neutral backend split.
+DockerProcessRunner = ProcessRunner
 
-_SAFE_PYTHON_EXCEPTION_TYPES = frozenset(
-    value.__name__
-    for value in vars(builtins).values()
-    if isinstance(value, type)
-    and issubclass(value, Exception)
-    and value.__module__ == "builtins"
-) | {"LinAlgError", "numpy.linalg.LinAlgError"}
-
-
-@dataclass(frozen=True)
-class ProcessOutcome:
-    """Internal captured process streams; they never enter ExecutionResult."""
-
-    exit_code: int | None
-    stdout: bytes
-    stderr: bytes
-    duration_seconds: float
-    timed_out: bool = False
-
-
-class DockerProcessRunner(ABC):
-    """Injectable process boundary so unit tests need no Docker daemon."""
-
-    @abstractmethod
-    def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
-        """Run Docker without a shell and return locally captured streams."""
+__all__ = [
+    "DockerCommandBuilder",
+    "DockerExecutor",
+    "DockerProcessRunner",
+    "ProcessOutcome",
+    "SubprocessDockerRunner",
+]
 
 
 class SubprocessDockerRunner(DockerProcessRunner):
@@ -161,7 +116,7 @@ class SubprocessDockerRunner(DockerProcessRunner):
 class DockerCommandBuilder:
     """Construct a fixed Docker argv; plans cannot inject Docker options."""
 
-    SCRIPT_TARGET = PurePosixPath("/labbio/script.py")
+    SCRIPT_TARGET = CONTAINER_SCRIPT_PATH
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
     INPUT_MANIFEST_TARGET = PurePosixPath("/labbio/input-manifest.json")
     INPUT_IDENTITIES_TARGET = PurePosixPath("/labbio/input-identities.json")
@@ -279,6 +234,18 @@ class DockerCommandBuilder:
         )
         return tuple(argv)
 
+    def import_probe_argv(
+        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        return (
+            self.docker_binary, "run", "--rm", "--pull", "never", "--name", "labbio-" + uuid4().hex,
+            "--network", "none", "--read-only", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--user", "65534:65534",
+            "--memory", "256m", "--cpus", "1", "--pids-limit", "32",
+            "--entrypoint", image.executable[0], image.resolved_reference,
+            *interpreter_arguments,
+        )
+
     @staticmethod
     def _mount(source: Path, target: PurePosixPath, read_only: bool) -> str:
         source_text = str(source.resolve(strict=True))
@@ -290,8 +257,8 @@ class DockerCommandBuilder:
         return ",".join(parts)
 
 
-class DockerExecutor:
-    """Execute one validated plan and return references plus technical metadata."""
+class DockerExecutor(ContainerExecutor):
+    """ContainerExecutor with the local Docker backend as its default."""
 
     def __init__(
         self,
@@ -302,628 +269,23 @@ class DockerExecutor:
         mount_resolver: MountResolver,
         workspace_manager: ExecutionWorkspaceManager,
         output_collector: OutputCollector,
-        process_runner: DockerProcessRunner | None = None,
+        process_runner: ProcessRunner | None = None,
         command_builder: DockerCommandBuilder | None = None,
         trace_recorder: RunTraceRecorder | None = None,
         minimum_queryable_output_count: int = 0,
     ):
-        self.store = store
-        self.image_registry = image_registry
-        self.execution_policy = execution_policy
-        self.mount_resolver = mount_resolver
-        self.workspace_manager = workspace_manager
-        self.output_collector = output_collector
-        self.process_runner = process_runner or SubprocessDockerRunner()
-        self.command_builder = command_builder or DockerCommandBuilder(
-            max_output_file_bytes=execution_policy.max_output_file_bytes,
-            tmpfs_size_mb=execution_policy.tmpfs_size_mb,
-        )
-        self.trace_recorder = trace_recorder
-        if type(minimum_queryable_output_count) is not int:
-            raise TypeError("minimum_queryable_output_count must be an integer")
-        if not 0 <= minimum_queryable_output_count <= 128:
-            raise ValueError(
-                "minimum_queryable_output_count must be between 0 and 128"
-            )
-        self.minimum_queryable_output_count = minimum_queryable_output_count
-
-    def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
-        """Prepare the workspace and return deterministic argv without launching."""
-
-        image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
-        self.execution_policy.validate_plan(plan, image)
-        self.output_collector.registration_policy.validate_output_declarations(
-            plan.requested_outputs, self.minimum_queryable_output_count
-        )
-        mounts = self.mount_resolver.resolve_inputs(plan.input_artifact_ids)
-        workspace = self.workspace_manager.prepare(plan, mounts)
-        return self.command_builder.build(plan, image, workspace, mounts)
-
-    def execute(self, plan: ExecutionPlan) -> ExecutionResult:
-        started_at = datetime.now(timezone.utc)
-        try:
-            image = self.image_registry.resolve(plan.image_key, runtime=plan.runtime)
-            self.execution_policy.validate_plan(plan, image)
-            self.output_collector.registration_policy.validate_output_declarations(
-                plan.requested_outputs, self.minimum_queryable_output_count
-            )
-            input_mounts = self.mount_resolver.resolve_inputs(
-                plan.input_artifact_ids
-            )
-            workspace = self.workspace_manager.prepare(plan, input_mounts)
-            script_ref = self._register_internal_file(
-                plan,
-                workspace.script_path,
-                artifact_type="execution-script",
-                metadata={
-                    "execution_id": str(plan.execution_id),
-                    "sha256": workspace.script_hash,
-                },
-            )
-            argv = self.command_builder.build(
-                plan,
-                image,
-                workspace,
-                input_mounts,
-            )
-        except ExecutionBoundaryError as exc:
-            if isinstance(exc, ExecutionOutputDeclarationError):
-                self._emit(
-                    plan, TraceEventType.EXECUTION_FAILED, "FAILED",
-                    {
-                        "error_class": exc.error_class.value,
-                        "error_code": "INVALID_OUTPUT_DECLARATION",
-                        "execution_output_declaration": {
-                            "minimum_queryable_output_count": exc.minimum_queryable_output_count,
-                            "declared_queryable_output_count": exc.declared_queryable_output_count,
-                        },
-                    },
-                )
-            else:
-                self._emit_failure(plan, exc.error_class, str(exc))
-            raise
-        except (ArtifactStoreError, OSError, ValueError) as exc:
-            error = OutputCollectionError(
-                f"Execution preparation failed: {exc}",
-                ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
-            )
-            self._emit_failure(plan, error.error_class, str(error))
-            raise error from exc
-
-        self._emit(
-            plan,
-            TraceEventType.EXECUTION_PLANNED,
-            "PLANNED",
-            {
-                "image_key": plan.image_key,
-                "resolved_image": image.resolved_reference,
-                "script_hash": workspace.script_hash,
-                "script_artifact_id": str(script_ref.artifact_id),
-                "input_artifact_ids": [
-                    str(artifact_id) for artifact_id in plan.input_artifact_ids
-                ],
-                "requested_output_count": len(plan.requested_outputs),
-                "network_enabled": plan.network_required,
-                "resources": {
-                    "cpus": plan.resources.cpus,
-                    "memory_mb": plan.resources.memory_mb,
-                    "pids_limit": plan.resources.pids_limit,
-                    "timeout_seconds": plan.resources.timeout_seconds,
-                },
-            },
-        )
-        self._emit(
-            plan,
-            TraceEventType.EXECUTION_STARTED,
-            "STARTED",
-            {"image_key": plan.image_key},
-        )
-        try:
-            outcome = self.process_runner.run(
-                argv,
-                timeout_seconds=plan.resources.timeout_seconds,
-            )
-        except ContainerStartError as exc:
-            completed_at = datetime.now(timezone.utc)
-            self._emit_failure(plan, exc.error_class, str(exc))
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=(completed_at - started_at).total_seconds(),
-                error_class=exc.error_class,
-                error_message=str(exc),
-            )
-
-        try:
-            stdout_ref = self._store_stream(
-                plan,
-                workspace.log_root / "stdout.log",
-                outcome.stdout,
-                "stdout",
-            )
-            stderr_ref = self._store_stream(
-                plan,
-                workspace.log_root / "stderr.log",
-                outcome.stderr,
-                "stderr",
-            )
-        except (ArtifactStoreError, OSError) as exc:
-            completed_at = datetime.now(timezone.utc)
-            message = f"Execution log registration failed: {exc}"
-            self._emit_failure(
-                plan,
-                ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
-                message,
-            )
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=outcome.duration_seconds,
-                exit_code=outcome.exit_code,
-                error_class=ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
-                error_message=message,
-            )
-
-        completed_at = datetime.now(timezone.utc)
-        if outcome.timed_out:
-            message = "Docker execution exceeded the host-enforced timeout."
-            self._emit_failure(plan, ExecutionFailureClass.TIMEOUT, message)
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.TIMED_OUT,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=outcome.duration_seconds,
-                stdout_ref=stdout_ref,
-                stderr_ref=stderr_ref,
-                error_class=ExecutionFailureClass.TIMEOUT,
-                error_message=message,
-                error_context=(bounded_error_context(outcome.stderr)
-                    if self.execution_policy.include_error_context else None),
-            )
-        if outcome.exit_code != 0:
-            message = f"Docker process exited with code {outcome.exit_code}."
-            self._emit_failure(
-                plan,
-                ExecutionFailureClass.NON_ZERO_EXIT,
-                message,
-                exit_code=outcome.exit_code,
-            )
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=outcome.duration_seconds,
-                exit_code=outcome.exit_code,
-                stdout_ref=stdout_ref,
-                stderr_ref=stderr_ref,
-                error_class=ExecutionFailureClass.NON_ZERO_EXIT,
-                error_message=message,
-                error_context=(bounded_error_context(outcome.stderr)
-                    if self.execution_policy.include_error_context else None),
-                diagnostics=self._safe_python_diagnostics(
-                    outcome.stderr,
-                    script_content=plan.script_content,
-                    verified_imports=verified_image_imports(
-                        outcome.stderr, image, self.process_runner,
-                        self.command_builder.docker_binary,
-                    ),
-                ),
-            )
-
-        collection_error = None
-        try:
-            collected = self.output_collector.collect(plan, workspace.output_root)
-            output_refs = tuple(item.ref for item in collected)
-            issues = tuple(item.issue for item in collected if item.issue is not None)
-        except OutputCollectionError as exc:
-            collection_error = exc
-            output_refs = exc.output_artifact_refs
-            issues = exc.issues
-        queryable_output_count = sum(
-            ref.exposure_class is not ArtifactExposureClass.RAW
-            for ref in output_refs
-        )
-        if queryable_output_count < self.minimum_queryable_output_count:
-            issues = (
-                *issues,
-                ExecutionIssue(
-                    error_class=ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
-                    detail_code=(
-                        OutputContractFailureCode.QUERYABLE_OUTPUT_REQUIRED
-                    ),
-                    message=(
-                        "The configured execution requires at least "
-                        f"{self.minimum_queryable_output_count} queryable output(s)."
-                    ),
-                ),
-            )
-        if issues or collection_error is not None:
-            error_class = (
-                collection_error.error_class if collection_error is not None
-                else ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE
-            )
-            message = (
-                str(collection_error) if collection_error is not None
-                else "One or more declared output contracts failed validation."
-            )
-            self._emit_failure(plan, error_class, message, exit_code=0)
-            return self._result(
-                plan,
-                image,
-                workspace,
-                script_ref,
-                status=ExecutionStatus.FAILED,
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_seconds=outcome.duration_seconds,
-                exit_code=0,
-                stdout_ref=stdout_ref,
-                stderr_ref=stderr_ref,
-                output_refs=output_refs,
-                issues=issues,
-                error_class=error_class,
-                error_message=message,
-            )
-
-        self._emit(
-            plan,
-            TraceEventType.EXECUTION_COMPLETED,
-            "SUCCEEDED",
-            {
-                "exit_code": 0,
-                "duration_seconds": outcome.duration_seconds,
-                "output_artifact_ids": [
-                    str(ref.artifact_id) for ref in output_refs
-                ],
-                "stdout_artifact_id": str(stdout_ref.artifact_id),
-                "stderr_artifact_id": str(stderr_ref.artifact_id),
-            },
-        )
-        return self._result(
-            plan,
-            image,
-            workspace,
-            script_ref,
-            status=ExecutionStatus.SUCCEEDED,
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=outcome.duration_seconds,
-            exit_code=0,
-            stdout_ref=stdout_ref,
-            stderr_ref=stderr_ref,
-            output_refs=output_refs,
-        )
-
-    def _store_stream(
-        self,
-        plan: ExecutionPlan,
-        path: Path,
-        content: bytes,
-        stream_name: str,
-    ) -> ArtifactRef:
-        path.write_bytes(content)
-        return self._register_internal_file(
-            plan,
-            path,
-            artifact_type=f"execution-{stream_name}",
-            metadata={
-                "execution_id": str(plan.execution_id),
-                "stream": stream_name,
-                "size_bytes": len(content),
-                "sha256": hashlib.sha256(content).hexdigest(),
-            },
-        )
-
-    def _register_internal_file(
-        self,
-        plan: ExecutionPlan,
-        path: Path,
-        *,
-        artifact_type: str,
-        metadata: dict[str, Any],
-    ) -> ArtifactRef:
-        return self.store.register_file(
-            path,
-            artifact_type=artifact_type,
-            exposure_class=ArtifactExposureClass.RAW,
-            representation=ArtifactRepresentation(),
-            owner_user_id=plan.owner_user_id,
-            project_id=plan.project_id,
-            lab_id=plan.lab_id,
-            run_id=plan.run_id,
-            stage_id=plan.stage_id,
-            producer_invocation_id=plan.invocation_id,
-            metadata=metadata,
-        )
-
-    @staticmethod
-    def _result(
-        plan: ExecutionPlan,
-        image: ApprovedImage,
-        workspace: ExecutionWorkspace,
-        script_ref: ArtifactRef,
-        *,
-        status: ExecutionStatus,
-        started_at: datetime,
-        completed_at: datetime,
-        duration_seconds: float,
-        exit_code: int | None = None,
-        stdout_ref: ArtifactRef | None = None,
-        stderr_ref: ArtifactRef | None = None,
-        output_refs: tuple[ArtifactRef, ...] = (),
-        issues: tuple[ExecutionIssue, ...] = (),
-        diagnostics: tuple[ExecutionDiagnostic, ...] = (),
-        error_context: ExecutionErrorContext | None = None,
-        error_class: ExecutionFailureClass | None = None,
-        error_message: str | None = None,
-    ) -> ExecutionResult:
-        return ExecutionResult(
-            execution_id=plan.execution_id,
-            run_id=plan.run_id,
-            stage_id=plan.stage_id,
-            invocation_id=plan.invocation_id,
-            status=status,
-            image_key=plan.image_key,
-            resolved_image=image.resolved_reference,
-            script_hash=workspace.script_hash,
-            script_ref=script_ref,
-            exit_code=exit_code,
-            stdout_ref=stdout_ref,
-            stderr_ref=stderr_ref,
-            output_artifact_refs=output_refs,
-            started_at=started_at,
-            completed_at=completed_at,
-            duration_seconds=max(duration_seconds, 0.0),
-            error_class=error_class,
-            error_message=error_message,
-            issues=issues,
-            diagnostics=diagnostics,
-            error_context=error_context,
-        )
-
-    @staticmethod
-    def _safe_python_diagnostics(
-        stderr: bytes,
-        *,
-        script_content: str = "",
-        verified_imports: frozenset[str] = frozenset(),
-    ) -> tuple[ExecutionDiagnostic, ...]:
-        """Extract identifiers and Agent-script line numbers, never raw stderr."""
-
-        diagnostics = []
-        for text, relation in traceback_chain(stderr):
-            items = DockerExecutor._safe_python_exception(text, script_content, verified_imports)
-            if not items:
-                break  # Never attach a cause across an unrecognized exception.
-            diagnostics.append(items[0].model_copy(update={"chain_relation": relation}))
-        return tuple(diagnostics)
-
-    @staticmethod
-    def _safe_python_exception(
-        text: str, script_content: str, verified_imports: frozenset[str],
-    ) -> tuple[ExecutionDiagnostic, ...]:
-        lines = text.rstrip().splitlines()
-        if not lines:
-            return ()
-        terminal_line = lines[-1]
-        terminal_exception = re.fullmatch(
-            r"([A-Za-z_][A-Za-z0-9_.]{0,127})(?::.*)?", terminal_line
-        )
-        if (
-            terminal_exception is None
-            or terminal_exception.group(1) not in _SAFE_PYTHON_EXCEPTION_TYPES
-        ):
-            return ()
-        exception_type = terminal_exception.group(1)
-        from .diagnostic_sources import reported_numerical_condition
-
-        # Keep complete-message matching distinct from traceback whitespace parsing.
-        raw_terminal = text.rstrip("\r\n").split("\n")[-1]
-        numerical_condition = reported_numerical_condition(
-            exception_type, raw_terminal.removeprefix(exception_type + ": "),
-        )
-        line_numbers = tuple(
-            dict.fromkeys(
-                int(match)
-                for match in re.findall(
-                    r'^\s*File "/labbio/script\.py", line ([0-9]{1,9}),',
-                    text,
-                    flags=re.MULTILINE,
-                )
-            )
-        )[-16:]
-        missing_module = re.fullmatch(
-            r"ModuleNotFoundError: No module named "
-            r"'([A-Za-z_][A-Za-z0-9_.]{0,127})'",
-            terminal_line,
-        )
-        if missing_module is not None:
-            imported_modules: set[str] = set(verified_imports)
-            try:
-                tree = ast.parse(script_content)
-            except SyntaxError:
-                tree = None
-            if tree is not None:
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.Import):
-                        imported_modules.update(alias.name for alias in node.names)
-                    elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                        imported_modules.add(node.module)
-            module_name = missing_module.group(1)
-            if any(
-                module_name == imported
-                or module_name.startswith(imported + ".")
-                or imported.startswith(module_name + ".")
-                for imported in imported_modules
-            ):
-                return (
-                    ExecutionDiagnostic(
-                        code=ExecutionDiagnosticCode.PYTHON_MODULE_NOT_FOUND,
-                        exception_type="ModuleNotFoundError",
-                        script_line_numbers=line_numbers,
-                        missing_module=module_name,
-                    ),
-                )
-        script_locations = DockerExecutor._script_error_locations(text, script_content)
-        missing_key_type = None
-        missing_key_locations = []
-        if exception_type == "KeyError":
-            match = re.fullmatch(r"KeyError: (.{1,512})", terminal_line)
-            if match is not None:
-                try:
-                    argument = ast.literal_eval(match.group(1))
-                except (ValueError, SyntaxError, RecursionError):
-                    pass
-                else:
-                    # Finite technical type vocabulary only; never serialize values.
-                    if type(argument) in (str, bytes, int, float, bool, type(None), tuple):
-                        missing_key_type = type(argument).__name__
-                        try:
-                            tree = ast.parse(script_content)
-                        except (SyntaxError, RecursionError):
-                            tree = None
-                        if tree is not None:
-                            for node in ast.walk(tree):
-                                if not isinstance(node, ast.Constant) or (
-                                    type(node.value) is not type(argument) or node.value != argument
-                                ):
-                                    continue
-                                # Existing highlights verify exact displayed source
-                                # and ASCII coordinates. No dynamic variable value
-                                # is inspected or copied from the process stream.
-                                if any(
-                                    node.lineno == node.end_lineno == loc.line_number
-                                    and loc.start_column <= node.col_offset < node.end_col_offset <= loc.end_column
-                                    for loc in script_locations
-                                ):
-                                    missing_key_locations.append(ExecutionScriptLocation(
-                                        line_number=node.lineno,
-                                        start_column=node.col_offset, end_column=node.end_col_offset,
-                                    ))
-        reported_index_condition = None
-        if exception_type == "IndexError":
-            # Match a complete bounded message, not task/source keywords. Keep
-            # trailing spaces significant and discard every captured number.
-            index_line = text.rstrip("\r\n").split("\n")[-1]
-            match = re.fullmatch(
-                r"IndexError: index -?(?:0|[1-9][0-9]{0,18}) is out of bounds "
-                r"for axis (?:0|[1-9][0-9]{0,18}) with size (0|[1-9][0-9]{0,18})",
-                index_line,
-            )
-            if match is not None:
-                reported_index_condition = (
-                    "OUT_OF_BOUNDS_EMPTY_AXIS" if match.group(1) == "0"
-                    else "OUT_OF_BOUNDS"
-                )
-            elif index_line in {
-                "IndexError: list index out of range",
-                "IndexError: tuple index out of range",
-                "IndexError: string index out of range",
-            }:
-                reported_index_condition = "OUT_OF_BOUNDS"
-        return (
-            ExecutionDiagnostic(
-                code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
-                exception_type=exception_type,
-                script_line_numbers=line_numbers,
-                script_error_locations=script_locations,
-                missing_key_type=missing_key_type,
-                missing_key_source_locations=tuple(missing_key_locations[:16]),
-                reported_index_condition=reported_index_condition,
-                reported_numerical_condition=numerical_condition,
+        super().__init__(
+            store=store,
+            image_registry=image_registry,
+            execution_policy=execution_policy,
+            mount_resolver=mount_resolver,
+            workspace_manager=workspace_manager,
+            output_collector=output_collector,
+            process_runner=process_runner or SubprocessDockerRunner(),
+            command_builder=command_builder or DockerCommandBuilder(
+                max_output_file_bytes=execution_policy.max_output_file_bytes,
+                tmpfs_size_mb=execution_policy.tmpfs_size_mb,
             ),
-        )
-
-    @staticmethod
-    def _script_error_locations(
-        text: str, script_content: str
-    ) -> tuple[ExecutionScriptLocation, ...]:
-        """Keep caret coordinates only when the displayed source matches the script."""
-
-        source_lines = script_content.splitlines()
-        locations: list[ExecutionScriptLocation] = []
-        for match in re.finditer(
-            r'^\s*File "/labbio/script\.py", line ([0-9]{1,9}),[^\n]*\n'
-            r'    ([^\n]*)\n    ([ ~^]*\^[ ~^]*)$',
-            text,
-            flags=re.MULTILINE,
-        ):
-            line_number = int(match.group(1))
-            if not 1 <= line_number <= len(source_lines):
-                continue
-            source = source_lines[line_number - 1]
-            if match.group(2) != source.strip():
-                continue
-            # Display-width and tab expansion are not character coordinates.
-            if not source.isascii() or "\t" in source:
-                continue
-            markers = match.group(3).rstrip()
-            indent = len(source) - len(source.lstrip())
-            start = indent + len(markers) - len(markers.lstrip())
-            end = indent + len(markers)
-            if not 0 <= start < end <= min(len(source), 262_144):
-                continue
-            location = ExecutionScriptLocation(
-                line_number=line_number, start_column=start, end_column=end
-            )
-            if location not in locations:
-                locations.append(location)
-        return tuple(locations[-16:])
-
-    def _emit_failure(
-        self,
-        plan: ExecutionPlan,
-        error_class: ExecutionFailureClass,
-        message: str,
-        *,
-        exit_code: int | None = None,
-    ) -> None:
-        payload: dict[str, Any] = {
-            "execution_id": str(plan.execution_id),
-            "error_class": error_class.value,
-            "error_message": f"Technical execution failure: {error_class.value}.",
-        }
-        if exit_code is not None:
-            payload["exit_code"] = exit_code
-        self._emit(
-            plan,
-            TraceEventType.EXECUTION_FAILED,
-            "FAILED",
-            payload,
-        )
-
-    def _emit(
-        self,
-        plan: ExecutionPlan,
-        event_type: TraceEventType,
-        status: str,
-        payload: dict[str, Any],
-    ) -> None:
-        if self.trace_recorder is None:
-            return
-        self.trace_recorder.emit(
-            plan.run_id,
-            event_type,
-            stage_id=plan.stage_id,
-            invocation_id=plan.invocation_id,
-            status=status,
-            payload={"execution_id": str(plan.execution_id), **payload},
+            trace_recorder=trace_recorder,
+            minimum_queryable_output_count=minimum_queryable_output_count,
         )

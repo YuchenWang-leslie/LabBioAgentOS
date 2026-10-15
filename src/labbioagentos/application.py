@@ -56,7 +56,6 @@ from .execution import (
     ArtifactRegistrationPolicy,
     DockerCommandBuilder,
     DockerExecutor,
-    DockerProcessRunner,
     ExecutionPolicy,
     ExecutionReceipt,
     ExecutionPreflightError,
@@ -68,6 +67,7 @@ from .execution import (
     MountResolver,
     OutputCollector,
     PreflightInputRequirement,
+    ProcessRunner,
     RequestedResources,
     StructuredOutputContract,
 )
@@ -570,7 +570,7 @@ class ApplicationRuntimeConfiguration:
     stage_plugins: tuple[ApplicationStagePlugin, ...] = ()
     trace_sink: TraceSink | None = None
     run_state_store: RunStateStore | None = None
-    process_runner: DockerProcessRunner | None = None
+    process_runner: ProcessRunner | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None

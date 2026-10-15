@@ -3,7 +3,6 @@
 import json
 import math
 import re
-from uuid import uuid4
 
 from .errors import ContainerStartError
 
@@ -80,7 +79,7 @@ print(json.dumps(sorted(modules)[:128]))
 '''
 
 
-def verified_image_imports(stderr: bytes, image, runner, docker_binary: str) -> frozenset[str]:
+def verified_image_imports(stderr: bytes, image, runner, command_builder) -> frozenset[str]:
     frames = []
     for text, _ in traceback_chain(stderr):
         if not re.search(r"\nModuleNotFoundError: No module named '[A-Za-z_][A-Za-z0-9_.]{0,127}'\s*$", text):
@@ -90,13 +89,8 @@ def verified_image_imports(stderr: bytes, image, runner, docker_binary: str) -> 
                 frames.append((path, int(line)))
     if not frames:
         return frozenset()
-    argv = (
-        docker_binary, "run", "--rm", "--pull", "never", "--name", "labbio-" + uuid4().hex,
-        "--network", "none", "--read-only", "--cap-drop", "ALL",
-        "--security-opt", "no-new-privileges", "--user", "65534:65534",
-        "--memory", "256m", "--cpus", "1", "--pids-limit", "32",
-        "--entrypoint", image.executable[0], image.resolved_reference,
-        "-I", "-S", "-c", IMPORT_PROBE, json.dumps(frames[:8]),
+    argv = command_builder.import_probe_argv(
+        image, ("-I", "-S", "-c", IMPORT_PROBE, json.dumps(frames[:8])),
     )
     try:
         outcome = runner.run(argv, timeout_seconds=15)
