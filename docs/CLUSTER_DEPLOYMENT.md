@@ -52,12 +52,13 @@ supported cluster mode.
 | Requirement | Why |
 |---|---|
 | Apptainer on login and compute nodes (same major version recommended) | Execution and image builds |
+| Absolute path to the Apptainer binary, identical on login and compute nodes | Jobs start from a cleared environment and may not have modules loaded |
 | Unprivileged `--net --network none` | Network isolation; without it execution is refused |
 | A filesystem shared by login and compute nodes | Workspace, SIF store, job logs; no data staging is performed |
 | Scheduler CLI on the login node (any scheduler describable by a template) | Job submission and polling |
 | External network on the login node | LLM provider and dependency downloads |
 | Python 3.11 conda environment on the login node | LabBio itself |
-| Site permission for a long-lived login-node process | The control plane waits for jobs |
+| Site permission for a long-lived login-node process | The control plane waits for jobs; some sites do not allow this (`KNOWN_LIMITATIONS.md`) |
 
 Compute nodes do not need network. If they have it, it is still disabled for
 every execution.
@@ -106,6 +107,8 @@ Compute nodes never pull images.
 
 Field names are proposals and may change during implementation. Keep the file
 outside the repository; credentials belong only in the provider env file.
+Paths are resolved to real paths when the configuration is loaded, so sites
+whose home directory is a symbolic link can still use `~` paths.
 
 ```toml
 result_root = "/shared/lab/labbio/result"
@@ -137,7 +140,7 @@ pids_limit = 256
 timeout_seconds = 3600.0       # walltime = timeout + walltime_margin
 
 [execution.apptainer]
-binary = "apptainer"
+binary = "/path/to/apptainer/bin/apptainer"   # absolute; required in scheduler mode
 sif_store = "/shared/lab/labbio/sif"
 scratch_root = "/shared/lab/labbio/scratch"
 cache_dir = "/shared/lab/labbio/apptainer-cache"
@@ -180,9 +183,20 @@ bundled; other schedulers or site variants use a site template file.
   redirection into the run workspace.
 - The model-authored analysis script as a separate read-only file at
   `/labbio/script.py`, never inlined into the job script.
-- No login-node environment: Slurm `--export=NONE`, PBS without `-V`, LSF
-  `-env none`. Provider keys never reach the scheduler command, the job, or
-  the container.
+- Submission: the scheduler command runs with an allowlisted environment and
+  export-disabling flags (Slurm `--export=NONE`, PBS without `-V`, LSF
+  `-env none`), so the submitting environment is not forwarded.
+- Compute node: some schedulers (for example Slurm with `--export=NONE`) still
+  load the user's login environment into the job shell, so anything exported
+  in shell startup files such as `~/.bashrc` can appear there. The job script
+  starts Apptainer through `env -i` with an allowlist, and the container also
+  uses `--cleanenv`. Do not export provider keys in shell startup files.
+- Scratch: each execution's scratch directory is removed when the job exits
+  and again after the control plane collects results.
+
+LabBio never passes provider keys to the scheduler command, the job script, or
+the container. Keys exported in shell startup files can still appear in the
+job shell, but not inside the container.
 
 ## 7. Refused cases
 
@@ -211,5 +225,6 @@ LabBio refuses to start or to execute when:
   call, so long queues may exceed the runtime's progress timeout (still being
   verified) and require the login-node process to stay alive throughout.
   Prefer partitions with short waits.
-- **Disk.** Clean the scratch, Apptainer cache, and tmp directories per site
-  policy; the SIF store should only grow through `image-register`.
+- **Disk.** Per-execution scratch directories are removed automatically.
+  Clean the Apptainer cache and tmp directories per site policy; the SIF store
+  should only grow through `image-register`.

@@ -6,6 +6,10 @@ Status: pre-implementation architecture audit. This memo records current
 source behavior before any C13 change. It is not an acceptance claim. C13 was
 authorized by MOHAN CUI on 2026-10-15 (`OPEN_DECISIONS.md` DECIDED-C13-0).
 
+Amended 2026-10-16 after a real-cluster check: job environment handling,
+Apptainer binary path, per-execution scratch removal, and configuration path
+resolution.
+
 Starting LabBio revision: `df51fbc0d3d1dd4221681fd84609fe803b50ae5b`
 
 Frozen Pantheon revision: `07675c45b538f7d27b9b16b1b7d8b72f37365293`, as
@@ -159,6 +163,8 @@ LabBio-defined `JobLauncher`: `submit`, `status`, `cancel`, `attach`
 `collect` (exit code and logs into the existing `ProcessOutcome`).
 `SchedulerLauncher` holds the shared logic (job script, ledger, polling,
 collection) and delegates only scheduler differences to a `SchedulerAdapter`.
+After collecting results, the launcher removes the per-execution scratch
+directory if the job did not.
 Adapters call scheduler CLIs; no Python scheduler dependency. The primary
 adapter is a configuration-driven scheduler template, with Slurm, PBS and LSF
 shipped as bundled templates; a dedicated adapter is added only for a
@@ -168,8 +174,15 @@ scheduler the template cannot express.
 
 Generated from a fixed template. Scheduler directives come only from trusted
 policy with upper bounds. The model-authored script is always a separate
-mounted file and is never concatenated into the job script. The job does not
-inherit the login-node environment (`--export=NONE`, no `-V`, `-env none`).
+mounted file and is never concatenated into the job script.
+
+The job script does not rely on scheduler export flags for a clean
+environment. It still passes them (`--export=NONE`, no `-V`, `-env none`) so
+the submitting environment is not forwarded, but some schedulers load the
+user's login environment on the compute node anyway. The script therefore
+starts Apptainer through `env -i` with an explicit allowlist, using an
+absolute Apptainer binary path. On exit it removes its own per-execution
+scratch directory.
 
 ### Runtime intelligence sovereignty
 
@@ -203,8 +216,9 @@ Phase 1 - runtime abstraction (no behavior change)
 Phase 2 - Apptainer backend
 
 5. `SifStore` registers a SIF by streamed sha256 into a 0700 store as a 0444
-   regular file via temp-file, fsync and rename; symlinks are rejected;
-   `path_for` and `verify` fail closed.
+   regular file via temp-file, fsync and rename; symlinks are rejected by the
+   store, and configuration paths are resolved to real paths once when the
+   configuration is loaded; `path_for` and `verify` fail closed.
 6. `ApptainerCommandBuilder` passes a parametrized contract shared with Docker:
    no network, read-only inputs, only the output directory writable, cleared
    environment, script at `/labbio/script.py`, no credentials in argv, and
@@ -229,8 +243,11 @@ Phase 3a - scheduler launcher, async execution
     submit/status/cancel/attach/collect contract.
 14. Configuration load rejects Local + Apptainer and Scheduler + Docker.
 15. Generated job scripts contain no credentials, always disable environment
-    export, take directives only from bounded policy, and never inline the
-    model-authored script.
+    export, start Apptainer through `env -i` with an allowlist, take directives
+    only from bounded policy, never inline the model-authored script, and
+    remove their per-execution scratch directory on exit; the launcher removes
+    it again after collection. In scheduler mode the Apptainer `binary` must be
+    an absolute path, or configuration load is refused.
 16. The job ledger persists each submission before polling; after a simulated
     crash, reconciliation finds orphan jobs, cancels running or queued ones,
     reports finished ones and deletes their output files, never resubmits,

@@ -561,7 +561,10 @@ Do not install Apptainer, a scheduler, or Docker. Use generic mock tasks only.
 * existing Docker tests pass unchanged after Phase 1
 * Docker and Apptainer command builders pass one shared sandbox contract
 * invalid runtime/launcher combinations are rejected at configuration load
-* no credentials reach the runtime process, scheduler command, job, or container
+* LabBio passes no credentials to the runtime process, scheduler command, job
+  script, or container; the container starts from a cleared environment even
+  when the scheduler loads the user's login environment
+* each execution's scratch directory is removed after the execution
 * a crash during a job never resubmits it and still fails closed
 * gated real runs pass: Apptainer on Linux, then a Slurm template end to end
 

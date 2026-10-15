@@ -136,6 +136,28 @@ paths, system keys, private-key material, scripts, stdout/stderr, and provider
 bodies remain outside this release path. This boundary does not classify
 biological identifiers and does not choose scientific methods.
 
+## C13 cluster execution (Apptainer and scheduler)
+
+C13 is in progress; the Apptainer backend exists and the scheduler launcher
+does not yet. These limitations apply to cluster mode (Scheduler + Apptainer).
+
+- **Long-lived login-node process.** The control plane runs on the login node
+  and waits for each scheduler job inside one tool call (DECIDED-C13-3), so it
+  must stay alive for the whole queue and run time. Some sites limit or kill
+  long-running login-node processes. Such sites cannot use the current wait
+  model; the recorded fallback (suspending the run in a
+  `WAITING_FOR_EXECUTION` state) is not implemented. Operators must confirm
+  site policy before deployment.
+- **Process-count limit.** With `resource_enforcement = "scheduler"` the
+  scheduler allocation enforces CPU and memory, but the per-execution
+  `pids_limit` is not enforced by the runtime, and not every scheduler limits
+  processes per job. The trusted trace records
+  `resource_limits_enforced_by_runtime = false`. A per-user `ulimit -u` is not
+  used because it would also constrain the user's other processes on the node.
+- **`/tmp` size.** Under Apptainer, `/tmp` lives in the per-execution scratch
+  directory and is bounded only by the per-file size limit; there is no
+  equivalent of Docker's tmpfs size limit.
+
 ## Operational status
 
 C12 core architecture remains accepted and frozen under the revised criterion.
