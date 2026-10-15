@@ -159,8 +159,10 @@ LabBio-defined `JobLauncher`: `submit`, `status`, `cancel`, `attach`
 `collect` (exit code and logs into the existing `ProcessOutcome`).
 `SchedulerLauncher` holds the shared logic (job script, ledger, polling,
 collection) and delegates only scheduler differences to a `SchedulerAdapter`.
-Adapters call scheduler CLIs; no Python scheduler dependency. Order: Slurm,
-then a configuration-driven template adapter, then PBS/LSF as needed.
+Adapters call scheduler CLIs; no Python scheduler dependency. The primary
+adapter is a configuration-driven scheduler template, with Slurm, PBS and LSF
+shipped as bundled templates; a dedicated adapter is added only for a
+scheduler the template cannot express.
 
 ### Job script
 
@@ -230,12 +232,14 @@ Phase 3a - scheduler launcher, async execution
     export, take directives only from bounded policy, and never inline the
     model-authored script.
 16. The job ledger persists each submission before polling; after a simulated
-    crash, reconciliation finds orphan jobs, cancels or reports them, never
-    resubmits, and still returns `BLOCKED`.
+    crash, reconciliation finds orphan jobs, cancels running or queued ones,
+    reports finished ones and deletes their output files, never resubmits,
+    and still returns `BLOCKED`.
 17. Local execution no longer blocks the event loop.
 18. The Q4 Pantheon timer behavior is verified and recorded.
-19. A gated Slurm integration test (`LABBIO_RUN_SLURM=1`) completes one minimal
-    mock task end to end.
+19. The template adapter passes fake-CLI tests with the bundled Slurm, PBS and
+    LSF templates, and a gated Slurm integration test (`LABBIO_RUN_SLURM=1`)
+    completes one minimal mock task end to end through the Slurm template.
 
 Phase 4 - cluster environment build
 

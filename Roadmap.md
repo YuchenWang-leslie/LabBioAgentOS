@@ -516,6 +516,61 @@ STOP.
 
 ---
 
+# C13 — Apptainer Cluster Execution
+
+Authorized by MOHAN CUI on 2026-10-15 (`docs/OPEN_DECISIONS.md` DECIDED-C13-0).
+Gap analysis and numbered acceptance criteria:
+`docs/C13_APPTAINER_EXECUTION_GAP_MEMO.md`.
+
+## Goal
+
+Run the same constrained execution on an HPC cluster that Docker provides
+locally. The login node runs the control plane, LLM calls, and job submission;
+compute nodes run analysis through the site scheduler inside Apptainer.
+Cluster support must be generic across most site types.
+
+Container runtime and launcher are separate axes. Configuration allows only:
+
+* Local + Docker (control-plane host)
+* Scheduler + Apptainer (the only cluster mode)
+
+Execution is always network-disabled by the runtime itself.
+
+Phases:
+
+1. Runtime abstraction: extract `ContainerExecutor`; Docker behavior unchanged.
+2. Apptainer backend: SIF store (sha256 identity), command builder, capability
+   probe, runner.
+3. Scheduler launcher (3a): `JobLauncher` with a configuration-driven
+   scheduler template adapter (Slurm, PBS and LSF as bundled templates);
+   generated job scripts; job ledger; non-blocking execution.
+   Jobs are awaited inside one tool call; suspending runs in a new workflow
+   state (3b) is a recorded fallback that needs its own decision.
+4. Login-node Apptainer environment builds.
+
+Important:
+
+C13 is execution infrastructure only. It adds no method selection, scientific
+routing, or analysis logic. Backend, launcher, scheduler, and SIF details never
+enter model-visible content. No Pantheon core change.
+
+Do not install Apptainer, a scheduler, or Docker. Use generic mock tasks only.
+
+## Acceptance
+
+* existing Docker tests pass unchanged after Phase 1
+* Docker and Apptainer command builders pass one shared sandbox contract
+* invalid runtime/launcher combinations are rejected at configuration load
+* no credentials reach the runtime process, scheduler command, job, or container
+* a crash during a job never resubmits it and still fails closed
+* gated real runs pass: Apptainer on Linux, then a Slurm template end to end
+
+Full list: the numbered criteria in the gap memo.
+
+STOP.
+
+---
+
 # Later Phases — Not Yet Authorized
 
 Do NOT implement these until explicitly requested:
