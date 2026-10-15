@@ -4,7 +4,7 @@ import json
 import math
 import re
 
-from .errors import ContainerStartError
+from .errors import ExecutionBoundaryError
 
 
 def reported_numerical_condition(exception_type: str, message: str) -> str | None:
@@ -89,12 +89,12 @@ def verified_image_imports(stderr: bytes, image, runner, command_builder) -> fro
                 frames.append((path, int(line)))
     if not frames:
         return frozenset()
-    argv = command_builder.import_probe_argv(
-        image, ("-I", "-S", "-c", IMPORT_PROBE, json.dumps(frames[:8])),
-    )
     try:
+        argv = command_builder.import_probe_argv(
+            image, ("-I", "-S", "-c", IMPORT_PROBE, json.dumps(frames[:8])),
+        )
         outcome = runner.run(argv, timeout_seconds=15)
-    except (OSError, ContainerStartError):
+    except (OSError, ExecutionBoundaryError):
         return frozenset()
     if outcome.exit_code != 0 or outcome.timed_out or len(outcome.stdout) > 32_768:
         return frozenset()

@@ -1,0 +1,48 @@
+# Cluster (Apptainer) site configuration. Copy outside the repository; relative
+# paths use this file's directory. Credentials belong only in the provider env file.
+#
+# Until the scheduler launcher exists (C13 phase 3), `labbio run` refuses this
+# backend. `labbio image-register` and `labbio backend-check` already work on
+# the login node; neither runs a model-authored analysis script.
+result_root = "/shared/lab/labbio/result"
+input_roots = ["/shared/lab/data"]
+default_format = "raw"
+
+[identity]
+user_id = "local-user"
+project_id = "local-project"
+lab_id = "local-lab"
+
+[provider]
+env_file = "~/.config/labbioagent/provider.env"
+api_key_env = "PROVIDER_API_KEY"
+base_url_env = "PROVIDER_BASE_URL"
+model_identifier = "<model>"
+
+[execution]
+backend = "apptainer"
+image_key = "scientific-python"
+# Output of `labbio image-register --sif <file>`: the SIF file's sha256.
+image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []
+max_output_file_bytes = 8589934592       # Enforced on the host with RLIMIT_FSIZE.
+max_collected_output_bytes = 34359738368
+# tmpfs_size_mb has no effect under Apptainer: /tmp lives in the per-execution
+# scratch directory and is bounded only by the per-file size limit.
+
+[execution.resources]
+cpus = 4.0
+memory_mb = 16384
+pids_limit = 256
+timeout_seconds = 3600.0
+
+[execution.apptainer]
+binary = "apptainer"
+sif_store = "/shared/lab/labbio/sif"           # Private (0700) content-addressed store.
+scratch_root = "/shared/lab/labbio/scratch"    # Per-execution --workdir parent.
+cache_dir = "/shared/lab/labbio/apptainer-cache"
+tmp_dir = "/shared/lab/labbio/apptainer-tmp"
+# Required, no default: "scheduler" when the allocation enforces CPU, memory and
+# process limits; "apptainer-cgroups" only where backend-check confirms cgroups.
+resource_enforcement = "scheduler"
+verify_sif_on_execute = false                  # Re-hash multi-GB SIFs only if required.

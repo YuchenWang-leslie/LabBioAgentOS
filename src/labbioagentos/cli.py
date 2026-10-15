@@ -57,6 +57,10 @@ def _parser() -> argparse.ArgumentParser:
     for name in ("status", "export"):
         command = commands.add_parser(name, help=f"Read persisted run {name} without a model call")
         command.add_argument("--run-dir", type=Path, required=True)
+    image_register = commands.add_parser(
+        "image-register", help="Copy a SIF into the controlled store and print its image_reference")
+    image_register.add_argument("--sif", type=Path, required=True)
+    commands.add_parser("backend-check", help="Probe the configured Apptainer backend on this node")
     from .local_workspace_cli import add_commands
     add_commands(commands)
     for command in commands.choices.values():
@@ -330,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
             _emit(administer(args))
             return 0
         settings = load_settings(args.config.expanduser())
+        if args.command in {"image-register", "backend-check"}:
+            from .local_backend import check_backend, register_image
+            if args.command == "image-register":
+                _emit(register_image(settings, args.sif))
+                return 0
+            report, passed = check_backend(settings)
+            _emit(report)
+            return 0 if passed else 1
         settings = scoped_settings(args, settings)
         if args.command == "run":
             return asyncio.run(_run(args, settings))

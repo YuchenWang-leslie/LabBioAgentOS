@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,7 @@ class ContainerExecutor:
         command_builder: ContainerCommandBuilder,
         trace_recorder: RunTraceRecorder | None = None,
         minimum_queryable_output_count: int = 0,
+        isolation_record: Mapping[str, Any] | None = None,
     ):
         self.store = store
         self.image_registry = image_registry
@@ -82,6 +84,8 @@ class ContainerExecutor:
                 "minimum_queryable_output_count must be between 0 and 128"
             )
         self.minimum_queryable_output_count = minimum_queryable_output_count
+        # Trusted-trace backend isolation summary; never part of a receipt.
+        self.isolation_record = None if isolation_record is None else dict(isolation_record)
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """Prepare the workspace and return deterministic argv without launching."""
@@ -146,28 +150,26 @@ class ContainerExecutor:
             self._emit_failure(plan, error.error_class, str(error))
             raise error from exc
 
-        self._emit(
-            plan,
-            TraceEventType.EXECUTION_PLANNED,
-            "PLANNED",
-            {
-                "image_key": plan.image_key,
-                "resolved_image": image.resolved_reference,
-                "script_hash": workspace.script_hash,
-                "script_artifact_id": str(script_ref.artifact_id),
-                "input_artifact_ids": [
-                    str(artifact_id) for artifact_id in plan.input_artifact_ids
-                ],
-                "requested_output_count": len(plan.requested_outputs),
-                "network_enabled": plan.network_required,
-                "resources": {
-                    "cpus": plan.resources.cpus,
-                    "memory_mb": plan.resources.memory_mb,
-                    "pids_limit": plan.resources.pids_limit,
-                    "timeout_seconds": plan.resources.timeout_seconds,
-                },
+        planned: dict[str, Any] = {
+            "image_key": plan.image_key,
+            "resolved_image": image.resolved_reference,
+            "script_hash": workspace.script_hash,
+            "script_artifact_id": str(script_ref.artifact_id),
+            "input_artifact_ids": [
+                str(artifact_id) for artifact_id in plan.input_artifact_ids
+            ],
+            "requested_output_count": len(plan.requested_outputs),
+            "network_enabled": plan.network_required,
+            "resources": {
+                "cpus": plan.resources.cpus,
+                "memory_mb": plan.resources.memory_mb,
+                "pids_limit": plan.resources.pids_limit,
+                "timeout_seconds": plan.resources.timeout_seconds,
             },
-        )
+        }
+        if self.isolation_record is not None:
+            planned["isolation"] = self.isolation_record
+        self._emit(plan, TraceEventType.EXECUTION_PLANNED, "PLANNED", planned)
         self._emit(
             plan,
             TraceEventType.EXECUTION_STARTED,

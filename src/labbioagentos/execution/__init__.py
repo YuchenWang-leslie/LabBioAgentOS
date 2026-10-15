@@ -1,5 +1,11 @@
 """Deterministic container-isolated execution boundary."""
 
+from .apptainer import (
+    ApptainerCommandBuilder,
+    SifStore,
+    SifStoreError,
+    SubprocessApptainerRunner,
+)
 from .backend import ContainerCommandBuilder, ProcessOutcome, ProcessRunner
 from .docker import (
     DockerCommandBuilder,
@@ -57,6 +63,7 @@ from .preflight import (
 )
 
 __all__ = [
+    "ApptainerCommandBuilder",
     "ApprovedImage",
     "ApprovedImageRegistry",
     "ArtifactRegistrationDecision",
@@ -104,6 +111,9 @@ __all__ = [
     "PreflightInputRequirement",
     "RequestedResources",
     "ResolvedMount",
+    "SifStore",
+    "SifStoreError",
     "StructuredOutputContract",
+    "SubprocessApptainerRunner",
     "SubprocessDockerRunner",
 ]

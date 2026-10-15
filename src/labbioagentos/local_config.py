@@ -6,13 +6,14 @@ from contextlib import ExitStack
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import tomllib
 from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from labbioagentos.literature import LiteratureSearchService
 from labbioagentos.artifacts import ExposurePolicy
@@ -42,7 +43,24 @@ class LocalProviderSettings(_SettingsModel):
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
 
 
+class UnsupportedExecutionBackend(ValueError):
+    """The configured execution backend cannot run in this release."""
+
+
+class LocalApptainerSettings(_SettingsModel):
+    binary: str = Field(default="apptainer", min_length=1, max_length=512, pattern=r"^[^-\s][^\s]*$")
+    sif_store: Path
+    scratch_root: Path
+    cache_dir: Path | None = None
+    tmp_dir: Path | None = None
+    # No default: a site must state who enforces CPU, memory and process limits.
+    resource_enforcement: Literal["scheduler", "apptainer-cgroups"]
+    verify_sif_on_execute: bool = Field(default=False, strict=True)
+
+
 class LocalExecutionSettings(_SettingsModel):
+    backend: Literal["docker", "apptainer"] = "docker"
+    apptainer: LocalApptainerSettings | None = None
     image_key: str
     image_reference: str
     available_python_modules: tuple[str, ...] = ()
@@ -53,6 +71,14 @@ class LocalExecutionSettings(_SettingsModel):
     tmpfs_size_mb: int = Field(default=64, ge=1, strict=True)
     include_error_context: bool = Field(default=False, strict=True)
     allow_generated_file_read: bool = Field(default=False, strict=True)
+
+    @model_serializer(mode="wrap")
+    def omit_absent_apptainer(self, handler):
+        # TOML has no null; an absent optional section is omitted, not dumped as None.
+        data = handler(self)
+        if isinstance(data, dict) and data.get("apptainer") is None:
+            data.pop("apptainer", None)
+        return data
 
     def approved_image(self) -> ApprovedImage:
         return ApprovedImage(
@@ -65,6 +91,11 @@ class LocalExecutionSettings(_SettingsModel):
     @model_validator(mode="after")
     def validate_image(self) -> "LocalExecutionSettings":
         self.approved_image()
+        if self.backend == "apptainer":
+            if self.apptainer is None:
+                raise ValueError("backend = 'apptainer' requires an [execution.apptainer] section")
+            if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_reference) is None:
+                raise ValueError("Apptainer image_reference must be a registered sha256:<64 hex> SIF")
         if self.max_output_file_bytes > self.max_collected_output_bytes:
             raise ValueError("Total collection limit must be at least the per-file limit")
         return self
@@ -149,6 +180,18 @@ def load_settings(path: Path) -> LocalSettings:
             "root": absolute(settings.environment.root),
         }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
+        "execution": settings.execution.model_copy(update={
+            "apptainer": _absolute_apptainer(settings.execution.apptainer, absolute),
+        }) if settings.execution.apptainer else settings.execution,
+    })
+
+
+def _absolute_apptainer(apptainer: LocalApptainerSettings, absolute) -> LocalApptainerSettings:
+    return apptainer.model_copy(update={
+        "sif_store": absolute(apptainer.sif_store),
+        "scratch_root": absolute(apptainer.scratch_root),
+        "cache_dir": absolute(apptainer.cache_dir) if apptainer.cache_dir else None,
+        "tmp_dir": absolute(apptainer.tmp_dir) if apptainer.tmp_dir else None,
     })
 
 
@@ -236,6 +279,11 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
+    if settings.execution.backend != "docker":
+        # Cluster execution runs only through a scheduler launcher (C13 phase 3).
+        raise UnsupportedExecutionBackend(
+            "Apptainer execution requires a scheduler launcher, which is not available yet"
+        )
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     if load_provider:
