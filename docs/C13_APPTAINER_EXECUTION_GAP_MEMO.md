@@ -78,11 +78,24 @@ process would be invisible to recovery.
 
 ### Q4 - can a long tool call outlive Pantheon's progress timer?
 
-Unverified. LabBio passes `max_no_progress_seconds` (default 300, allowed
-30-1800; `runtime/assembly.py:65-91`) to Pantheon `team.run`
-(`runtime/pantheon.py:571-572`). Whether Pantheon counts time spent inside a
-single tool call is upstream behavior and must be checked against the frozen
-revision. If it does, a job that queues longer than the limit fails the stage.
+Verified on 2026-10-16 against the frozen Pantheon revision (phase 3a,
+acceptance criterion 18): no. LabBio passes `max_no_progress_seconds`
+(default 300, allowed 30-1800; `runtime/assembly.py:65-91`) to Pantheon
+`team.run` (`runtime/pantheon.py:571-572`), and:
+
+- Pantheon's no-progress timer adds up only the duration of provider calls on
+  turns without observable progress. A turn that calls a non-`think` tool
+  resets it, and time spent executing the tool is not measured.
+- Pantheon's `tool_timeout` only moves a long tool into the background when
+  `allow_background_tools` is true. LabBio runtime agents set it to false
+  (`runtime/pantheon.py:363`), so no tool timeout applies.
+- LabBio's `check_stop` callback only enforces the turn budget between turns;
+  elapsed-time checks during a tool call never stop the run.
+- Neither LabBio nor Pantheon wraps the stage in a wall-clock timeout.
+
+A long in-call wait is therefore bounded only by the execution's own timeout,
+the queue limit, and the lifetime of the LabBio process.
+`tests/test_c13_long_tool_wait.py` pins both preconditions.
 
 ### Q5 - can credentials reach the container runtime process?
 

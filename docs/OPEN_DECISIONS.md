@@ -190,10 +190,11 @@ provenance only.
 Decided by MOHAN CUI on 2026-10-15: `execution_submit` waits for the scheduler
 job inside one tool call (phase 3a). The workflow state model is unchanged.
 
-Known risk: long queue times. A queued job holds the tool call open, so it may
-exceed Pantheon's `max_no_progress_seconds` if that timer counts time inside a
-tool call (unverified), and the login-node LabBio process must stay alive for
-the whole queue and run time. A crash in that window leaves the run `BLOCKED`.
+Known risk: long queue times. A queued job holds the tool call open. Verified
+on 2026-10-16: neither Pantheon's `max_no_progress_seconds` nor its tool
+timeout cuts off that call (`tests/test_c13_long_tool_wait.py`). The remaining
+risk is that the login-node LabBio process must stay alive for the whole queue
+and run time; a crash in that window leaves the run `BLOCKED`.
 
 Recorded fallback, not authorized: end the capability phase with a submitted
 receipt and suspend the run in a new `WAITING_FOR_EXECUTION` state, resuming

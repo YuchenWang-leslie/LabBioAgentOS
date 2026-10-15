@@ -222,9 +222,9 @@ LabBio refuses to start or to execute when:
   or running, and reports finished ones and deletes their output files. It
   never resubmits, and the run is reported as blocked for operator review.
 - **Queue time.** The control plane waits for each job inside a single tool
-  call, so long queues may exceed the runtime's progress timeout (still being
-  verified) and require the login-node process to stay alive throughout.
-  Prefer partitions with short waits.
+  call. Runtime progress timers do not cut off that wait, but the login-node
+  process must stay alive for the whole queue and run time. Prefer partitions
+  with short waits.
 - **Disk.** Per-execution scratch directories are removed automatically.
   Clean the Apptainer cache and tmp directories per site policy; the SIF store
   should only grow through `image-register`.
