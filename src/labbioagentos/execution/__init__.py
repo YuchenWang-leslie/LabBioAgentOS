@@ -14,6 +14,8 @@ from .docker import (
     SubprocessDockerRunner,
 )
 from .executor import ContainerExecutor
+from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState
+from .job_reconciliation import OrphanAction, ReconciledJob, reconcile_orphan_jobs
 from .launchers import (
     JobHandle,
     JobLauncher,
@@ -111,12 +113,16 @@ __all__ = [
     "JobHandle",
     "JobLauncher",
     "JobLauncherError",
+    "JobLedger",
+    "JobLedgerEntry",
+    "JobLedgerState",
     "JobNotFoundError",
     "JobSpec",
     "JobState",
     "LocalLauncher",
     "MountResolutionError",
     "MountResolver",
+    "OrphanAction",
     "OutputArtifactSpec",
     "OutputContractFailureCode",
     "OutputDeclassificationMode",
@@ -124,6 +130,7 @@ __all__ = [
     "OutputCollector",
     "ProcessOutcome",
     "ProcessRunner",
+    "ReconciledJob",
     "PreflightInputRequirement",
     "RequestedResources",
     "ResolvedMount",
@@ -132,4 +139,5 @@ __all__ = [
     "StructuredOutputContract",
     "SubprocessApptainerRunner",
     "SubprocessDockerRunner",
+    "reconcile_orphan_jobs",
 ]

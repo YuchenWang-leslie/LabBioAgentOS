@@ -68,6 +68,11 @@ from .execution import (
     OutputCollector,
     PreflightInputRequirement,
     ProcessRunner,
+    JobLauncher,
+    JobLedger,
+    LocalLauncher,
+    ReconciledJob,
+    reconcile_orphan_jobs,
     RequestedResources,
     StructuredOutputContract,
 )
@@ -571,6 +576,9 @@ class ApplicationRuntimeConfiguration:
     trace_sink: TraceSink | None = None
     run_state_store: RunStateStore | None = None
     process_runner: ProcessRunner | None = None
+    # Where jobs run (None: the control-plane host) and their durable record.
+    job_launcher: JobLauncher | None = None
+    job_ledger: JobLedger | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
@@ -746,6 +754,8 @@ class LabBioApplication:
                 ),
             ),
             process_runner=configuration.process_runner,
+            launcher=configuration.job_launcher,
+            job_ledger=configuration.job_ledger,
             command_builder=DockerCommandBuilder(
                 max_output_file_bytes=self.execution_policy.max_output_file_bytes,
                 tmpfs_size_mb=self.execution_policy.tmpfs_size_mb,
@@ -1163,6 +1173,26 @@ class LabBioApplication:
         return ApplicationReconciliationStatus(
             recovery=status, continuation_action=action,
             confirmed_calls=calls, uncertain_side_effects=unknown,
+        )
+
+    async def reconcile_jobs(
+        self, run_id: UUID, *, principal: Principal, workspace: WorkspaceContext,
+    ) -> tuple[ReconciledJob, ...]:
+        """Clean up jobs orphaned by a lost process; never resubmit or change run state.
+
+        The caller must hold the run writer lease, which proves the process that
+        launched the jobs is gone. Without a job ledger there is nothing to do.
+        """
+        self.recovery_status(run_id, principal=principal, workspace=workspace)
+        ledger = self.configuration.job_ledger
+        if ledger is None:
+            return ()
+        launcher = self.configuration.job_launcher or LocalLauncher(
+            self.docker_executor.process_runner
+        )
+        return await reconcile_orphan_jobs(
+            ledger=ledger, launcher=launcher, run_id=run_id,
+            cleanup_paths=self.docker_executor.command_builder.cleanup_paths,
         )
 
     async def continue_run(

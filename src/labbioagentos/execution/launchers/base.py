@@ -77,6 +77,11 @@ class JobLauncher(ABC):
     async def collect(self, handle: JobHandle) -> ProcessOutcome:
         """Return the exit outcome of a COMPLETED job."""
 
+    async def find(self, execution_id: UUID) -> JobHandle | None:
+        """Recover a job whose ID never reached the ledger; None when it cannot be known."""
+
+        return None
+
     async def wait(self, handle: JobHandle) -> JobState:
         """Poll until the job reaches a terminal state."""
 

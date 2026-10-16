@@ -47,14 +47,14 @@ class PythonBuilder:
         self.scratch_root, self.program = scratch_root, program
 
     def build(self, plan, image, workspace, input_mounts):
-        self.cleanup_paths(plan)[0].mkdir(parents=True)
+        self.cleanup_paths(plan.execution_id)[0].mkdir(parents=True)
         return (sys.executable, "-c", self.program)
 
     def import_probe_argv(self, image, interpreter_arguments):
         return (sys.executable, *interpreter_arguments)
 
-    def cleanup_paths(self, plan):
-        return (self.scratch_root / plan.execution_id.hex,)
+    def cleanup_paths(self, execution_id):
+        return (self.scratch_root / execution_id.hex,)
 
 
 def _policy(**overrides):

@@ -129,9 +129,14 @@ def _close(application) -> None:
     try:
         application.run_state_store.close()
     finally:
-        if application.configuration.skill_service is not None:
-            from .local_gold import close_personal_gold
-            close_personal_gold(application.configuration.skill_service)
+        try:
+            if application.configuration.skill_service is not None:
+                from .local_gold import close_personal_gold
+                close_personal_gold(application.configuration.skill_service)
+        finally:
+            ledger = getattr(application.configuration, "job_ledger", None)
+            if ledger is not None:
+                ledger.close()
 
 
 async def _run(args: argparse.Namespace, settings) -> int:

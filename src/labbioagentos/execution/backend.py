@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
+from uuid import UUID
 
 from .images import ApprovedImage
 from .models import ExecutionPlan
@@ -51,5 +52,5 @@ class ContainerCommandBuilder(Protocol):
     ) -> tuple[str, ...]:
         """Return argv for a data-free, network-disabled interpreter probe of the image."""
 
-    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
-        """Host directories this backend created for the plan and nothing else uses."""
+    def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        """Host directories this backend creates for one execution and nothing else uses."""

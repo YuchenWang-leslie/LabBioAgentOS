@@ -8,7 +8,7 @@ import re
 import subprocess
 import time
 from pathlib import Path, PurePosixPath
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from labbioagentos.artifacts import ArtifactStore
 from labbioagentos.trace import RunTraceRecorder
@@ -16,7 +16,9 @@ from labbioagentos.trace import RunTraceRecorder
 from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
 from .errors import ContainerStartError
 from .executor import ContainerExecutor
+from .job_ledger import JobLedger
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
+from .launchers import JobLauncher
 from .models import ExecutionPlan
 from .mounts import (
     ExecutionWorkspace,
@@ -251,7 +253,7 @@ class DockerCommandBuilder:
             *interpreter_arguments,
         )
 
-    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
+    def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         return ()  # Docker's /tmp is a tmpfs that disappears with the container.
 
     @staticmethod
@@ -281,6 +283,8 @@ class DockerExecutor(ContainerExecutor):
         command_builder: DockerCommandBuilder | None = None,
         trace_recorder: RunTraceRecorder | None = None,
         minimum_queryable_output_count: int = 0,
+        launcher: JobLauncher | None = None,
+        job_ledger: JobLedger | None = None,
     ):
         super().__init__(
             store=store,
@@ -296,4 +300,6 @@ class DockerExecutor(ContainerExecutor):
             ),
             trace_recorder=trace_recorder,
             minimum_queryable_output_count=minimum_queryable_output_count,
+            launcher=launcher,
+            job_ledger=job_ledger,
         )

@@ -50,6 +50,7 @@ from .python_diagnostics import (
     safe_python_exception,
     script_error_locations,
 )
+from .job_ledger import JobLedger
 from .launchers import JobLauncher, JobSpec, LocalLauncher
 from .registration import OutputCollector
 
@@ -81,6 +82,7 @@ class ContainerExecutor:
         minimum_queryable_output_count: int = 0,
         isolation_record: Mapping[str, Any] | None = None,
         launcher: JobLauncher | None = None,
+        job_ledger: JobLedger | None = None,
     ):
         self.store = store
         self.image_registry = image_registry
@@ -102,6 +104,8 @@ class ContainerExecutor:
         self.isolation_record = None if isolation_record is None else dict(isolation_record)
         # None means the control-plane host, through the current process runner.
         self.launcher = launcher
+        # Every submission is recorded before the wait, so a lost process leaves a trail.
+        self.job_ledger = job_ledger
         self._execution_lock = asyncio.Lock()
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
@@ -138,17 +142,30 @@ class ContainerExecutor:
         async with self._execution_lock:
             prepared = self._prepare(plan)
             launcher = self.launcher or LocalLauncher(self.process_runner)
+            ledger = self.job_ledger
+            if ledger is not None:
+                ledger.record_intent(run_id=plan.run_id, execution_id=plan.execution_id,
+                                     launcher=launcher.kind, workspace_root=prepared.workspace.root)
             try:
-                handle = await launcher.submit(JobSpec(
-                    execution_id=plan.execution_id,
-                    argv=prepared.argv,
-                    timeout_seconds=plan.resources.timeout_seconds,
-                    resources=plan.resources,
-                    workspace_root=prepared.workspace.root,
-                    cleanup_paths=self.command_builder.cleanup_paths(plan),
-                ))
+                try:
+                    handle = await launcher.submit(JobSpec(
+                        execution_id=plan.execution_id,
+                        argv=prepared.argv,
+                        timeout_seconds=plan.resources.timeout_seconds,
+                        resources=plan.resources,
+                        workspace_root=prepared.workspace.root,
+                        cleanup_paths=self.command_builder.cleanup_paths(plan.execution_id),
+                    ))
+                except ContainerStartError:
+                    if ledger is not None:
+                        ledger.record_not_submitted(plan.execution_id)
+                    raise
+                if ledger is not None:
+                    ledger.record_submitted(plan.execution_id, handle.job_id)
                 await launcher.wait(handle)
                 outcome = await launcher.collect(handle)
+                if ledger is not None:
+                    ledger.record_collected(plan.execution_id)
             except ContainerStartError as exc:
                 return self._start_failure(plan, prepared, exc)
             finally:
@@ -158,7 +175,7 @@ class ContainerExecutor:
     def _remove_cleanup_paths(self, plan: ExecutionPlan) -> None:
         """Host-side fallback: the job removes these on exit; never follow a link."""
 
-        for path in self.command_builder.cleanup_paths(plan):
+        for path in self.command_builder.cleanup_paths(plan.execution_id):
             if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path, ignore_errors=True)
 

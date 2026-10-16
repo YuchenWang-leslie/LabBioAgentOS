@@ -13,7 +13,7 @@ import subprocess
 import time
 from pathlib import Path, PurePosixPath
 from typing import Literal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
 from .errors import ContainerStartError, ExecutionPlanRejected, ImageNotApprovedError
@@ -181,7 +181,7 @@ class ApptainerCommandBuilder:
         if plan.network_required:
             raise ExecutionPlanRejected("Network-enabled execution is unavailable for this backend")
         sif = self._sif(image)
-        (scratch,) = self.cleanup_paths(plan)
+        (scratch,) = self.cleanup_paths(plan.execution_id)
         scratch.mkdir(mode=0o700)
         numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
         argv = [
@@ -227,9 +227,9 @@ class ApptainerCommandBuilder:
         argv.extend([str(sif), *image.executable, str(self.SCRIPT_TARGET)])
         return tuple(argv)
 
-    def cleanup_paths(self, plan: ExecutionPlan) -> tuple[Path, ...]:
+    def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         # The per-execution --workdir holds the container's /tmp and /var/tmp.
-        return (self.scratch_root / plan.execution_id.hex,)
+        return (self.scratch_root / execution_id.hex,)
 
     def import_probe_argv(
         self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]

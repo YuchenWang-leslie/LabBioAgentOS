@@ -172,6 +172,12 @@ class SchedulerLauncher(JobLauncher):
         self._tracked.setdefault(job_id, _Tracked(submitted_at=time.monotonic()))
         return handle
 
+    async def find(self, execution_id: UUID) -> JobHandle | None:
+        job_id = self._recorded_job_id(self._job_dir(execution_id))
+        if job_id is None:
+            return None
+        return await self.attach(job_id, execution_id=execution_id)
+
     async def collect(self, handle: JobHandle) -> ProcessOutcome:
         job_dir = self._existing_job_dir(handle)
         tracked = self._tracked.get(handle.job_id)
