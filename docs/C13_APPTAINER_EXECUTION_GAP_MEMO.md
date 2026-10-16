@@ -160,8 +160,10 @@ change; MOHAN CUI gave it on 2026-10-15.
 Execution is always network-disabled, enforced by the runtime
 (`--net --network none` for Apptainer, `--network none` for Docker). Security
 never relies on the site's compute-node network policy. C13 does not assume
-compute nodes have or lack network; work that needs network (dependency
-builds) runs on the login node.
+compute nodes have or lack network. The only step that needs network,
+downloading wheels for a dependency build, runs on the login node or in a job
+on an operator-configured network-capable partition; installing and packing
+the environment run in a network-disabled job.
 
 ### Image identity
 
@@ -273,11 +275,20 @@ Phase 3a - scheduler launcher, async execution
 
 Phase 4 - cluster environment build
 
-20. `ApptainerEnvironmentBuilder` matches the Docker builder signature, builds
-    on the login node, registers the result in `SifStore`, runs the import
-    probe under `--network none`, and returns `BUILDER_UNAVAILABLE` when
-    writable sandboxes are unsupported.
-21. Build proxy settings reach only the build subprocess.
+20. `ApptainerEnvironmentBuilder` implements the `EnvironmentBuilder`
+    protocol shared with the Docker builder. Wheels are downloaded inside the
+    base SIF, on the login node or in a job on a configured network-capable
+    partition, and pinned by sha256 in a lock list. Only the locked wheels are
+    installed (`--no-index --no-deps --require-hashes`); installation,
+    `pip check`, SIF packing, and the import probe run in a network-disabled
+    scheduler job. The result is registered in `SifStore` with the lock list
+    as provenance. Build jobs are recorded in the job ledger under the run that
+    requested them and are cleaned up after a crash without resubmission.
+    `BUILDER_UNAVAILABLE` is returned when the build job finds writable
+    sandboxes unsupported. A gated real-cluster test builds one small
+    environment end to end and runs a task in it.
+21. Build proxy, CA bundle, and package index settings reach only the download
+    step; build jobs and execution jobs never receive them.
 
 Across all phases
 
