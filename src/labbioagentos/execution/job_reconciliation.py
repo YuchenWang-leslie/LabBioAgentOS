@@ -3,7 +3,9 @@
 Re-attachment is cleanup only: a running or queued orphan is cancelled, a
 finished one is reported and its files are deleted, nothing is resubmitted,
 and the run itself stays BLOCKED. The caller must hold the run writer lease,
-which proves the process that launched the jobs is gone.
+which proves the process that launched the jobs is gone. Environment build
+jobs belong to the run that requested them (DECIDED-C13-8) and are cleaned
+up the same way by the launcher that owns them.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import UUID
 
-from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState
+from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState, JobPurpose
 from .launchers.base import TERMINAL_STATES, JobHandle, JobLauncher, JobNotFoundError, JobState
 
 
@@ -44,19 +46,28 @@ async def reconcile_orphan_jobs(
     run_id: UUID,
     cleanup_paths: Callable[[UUID], tuple[Path, ...]] = lambda _execution_id: (),
     settle_seconds: float = 120.0,
+    environment_launcher: JobLauncher | None = None,
 ) -> tuple[ReconciledJob, ...]:
-    """Resolve every open ledger entry of one run; never submit anything."""
+    """Resolve every open ledger entry of one run; never submit anything.
+
+    `launcher` and `cleanup_paths` serve executions; `environment_launcher`
+    serves environment build jobs, whose only files are their workspace.
+    """
 
     results = []
     for entry in ledger.open_jobs(run_id):
-        action, job_id = await _reconcile(entry, ledger, launcher, cleanup_paths, settle_seconds)
+        if entry.purpose is JobPurpose.EXECUTION:
+            owner, paths = launcher, cleanup_paths
+        else:
+            owner, paths = environment_launcher, (lambda _execution_id: ())
+        action, job_id = await _reconcile(entry, ledger, owner, paths, settle_seconds)
         results.append(ReconciledJob(entry.execution_id, job_id, entry.launcher, action))
     return tuple(results)
 
 
-async def _reconcile(entry: JobLedgerEntry, ledger: JobLedger, launcher: JobLauncher,
+async def _reconcile(entry: JobLedgerEntry, ledger: JobLedger, launcher: JobLauncher | None,
                      cleanup_paths, settle_seconds: float) -> tuple[OrphanAction, str | None]:
-    if entry.launcher != launcher.kind:
+    if launcher is None or entry.launcher != launcher.kind:
         return OrphanAction.LAUNCHER_MISMATCH, entry.job_id
     handle: JobHandle | None
     if entry.job_id is None:

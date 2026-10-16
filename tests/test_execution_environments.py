@@ -51,6 +51,17 @@ def environment(tmp_path):
     return SimpleNamespace(root=root, base=base, registry=registry, builder=builder, service=service)
 
 
+@pytest.mark.asyncio
+async def test_builder_is_told_which_run_requested_the_build(environment):
+    from uuid import uuid4
+
+    run_id = uuid4()
+    await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",), run_id=run_id)
+    await environment.service.build_environment("base", ("examplepkg==2.0", "basepkg==1.0"), ("examplepkg",))
+
+    assert [call["run_id"] for call in environment.builder.calls] == [run_id, None]
+
+
 def test_registry_registration_is_idempotent_and_never_overwrites_identity():
     base = _image()
     registry = ApprovedImageRegistry((base,))

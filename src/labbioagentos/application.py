@@ -581,6 +581,8 @@ class ApplicationRuntimeConfiguration:
     # Where jobs run (None: the control-plane host) and their durable record.
     job_launcher: JobLauncher | None = None
     job_ledger: JobLedger | None = None
+    # The launcher that owns environment build jobs, for cleanup after a crash.
+    environment_job_launcher: JobLauncher | None = None
     # How to isolate executions (None: Docker) and a check run before the first one.
     command_builder: ContainerCommandBuilder | None = None
     backend_check: Callable[[], Mapping[str, Any]] | None = None
@@ -1201,6 +1203,7 @@ class LabBioApplication:
         return await reconcile_orphan_jobs(
             ledger=ledger, launcher=launcher, run_id=run_id,
             cleanup_paths=self.docker_executor.command_builder.cleanup_paths,
+            environment_launcher=self.configuration.environment_job_launcher,
         )
 
     async def continue_run(

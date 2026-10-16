@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import re
 from typing import Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
@@ -65,10 +65,15 @@ class EnvironmentBuildResult:
 
 
 class EnvironmentBuilder(Protocol):
-    """Builds one environment image from an approved base; one implementation per runtime."""
+    """Builds one environment image from an approved base; one implementation per runtime.
+
+    `run_id` names the run that requested the build; a builder that submits jobs
+    records them under it so that the run's crash cleanup covers them.
+    """
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
-                    import_modules: tuple[str, ...], build_root: Path, request_hash: str) -> EnvironmentBuildResult:
+                    import_modules: tuple[str, ...], build_root: Path, request_hash: str,
+                    run_id: UUID | None = None) -> EnvironmentBuildResult:
         ...
 
 
@@ -234,7 +239,8 @@ class EnvironmentService:
         return {"items": items, "offset": offset, "limit": limit, "returned_count": len(items),
             "available_count": len(images), "next_offset": end if end < len(images) else None}
 
-    async def build_environment(self, base_image_key, requirements: tuple[str, ...], import_modules: tuple[str, ...] = ()) -> dict:
+    async def build_environment(self, base_image_key, requirements: tuple[str, ...], import_modules: tuple[str, ...] = (),
+                                *, run_id: UUID | None = None) -> dict:
         requirements, modules = normalize_requirements(requirements), normalize_modules(import_modules)
         try:
             base = self.image_registry.resolve(base_image_key, runtime=ExecutionRuntime.PYTHON)
@@ -256,7 +262,8 @@ class EnvironmentService:
             attempt.mkdir(mode=0o700)
             try:
                 result = await self.builder.build(base_image=base, requirements=requirements,
-                    import_modules=verified_modules, build_root=attempt, request_hash=request_hash)
+                    import_modules=verified_modules, build_root=attempt, request_hash=request_hash,
+                    run_id=run_id)
             except Exception:
                 result = EnvironmentBuildResult(failure_code="BUILD_FAILED", log_id=attempt.name)
             if not isinstance(result, EnvironmentBuildResult):

@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from .environments import EnvironmentBuildResult, EnvironmentRequestError, normalize_modules, normalize_requirements
 from .images import ApprovedImage
@@ -75,7 +76,9 @@ class DockerEnvironmentBuilder:
         self.proxy_url, self.timeout_seconds = proxy_url, timeout_seconds
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
-                    import_modules: tuple[str, ...], build_root: Path, request_hash: str) -> EnvironmentBuildResult:
+                    import_modules: tuple[str, ...], build_root: Path, request_hash: str,
+                    run_id: UUID | None = None) -> EnvironmentBuildResult:
+        # Docker builds run on the control-plane host and submit no job, so run_id is unused.
         requirements, import_modules = normalize_requirements(requirements), normalize_modules(import_modules, max_count=256)
         return await asyncio.to_thread(self._build, base_image, requirements, import_modules, build_root, request_hash)
 

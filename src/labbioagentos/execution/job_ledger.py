@@ -28,6 +28,13 @@ class JobLedgerState(StrEnum):
 OPEN_STATES = frozenset({JobLedgerState.SUBMITTING, JobLedgerState.SUBMITTED})
 
 
+class JobPurpose(StrEnum):
+    """What a job does; reconciliation uses the launcher that owns that kind of job."""
+
+    EXECUTION = "EXECUTION"  # An analysis execution.
+    ENVIRONMENT_BUILD = "ENVIRONMENT_BUILD"  # A download or build job of an environment build.
+
+
 @dataclass(frozen=True)
 class JobLedgerEntry:
     run_id: UUID
@@ -36,6 +43,7 @@ class JobLedgerEntry:
     job_id: str | None
     state: JobLedgerState
     workspace_root: Path
+    purpose: JobPurpose = JobPurpose.EXECUTION
 
 
 class JobLedger:
@@ -55,17 +63,24 @@ class JobLedger:
             "CREATE TABLE IF NOT EXISTS jobs ("
             " execution_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, launcher TEXT NOT NULL,"
             " job_id TEXT, state TEXT NOT NULL, workspace_root TEXT NOT NULL,"
-            " created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
+            " created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+            " purpose TEXT NOT NULL DEFAULT 'EXECUTION')"
         )
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(jobs)")}
+        if "purpose" not in columns:  # A ledger written before job purposes existed.
+            self._connection.execute(
+                "ALTER TABLE jobs ADD COLUMN purpose TEXT NOT NULL DEFAULT 'EXECUTION'"
+            )
 
     def record_intent(self, *, run_id: UUID, execution_id: UUID, launcher: str,
-                      workspace_root: Path) -> None:
+                      workspace_root: Path, purpose: JobPurpose = JobPurpose.EXECUTION) -> None:
         now = _now()
         try:
             self._connection.execute(
-                "INSERT INTO jobs VALUES (?, ?, ?, NULL, ?, ?, ?, ?)",
+                "INSERT INTO jobs (execution_id, run_id, launcher, job_id, state, workspace_root,"
+                " created_at, updated_at, purpose) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)",
                 (str(execution_id), str(run_id), launcher, JobLedgerState.SUBMITTING.value,
-                 str(workspace_root), now, now),
+                 str(workspace_root), now, now, JobPurpose(purpose).value),
             )
         except sqlite3.IntegrityError:
             raise JobLauncherError("This execution already has a job record") from None
@@ -88,7 +103,7 @@ class JobLedger:
 
     def open_jobs(self, run_id: UUID) -> tuple[JobLedgerEntry, ...]:
         rows = self._connection.execute(
-            "SELECT run_id, execution_id, launcher, job_id, state, workspace_root FROM jobs"
+            "SELECT run_id, execution_id, launcher, job_id, state, workspace_root, purpose FROM jobs"
             " WHERE run_id = ? AND state IN (?, ?) ORDER BY created_at, execution_id",
             (str(run_id), *sorted(state.value for state in OPEN_STATES)),
         ).fetchall()
@@ -96,7 +111,7 @@ class JobLedger:
 
     def get(self, execution_id: UUID) -> JobLedgerEntry | None:
         row = self._connection.execute(
-            "SELECT run_id, execution_id, launcher, job_id, state, workspace_root FROM jobs"
+            "SELECT run_id, execution_id, launcher, job_id, state, workspace_root, purpose FROM jobs"
             " WHERE execution_id = ?", (str(execution_id),),
         ).fetchone()
         return None if row is None else _entry(row)
@@ -117,10 +132,10 @@ class JobLedger:
 
 
 def _entry(row) -> JobLedgerEntry:
-    run_id, execution_id, launcher, job_id, state, workspace_root = row
+    run_id, execution_id, launcher, job_id, state, workspace_root, purpose = row
     return JobLedgerEntry(run_id=UUID(run_id), execution_id=UUID(execution_id), launcher=launcher,
                           job_id=job_id, state=JobLedgerState(state),
-                          workspace_root=Path(workspace_root))
+                          workspace_root=Path(workspace_root), purpose=JobPurpose(purpose))
 
 
 def _now() -> str:

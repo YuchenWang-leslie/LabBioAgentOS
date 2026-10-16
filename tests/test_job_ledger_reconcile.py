@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import sqlite3
 import stat
 import sys
 import time
@@ -28,6 +29,7 @@ from labbioagentos.execution import (
     JobLauncherError,
     JobLedger,
     JobLedgerState,
+    JobPurpose,
     JobSpec,
     LocalLauncher,
     OrphanAction,
@@ -275,6 +277,80 @@ def test_mismatched_and_local_launchers_never_act(tmp_path):
     results = asyncio.run(reconcile_orphan_jobs(
         ledger=ledger, launcher=LocalLauncher(FakeDockerRunner()), run_id=run_id))
     assert [item.action for item in results] == [OrphanAction.LOST]
+
+
+# Environment build jobs (DECIDED-C13-8): owned by the requesting run, cleaned up by their launcher.
+
+def test_ledger_records_job_purpose_and_upgrades_an_older_ledger(tmp_path):
+    path = tmp_path / "jobs.sqlite"
+    older, run_id = uuid4(), uuid4()
+    with sqlite3.connect(path) as connection:  # The schema before job purposes existed.
+        connection.execute(
+            "CREATE TABLE jobs (execution_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,"
+            " launcher TEXT NOT NULL, job_id TEXT, state TEXT NOT NULL, workspace_root TEXT NOT NULL,"
+            " created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        connection.execute("INSERT INTO jobs VALUES (?, ?, 'scheduler', '7', 'SUBMITTED', '/w', ?, ?)",
+                           (str(older), str(run_id), "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"))
+    ledger = JobLedger(path)
+    build = uuid4()
+    ledger.record_intent(run_id=run_id, execution_id=build, launcher="scheduler",
+                         workspace_root=tmp_path / str(build), purpose=JobPurpose.ENVIRONMENT_BUILD)
+
+    assert ledger.get(older).purpose is JobPurpose.EXECUTION
+    assert [(entry.execution_id, entry.purpose) for entry in ledger.open_jobs(run_id)] == [
+        (older, JobPurpose.EXECUTION), (build, JobPurpose.ENVIRONMENT_BUILD)]
+    ledger.close()
+
+
+def _environment_orphan(tmp_path, scheduler, run_id):
+    root = tmp_path / "environment-jobs"
+    build_id = uuid4()
+    workspace = root / str(build_id)
+    (workspace / "out").mkdir(parents=True)
+    (workspace / "out" / "environment.sif.partial").write_text("partial")
+    ledger = JobLedger(tmp_path / "jobs.sqlite")
+    ledger.record_intent(run_id=run_id, execution_id=build_id, launcher="scheduler",
+                         workspace_root=workspace, purpose=JobPurpose.ENVIRONMENT_BUILD)
+    spec = JobSpec(execution_id=build_id, argv=("true",), timeout_seconds=60.0,
+                   resources=RequestedResources(), workspace_root=workspace)
+    job_id = asyncio.run(_launcher(root, scheduler).submit(spec)).job_id
+    ledger.record_submitted(build_id, job_id)
+    ledger.close()
+    return build_id, workspace, job_id
+
+
+def test_environment_build_jobs_are_cleaned_up_by_their_own_launcher(tmp_path):
+    scheduler = FakeSlurm(tmp_path, hold=True)
+    run_id = uuid4()
+    execution_id, execution_workspace, _ = _orphan(tmp_path, scheduler, run_id)
+    build_id, build_workspace, build_job = _environment_orphan(tmp_path, scheduler, run_id)
+    scratch_requests = []
+
+    def cleanup_paths(identifier):
+        scratch_requests.append(identifier)
+        return ()
+
+    results, get = _reconcile(tmp_path, scheduler, run_id, cleanup_paths=cleanup_paths,
+                              environment_launcher=_launcher(tmp_path / "environment-jobs", scheduler))
+
+    assert [(item.execution_id, item.action) for item in results] == [
+        (execution_id, OrphanAction.CANCELLED), (build_id, OrphanAction.CANCELLED)]
+    assert scheduler.jobs[build_job].cancelled and get(build_id).state is JobLedgerState.CANCELLED
+    assert not build_workspace.exists() and not execution_workspace.exists()
+    assert scratch_requests == [execution_id]  # Execution scratch rules never apply to builds.
+    assert len(scheduler.calls) == 2  # Nothing was resubmitted.
+
+
+def test_environment_build_jobs_without_their_launcher_stay_open(tmp_path):
+    scheduler = FakeSlurm(tmp_path, hold=True)
+    run_id = uuid4()
+    build_id, workspace, job_id = _environment_orphan(tmp_path, scheduler, run_id)
+
+    results, get = _reconcile(tmp_path, scheduler, run_id)
+
+    assert [item.action for item in results] == [OrphanAction.LAUNCHER_MISMATCH]
+    assert get(build_id).state is JobLedgerState.SUBMITTED and workspace.exists()
+    assert not scheduler.jobs[job_id].cancelled
 
 
 # Through the operator command, after a simulated crash.

@@ -14,7 +14,7 @@ from .docker import (
     SubprocessDockerRunner,
 )
 from .executor import ContainerExecutor
-from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState
+from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState, JobPurpose
 from .job_reconciliation import OrphanAction, ReconciledJob, reconcile_orphan_jobs
 from .launchers import (
     JobHandle,
@@ -116,6 +116,7 @@ __all__ = [
     "JobLedger",
     "JobLedgerEntry",
     "JobLedgerState",
+    "JobPurpose",
     "JobNotFoundError",
     "JobSpec",
     "JobState",
