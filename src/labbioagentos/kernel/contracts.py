@@ -177,6 +177,7 @@ class ToolError(KernelModel):
     code: Identifier
     message: Annotated[StrictStr, StringConstraints(min_length=1, max_length=1_000)]
     retryable: bool = False
+    validation_type: Identifier | None = None
     validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
 
 
@@ -325,6 +326,7 @@ class ToolArgumentObservation(KernelModel):
     tool_name: Identifier
     parse_mode: Literal["STRICT_JSON", "REJECTED"]
     rejection_reason: Identifier | None = None
+    validation_type: Identifier | None = None
     validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
@@ -703,6 +705,9 @@ class KernelEvent(KernelModel):
     actor_id: Identifier | None = None
     status_code: Identifier | None = None
     reason_code: Identifier | None = None
+    tool_name: Identifier | None = None
+    validation_type: Identifier | None = None
+    validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
     numeric_facts: dict[Identifier, int | float | None] = Field(
         default_factory=dict, max_length=32
     )

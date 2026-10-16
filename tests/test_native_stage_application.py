@@ -47,6 +47,7 @@ from labbioagentos.kernel import (
     FinishReason,
     ModelTurn,
     ProviderBinding,
+    ProviderProtocolError,
     ProviderTransportError,
     TokenUsage,
     ToolCall,
@@ -314,6 +315,80 @@ async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
 
 
 @pytest.mark.asyncio
+async def test_rejected_native_tool_arguments_are_persisted_without_values(tmp_path):
+    class CorrectingProvider(CapabilityProvider):
+        async def generate(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="invalid-list",
+                        name="artifact_list",
+                        arguments_json='{"unexpected":"PRIVATE_CANARY"}',
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            if self.calls == 2:
+                feedback = json.loads(request.messages[-1].content)
+                assert feedback["error"]["validation_fields"] == ["unexpected"]
+                assert feedback["error"]["validation_type"] == "extra_forbidden"
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="corrected-list",
+                        name="artifact_list",
+                        arguments_json="{}",
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            return ModelTurn(
+                content="Inspection complete.",
+                finish_reason=FinishReason.STOP,
+                usage=TokenUsage(total_tokens=2),
+            )
+
+    stage_input = _stage_input()
+    recorder = RunTraceRecorder(InMemoryTraceSink())
+    fixture = _toolset(tmp_path, stage_input, recorder)
+    capability_provider = CorrectingProvider()
+    providers = []
+
+    def builder(_model):
+        provider = capability_provider if not providers else WorkflowProvider([])
+        providers.append(provider)
+        return provider
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+            required_capabilities=("artifact_list",),
+            max_capability_turns=4,
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        trace_recorder=recorder,
+    )
+
+    result = await invoker.invoke(stage_input)
+    events = recorder.events(stage_input.run_id)
+    rejected = [event for event in events if event.event_type.value == "TOOL_BATCH_REJECTED"]
+    assert len(rejected) == 1
+    assert rejected[0].payload["reason_code"] == "INVALID_TOOL_ARGUMENTS"
+    assert rejected[0].payload["tool_name"] == "artifact_list"
+    assert rejected[0].payload["validation_fields"] == ["unexpected"]
+    assert rejected[0].payload["validation_type"] == "extra_forbidden"
+    assert "PRIVATE_CANARY" not in json.dumps([event.model_dump(mode="json") for event in events])
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert capability_provider.calls == 3
+
+
+@pytest.mark.asyncio
 async def test_missing_required_capability_is_a_malformed_result_after_evidence_boundary(tmp_path):
     class NoToolProvider:
         binding = WorkflowProvider.binding
@@ -449,11 +524,16 @@ async def test_native_stage_stops_after_repeated_host_feedback(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_capability_failure_records_safe_kernel_cause(tmp_path):
+@pytest.mark.parametrize("protocol_failure", [False, True])
+async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, protocol_failure):
     class FailingProvider:
         binding = WorkflowProvider.binding
 
         async def generate(self, _request):
+            if protocol_failure:
+                raise ProviderProtocolError(
+                    validation_type="value_error", validation_fields=("usage",)
+                )
             raise ProviderTransportError()
 
     stage_input = _stage_input()
@@ -485,10 +565,17 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path):
         if event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
     )
     assert failed.payload["error_code"] == "NATIVE_CAPABILITY_FAILED"
-    assert failed.payload["cause_code"] == "PROVIDER_TRANSPORT_ERROR"
-    assert set(failed.payload) == {
+    assert failed.payload["cause_code"] == (
+        "PROVIDER_PROTOCOL_ERROR" if protocol_failure else "PROVIDER_TRANSPORT_ERROR"
+    )
+    expected_keys = {
         "runtime_backend", "error_code", "correlation_id", "cause_code"
     }
+    if protocol_failure:
+        assert failed.payload["validation_type"] == "value_error"
+        assert failed.payload["validation_fields"] == ["usage"]
+        expected_keys.update({"validation_type", "validation_fields"})
+    assert set(failed.payload) == expected_keys
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,26 @@ class RecordingTransport:
         return deepcopy(response)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_usage", [False, True])
+async def test_protocol_error_identifies_component_without_response_values(invalid_usage):
+    response = {"choices": [{"finish_reason": "stop", "message": {
+        "content": "complete" if invalid_usage else {"secret": "PRIVATE_CANARY"},
+    }}]}
+    if invalid_usage:
+        response["usage"] = {"prompt_tokens": 9, "total_tokens": 0}
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding, api_key="secret-token",
+        transport=RecordingTransport((response,)),
+    )
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding, (PublicMessage(role="USER", content="Run."),)))
+    assert caught.value.validation_fields == (("usage",) if invalid_usage else ("message.content",))
+    assert caught.value.validation_type == ("value_error" if invalid_usage else "ValueError")
+    assert "PRIVATE_CANARY" not in str(caught.value)
+
+
 def _binding(
     *,
     thinking="ENABLED",

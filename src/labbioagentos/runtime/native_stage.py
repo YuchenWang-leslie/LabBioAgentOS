@@ -396,6 +396,8 @@ class NativeKernelStageInvoker:
                 TraceEventType.CAPABILITY_PHASE_FAILED,
                 error,
                 cause_code=cause_code,
+                validation_type=getattr(exc, "validation_type", None),
+                validation_fields=getattr(exc, "validation_fields", ()),
             )
             raise error from exc
         items = tuple(item for host in hosts for item in host.evidence_items())
@@ -759,6 +761,11 @@ class NativeKernelStageInvoker:
         for event in events:
             if event.kind is KernelEventKind.MODEL_TURN_OBSERVED:
                 trace_type = TraceEventType.PROVIDER_TURN_OBSERVED
+            elif (
+                event.kind is KernelEventKind.TOOL_BATCH_VALIDATED
+                and event.status_code == "REJECTED"
+            ):
+                trace_type = TraceEventType.TOOL_BATCH_REJECTED
             elif event.kind is KernelEventKind.DELEGATION_STARTED:
                 trace_type = TraceEventType.DELEGATION_STARTED
             elif event.kind is KernelEventKind.DELEGATION_FINISHED:
@@ -779,6 +786,9 @@ class NativeKernelStageInvoker:
                 "kernel_task_id": str(event.task_id) if event.task_id is not None else None,
                 "actor_id": event.actor_id,
                 "reason_code": event.reason_code,
+                "tool_name": event.tool_name,
+                "validation_type": event.validation_type,
+                "validation_fields": list(event.validation_fields),
                 "numeric_facts": event.numeric_facts,
                 "references": list(event.references),
             })

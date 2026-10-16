@@ -455,6 +455,7 @@ class AgentLoop:
                     error=ToolError(
                         code=exc.code,
                         message=str(exc),
+                        validation_type=exc.validation_type,
                         validation_fields=exc.validation_fields,
                     ),
                 )
@@ -466,6 +467,7 @@ class AgentLoop:
                     tool_name=call.name,
                     parse_mode="REJECTED",
                     rejection_reason=exc.code,
+                    validation_type=exc.validation_type,
                     validation_fields=exc.validation_fields,
                 )
                 for call in raw_calls
@@ -474,6 +476,9 @@ class AgentLoop:
                 KernelEventKind.TOOL_BATCH_VALIDATED,
                 status_code="REJECTED",
                 reason_code=exc.code,
+                tool_name=exc.tool_name,
+                validation_type=exc.validation_type,
+                validation_fields=exc.validation_fields,
                 numeric_facts={"tool_call_count": len(raw_calls)},
             )
         feedback = tuple(self._tool_feedback(result) for result in results)
@@ -601,6 +606,9 @@ class AgentLoop:
         *,
         status_code: str | None = None,
         reason_code: str | None = None,
+        tool_name: str | None = None,
+        validation_type: str | None = None,
+        validation_fields: tuple[str, ...] = (),
         numeric_facts: dict[str, int | float | None] | None = None,
         references: tuple[str, ...] = (),
         tool_invocation_id=None,
@@ -616,6 +624,9 @@ class AgentLoop:
             actor_id=self.invocation.agent_id,
             status_code=status_code,
             reason_code=reason_code,
+            tool_name=tool_name,
+            validation_type=validation_type,
+            validation_fields=validation_fields,
             numeric_facts=numeric_facts or {},
             references=references,
         )

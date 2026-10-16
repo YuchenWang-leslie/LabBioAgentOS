@@ -1,6 +1,6 @@
 # Real E2E Convergence Workplan
 
-## Current state — 2026-10-14
+## Current state — 2026-10-16
 
 LabBioAgentOS uses one independently designed LabBio Native Kernel. The source,
 wheel, isolated runtime, and active P8 release contain no legacy third-party
@@ -149,16 +149,49 @@ tree passes 1375 tests with 10 intentional skips under Python 3.11.
 
 ## Cleanup and unique continuation
 
-No active LabBio process or retained task container remains. Run directories
+Deployment was authorized on 2026-10-16. The advanced-task fixes were committed
+as `e4d6fe38f6d3c37f44f245c3592783a95b74c533`, excluding the independently
+modified `examples/local-runtime.toml`. A clean detached worktree repeated
+1375 passing tests with 10 skips and built candidate
+`native-p8-20261016T073018Z`. Its isolated wheel installation and dependency
+check passed, but it has not been activated or sealed as an accepted release.
+
+Candidate live run `8b5ca5e6-9e6b-4d18-b0d2-960e1e8b4551` executed successfully
+and reached REPORT with `report_check.ready=true`, then encountered
+`PROVIDER_TRANSPORT_STOP` before mandatory report submission. A subsequent
+provider health check returned HTTP 200. The single fresh retry,
+`05fbb9d9-7812-4871-ab13-90bf878e5cf2`, exhausted EXECUTE provider turns after
+only two calls entered the capability service; no execution was submitted.
+Both runs remain preserved. Neither failure permits production activation.
+
+The retry exposed missing persistence for kernel-level tool argument
+rejections. The source now projects their tool name, reason code and bounded
+validation field locations and error type without argument values. A failing-first regression
+covers rejection feedback, model-authored correction, successful dispatch and
+persisted safe diagnostics. Fresh source diagnostic run
+`06bde029-69c0-44c3-8451-ca5a3c71894d` showed two rejected execution review
+arguments and one query limit argument, then the Agent corrected its own call
+and executed successfully. VALIDATE later encountered `PROVIDER_PROTOCOL_ERROR`;
+the process exited and its uncertain checkpoint remains `STAGE_IN_FLIGHT`.
+The provider adapter now attaches only the failing response component and safe
+validation type to that error, and the runtime persists those facts. No provider
+response body is logged and the protocol validator is unchanged. The merged
+source suite passes 1379 tests with 10 skips. Production still points to
+`native-p8-20261014T025522Z`.
+
+The unique continuation is to build one clean immutable candidate containing
+the merged safe-feedback/diagnostic fixes, inspect fresh validation, and complete
+activation/live verification under the existing deployment authorization. Do not repeat the
+two rejected candidate attempts without new persisted or external evidence.
+
+At the end of the 2026-10-14 validation, no active LabBio process or retained
+task container remained. Run directories
 15--25 and their execution evidence are retained as provenance; no live Docker
 sandbox remains. The persistent empty `.writer.lock` is an inactive lock file,
 not an owned/open lease.
 
 The advanced-task clarification/autonomy, pagination, execution correction and
-final report path now have fresh live proof. Remaining handoff items are
-immutable release construction, production activation, and GitHub
-synchronization. The unique continuation is
-to build and activate a new immutable release from this exact source only after
-explicit deployment authorization. Retry the GitHub push separately when its
+final report path have source live proof. GitHub synchronization remains
+outstanding. Retry the GitHub push separately when its
 network path is healthy; do not mutate production `current` or promote a
 profile/Skill as part of synchronization.

@@ -223,6 +223,7 @@ class OpenAICompatibleChatProvider:
         return wire
 
     def _parse_response(self, request, response: Mapping[str, Any]) -> ModelTurn:
+        component = "choices"
         try:
             choices = response["choices"]
             if not isinstance(choices, list) or len(choices) != 1:
@@ -231,14 +232,18 @@ class OpenAICompatibleChatProvider:
             if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
                 raise ValueError("Missing provider message")
             message = choice["message"]
+            component = "message.role"
             if message.get("role", "assistant") != "assistant":
                 raise ValueError("Unsupported provider message role")
+            component = "message.content"
             content = message.get("content")
             if content is not None and not isinstance(content, str):
                 raise ValueError("Unsupported provider content")
             if content == "" and message.get("tool_calls"):
                 content = None
+            component = "message.tool_calls"
             calls = self._tool_calls(message.get("tool_calls", ()))
+            component = "message.reasoning_content"
             private_reasoning = message.get("reasoning_content")
             if private_reasoning is not None and (
                 not isinstance(private_reasoning, str)
@@ -246,10 +251,13 @@ class OpenAICompatibleChatProvider:
             ):
                 raise ValueError("Unsupported private reasoning field")
             finish = self._finish_reason(choice.get("finish_reason"))
+            component = "usage"
             usage = self._usage(response.get("usage"))
+            component = "id"
             request_id = response.get("id")
             if request_id is not None and not isinstance(request_id, str):
                 raise ValueError("Unsupported provider request identity")
+            component = "model_turn"
             turn = ModelTurn(
                 content=content,
                 tool_calls=calls,
@@ -267,8 +275,12 @@ class OpenAICompatibleChatProvider:
                 if key is not None:
                     self._private_reasoning[key] = private_reasoning
             return turn
-        except (KeyError, TypeError, ValueError, ValidationError):
-            raise ProviderProtocolError() from None
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
+            raise ProviderProtocolError(
+                validation_type=issues[0]["type"] if issues else type(exc).__name__,
+                validation_fields=(component,),
+            ) from None
 
     @staticmethod
     def _tool_calls(raw) -> tuple[ToolCall, ...]:

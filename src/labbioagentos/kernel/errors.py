@@ -75,11 +75,13 @@ class ToolBatchRejectedError(KernelContractError):
         *,
         call_id: str | None = None,
         tool_name: str | None = None,
+        validation_type: str | None = None,
         validation_fields: tuple[str, ...] = (),
     ):
         super().__init__(code, message)
         self.call_id = call_id
         self.tool_name = tool_name
+        self.validation_type = validation_type
         self.validation_fields = validation_fields
 
 
@@ -155,11 +157,13 @@ class FinalizationRejectedError(KernelContractError):
 
 
 class ProviderProtocolError(KernelContractError):
-    def __init__(self):
+    def __init__(self, *, validation_type: str | None = None, validation_fields: tuple[str, ...] = ()):
         super().__init__(
             "PROVIDER_PROTOCOL_ERROR",
             "The provider returned an unsupported response shape",
         )
+        self.validation_type = validation_type
+        self.validation_fields = validation_fields
 
 
 class ProviderTransportError(KernelContractError):

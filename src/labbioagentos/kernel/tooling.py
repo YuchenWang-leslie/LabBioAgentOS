@@ -295,19 +295,17 @@ class ToolRegistry:
                 strict=True,
             )
         except ValidationError as exc:
+            issues = exc.errors(include_url=False, include_input=False, include_context=False)[:16]
             fields = tuple(
                 ".".join(str(part) for part in issue["loc"][:8]) or "request"
-                for issue in exc.errors(
-                    include_url=False,
-                    include_input=False,
-                    include_context=False,
-                )[:16]
+                for issue in issues
             )
             raise ToolBatchRejectedError(
                 "INVALID_TOOL_ARGUMENTS",
                 "Tool arguments do not match the registered schema",
                 call_id=call.call_id,
                 tool_name=call.name,
+                validation_type=issues[0]["type"] if issues else None,
                 validation_fields=fields,
             ) from None
         return ParsedToolCall(
