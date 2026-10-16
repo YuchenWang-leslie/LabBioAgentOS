@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+from typing import Protocol
 from uuid import uuid4
 
 from packaging.requirements import InvalidRequirement, Requirement
@@ -28,7 +29,7 @@ _FAILURES = {
     "BUILD_FAILED": "The container build failed; no environment was registered.",
     "BUILD_TIMEOUT": "The environment build exceeded its time limit.",
     "BUILD_LOG_LIMIT": "The build exceeded the bounded local log limit.",
-    "BUILDER_UNAVAILABLE": "The configured Docker builder is unavailable.",
+    "BUILDER_UNAVAILABLE": "The configured environment builder is unavailable.",
     "PIP_NO_MATCH": "No compatible wheel distribution satisfies a dependency request.",
     "PIP_RESOLUTION_CONFLICT": "The requested dependency constraints could not be resolved together.",
     "PYTHON_VERSION_INCOMPATIBLE": "A dependency requires a different Python version.",
@@ -61,6 +62,14 @@ class EnvironmentBuildResult:
     failure_code: str | None = None
     diagnostics: tuple[dict, ...] = ()
     log_id: str | None = None
+
+
+class EnvironmentBuilder(Protocol):
+    """Builds one environment image from an approved base; one implementation per runtime."""
+
+    async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
+                    import_modules: tuple[str, ...], build_root: Path, request_hash: str) -> EnvironmentBuildResult:
+        ...
 
 
 def normalize_requirements(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -114,7 +123,8 @@ def _write_private(path: Path, value: dict) -> None:
 
 
 class EnvironmentService:
-    def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder, owner_user_id: str):
+    def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
+                 owner_user_id: str):
         self.root = Path(root).expanduser().absolute()
         self.image_registry, self.builder, self.owner_user_id = image_registry, builder, owner_user_id
         if (not owner_user_id or len(owner_user_id) > 128 or

@@ -11,7 +11,16 @@ from pathlib import Path
 
 import pytest
 
-from labbioagentos import DockerCommandBuilder, ExecutionPolicy, ExecutionReceipt, ExecutionStatus
+from labbioagentos import (
+    ApprovedImage,
+    ApprovedImageRegistry,
+    DockerCommandBuilder,
+    ExecutionPolicy,
+    ExecutionReceipt,
+    ExecutionRuntime,
+    ExecutionStatus,
+)
+from labbioagentos.execution.environments import _FAILURES, EnvironmentBuildResult, EnvironmentService
 
 from apptainer_fixtures import apptainer_environment
 from scheduler_fixtures import FakeSlurm
@@ -78,3 +87,26 @@ async def test_scheduler_execution_results_name_no_scheduler_or_job(tmp_path):
 def test_docker_stderr_is_not_filtered():
     stderr = b"FATAL: printed by the analysis program\n" + SCRIPT_FAILURE
     assert DockerCommandBuilder().model_stderr(stderr) == stderr
+
+
+@pytest.mark.asyncio
+async def test_environment_build_failures_name_no_backend(tmp_path):
+    class FailingBuilder:
+        code = None
+
+        async def build(self, **_):
+            return EnvironmentBuildResult(failure_code=self.code)
+
+    builder = FailingBuilder()
+    base = ApprovedImage(key="base", reference="sha256:" + "a" * 64, runtime=ExecutionRuntime.PYTHON)
+    service = EnvironmentService(root=tmp_path / "environments", image_registry=ApprovedImageRegistry((base,)),
+                                 builder=builder, owner_user_id="user-one")
+    for code in _FAILURES:
+        builder.code = code
+
+        receipt = await service.build_environment("base", ("examplepkg",))
+
+        assert receipt["failure_code"] == code
+        view = json.dumps(receipt).lower()
+        for term in (*FORBIDDEN, "docker"):
+            assert term not in view, (code, term)
