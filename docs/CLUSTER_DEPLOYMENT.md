@@ -1,9 +1,10 @@
 # Cluster Deployment
 
-> **Status: planned, not implemented.** This guide describes the intended C13
-> deployment. The commands, configuration sections, and checks below do not
-> exist yet; C13 was authorized on 2026-10-15 and is being implemented. Today LabBioAgentOS runs only with
-> local Docker (`examples/local-runtime.toml`). Design and open questions:
+> **Status: implemented, pending real-cluster scheduler acceptance.** The
+> commands, configuration sections, and checks below exist on the C13 branch;
+> an end-to-end run through a real scheduler is still to be accepted.
+> Environment builds under Apptainer (phase 4) are not available yet. Example
+> configuration: `examples/cluster-runtime.toml`. Design and decisions:
 > `C13_APPTAINER_EXECUTION_GAP_MEMO.md` and the C13 section of
 > `OPEN_DECISIONS.md`.
 
@@ -85,6 +86,10 @@ A failed security item stops startup. A failed non-security item is reported,
 recorded in the trusted trace, and the related feature is degraded or
 disabled.
 
+The same probe also runs automatically once per process before the first
+execution; if a security item fails, that execution is refused. Read-only
+commands such as `status` and `export` never probe.
+
 ## 4. Registering an image
 
 Images are identified by the sha256 of the SIF file, not by name or tag.
@@ -150,16 +155,17 @@ verify_sif_on_execute = false        # re-hash multi-GB SIFs only if required
 
 [launcher]
 kind = "template"
-template = "slurm"             # bundled: slurm, pbs, lsf; or a site file
+template = "slurm"             # bundled: slurm, pbs, lsf; or a site template file
 partition = "regular"
 account = "lab-x"
-qos = ""
-walltime_margin = "00:10:00"
-poll_interval = 30
-max_queue_seconds = 86400
-extra_directives = []          # only directives on the policy allowlist
+# qos = "normal"               # omit when the site has no QoS
+walltime_margin_seconds = 600  # walltime = timeout + 30 s kill grace + margin
+poll_interval_seconds = 30
+max_queue_seconds = 86400      # longer queues are cancelled and reported as a timeout
+completion_grace_seconds = 60  # shared-filesystem lag allowed for the exit record
+extra_directives = []          # single plain lines; never export or login-env flags
 
-# Optional login-node environment builds.
+# Login-node environment builds (phase 4; not yet available with Apptainer).
 # [environment]
 # root = "/shared/lab/labbio/Environments"
 # build_proxy = "http://proxy.site:3128"   # build subprocess only
@@ -203,11 +209,16 @@ job shell, but not inside the container.
 LabBio refuses to start or to execute when:
 
 - the configuration combines Local with Apptainer, or Scheduler with Docker;
+- the Apptainer `binary` is not an absolute path;
+- an extra directive is not a single plain line, or touches environment
+  export, the login environment, or a key LabBio manages;
+- an `[environment]` section is configured with the Apptainer backend (until
+  phase 4);
 - `--net --network none` is unavailable unprivileged;
 - a required bind target cannot be created and the image does not provide it;
 - `image_reference` is not a registered SIF, the file is missing, writable, a
   symlink, or (when verification is enabled) its hash differs;
-- a scheduler directive is outside the allowlist or a resource exceeds policy;
+- a resource request exceeds policy;
 - an input or output path contains `:` or `,`;
 - `resource_enforcement = "apptainer-cgroups"` but cgroup flags are
   unsupported.

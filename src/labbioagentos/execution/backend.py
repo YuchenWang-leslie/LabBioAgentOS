@@ -54,3 +54,6 @@ class ContainerCommandBuilder(Protocol):
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         """Host directories this backend creates for one execution and nothing else uses."""
+
+    def model_stderr(self, stderr: bytes) -> bytes:
+        """Drop lines the container runtime itself wrote before stderr is projected for a model."""

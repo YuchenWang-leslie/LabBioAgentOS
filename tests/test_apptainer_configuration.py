@@ -1,4 +1,4 @@
-"""C13 phase 2: Apptainer configuration, refusal before a launcher exists, operator CLI."""
+"""C13: Apptainer configuration, Scheduler + Apptainer wiring, operator CLI."""
 
 from __future__ import annotations
 
@@ -8,15 +8,18 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from labbioagentos import cli
+from labbioagentos import ContainerStartError, cli
+from labbioagentos.execution import ApptainerCommandBuilder, JobLedger
 from labbioagentos.execution.apptainer_probe import ApptainerCapabilities
+from labbioagentos.execution.launchers import SchedulerLauncher
 from labbioagentos.local_backend import check_backend
 from labbioagentos.local_config import (
-    UnsupportedExecutionBackend,
     build_application,
     load_settings,
     runtime_manifest,
 )
+
+from test_phase6_docker_execution import _plan
 
 SIF_CONTENT = b"configured SIF fixture"
 SIF_REFERENCE = "sha256:" + hashlib.sha256(SIF_CONTENT).hexdigest()
@@ -42,6 +45,7 @@ memory_mb = 512
 pids_limit = 64
 timeout_seconds = 60.0
 {apptainer}
+{launcher}
 '''
 APPTAINER = '''
 [execution.apptainer]
@@ -53,14 +57,26 @@ resource_enforcement = "{enforcement}"
 '''
 
 
+LAUNCHER = '''
+[launcher]
+kind = "template"
+template = "slurm"
+partition = "regular"
+'''
+
+
 def _write(tmp_path, *, backend='backend = "apptainer"', reference=SIF_REFERENCE,
-           apptainer=True, binary="apptainer", enforcement="scheduler"):
+           apptainer=True, binary="/opt/apptainer/bin/apptainer", enforcement="scheduler",
+           launcher=None, extra=""):
     (tmp_path / "inputs").mkdir(exist_ok=True)
     path = tmp_path / "runtime.toml"
+    if launcher is None:
+        launcher = LAUNCHER if apptainer else ""
     path.write_text(BASE.format(
         execution=backend, reference=reference,
         apptainer=APPTAINER.format(binary=binary, enforcement=enforcement) if apptainer else "",
-    ), encoding="utf-8")
+        launcher=launcher,
+    ) + extra, encoding="utf-8")
     return path
 
 
@@ -89,14 +105,21 @@ def test_docker_configuration_omits_the_absent_apptainer_section(tmp_path):
 
 
 @pytest.mark.parametrize("arguments", [
-    {"apptainer": False},
+    {"apptainer": False, "launcher": LAUNCHER},
     {"reference": "registry.example/python@sha256:" + "1" * 64},
     {"binary": "-privileged"},
     {"binary": "apptainer exec"},
+    {"binary": "apptainer"},  # Scheduler mode needs an absolute path.
     {"enforcement": "none"},
+    {"launcher": ""},  # Local + Apptainer.
+    {"launcher": '[launcher]\nkind = "local"\n'},
+    {"launcher": '[launcher]\nkind = "template"\n'},
+    {"launcher": LAUNCHER + 'extra_directives = ["--export=ALL"]\n'},
+    {"launcher": LAUNCHER.replace('"slurm"', '"no-such-template.toml"')},
+    {"extra": '[environment]\nroot = "envs"\n'},
 ])
 def test_invalid_apptainer_configuration_is_rejected(tmp_path, arguments):
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValueError):  # Includes pydantic ValidationError.
         load_settings(_write(tmp_path, **arguments))
 
 
@@ -107,11 +130,58 @@ def test_resource_enforcement_has_no_default(tmp_path):
         load_settings(path)
 
 
-def test_apptainer_backend_is_refused_until_a_scheduler_launcher_exists(tmp_path):
-    settings = load_settings(_write(tmp_path))
-    with pytest.raises(UnsupportedExecutionBackend):
-        build_application(settings, tmp_path / "run", load_provider=False)
-    assert not (tmp_path / "run").exists()
+def test_scheduler_launcher_requires_the_apptainer_backend(tmp_path):
+    with pytest.raises(ValidationError):  # Scheduler + Docker.
+        load_settings(_write(tmp_path, backend="", apptainer=False, launcher=LAUNCHER))
+
+
+def test_site_template_file_is_resolved_and_validated(tmp_path):
+    from labbioagentos.execution.launchers import BUILTIN_TEMPLATES
+
+    site = BUILTIN_TEMPLATES["slurm"].model_dump()
+    lines = [f"{key} = {json.dumps(value)}" for key, value in site.items() if not isinstance(value, dict)]
+    lines += [f"[{key}]\n" + "\n".join(f"{json.dumps(k)} = {json.dumps(v)}" for k, v in value.items())
+              for key, value in site.items() if isinstance(value, dict)]
+    (tmp_path / "site-slurm.toml").write_text("\n".join(lines) + "\n")
+
+    settings = load_settings(_write(tmp_path, launcher=LAUNCHER.replace('"slurm"', '"site-slurm.toml"')))
+
+    assert settings.launcher.template == str(tmp_path / "site-slurm.toml")
+    assert settings.launcher.scheduler_template() == BUILTIN_TEMPLATES["slurm"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_apptainer_wiring_defers_the_probe_to_the_first_execution(tmp_path):
+    settings = load_settings(_write(tmp_path, binary=str(tmp_path / "no-such-apptainer")))
+
+    application = build_application(settings, tmp_path / "run", load_provider=False)
+    try:
+        executor = application.container_executor
+        assert isinstance(executor.command_builder, ApptainerCommandBuilder)
+        assert isinstance(executor.launcher, SchedulerLauncher)
+        assert executor.launcher.workspace_root == (tmp_path / "run" / "executions").resolve()
+        assert isinstance(executor.job_ledger, JobLedger)
+        assert (tmp_path / "run" / "jobs.sqlite").is_file()
+        assert application.docker_executor is executor
+        # Building is cheap; the runtime is probed only when something would run.
+        with pytest.raises(ContainerStartError):
+            await executor.execute_async(_plan(image_key="python-local"))
+        assert not (tmp_path / "run" / "executions").exists() or not any(
+            (tmp_path / "run" / "executions").iterdir())
+    finally:
+        cli._close(application)
+
+
+def test_docker_wiring_is_unchanged(tmp_path):
+    settings = load_settings(_write(tmp_path, backend="", apptainer=False))
+    application = build_application(settings, tmp_path / "run", load_provider=False)
+    try:
+        executor = application.container_executor
+        assert executor.launcher is None and executor.job_ledger is None
+        assert executor.backend_check is None and executor.isolation_record is None
+        assert not (tmp_path / "run" / "jobs.sqlite").exists()
+    finally:
+        cli._close(application)
 
 
 def test_image_register_prints_the_immutable_reference(tmp_path, capsys):

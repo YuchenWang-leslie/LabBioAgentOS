@@ -56,6 +56,9 @@ class PythonBuilder:
     def cleanup_paths(self, execution_id):
         return (self.scratch_root / execution_id.hex,)
 
+    def model_stderr(self, stderr):
+        return stderr
+
 
 def _policy(**overrides):
     values = dict(max_output_file_bytes=1 << 20, poll_interval_seconds=0.05,

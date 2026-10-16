@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -54,8 +54,9 @@ from .execution import (
     ApprovedImage,
     ApprovedImageRegistry,
     ArtifactRegistrationPolicy,
+    ContainerCommandBuilder,
+    ContainerExecutor,
     DockerCommandBuilder,
-    DockerExecutor,
     ExecutionPolicy,
     ExecutionReceipt,
     ExecutionPreflightError,
@@ -68,6 +69,7 @@ from .execution import (
     OutputCollector,
     PreflightInputRequirement,
     ProcessRunner,
+    SubprocessDockerRunner,
     JobLauncher,
     JobLedger,
     LocalLauncher,
@@ -579,6 +581,9 @@ class ApplicationRuntimeConfiguration:
     # Where jobs run (None: the control-plane host) and their durable record.
     job_launcher: JobLauncher | None = None
     job_ledger: JobLedger | None = None
+    # How to isolate executions (None: Docker) and a check run before the first one.
+    command_builder: ContainerCommandBuilder | None = None
+    backend_check: Callable[[], Mapping[str, Any]] | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
@@ -733,7 +738,7 @@ class LabBioApplication:
             if profile is not None
             else None
         )
-        self.docker_executor = DockerExecutor(
+        self.container_executor = ContainerExecutor(
             store=self.artifact_store,
             image_registry=self.image_registry,
             execution_policy=self.execution_policy,
@@ -753,18 +758,21 @@ class LabBioApplication:
                     self.execution_policy.max_collected_output_bytes
                 ),
             ),
-            process_runner=configuration.process_runner,
+            process_runner=configuration.process_runner or SubprocessDockerRunner(),
             launcher=configuration.job_launcher,
             job_ledger=configuration.job_ledger,
-            command_builder=DockerCommandBuilder(
+            command_builder=configuration.command_builder or DockerCommandBuilder(
                 max_output_file_bytes=self.execution_policy.max_output_file_bytes,
                 tmpfs_size_mb=self.execution_policy.tmpfs_size_mb,
             ),
+            backend_check=configuration.backend_check,
             trace_recorder=self.trace_recorder,
             minimum_queryable_output_count=(
                 profile.minimum_queryable_output_count if profile is not None else 0
             ),
         )
+        # Compatibility name from before the runtime-neutral executor.
+        self.docker_executor = self.container_executor
         self.execution_submission = ExecutionSubmissionService(
             artifact_store=self.artifact_store,
             access_service=self.access_service,

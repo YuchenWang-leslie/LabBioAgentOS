@@ -256,6 +256,9 @@ class DockerCommandBuilder:
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         return ()  # Docker's /tmp is a tmpfs that disappears with the container.
 
+    def model_stderr(self, stderr: bytes) -> bytes:
+        return stderr
+
     @staticmethod
     def _mount(source: Path, target: PurePosixPath, read_only: bool) -> str:
         source_text = str(source.resolve(strict=True))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shutil
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +83,7 @@ class ContainerExecutor:
         isolation_record: Mapping[str, Any] | None = None,
         launcher: JobLauncher | None = None,
         job_ledger: JobLedger | None = None,
+        backend_check: Callable[[], Mapping[str, Any]] | None = None,
     ):
         self.store = store
         self.image_registry = image_registry
@@ -106,6 +107,9 @@ class ContainerExecutor:
         self.launcher = launcher
         # Every submission is recorded before the wait, so a lost process leaves a trail.
         self.job_ledger = job_ledger
+        # Runs once, before the first execution; its record joins the trusted trace.
+        self.backend_check = backend_check
+        self._backend_checked = backend_check is None
         self._execution_lock = asyncio.Lock()
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
@@ -123,6 +127,7 @@ class ContainerExecutor:
     def execute(self, plan: ExecutionPlan) -> ExecutionResult:
         """Run one plan synchronously through the injected process runner."""
 
+        self._ensure_backend()
         prepared = self._prepare(plan)
         try:
             outcome = self.process_runner.run(
@@ -140,6 +145,7 @@ class ContainerExecutor:
 
         # One execution at a time per executor, as the synchronous path always was.
         async with self._execution_lock:
+            await asyncio.to_thread(self._ensure_backend)
             prepared = self._prepare(plan)
             launcher = self.launcher or LocalLauncher(self.process_runner)
             ledger = self.job_ledger
@@ -171,6 +177,18 @@ class ContainerExecutor:
             finally:
                 self._remove_cleanup_paths(plan)
             return self._finish(plan, prepared, outcome)
+
+    def _ensure_backend(self) -> None:
+        """Refuse execution until the backend passes its capability check."""
+
+        if self._backend_checked:
+            return
+        try:
+            record = self.backend_check()
+        except Exception as exc:  # Retried on the next execution; nothing has started.
+            raise ContainerStartError("The execution backend failed its capability check") from exc
+        self.isolation_record = dict(record)
+        self._backend_checked = True
 
     def _remove_cleanup_paths(self, plan: ExecutionPlan) -> None:
         """Host-side fallback: the job removes these on exit; never follow a link."""
@@ -318,6 +336,9 @@ class ContainerExecutor:
             )
 
         completed_at = datetime.now(timezone.utc)
+        # The stored stderr Artifact stays complete; model-facing projections drop
+        # lines the container runtime wrote about itself.
+        model_stderr = self.command_builder.model_stderr(outcome.stderr)
         if outcome.timed_out:
             message = "Container execution exceeded the host-enforced timeout."
             self._emit_failure(plan, ExecutionFailureClass.TIMEOUT, message)
@@ -334,7 +355,7 @@ class ContainerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.TIMEOUT,
                 error_message=message,
-                error_context=(bounded_error_context(outcome.stderr)
+                error_context=(bounded_error_context(model_stderr)
                     if self.execution_policy.include_error_context else None),
             )
         if outcome.exit_code != 0:
@@ -359,13 +380,13 @@ class ContainerExecutor:
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.NON_ZERO_EXIT,
                 error_message=message,
-                error_context=(bounded_error_context(outcome.stderr)
+                error_context=(bounded_error_context(model_stderr)
                     if self.execution_policy.include_error_context else None),
                 diagnostics=self._safe_python_diagnostics(
-                    outcome.stderr,
+                    model_stderr,
                     script_content=plan.script_content,
                     verified_imports=verified_image_imports(
-                        outcome.stderr, image, self.process_runner,
+                        model_stderr, image, self.process_runner,
                         self.command_builder,
                     ),
                 ),

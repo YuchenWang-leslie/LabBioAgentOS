@@ -43,10 +43,6 @@ class LocalProviderSettings(_SettingsModel):
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
 
 
-class UnsupportedExecutionBackend(ValueError):
-    """The configured execution backend cannot run in this release."""
-
-
 class LocalApptainerSettings(_SettingsModel):
     binary: str = Field(default="apptainer", min_length=1, max_length=512, pattern=r"^[^-\s][^\s]*$")
     sif_store: Path
@@ -117,6 +113,41 @@ class LocalEnvironmentSettings(_SettingsModel):
         return self
 
 
+class LocalLauncherSettings(_SettingsModel):
+    """Where executions run: the control-plane host, or a scheduler via a template."""
+
+    kind: Literal["local", "template"] = "local"
+    # A bundled template name (slurm, pbs, lsf) or a path to a site template TOML file.
+    template: str | None = Field(default=None, min_length=1, max_length=1024)
+    partition: str | None = None
+    account: str | None = None
+    qos: str | None = None
+    walltime_margin_seconds: int = Field(default=600, ge=0, le=86_400, strict=True)
+    poll_interval_seconds: float = Field(default=30.0, gt=0, le=3_600)
+    max_queue_seconds: float = Field(default=86_400.0, gt=0, le=30 * 86_400)
+    completion_grace_seconds: float = Field(default=60.0, ge=0, le=3_600)
+    extra_directives: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> "LocalLauncherSettings":
+        scheduler_fields = (self.template, self.partition, self.account, self.qos)
+        if self.kind == "template" and self.template is None:
+            raise ValueError("kind = 'template' requires a scheduler template")
+        if self.kind == "local" and (any(scheduler_fields) or self.extra_directives):
+            raise ValueError("Scheduler settings apply only to kind = 'template'")
+        return self
+
+    def scheduler_template(self):
+        from .execution.launchers import BUILTIN_TEMPLATES, SchedulerTemplate
+
+        if self.template in BUILTIN_TEMPLATES:
+            return BUILTIN_TEMPLATES[self.template]
+        path = Path(self.template)
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("Scheduler template file is unavailable")
+        return SchedulerTemplate.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
+
+
 class LocalSettings(_SettingsModel):
     result_root: Path
     input_roots: tuple[Path, ...] = Field(min_length=1, max_length=64)
@@ -128,6 +159,23 @@ class LocalSettings(_SettingsModel):
     managed_root: Path | None = None
     gold_root: Path | None = None
     environment: LocalEnvironmentSettings | None = None
+    launcher: LocalLauncherSettings | None = None
+
+    @model_validator(mode="after")
+    def validate_placement(self) -> "LocalSettings":
+        # Runtime and launcher are separate axes, but only two combinations exist.
+        placement = (self.execution.backend, self.launcher.kind if self.launcher else "local")
+        if placement not in {("docker", "local"), ("apptainer", "template")}:
+            raise ValueError(
+                "Only Local + Docker and Scheduler + Apptainer are supported; "
+                f"got backend {placement[0]!r} with launcher {placement[1]!r}"
+            )
+        if self.execution.backend == "apptainer":
+            if not Path(self.execution.apptainer.binary).is_absolute():
+                raise ValueError("Scheduler mode requires an absolute Apptainer binary path")
+            if self.environment is not None:
+                raise ValueError("Environment builds are not available with the Apptainer backend yet")
+        return self
 
     @property
     def principal(self) -> Principal:
@@ -183,7 +231,19 @@ def load_settings(path: Path) -> LocalSettings:
         "execution": settings.execution.model_copy(update={
             "apptainer": _absolute_apptainer(settings.execution.apptainer, absolute),
         }) if settings.execution.apptainer else settings.execution,
+        "launcher": _absolute_launcher(settings.launcher, absolute),
     })
+
+
+def _absolute_launcher(launcher: LocalLauncherSettings | None, absolute):
+    if launcher is None or launcher.kind != "template":
+        return launcher
+    from .execution.launchers import BUILTIN_TEMPLATES, validate_extra_directives
+
+    if launcher.template not in BUILTIN_TEMPLATES:
+        launcher = launcher.model_copy(update={"template": str(absolute(Path(launcher.template)))})
+    validate_extra_directives(launcher.scheduler_template(), launcher.extra_directives)
+    return launcher
 
 
 def _absolute_apptainer(apptainer: LocalApptainerSettings, absolute) -> LocalApptainerSettings:
@@ -275,15 +335,63 @@ def _load_provider(settings: LocalProviderSettings) -> None:
     os.environ["OPENAI_API_BASE"] = endpoint
 
 
+def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
+    """Scheduler + Apptainer wiring; the capability probe runs before the first execution."""
+    from .execution.apptainer import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
+    from .execution.apptainer_probe import probe_capabilities
+    from .execution.job_ledger import JobLedger
+    from .execution.launchers import SchedulerLauncher, SchedulerPolicy
+
+    apptainer, launcher = settings.execution.apptainer, settings.launcher
+    image = settings.execution.approved_image()
+    store = SifStore(apptainer.sif_store)
+    runner = SubprocessApptainerRunner(
+        max_output_file_bytes=settings.execution.max_output_file_bytes,
+        cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
+    )
+
+    def backend_check() -> dict:
+        sif_path = (store.verify(image.reference) if apptainer.verify_sif_on_execute
+                    else store.path_for(image.reference))
+        capabilities = probe_capabilities(
+            binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
+            runner=runner, scratch_root=apptainer.scratch_root,
+        )
+        capabilities.require(resource_enforcement=apptainer.resource_enforcement)
+        return capabilities.trace_record(resource_enforcement=apptainer.resource_enforcement)
+
+    policy = SchedulerPolicy(
+        max_output_file_bytes=settings.execution.max_output_file_bytes,
+        partition=launcher.partition, account=launcher.account, qos=launcher.qos,
+        walltime_margin_seconds=launcher.walltime_margin_seconds,
+        poll_interval_seconds=launcher.poll_interval_seconds,
+        max_queue_seconds=launcher.max_queue_seconds,
+        completion_grace_seconds=launcher.completion_grace_seconds,
+        extra_directives=launcher.extra_directives,
+        apptainer_cache_dir=apptainer.cache_dir, apptainer_tmp_dir=apptainer.tmp_dir,
+    )
+    return {
+        # The login node runs only the data-free import probe through this runner.
+        "process_runner": runner,
+        "command_builder": ApptainerCommandBuilder(
+            store, scratch_root=apptainer.scratch_root,
+            resource_enforcement=apptainer.resource_enforcement,
+            apptainer_binary=apptainer.binary,
+            verify_sif_on_execute=apptainer.verify_sif_on_execute,
+        ),
+        "backend_check": backend_check,
+        "job_launcher": SchedulerLauncher(
+            template=launcher.scheduler_template(), policy=policy,
+            workspace_root=run_root / "executions",
+        ),
+        "job_ledger": JobLedger(run_root / "jobs.sqlite"),
+    }
+
+
 def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
-    if settings.execution.backend != "docker":
-        # Cluster execution runs only through a scheduler launcher (C13 phase 3).
-        raise UnsupportedExecutionBackend(
-            "Apptainer execution requires a scheduler launcher, which is not available yet"
-        )
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     if load_provider:
@@ -392,6 +500,10 @@ def build_application(
             handlers = (SkillDomainDecisionHandler(skill_service),)
         run_store = SQLiteRunStateStore(run_root / "state.sqlite")
         cleanup.callback(run_store.close)
+        execution_wiring = {}
+        if settings.execution.backend == "apptainer":
+            execution_wiring = _cluster_execution(settings, run_root)
+            cleanup.callback(execution_wiring["job_ledger"].close)
         application = LabBioApplication(ApplicationRuntimeConfiguration(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
@@ -421,6 +533,7 @@ def build_application(
             skill_service=skill_service, domain_decision_handlers=handlers,
             environment_service_factory=environment_service_factory,
             literature_search=LiteratureSearchService(),
+            **execution_wiring,
         ))
         cleanup.pop_all()  # The caller now owns both stores, including failure cleanup.
         return application

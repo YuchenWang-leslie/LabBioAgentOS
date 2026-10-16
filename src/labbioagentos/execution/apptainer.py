@@ -24,6 +24,8 @@ from .mounts import ExecutionWorkspace, ResolvedMount
 ResourceEnforcement = Literal["scheduler", "apptainer-cgroups"]
 
 _SIF_REFERENCE = re.compile(r"sha256:([0-9a-f]{64})")
+_RUNTIME_LOG_LINE = re.compile(rb"(?:FATAL|ERROR|WARNING|INFO|VERBOSE|DEBUG):\s")
+_ANSI = re.compile(rb"\x1b\[[0-9;]*m")
 _CHUNK_BYTES = 1_048_576
 
 # Contain host filesystems, PID/IPC, environment and site-configured bind
@@ -230,6 +232,15 @@ class ApptainerCommandBuilder:
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         # The per-execution --workdir holds the container's /tmp and /var/tmp.
         return (self.scratch_root / execution_id.hex,)
+
+    def model_stderr(self, stderr: bytes) -> bytes:
+        # --silent keeps INFO/WARNING out; FATAL/ERROR lines would name the runtime and
+        # host paths. A script line in the same format is dropped too; the raw stderr
+        # artifact keeps everything.
+        return b"".join(
+            line for line in stderr.splitlines(keepends=True)
+            if _RUNTIME_LOG_LINE.match(_ANSI.sub(b"", line)) is None
+        )
 
     def import_probe_argv(
         self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
