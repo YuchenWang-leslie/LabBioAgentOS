@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import textwrap
@@ -20,6 +21,7 @@ from labbioagentos.execution.apptainer_build import (
     WheelLockError,
     attempt_lease,
     classify_download,
+    prepare_cache_dir,
     remove_stale_downloads,
     render_download_program,
     verify_download,
@@ -36,6 +38,9 @@ binds, index = [], 2
 while args[index].startswith("--"):
     if args[index] == "--bind":
         source, target = args[index + 1].split(":")[:2]
+        if not os.path.exists(source):  # Like Apptainer: a missing bind source stops the container.
+            sys.stderr.write("FATAL: mount source " + source + " doesn't exist\\n")
+            sys.exit(255)
         binds.append((target, source))
     index += 2 if args[index] in ("--bind", "--workdir", "--no-mount") else 1
 command = args[index + 1:]
@@ -171,6 +176,34 @@ def test_failures_map_to_the_docker_builder_codes(download, fail, output, status
     assert failure == code
     if code == "PIP_NO_MATCH":
         assert diagnostics == ({"code": "PIP_NO_MATCH", "requirement": "example-pkg>=9"},)
+
+
+def test_a_missing_bind_source_stops_the_download_as_apptainer_does(download, tmp_path):
+    start, calls, paths, _, _ = download
+
+    status = start(_report(("example-pkg", "2.0")), cache_dir=tmp_path / "never-created").wait(timeout=60)
+
+    assert status == DownloadExit.RESOLVE_FAILED and len(calls()) == 1
+    assert "doesn't exist" in (paths["logs"] / "resolve.log").read_text()
+
+
+def test_the_pip_cache_is_created_private_and_an_unsafe_one_is_refused(tmp_path):
+    cache = tmp_path / "shared" / "pip-cache"
+
+    prepare_cache_dir(cache)
+    prepare_cache_dir(cache)  # An existing private cache is accepted as it is.
+
+    assert cache.is_dir() and stat.S_IMODE(cache.stat().st_mode) == 0o700
+    writable = tmp_path / "group-writable"
+    writable.mkdir()
+    writable.chmod(0o770)
+    link = tmp_path / "link"
+    link.symlink_to(cache)
+    regular = tmp_path / "regular-file"
+    regular.write_text("not a directory")
+    for path in (writable, link, regular):
+        with pytest.raises((ValueError, OSError)):
+            prepare_cache_dir(path)
 
 
 def test_timeouts_and_unknown_statuses_are_classified_without_logs(tmp_path):

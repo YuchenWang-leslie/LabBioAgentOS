@@ -30,6 +30,7 @@ from .apptainer_build import (
     attempt_lease,
     classify_build,
     classify_download,
+    prepare_cache_dir,
     remove_stale_downloads,
     render_build_program,
     render_download_program,
@@ -192,8 +193,15 @@ class ApptainerEnvironmentBuilder:
         )
 
     async def _download(self, build_root: Path, base_sif: Path, run_id: UUID) -> ProcessOutcome | None:
+        """Run the download step; None when the builder cannot run it at all."""
+
         program = build_root / "download.sh"
         policy = self.policy
+        if policy.cache_dir is not None:
+            try:
+                prepare_cache_dir(policy.cache_dir)
+            except (ValueError, OSError):
+                return None
         _write_private(program, render_download_program(
             apptainer_binary=policy.apptainer_binary, base_sif=base_sif,
             requirements_file=build_root / "requirements.txt", download_dir=build_root / "download",

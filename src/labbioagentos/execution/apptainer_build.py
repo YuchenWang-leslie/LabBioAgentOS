@@ -144,6 +144,24 @@ def render_lock(wheels: tuple[LockedWheel, ...]) -> str:
                    for wheel in sorted(wheels, key=lambda item: item.name))
 
 
+def prepare_cache_dir(path: Path) -> None:
+    """Create the pip cache the download step binds, or accept an existing private one.
+
+    Apptainer refuses to bind a missing source, so the directory must exist
+    before the first download. Wheels are pinned only after they are downloaded,
+    so a cache other users could write to could plant packages: it must be a
+    real directory owned by this user and writable by nobody else.
+    """
+
+    _check_path(path)
+    if path.is_symlink():
+        raise ValueError("The pip cache directory cannot be a symbolic link")
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        raise ValueError("The pip cache must be a directory owned by this user and writable only by it")
+
+
 def render_download_program(
     *,
     apptainer_binary: Path,
@@ -226,6 +244,7 @@ def download_check_argv(
     apptainer_binary: Path,
     base_sif: Path,
     work_dir: Path,
+    cache_dir: Path | None = None,
     index_url: str | None = None,
     proxy_url: str | None = None,
     ca_bundle: Path | None = None,
@@ -234,16 +253,20 @@ def download_check_argv(
 
     pip resolves itself, ignoring the installed copy, so the index must be
     reached; --dry-run --report also proves the pip version the download needs.
+    The binds are the download step's, so a missing cache or CA file fails here too.
     """
 
-    for path in (apptainer_binary, base_sif, work_dir, *((ca_bundle,) if ca_bundle else ())):
+    for path in (apptainer_binary, base_sif, work_dir, *(item for item in (cache_dir, ca_bundle) if item)):
         _check_path(path)
     for url in (index_url, proxy_url):
         if url is not None and not _plain_url(url):
             raise ValueError("Index and proxy settings must be HTTP(S) endpoints without credentials")
     argv = [str(apptainer_binary), "--silent", "exec", *CONTAIN_ARGUMENTS, "--workdir", str(work_dir),
             "--bind", f"{work_dir}:/labbio/check:rw"]
-    options = []
+    options = ["--no-cache-dir"]
+    if cache_dir is not None:
+        argv += ["--bind", f"{cache_dir}:/labbio/cache:rw"]
+        options = ["--cache-dir", "/labbio/cache"]
     if ca_bundle is not None:
         argv += ["--bind", f"{ca_bundle}:/labbio/ca.pem:ro"]
         options += ["--cert", "/labbio/ca.pem"]
@@ -253,8 +276,7 @@ def download_check_argv(
         options += ["--proxy", proxy_url]
     return (*argv, str(base_sif), "python", "-I", "-m", "pip", "install", "--dry-run", "--ignore-installed",
             "--no-deps", "--only-binary=:all:", "--disable-pip-version-check", "--no-input",
-            "--progress-bar", "off", "--no-cache-dir", "--report", "/labbio/check/report.json",
-            *options, "pip")
+            "--progress-bar", "off", "--report", "/labbio/check/report.json", *options, "pip")
 
 
 def classify_download_check(exit_code: int | None, *, timed_out: bool, output: str, report: Path) -> str:

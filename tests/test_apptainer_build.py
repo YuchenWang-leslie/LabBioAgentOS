@@ -129,6 +129,12 @@ import json, os, sys, time
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as stream:
     stream.write(json.dumps(args) + "\\n")
+for flag, value in zip(args, args[1:]):
+    if flag == "--bind":
+        source = value.split(":")[0]
+        if not os.path.exists(source):  # Like Apptainer: a missing bind source stops the container.
+            sys.stderr.write("FATAL: mount source " + source + " doesn't exist\\n")
+            sys.exit(255)
 fail = os.environ.get("FAKE_FAIL", "")
 if args[1] == "build":
     if args[2] == "--sandbox":

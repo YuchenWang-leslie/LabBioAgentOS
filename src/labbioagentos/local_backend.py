@@ -14,7 +14,12 @@ from .execution.apptainer import (
     SifStoreError,
     SubprocessApptainerRunner,
 )
-from .execution.apptainer_build import DownloadRunner, classify_download_check, download_check_argv
+from .execution.apptainer_build import (
+    DownloadRunner,
+    classify_download_check,
+    download_check_argv,
+    prepare_cache_dir,
+)
 from .execution.apptainer_probe import probe_capabilities
 from .execution.launchers import check_scheduler_client
 from .local_config import LocalSettings, scheduler_policy
@@ -40,14 +45,22 @@ def check_environment_builds(settings: LocalSettings, sif_path: Path, *, runner=
 
     For login-node downloads: the login node, the base SIF and the configured
     machine must share one CPU architecture, and pip in the base SIF must reach
-    the index with the download settings. Writable sandboxes and SIF packing
-    exist only on compute nodes; every build job checks them before building.
+    the index with the download step's settings and binds, including the pip
+    cache, which is created here exactly as a build would create it. Writable
+    sandboxes and SIF packing exist only on compute nodes; every build job
+    checks them before building.
     """
 
     environment, apptainer = settings.environment, settings.execution.apptainer
     cluster = environment.cluster
     report = {"machine": cluster.machine, "download_placement": cluster.download_placement,
               "build_capabilities": "CHECKED_BY_EACH_BUILD_JOB", "failures": []}
+    if cluster.cache_dir is not None:
+        try:
+            prepare_cache_dir(cluster.cache_dir)
+        except (ValueError, OSError):
+            report.update(download_check="SKIPPED", failures=["environment_cache_dir"])
+            return report
     if cluster.download_placement == "job":
         report["download_check"] = "UNCHECKED_JOB_PLACEMENT"  # Only a submitted job could tell.
         return report
@@ -70,7 +83,8 @@ def check_environment_builds(settings: LocalSettings, sif_path: Path, *, runner=
             return report
         outcome = runner.run(download_check_argv(
             apptainer_binary=Path(apptainer.binary), base_sif=sif_path, work_dir=work,
-            index_url=cluster.index_url, proxy_url=environment.build_proxy, ca_bundle=cluster.ca_bundle,
+            cache_dir=cluster.cache_dir, index_url=cluster.index_url, proxy_url=environment.build_proxy,
+            ca_bundle=cluster.ca_bundle,
         ), timeout_seconds=min(cluster.download_timeout_seconds, 600))
         report["download_check"] = classify_download_check(
             outcome.exit_code, timed_out=outcome.timed_out,

@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import json
 import sqlite3
+import stat
 import sys
 import time
 from pathlib import Path
@@ -38,7 +39,7 @@ from scheduler_fixtures import FakeSlurm
 PROXY = "http://proxy.example:3128"
 
 FAKE_APPTAINER = f"""#!{sys.executable}
-import json, subprocess, sys, time
+import json, os, subprocess, sys, time
 from pathlib import Path
 here = Path(sys.argv[0]).parent
 config = json.loads((here / "fake.json").read_text())
@@ -69,6 +70,9 @@ binds, index = [], 2
 while args[index].startswith("--"):
     if args[index] == "--bind":
         source, target = args[index + 1].split(":")[:2]
+        if not os.path.exists(source):  # Like Apptainer: a missing bind source stops the container.
+            sys.stderr.write("FATAL: mount source " + source + " doesn't exist\\n")
+            sys.exit(255)
         binds.append((target, source))
     index += 2 if args[index] in ("--bind", "--workdir", "--no-mount", "--network") else 1
 image = Path(args[index])
@@ -261,6 +265,31 @@ async def test_each_failure_is_reported_with_its_code_and_leaves_nothing_registe
     assert len(_jobs(cluster, run_id)) == (0 if stage in {"resolve", "download"} else 1)
     for directory in ("jobs", "node-local", "login-tmp"):
         assert list((cluster.tmp_path / directory).iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_missing_pip_cache_is_created_private_before_the_download(cluster):
+    cache = cluster.tmp_path / "shared" / "pip-cache"
+    service = cluster.service(cache_dir=cache)
+
+    receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4())
+
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o700
+    resolve = next(call for call in cluster.calls() if "--dry-run" in call)
+    assert f"{cache}:/labbio/cache:rw" in resolve
+
+
+@pytest.mark.asyncio
+async def test_a_pip_cache_others_can_write_makes_the_builder_unavailable(cluster):
+    cache = cluster.tmp_path / "open-cache"
+    cache.mkdir()
+    cache.chmod(0o777)
+    service = cluster.service(cache_dir=cache)
+
+    receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4())
+
+    assert receipt["failure_code"] == "BUILDER_UNAVAILABLE" and cluster.calls() == []
 
 
 @pytest.mark.asyncio

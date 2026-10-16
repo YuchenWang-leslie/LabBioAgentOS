@@ -105,38 +105,45 @@ def _scheduler_policy(**overrides) -> SchedulerPolicy:
 
 @pytest.fixture
 def site(request):
+    options = getattr(request, "param", {})
+    if options.get("download") == "job" and not os.environ.get("LABBIO_DOWNLOAD_PARTITION"):
+        pytest.skip("set LABBIO_DOWNLOAD_PARTITION to a partition whose nodes can reach the index")
     base = Path(os.environ["LABBIO_SHARED_DIR"]) / f"env-{uuid4().hex[:12]}"
     base.mkdir(parents=True)
-    sif_store = SifStore(base / "sif")
-    reference = sif_store.register(Path(os.environ["LABBIO_APPTAINER_SIF"]))
-    image = ApprovedImage(key="python-base", reference=reference, runtime=ExecutionRuntime.PYTHON)
-    ledger = JobLedger(base / "jobs.sqlite")
-    jobs_root = base / "environment-jobs"
-    jobs_root.mkdir()
-    options = getattr(request, "param", {})
-    launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"],
-                                 policy=_scheduler_policy(**options.get("build", {})), workspace_root=jobs_root)
-    policy = ApptainerBuildPolicy(
-        apptainer_binary=Path(BINARY), machine=MACHINE,
-        build_dir=Path(os.environ.get("LABBIO_BUILD_DIR", "/tmp")), download_work_root=Path("/tmp"),
-        resources=RequestedResources(cpus=2.0, memory_mb=8192, timeout_seconds=3600),
-        cache_dir=base / "pip-cache", index_url=INDEX_URL, proxy_url=PROXY,
-    )
-    if options.get("download") == "job":
-        placement = {"download_launcher": SchedulerLauncher(
-            template=BUILTIN_TEMPLATES["slurm"],
-            policy=_scheduler_policy(partition=os.environ["LABBIO_DOWNLOAD_PARTITION"]),
-            workspace_root=jobs_root)}
-    else:
-        placement = {"download_runner": DownloadRunner(max_file_bytes=SIF_BYTES, cpu_seconds=1800)}
-    builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
-                                          job_ledger=ledger, **placement)
-    service = EnvironmentService(root=base / "environments", image_registry=ApprovedImageRegistry((image,)),
-                                 builder=builder, owner_user_id="real-test-user")
-    yield service, ledger, launcher, sif_store, base
-    ledger.close()
-    if os.environ.get("LABBIO_KEEP_TEST_FILES") != "1":
-        shutil.rmtree(base, ignore_errors=True)
+    ledger = None
+    try:  # The directory is removed even when setup fails.
+        sif_store = SifStore(base / "sif")
+        reference = sif_store.register(Path(os.environ["LABBIO_APPTAINER_SIF"]))
+        image = ApprovedImage(key="python-base", reference=reference, runtime=ExecutionRuntime.PYTHON)
+        ledger = JobLedger(base / "jobs.sqlite")
+        jobs_root = base / "environment-jobs"
+        jobs_root.mkdir()
+        launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"],
+                                     policy=_scheduler_policy(**options.get("build", {})), workspace_root=jobs_root)
+        policy = ApptainerBuildPolicy(
+            apptainer_binary=Path(BINARY), machine=MACHINE,
+            build_dir=Path(os.environ.get("LABBIO_BUILD_DIR", "/tmp")), download_work_root=Path("/tmp"),
+            resources=RequestedResources(cpus=2.0, memory_mb=8192, timeout_seconds=3600),
+            # Not created here: the builder must create it, as for a fresh site.
+            cache_dir=base / "pip-cache", index_url=INDEX_URL, proxy_url=PROXY,
+        )
+        if options.get("download") == "job":
+            placement = {"download_launcher": SchedulerLauncher(
+                template=BUILTIN_TEMPLATES["slurm"],
+                policy=_scheduler_policy(partition=os.environ["LABBIO_DOWNLOAD_PARTITION"]),
+                workspace_root=jobs_root)}
+        else:
+            placement = {"download_runner": DownloadRunner(max_file_bytes=SIF_BYTES, cpu_seconds=1800)}
+        builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
+                                              job_ledger=ledger, **placement)
+        service = EnvironmentService(root=base / "environments", image_registry=ApprovedImageRegistry((image,)),
+                                     builder=builder, owner_user_id="real-test-user")
+        yield service, ledger, launcher, sif_store, base
+    finally:
+        if ledger is not None:
+            ledger.close()
+        if os.environ.get("LABBIO_KEEP_TEST_FILES") != "1":
+            shutil.rmtree(base, ignore_errors=True)
 
 
 def _jobs(base, ledger, run_id):
@@ -194,6 +201,7 @@ async def test_environment_is_built_in_a_job_and_runs_a_task(site):
     assert list((base / "environment-jobs").iterdir()) == []
     attempt = next((base / "environments" / "attempts").iterdir())
     assert not (attempt / "download" / "wheels").exists() and (attempt / "lock.txt").is_file()
+    assert ((base / "pip-cache").stat().st_mode & 0o777) == 0o700  # Created private by the builder.
 
     # The built environment executes like any approved image: scheduled, isolated, no network.
     store = LocalArtifactStore(base / "artifacts", trace_recorder=RunTraceRecorder(InMemoryTraceSink()))
@@ -234,8 +242,6 @@ async def test_requirements_the_base_image_satisfies_build_without_downloading(s
 @pytest.mark.asyncio
 @pytest.mark.parametrize("site", [{"download": "job"}], indirect=True)
 async def test_download_can_run_as_a_job_on_a_network_partition(site):
-    if not os.environ.get("LABBIO_DOWNLOAD_PARTITION"):
-        pytest.skip("set LABBIO_DOWNLOAD_PARTITION to a partition whose nodes can reach the index")
     service, ledger, _, _, base = site
     run_id = uuid4()
 

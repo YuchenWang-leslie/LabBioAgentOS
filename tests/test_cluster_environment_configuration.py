@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from pathlib import Path
 
 import pytest
@@ -178,6 +179,9 @@ def test_login_downloads_need_one_architecture_and_a_reachable_index(tmp_path):
     assert resolve[resolve.index("--proxy") + 1] == PROXY
     assert resolve[resolve.index("--index-url") + 1] == "https://pypi.example/simple"
     assert f"{ca}:/labbio/ca.pem:ro" in resolve and "--cert" in resolve
+    # The check binds the pip cache exactly as the download does, creating it first.
+    assert f"{tmp_path / 'pip-cache'}:/labbio/cache:rw" in resolve and "--no-cache-dir" not in resolve
+    assert stat.S_IMODE((tmp_path / "pip-cache").stat().st_mode) == 0o700
     assert list((tmp_path / "login-tmp").iterdir()) == []
 
 
@@ -204,6 +208,17 @@ def test_unreachable_index_or_old_pip_refuses_login_downloads(tmp_path, check, r
                                       host_machine="x86_64")
 
     assert report["download_check"] == expected and report["failures"] == ["environment_download"]
+
+
+def test_an_unusable_pip_cache_is_reported_before_any_check(tmp_path):
+    (tmp_path / "pip-cache").mkdir()
+    (tmp_path / "pip-cache").chmod(0o777)
+    runner = Runner()
+
+    report = check_environment_builds(_settings(tmp_path), tmp_path / "base.sif", runner=runner,
+                                      host_machine="x86_64")
+
+    assert report["failures"] == ["environment_cache_dir"] and runner.calls == []
 
 
 def test_job_downloads_are_reported_as_unchecked(tmp_path):
