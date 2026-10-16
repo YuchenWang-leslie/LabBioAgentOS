@@ -308,13 +308,14 @@ class SubprocessApptainerRunner(ProcessRunner):
             environment["APPTAINER_TMPDIR"] = str(self.tmp_dir)
         return environment
 
+    def child_limits(self) -> None:
+        """Runs in the child before exec: limits the size of any file it writes."""
+
+        limit = self.max_output_file_bytes
+        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+
     def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
         started = time.monotonic()
-        limit = self.max_output_file_bytes
-
-        def limit_file_size() -> None:
-            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
-
         try:
             process = subprocess.Popen(
                 list(argv),
@@ -324,7 +325,7 @@ class SubprocessApptainerRunner(ProcessRunner):
                 stderr=subprocess.PIPE,
                 env=self.environment(),
                 start_new_session=True,
-                preexec_fn=limit_file_size,
+                preexec_fn=self.child_limits,
             )
         except OSError as exc:
             raise ContainerStartError(f"Could not start the container runtime: {exc}") from exc
