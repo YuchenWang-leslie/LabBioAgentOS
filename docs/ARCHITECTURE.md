@@ -101,17 +101,23 @@ filename or modification time.
 
 ## Current evidence boundary
 
-The deterministic suite currently passes 1357 tests with 10 intentional skips.
+The deterministic suite currently passes 1382 tests with 10 intentional skips.
 Generic live model behavior, dynamic collaboration, interruption/recovery,
 Docker execution, and one bounded ordinary-user PBMC3k task through an
 Agent-authored report have been observed. This does not establish independent
 scientific review or general repeatability.
 
-Immutable P8 release `native-p8-20261014T025522Z` completed isolated runtime,
-packaged live, manifest, rollback, and active-current verification. It is the
+Immutable release `native-p8-20261016T085718Z` completed isolated installation,
+exact source/package comparison, manifest, rollback, and fresh active-current verification. It is the
 active production pointer. Local delivery uses the exact report Artifact
 selected by the persisted REPORT stage; other registered reports remain
 historical audit evidence rather than final deliverables.
+
+Tool rejection feedback carries bounded field locations and error types;
+provider protocol failures retain their failing component without response
+bodies. A premature capability handoff receives one correction with exact
+missing required-capability facts inside the original budget. The model still
+chooses calls, arguments and order; the final required-capability guard remains.
 
 ## Related documents
 

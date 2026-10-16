@@ -7,7 +7,8 @@ governed lifecycle closed; it does not establish that a scientific method,
 result, interpretation, or report is correct. Independent review remains
 required.
 
-Current real-task evidence covers one bounded PBMC3k descriptive task. It is not
+Current real-task evidence covers a bounded PBMC3k descriptive task and an
+exploratory annotated-H5AD source task with a separate delivery revision. It is not
 a repeatability study or validation across data types, methods, providers, and
 failure modes.
 
@@ -62,8 +63,11 @@ the service does not self-grade scientific quality.
 ## Release status
 
 The deterministic suite is green and immutable P8 release
-`native-p8-20261014T025522Z` passed clean-install, packaged live, manifest,
+`native-p8-20261016T085718Z` passed clean-install, exact source/package comparison, manifest,
 rollback, and active-current verification. Production points to that release.
 The active-current task is a bounded runtime validation, not independent
 scientific review or evidence of general repeatability. No profile or Skill
 was activated or promoted with the release.
+Fresh bioinformatics validation on this release remains outstanding. Failed
+candidate runs and inactive uncertain source checkpoints are retained as audit
+evidence; they are not resumable production work or active leases.

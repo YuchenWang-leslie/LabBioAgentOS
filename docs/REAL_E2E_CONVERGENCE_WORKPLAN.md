@@ -7,12 +7,13 @@ wheel, isolated runtime, and active P8 release contain no legacy third-party
 kernel package, adapter, dependency, source path, or runtime fallback. Scientific methods,
 parameters, programs, interpretation, and report content remain Agent-owned.
 
-Local source commit `e1be8920373749a553bc915e9839b9086d0698b2`
-contains the final-report selection fix. A clean detached worktree passed 1357
-tests with 10 intentional skips. The wheel has 99 entries and no legacy-kernel
-path or content match. GitHub synchronization is not complete: the configured SSH
-proxy and direct SSH paths timed out on 2026-10-14, so the local branch remains
-ahead of its last fetched remote-tracking reference.
+Production source commit `3b5ed8383ecad14f85693a08948e09fd96efeb39`
+contains the advanced-task fixes and the deployment-discovered feedback and
+diagnostic repairs. A clean detached worktree passed 1382 tests with 10 skips.
+Its wheel has 99 entries and no legacy-kernel path or content match. GitHub
+synchronization remains incomplete: a bounded remote-reference check timed out
+on 2026-10-16. The local example configuration's independent edit is preserved
+and excluded from the release.
 
 ## Root causes closed
 
@@ -34,6 +35,34 @@ delivery/revision tests.
 ## Production release
 
 Production `current` points to immutable release
+`native-p8-20261016T085718Z` from the exact source commit above.
+
+- 6310 manifest entries verified before and after active-current live;
+- manifest SHA-256:
+  `06308603b45f5cce1d3a79caa9336d9ef984692d5f522929c1c8eb348b6c7887`;
+- wheel SHA-256:
+  `c5381338b270c139ed39801b9a3c43177184b61d70e944a362da96485202c2ed`;
+- validation receipt SHA-256:
+  `a0e42fde1141542c5f08027159b1efcb237bf10c76b1e492827fa36e043144a5`;
+- isolated package code matches the clean source byte-for-byte;
+- rollback rehearsal to `native-p8-20261014T025522Z` passed;
+- external activation and rollback receipts:
+  `/media/desk16/iy1982/WYC/LabBioAgentOS-production/receipts/native-p8-20261016T085718Z/`.
+
+Fresh active-current run `c7d47845-6616-41c1-94e1-cdbc51e017ec` completed
+through LEARN with no issue codes. Execution
+`9ba76f2e-daa3-4166-8f13-b9d2b2985fe1` succeeded, output
+`d7dc40e3-e824-4e59-b451-404bc52a9474` contains seven queryable records, and
+report `5dc86287-16e7-4e36-b473-ebc560a7c50b` matches the persisted REPORT
+selection. The exported report SHA-256 is
+`d1b4cbfdc11402bccd7401f327e87b1ebfbd6afae8e5fad653a7d1c1d988fd41`.
+Delivery hashes, provider-free status and idempotent export passed. No external
+profile or Skill was activated/promoted. The deployed surface is the local CLI;
+there is no API/worker service or PostgreSQL/Redis/RQ service in this release.
+
+### Previous activation history — 2026-10-14
+
+The previous production release was
 `native-p8-20261014T025522Z`, built from exact clean source commit
 `e1be8920373749a553bc915e9839b9086d0698b2`.
 
@@ -143,11 +172,11 @@ coverage checking and registered final report
 The report preserves the no-biological-replicate, cell-level-exploratory and
 failure-lineage boundaries and adds no new scientific claim.
 
-These fixes remain source-only. Production still points to the immutable P8
-release above; no profile or Skill was activated or promoted. The final source
-tree passes 1375 tests with 10 intentional skips under Python 3.11.
+These fixes were source-only at the end of that validation and are now included
+in the 2026-10-16 production release above. That source snapshot passed 1375
+tests with 10 intentional skips under Python 3.11.
 
-## Cleanup and unique continuation
+## Authorized deployment — 2026-10-16
 
 Deployment was authorized on 2026-10-16. The advanced-task fixes were committed
 as `e4d6fe38f6d3c37f44f245c3592783a95b74c533`, excluding the independently
@@ -176,8 +205,8 @@ the process exited and its uncertain checkpoint remains `STAGE_IN_FLIGHT`.
 The provider adapter now attaches only the failing response component and safe
 validation type to that error, and the runtime persists those facts. No provider
 response body is logged and the protocol validator is unchanged. The merged
-source suite passes 1379 tests with 10 skips. Production still points to
-`native-p8-20261014T025522Z`.
+source suite passed 1379 tests with 10 skips. The production pointer remained
+`native-p8-20261014T025522Z` throughout these rejected attempts.
 
 Candidate `native-p8-20261016T084218Z` was also rejected before activation.
 Its run `f6fc00d1-c176-4392-807d-3406d7e3ce17` returned only an INTAKE tool
@@ -198,11 +227,30 @@ registered queryable output `e5078a3b-3372-4320-9836-6d288c801470` and report
 `4571ab7e660ac515fdd4f151126673a4795bdee48588b32b74c18f8891cf0ec5`.
 The merged source suite passes 1382 tests with 10 skips.
 
-The unique continuation is to build a clean immutable release from the
-validated source, verify its isolated installation and exact package content,
-then activate it with rollback available and perform fresh active-current live
-validation under the existing deployment authorization. Do not repeat rejected
-attempts without new persisted or external evidence.
+The validated source was committed, clean-built and activated as recorded in
+the current production section. Two rejected candidate directories retain
+their rejection receipts. The failed source checkpoints
+`06bde029-69c0-44c3-8451-ca5a3c71894d` and
+`f4eca72a-d7bf-49eb-9e72-ab4a60bb7780` retain their uncertain in-flight state;
+they have no live process, container or owned lock and were not resumed.
+
+## Cleanup and next entry
+
+All three temporary build worktrees were removed after their exact commits and
+clean status were checked. They can be reconstructed from Git. No active
+LabBio process, retained task container or owned run lock remains. Failed and
+completed run evidence is preserved; the active-current run is terminal and
+stable. Source `PRODUCTIONIZATION_DEBUG_GUIDE.md` remains absent; this workplan,
+the architecture and local entrypoint documents provide the available handoff.
+
+Generic active-current live is complete. Earlier advanced H5AD source execution
+and its final delivery revision remain valid bounded evidence; no fresh
+bioinformatics task or independent scientific review has been completed on this
+new production release. The next task entry is a fresh production H5AD task in
+the existing ADVANCED_H5AD project through `current/bin/labbio`, preserving the
+Agent's ownership of analysis, environment, program correction and conclusions.
+Do not resume the inactive uncertain checkpoints or promote a profile/Skill as
+a substitute for this validation.
 
 At the end of the 2026-10-14 validation, no active LabBio process or retained
 task container remained. Run directories
