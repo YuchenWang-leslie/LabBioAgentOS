@@ -239,17 +239,61 @@ compute nodes for workspace, SIF store, and job logs is a prerequisite. Job
 completion and exit codes are read from that filesystem. Data staging is out
 of scope.
 
+### DECIDED-C13-8 — Cluster environment builds
+
+Decided by MOHAN CUI on 2026-10-16. A cluster environment build separates
+downloading from building, and all heavy work runs in scheduler jobs. A
+build that runs entirely on the login node was rejected: it places heavy
+work where resources are limited and some sites forbid it.
+
+1. Download, with network. `pip download --only-binary=:all:` runs inside the
+   base SIF and writes wheels to a per-user wheelhouse on the shared
+   filesystem. It runs on the login node by default, or as a job on an
+   operator-configured network-capable partition. The sha256 of every wheel
+   is recorded in a lock list. Build proxy and CA bundle settings reach only
+   this step.
+2. Build job, without network. On a compute node the base SIF is extracted
+   into a writable sandbox in node-local scratch. Only the locked wheels are
+   installed, with `pip install --no-index --no-deps --require-hashes`, so
+   dependencies are never resolved a second time; `pip check` follows. The
+   sandbox is packed into a SIF on the shared filesystem, and the import
+   probe runs in the same job with the execution isolation flags.
+3. Completion, on the login node. The control plane verifies the SIF hash,
+   registers it in the SIF store, and records the lock list as build
+   provenance.
+
+Build jobs have their own scheduler resources and are recorded in the job
+ledger. After a crash they follow DECIDED-C13-4: cancelled, partial outputs
+deleted, never resubmitted. Waiting follows DECIDED-C13-3. Capabilities only
+a compute node can confirm (writable sandbox, SIF packing) are probed inside
+a job. Failures use the Docker builder's failure codes.
+
+Site-dependent mitigations that are part of the design: a configurable
+build directory for node-local scratch; a CA bundle setting for
+TLS-intercepting proxies; an index URL without credentials; time and CPU
+limits on the download step; `backend-check` refusing login-node downloads
+when the login node's CPU architecture differs from the base SIF's; cleanup
+of partial downloads at restart; a preempted build job reported as failed,
+not resubmitted. The SIF store must be on storage that is not purged.
+
+Accepted weaknesses: builds take longer than local Docker builds and wait
+for the queue inside the tool call; dependency resolution and downloads
+still use the login node unless the download runs as a job; the build has
+more moving parts than a single-host build.
+
+Scope is unchanged: wheels only, as in the local Docker builder. Source
+builds, conda packages, system libraries, fakeroot `.def` builds, and GPU
+support are not part of C13.
+
+This refines DECIDED-C13-1: only the network-dependent download step runs on
+the login node (or on a configured network-capable partition); the build
+itself runs in a network-disabled job.
+
 ### OPEN-C13-E — Unprivileged network isolation
 
 Whether `--net --network none` works unprivileged depends on Apptainer version
 and site configuration. Proposed: probe at startup and fail closed where it
 is unavailable; such sites are unsupported.
-
-### OPEN-C13-H — Cluster environment build tiers
-
-Proposed first tier: build from a base SIF through a writable sandbox on the
-login node. fakeroot `.def` builds and networked build jobs are later
-enhancements.
 
 ### OPEN-C13-I — Gold Skill image identity across backends
 
