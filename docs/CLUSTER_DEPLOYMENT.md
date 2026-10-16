@@ -1,12 +1,11 @@
 # Cluster Deployment
 
-> **Status: implemented, pending real-cluster scheduler acceptance.** The
-> commands, configuration sections, and checks below exist on the C13 branch;
-> an end-to-end run through a real scheduler is still to be accepted.
-> Environment builds under Apptainer (phase 4) are not available yet. Example
-> configuration: `examples/cluster-runtime.toml`. Design and decisions:
+> **Status:** execution through a real scheduler is accepted on a test cluster
+> (C13 phase 3a). Environment builds (phase 4) are implemented and pending
+> real-cluster acceptance. Example configuration:
+> `examples/cluster-runtime.toml`. Design and decisions:
 > `C13_APPTAINER_EXECUTION_GAP_MEMO.md` and the C13 section of
-> `OPEN_DECISIONS.md`.
+> `OPEN_DECISIONS.md` (environment builds: DECIDED-C13-8).
 
 Audience: an operator installing LabBioAgentOS on an HPC cluster for a lab.
 
@@ -14,17 +13,19 @@ Audience: an operator installing LabBioAgentOS on an HPC cluster for a lab.
 
 ```
 login node (has external network)                 compute nodes
-┌──────────────────────────────────────┐          ┌──────────────────────────┐
-│ LabBio control plane                 │  submit  │ job script               │
-│  - workflow, run state, trace        │ ───────► │  └─ apptainer exec       │
-│  - LLM provider calls                │  poll    │       --net --network none│
-│  - job submission / ledger           │ ◄─────── │       (analysis script)  │
-│  - capability probe, SIF register    │          └──────────────────────────┘
-│  - environment builds                │
-└──────────────────────────────────────┘
+┌──────────────────────────────────────┐          ┌───────────────────────────────┐
+│ LabBio control plane                 │  submit  │ analysis job                  │
+│  - workflow, run state, trace        │ ───────► │  └─ apptainer exec            │
+│  - LLM provider calls                │  poll    │       --net --network none    │
+│  - job submission / ledger           │ ◄─────── │       (analysis script)       │
+│  - capability probe, SIF register    │          │ environment build job         │
+│  - wheel download for environment    │          │  └─ sandbox, locked install,  │
+│    builds (or as a job, see §5)      │          │     pip check, pack SIF,      │
+└──────────────────────────────────────┘          │     import check; no network  │
+                 │                                └───────────────────────────────┘
                  │                                    │
                  └──────── shared filesystem ─────────┘
-                    workspace, SIF store, job logs
+          workspace, SIF store, environments, job logs
 ```
 
 - The control plane runs on the login node and stays running while jobs are
@@ -32,8 +33,10 @@ login node (has external network)                 compute nodes
 - Analysis scripts always run on compute nodes through the scheduler, inside
   Apptainer, with network disabled by Apptainer itself.
 - The login node runs only light operations: LLM calls, job submission,
-  capability probing, SIF registration, and dependency environment builds. It
-  never runs model-authored analysis scripts.
+  capability probing, SIF registration, and the wheel download of an
+  environment build (unless downloads run as jobs). Installing, checking and
+  packing an environment run in a compute-node job. The login node never runs
+  model-authored analysis scripts.
 - Raw data stays on the cluster filesystem. Remote LLMs receive only what the
   Artifact exposure policy allows, exactly as in local mode.
 
@@ -57,8 +60,10 @@ supported cluster mode.
 | Unprivileged `--net --network none` | Network isolation; without it execution is refused |
 | A filesystem shared by login and compute nodes | Workspace, SIF store, job logs; no data staging is performed |
 | Scheduler CLI on the login node (any scheduler describable by a template) | Job submission and polling |
-| External network on the login node | LLM provider and dependency downloads |
+| External network on the login node | LLM provider; wheel downloads unless they run as jobs on a network-capable partition |
 | Python 3.11 conda environment on the login node | LabBio itself |
+| Base images with pip 22.2 or later (environment builds only) | Wheels are resolved with `pip install --dry-run --report` |
+| On compute nodes: a writable node-local directory, unprivileged `apptainer build --sandbox`, and SIF packing (environment builds only) | The build job unpacks, installs and packs there; every build job checks this first |
 | Site permission for a long-lived login-node process | The control plane waits for jobs; some sites do not allow this (`KNOWN_LIMITATIONS.md`) |
 
 Compute nodes do not need network. If they have it, it is still disabled for
@@ -78,8 +83,16 @@ Checks:
   image does not already contain `/labbio` and `/workspace`.
 - cgroup resource flags (`--cpus`, `--memory`). Non-security; when missing,
   limits come from the scheduler allocation.
-- Writable sandbox support. Not checked yet; needed only for environment
-  builds (phase 4).
+- Environment builds, when `[environment]` is configured:
+  - downloads on the login node: the login node, the base SIF and the
+    configured `machine` must share one CPU architecture, and pip in the base
+    SIF must resolve from the package index with the configured proxy, index
+    and CA bundle (this also proves pip 22.2 or later);
+  - downloads as jobs: reported as unchecked, since only a submitted job could
+    tell;
+  - writable sandbox and SIF packing exist only on compute nodes, so every
+    build job checks them before building and reports the builder as
+    unavailable when they fail.
 - Scheduler client commands (submit, status, cancel) on the login node's
   `PATH`. Where the template defines a validation-only submission (bundled
   Slurm: `sbatch --test-only`), a job script built from this configuration
@@ -88,8 +101,9 @@ Checks:
 - SIF store directory permissions (0700, no symlinks) and the registered
   SIF's hash.
 
-A failed security item stops startup. A failed scheduler check is reported
-under `configuration_failures` and also refuses execution. A failed
+A failed security item stops startup. A failed scheduler or environment
+build check is reported under `configuration_failures` and makes the overall
+status `REFUSED`. A failed
 non-security item is reported, recorded in the trusted trace, and the related
 feature is degraded or disabled.
 
@@ -115,10 +129,11 @@ Build or convert the SIF on a machine with network (for example
 `apptainer build scientific-python.sif docker://...` on the login node).
 Compute nodes never pull images.
 
-## 5. Site configuration (proposed)
+## 5. Site configuration
 
-Field names are proposals and may change during implementation. Keep the file
-outside the repository; credentials belong only in the provider env file.
+The fields below match the implementation; `examples/cluster-runtime.toml` is
+the complete example. Keep the file outside the repository; credentials belong
+only in the provider env file.
 Paths are resolved to real paths when the configuration is loaded, so sites
 whose home directory is a symbolic link can still use `~` paths.
 
@@ -172,15 +187,54 @@ max_queue_seconds = 86400      # longer queues are cancelled and reported as a t
 completion_grace_seconds = 60  # shared-filesystem lag allowed for the exit record
 extra_directives = []          # single plain lines; never export or login-env flags
 
-# Login-node environment builds (phase 4; not yet available with Apptainer).
-# [environment]
-# root = "/shared/lab/labbio/Environments"
-# build_proxy = "http://proxy.site:3128"   # build subprocess only
+[environment]                  # optional: model-requested Python environments (wheels only)
+root = "/shared/lab/labbio/environments"   # shared filesystem
+# build_proxy = "http://proxy.site:3128"   # download step only; no credentials
+
+[environment.cluster]          # required with [environment] under Apptainer
+machine = "x86_64"             # required: CPU architecture of compute nodes and base SIFs
+build_dir = "/tmp"             # node-local on compute nodes; taken literally
+cpus = 4.0                     # build job resources
+memory_mb = 16384
+build_timeout_seconds = 7200.0
+max_file_bytes = 34359738368   # largest file a build job may write: the packed SIF
+# partition = "regular"        # build jobs; defaults to [launcher] partition
+download_placement = "login"   # or "job" with download_partition = "<partition with network>"
+download_work_root = "/tmp"
+download_timeout_seconds = 1800.0
+download_cpu_seconds = 1800
+cache_dir = "/shared/lab/labbio/pip-cache"
+# index_url = "https://pypi.site/simple"   # mirror without credentials
+# ca_bundle = "/etc/pki/tls/certs/site-ca.pem"
 ```
 
 `tmpfs_size_mb` has no effect under Apptainer: `/tmp` lives in the
 per-execution scratch directory and is bounded only by the per-file size
 limit.
+
+### Environment builds
+
+When the runtime model asks for an environment, the build runs in three parts:
+
+1. **Download (the only step with network).** Inside the base SIF, pip resolves
+   the request with `--dry-run --report`, so packages the base image already
+   satisfies are kept. Exactly the resolved wheels are then downloaded, and
+   each is pinned by sha256 in a lock list. This runs on the login node at low
+   priority with CPU, time and file-size limits, or, with
+   `download_placement = "job"`, as a job on the named partition. The build
+   proxy, index URL and CA bundle reach only this step.
+2. **Build job (no network).** On a compute node, the base SIF is unpacked into
+   a writable sandbox under `build_dir`, only the locked wheels are installed
+   (`--no-index --no-deps --require-hashes`), `pip check` runs, the sandbox is
+   packed into a SIF, and the import check runs with the execution isolation
+   flags.
+3. **Registration (login node).** The packed SIF is registered in the SIF store
+   by its sha256 and the lock list is kept in the environment record as
+   provenance. The model sees only the image key and the verified package
+   inventory.
+
+Build and download jobs are recorded in the job ledger under the run that
+requested them, so the run's crash cleanup covers them.
 
 ### Scheduler templates
 
@@ -219,8 +273,10 @@ LabBio refuses to start or to execute when:
 - the Apptainer `binary` is not an absolute path;
 - an extra directive is not a single plain line, or touches environment
   export, the login environment, or a key LabBio manages;
-- an `[environment]` section is configured with the Apptainer backend (until
-  phase 4);
+- an `[environment]` section under Apptainer lacks `[environment.cluster]`, or
+  one under Docker has it;
+- `download_placement = "job"` is set without `download_partition`;
+- a build proxy or package index URL carries credentials;
 - `--net --network none` is unavailable unprivileged;
 - a required bind target cannot be created and the image does not provide it;
 - `image_reference` is not a registered SIF, the file is missing, writable, a
@@ -235,14 +291,19 @@ LabBio refuses to start or to execute when:
 - **Restarts and upgrades.** Every LabBio upgrade changes the runtime revision,
   so runs started before an upgrade cannot continue afterwards. Drain or finish
   runs first.
-- **Crash during a job.** Submitted jobs are recorded in a job ledger under the
-  run root. After a crash, reconciliation cancels jobs that are still queued
-  or running, and reports finished ones and deletes their output files. It
-  never resubmits, and the run is reported as blocked for operator review.
+- **Crash during a job.** Submitted jobs, including environment build and
+  download jobs, are recorded in a job ledger under the run root. After a
+  crash, reconciliation cancels jobs that are still queued or running, and
+  reports finished ones and deletes their output files. It never resubmits,
+  and the run is reported as blocked for operator review. Wheels left by an
+  interrupted build are deleted by the next build.
 - **Queue time.** The control plane waits for each job inside a single tool
   call. Runtime progress timers do not cut off that wait, but the login-node
   process must stay alive for the whole queue and run time. Prefer partitions
   with short waits.
 - **Disk.** Per-execution scratch directories are removed automatically.
-  Clean the Apptainer cache and tmp directories per site policy; the SIF store
-  should only grow through `image-register`.
+  Clean the Apptainer cache and tmp directories per site policy. The SIF store
+  grows through `image-register` and through environment builds, one SIF per
+  distinct environment; keep it on storage that is not purged. Downloaded
+  wheels are deleted after each build; the pip cache directory grows and can
+  be cleared at any time.
