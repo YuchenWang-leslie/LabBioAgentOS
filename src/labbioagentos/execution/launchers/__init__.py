@@ -11,7 +11,7 @@ from .base import (
 )
 from .job_script import SchedulerPolicy, render_job_script, validate_extra_directives
 from .local import LocalLauncher
-from .scheduler import SchedulerCommandRunner, SchedulerLauncher
+from .scheduler import SchedulerCommandRunner, SchedulerLauncher, check_scheduler_client
 from .templates import BUILTIN_TEMPLATES, SchedulerTemplate
 
 __all__ = [
@@ -28,6 +28,7 @@ __all__ = [
     "SchedulerPolicy",
     "SchedulerTemplate",
     "TERMINAL_STATES",
+    "check_scheduler_client",
     "render_job_script",
     "validate_extra_directives",
 ]

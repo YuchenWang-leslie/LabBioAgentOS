@@ -70,21 +70,28 @@ every execution.
 labbio backend-check --config <site-config>.toml
 ```
 
-Planned checks:
+Checks:
 
-- Apptainer version and binary path.
+- Apptainer version (at least 1.1) and binary path.
 - Unprivileged network isolation (`--net --network none`). **Security item.**
 - Bind to a target absent from the image. **Security item** when the base
   image does not already contain `/labbio` and `/workspace`.
 - cgroup resource flags (`--cpus`, `--memory`). Non-security; when missing,
   limits come from the scheduler allocation.
-- Writable sandbox support. Non-security; needed only for environment builds.
-- Scheduler CLI reachable and the configured partition/account accepted.
-- SIF store directory permissions (0700, no symlinks).
+- Writable sandbox support. Not checked yet; needed only for environment
+  builds (phase 4).
+- Scheduler client commands (submit, status, cancel) on the login node's
+  `PATH`. Where the template defines a validation-only submission (bundled
+  Slurm: `sbatch --test-only`), a job script built from this configuration
+  must be accepted, which checks partition, account, QoS and directives
+  without queueing anything.
+- SIF store directory permissions (0700, no symlinks) and the registered
+  SIF's hash.
 
-A failed security item stops startup. A failed non-security item is reported,
-recorded in the trusted trace, and the related feature is degraded or
-disabled.
+A failed security item stops startup. A failed scheduler check is reported
+under `configuration_failures` and also refuses execution. A failed
+non-security item is reported, recorded in the trusted trace, and the related
+feature is degraded or disabled.
 
 The same probe also runs automatically once per process before the first
 execution; if a security item fails, that execution is refused. Read-only

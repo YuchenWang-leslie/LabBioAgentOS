@@ -237,9 +237,38 @@ def test_backend_check_report(tmp_path, enforcement, capabilities, passed, failu
         calls.append(arguments)
         return capabilities
 
-    report, ok = check_backend(load_settings(config), probe=probe)
+    report, ok = check_backend(load_settings(config), probe=probe, scheduler_check=_healthy_scheduler)
 
     assert ok is passed and report["security_failures"] == failures
+    assert report["configuration_failures"] == []
     assert report["status"] == ("OK" if passed else "REFUSED")
     assert calls[0]["sif_path"] == tmp_path / "sif" / f"{SIF_REFERENCE.removeprefix('sha256:')}.sif"
     assert calls[0]["scratch_root"] == tmp_path / "scratch"
+
+
+def _healthy_scheduler(template, policy, work_root):
+    return {"template": template.name, "test_submission": "ACCEPTED",
+            "clients": {"sbatch": True, "squeue": True, "scancel": True}}
+
+
+@pytest.mark.parametrize("scheduler, expected", [
+    ({"clients": {"sbatch": False, "squeue": True, "scancel": True},
+      "test_submission": "UNSUPPORTED"}, ["scheduler_client"]),
+    ({"clients": {"sbatch": True, "squeue": True, "scancel": True},
+      "test_submission": "REJECTED", "detail": "invalid partition"}, ["scheduler_submission"]),
+])
+def test_backend_check_refuses_an_unusable_scheduler(tmp_path, scheduler, expected):
+    config = _write(tmp_path)
+    cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))])
+    seen = []
+
+    def scheduler_check(template, policy, work_root):
+        seen.append((template.name, policy.partition, work_root))
+        return {"template": template.name, **scheduler}
+
+    report, ok = check_backend(load_settings(config), probe=lambda **_: _capabilities(),
+                               scheduler_check=scheduler_check)
+
+    assert not ok and report["status"] == "REFUSED"
+    assert report["security_failures"] == [] and report["configuration_failures"] == expected
+    assert seen == [("slurm", "regular", tmp_path / "scratch")]

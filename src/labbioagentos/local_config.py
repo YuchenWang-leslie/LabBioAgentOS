@@ -335,12 +335,29 @@ def _load_provider(settings: LocalProviderSettings) -> None:
     os.environ["OPENAI_API_BASE"] = endpoint
 
 
+def scheduler_policy(settings: LocalSettings):
+    """Operator scheduler policy from configuration; never from model or task text."""
+    from .execution.launchers import SchedulerPolicy
+
+    apptainer, launcher = settings.execution.apptainer, settings.launcher
+    return SchedulerPolicy(
+        max_output_file_bytes=settings.execution.max_output_file_bytes,
+        partition=launcher.partition, account=launcher.account, qos=launcher.qos,
+        walltime_margin_seconds=launcher.walltime_margin_seconds,
+        poll_interval_seconds=launcher.poll_interval_seconds,
+        max_queue_seconds=launcher.max_queue_seconds,
+        completion_grace_seconds=launcher.completion_grace_seconds,
+        extra_directives=launcher.extra_directives,
+        apptainer_cache_dir=apptainer.cache_dir, apptainer_tmp_dir=apptainer.tmp_dir,
+    )
+
+
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     """Scheduler + Apptainer wiring; the capability probe runs before the first execution."""
     from .execution.apptainer import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
     from .execution.apptainer_probe import probe_capabilities
     from .execution.job_ledger import JobLedger
-    from .execution.launchers import SchedulerLauncher, SchedulerPolicy
+    from .execution.launchers import SchedulerLauncher
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
     image = settings.execution.approved_image()
@@ -360,16 +377,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
         capabilities.require(resource_enforcement=apptainer.resource_enforcement)
         return capabilities.trace_record(resource_enforcement=apptainer.resource_enforcement)
 
-    policy = SchedulerPolicy(
-        max_output_file_bytes=settings.execution.max_output_file_bytes,
-        partition=launcher.partition, account=launcher.account, qos=launcher.qos,
-        walltime_margin_seconds=launcher.walltime_margin_seconds,
-        poll_interval_seconds=launcher.poll_interval_seconds,
-        max_queue_seconds=launcher.max_queue_seconds,
-        completion_grace_seconds=launcher.completion_grace_seconds,
-        extra_directives=launcher.extra_directives,
-        apptainer_cache_dir=apptainer.cache_dir, apptainer_tmp_dir=apptainer.tmp_dir,
-    )
+    policy = scheduler_policy(settings)
     return {
         # The login node runs only the data-free import probe through this runner.
         "process_runner": runner,

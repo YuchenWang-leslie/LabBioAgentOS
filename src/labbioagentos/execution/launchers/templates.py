@@ -36,6 +36,8 @@ class SchedulerTemplate(BaseModel):
     status_map: dict[str, GoneOrState]
     gone_pattern: str | None = None
     cancel: tuple[str, ...] = Field(min_length=1)
+    # Optional validation-only submission of a script; nothing is queued or run.
+    test_submit: tuple[str, ...] = ()
     # Directive formats by logical key; a key without a format cannot be configured.
     directives: dict[DirectiveKey, str]
     fixed_directives: tuple[str, ...] = ()
@@ -59,12 +61,14 @@ class SchedulerTemplate(BaseModel):
         if re.compile(self.status_pattern).groups != 1:
             raise ValueError("status_pattern must capture exactly one group")
         for command, allowed in ((self.submit, {"script"}), (self.status, {"job_id"}),
-                                 (self.cancel, {"job_id"})):
+                                 (self.cancel, {"job_id"}), (self.test_submit, {"script"})):
             used = {name for item in command for name in _PLACEHOLDER.findall(item)}
             if not used <= allowed:
                 raise ValueError(f"Unsupported command placeholder: {sorted(used - allowed)}")
         if "{script}" not in self.submit and not self.submit_via_stdin:
             raise ValueError("submit must pass {script} or read the script from stdin")
+        if self.test_submit and "{script}" not in self.test_submit:
+            raise ValueError("test_submit must pass {script}")
         for name in self.passthrough_environment:
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name) or _SECRET_NAME.search(name):
                 raise ValueError(f"Environment name {name!r} cannot be passed to the scheduler")
@@ -92,6 +96,7 @@ SLURM = SchedulerTemplate(
     },
     gone_pattern=r"Invalid job id",
     cancel=("scancel", "{job_id}"),
+    test_submit=("sbatch", "--test-only", "{script}"),
     directives={
         "job_name": "--job-name={job_name}",
         "walltime": "--time={walltime}",

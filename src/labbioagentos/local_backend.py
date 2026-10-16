@@ -11,7 +11,8 @@ from .execution.apptainer import (
     SubprocessApptainerRunner,
 )
 from .execution.apptainer_probe import probe_capabilities
-from .local_config import LocalSettings
+from .execution.launchers import check_scheduler_client
+from .local_config import LocalSettings, scheduler_policy
 
 
 def _apptainer(settings: LocalSettings):
@@ -28,8 +29,10 @@ def register_image(settings: LocalSettings, sif: Path) -> dict:
     return {"image_reference": reference}
 
 
-def check_backend(settings: LocalSettings, *, probe=probe_capabilities) -> tuple[dict, bool]:
-    """Probe the site with the configured image; security failures refuse startup."""
+def check_backend(
+    settings: LocalSettings, *, probe=probe_capabilities, scheduler_check=check_scheduler_client,
+) -> tuple[dict, bool]:
+    """Probe the runtime and the scheduler client; any failure refuses execution."""
 
     apptainer = _apptainer(settings)
     report: dict = {"backend": "apptainer", "resource_enforcement": apptainer.resource_enforcement}
@@ -56,9 +59,20 @@ def check_backend(settings: LocalSettings, *, probe=probe_capabilities) -> tuple
     failures = list(capabilities.security_failures())
     if apptainer.resource_enforcement == "apptainer-cgroups" and not capabilities.cgroup_limits:
         failures.append("cgroup_limits")
+    configuration_failures = []
+    scheduler = scheduler_check(
+        settings.launcher.scheduler_template(), scheduler_policy(settings), apptainer.scratch_root,
+    )
+    if not all(scheduler["clients"].values()):
+        configuration_failures.append("scheduler_client")
+    if scheduler["test_submission"] == "REJECTED":
+        configuration_failures.append("scheduler_submission")
+    passed = not failures and not configuration_failures
     report.update(
         capabilities.trace_record(resource_enforcement=apptainer.resource_enforcement),
         security_failures=failures,
-        status="REFUSED" if failures else "OK",
+        configuration_failures=configuration_failures,
+        scheduler=scheduler,
+        status="OK" if passed else "REFUSED",
     )
-    return report, not failures
+    return report, passed

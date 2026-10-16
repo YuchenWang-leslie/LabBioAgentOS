@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from labbioagentos.execution.launchers import (
     SchedulerLauncher,
     SchedulerPolicy,
     SchedulerTemplate,
+    check_scheduler_client,
 )
 
 from scheduler_fixtures import outcome
@@ -146,3 +148,68 @@ async def test_unparsable_submission_is_a_start_failure(tmp_path, submit_stdout)
 def test_site_templates_are_validated(change):
     with pytest.raises(ValidationError):
         SchedulerTemplate.model_validate({**BUILTIN_TEMPLATES["slurm"].model_dump(), **change})
+
+
+# Operator preflight of the scheduler client.
+
+class CheckClient(CannedClient):
+    def __init__(self, bin_dir, result):
+        super().__init__(b"")
+        self.bin_dir, self.result, self.scripts = bin_dir, result, []
+
+    def environment(self):
+        return {"PATH": str(self.bin_dir)}
+
+    def run(self, argv, *, stdin=None):
+        self.commands.append(tuple(argv))
+        self.scripts.append(Path(argv[-1]).read_text())  # Removed after the check.
+        return self.result
+
+
+def _bin(tmp_path, names):
+    directory = tmp_path / "bin"
+    directory.mkdir(exist_ok=True)
+    for name in names:
+        (directory / name).write_text("#!/bin/sh\nexit 0\n")
+        (directory / name).chmod(0o755)
+    return directory
+
+
+def test_slurm_check_validates_the_configured_script_without_submitting(tmp_path):
+    client = CheckClient(_bin(tmp_path, ("sbatch", "squeue", "scancel")), outcome())
+    policy = SchedulerPolicy(max_output_file_bytes=1 << 20, partition="regular", account="lab")
+
+    report = check_scheduler_client(BUILTIN_TEMPLATES["slurm"], policy, tmp_path, client)
+
+    assert report == {"template": "slurm", "test_submission": "ACCEPTED",
+                      "clients": {"sbatch": True, "squeue": True, "scancel": True}}
+    assert client.commands[0][:2] == ("sbatch", "--test-only")
+    assert "#SBATCH --partition=regular" in client.scripts[0]
+    assert "#SBATCH --export=NONE" in client.scripts[0]
+    assert [path.name for path in tmp_path.iterdir()] == ["bin"]  # Nothing left behind.
+
+
+def test_slurm_check_reports_a_rejected_submission(tmp_path):
+    rejected = outcome(1, stderr=b"sbatch: error: invalid partition specified: nope\nmore\n")
+    client = CheckClient(_bin(tmp_path, ("sbatch", "squeue", "scancel")), rejected)
+
+    report = check_scheduler_client(BUILTIN_TEMPLATES["slurm"],
+                                    SchedulerPolicy(max_output_file_bytes=1, partition="nope"),
+                                    tmp_path, client)
+
+    assert report["test_submission"] == "REJECTED"
+    assert report["detail"] == "sbatch: error: invalid partition specified: nope"
+
+
+@pytest.mark.parametrize("name, present, expected", [
+    ("slurm", ("squeue", "scancel"), {"sbatch": False, "squeue": True, "scancel": True}),
+    ("pbs", ("qsub", "qstat", "qdel"), {"qsub": True, "qstat": True, "qdel": True}),
+])
+def test_missing_clients_or_no_dry_run_skip_the_submission(tmp_path, name, present, expected):
+    client = CheckClient(_bin(tmp_path, present), outcome())
+
+    report = check_scheduler_client(BUILTIN_TEMPLATES[name],
+                                    SchedulerPolicy(max_output_file_bytes=1), tmp_path, client)
+
+    assert report["clients"] == expected and report["test_submission"] == "UNSUPPORTED"
+    assert client.commands == []

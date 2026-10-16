@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +15,7 @@ from uuid import UUID, uuid4
 
 from ..backend import ProcessOutcome
 from ..errors import ContainerStartError
+from ..models import RequestedResources
 from .base import (
     TERMINAL_STATES,
     JobHandle,
@@ -55,6 +58,42 @@ class SchedulerCommandRunner:
             raise ContainerStartError(f"Could not start the scheduler client: {exc}") from exc
         return ProcessOutcome(exit_code=completed.returncode, stdout=completed.stdout,
                               stderr=completed.stderr, duration_seconds=time.monotonic() - started)
+
+
+def check_scheduler_client(
+    template: SchedulerTemplate,
+    policy: SchedulerPolicy,
+    work_root: Path,
+    command_runner: SchedulerCommandRunner | None = None,
+) -> dict:
+    """Operator preflight: clients on PATH and, where supported, a validation-only submit."""
+
+    runner = command_runner or SchedulerCommandRunner(template.passthrough_environment)
+    search_path = runner.environment().get("PATH", "")
+    names = dict.fromkeys(command[0] for command in (template.submit, template.status, template.cancel))
+    clients = {name: shutil.which(name, path=search_path) is not None for name in names}
+    report = {"template": template.name, "clients": clients, "test_submission": "UNSUPPORTED"}
+    if not template.test_submit or not all(clients.values()):
+        return report
+    directory = Path(tempfile.mkdtemp(prefix="labbio-scheduler-check-", dir=work_root))
+    try:
+        job_dir = directory / "job"
+        job_dir.mkdir()
+        spec = JobSpec(execution_id=uuid4(), argv=("true",), timeout_seconds=60.0,
+                       resources=RequestedResources(), workspace_root=directory)
+        script = job_dir / "job.sh"
+        script.write_text(render_job_script(template, policy, spec, job_dir, {"PATH": JOB_PATH}),
+                          encoding="utf-8")
+        argv = tuple(item.replace("{script}", str(script)) for item in template.test_submit)
+        outcome = runner.run(argv)
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    accepted = outcome.exit_code == 0 and not outcome.timed_out
+    report["test_submission"] = "ACCEPTED" if accepted else "REJECTED"
+    if not accepted:
+        lines = (outcome.stderr or outcome.stdout).decode("utf-8", "replace").strip().splitlines()
+        report["detail"] = lines[0][:300] if lines else None
+    return report
 
 
 @dataclass
