@@ -25,6 +25,8 @@ from .models import ExecutionRuntime
 
 RECIPE_VERSION = "python-wheels-v1"
 _MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_CANONICAL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 _FAILURES = {
     "BUILD_FAILED": "The container build failed; no environment was registered.",
     "BUILD_TIMEOUT": "The environment build exceeded its time limit.",
@@ -62,6 +64,8 @@ class EnvironmentBuildResult:
     failure_code: str | None = None
     diagnostics: tuple[dict, ...] = ()
     log_id: str | None = None
+    # Exact wheels installed, as {"name", "version", "sha256"}; kept as provenance, never shown.
+    locked_wheels: tuple[dict, ...] = ()
 
 
 class EnvironmentBuilder(Protocol):
@@ -112,6 +116,24 @@ def normalize_modules(values: tuple[str, ...], *, max_count: int = 64) -> tuple[
     ):
         raise EnvironmentRequestError("INVALID_IMPORT_MODULES")
     return tuple(sorted(set(values)))
+
+
+def _locked_wheels(values) -> list[dict]:
+    """Validated lock-list provenance, sorted by name; anything malformed raises ValueError."""
+    if not isinstance(values, (tuple, list)) or len(values) > 2048:
+        raise ValueError()
+    locked = []
+    for item in values:
+        if not isinstance(item, dict) or set(item) != {"name", "version", "sha256"}:
+            raise ValueError()
+        if (not isinstance(item["name"], str) or _CANONICAL_NAME.fullmatch(item["name"]) is None
+                or not isinstance(item["version"], str) or not isinstance(item["sha256"], str)
+                or _SHA256.fullmatch(item["sha256"]) is None):
+            raise ValueError()
+        locked.append({"name": item["name"], "version": str(Version(item["version"])), "sha256": item["sha256"]})
+    if len({item["name"] for item in locked}) != len(locked):
+        raise ValueError()
+    return sorted(locked, key=lambda item: item["name"])
 
 
 def _request_hash(base: str, requirements: tuple[str, ...], modules: tuple[str, ...]) -> str:
@@ -185,6 +207,7 @@ class EnvironmentService:
                 req = Requirement(value)
                 if not req.specifier.contains(image.installed_packages[canonicalize_name(req.name)], prereleases=True):
                     raise ValueError()
+            _locked_wheels(record.get("locked_wheels", []))  # Absent in records built before lock lists.
             return record, image
         except (KeyError, TypeError, ValueError):
             raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
@@ -280,6 +303,7 @@ class EnvironmentService:
                         raise ValueError()
                     image = ApprovedImage(key="env-" + request_hash, reference=result.image_id,
                         runtime=ExecutionRuntime.PYTHON, available_python_modules=verified_modules, installed_packages=inventory)
+                    locked_wheels = _locked_wheels(result.locked_wheels)
                     for value in requirements:
                         req = Requirement(value)
                         if not req.specifier.contains(inventory[canonicalize_name(req.name)], prereleases=True):
@@ -321,7 +345,7 @@ class EnvironmentService:
             record = {"owner_user_id": self.owner_user_id, "recipe_version": RECIPE_VERSION,
                 "request_hash": request_hash, "base_image_reference": base.resolved_reference,
                 "requested_requirements": requirements, "requested_import_modules": modules,
-                "image": image.model_dump(mode="json")}
+                "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels}
             try:
                 _write_private(path, record)
             except FileExistsError:

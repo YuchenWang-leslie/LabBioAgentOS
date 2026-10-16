@@ -255,6 +255,14 @@ def test_cancel_stops_the_running_step_and_removes_node_local_files(build):
     assert list(paths["node-local"].iterdir()) == []
 
 
+def test_program_can_find_mksquashfs_beside_apptainer_or_in_sbin(build):
+    _, _, _, _, program, _ = build
+    text = program.read_text()
+
+    fake_dir = str(program.parent / "bin")
+    assert f'export PATH={fake_dir}:/usr/local/sbin:/usr/sbin:/sbin:"$PATH"' in text
+
+
 def test_program_carries_no_requirement_text_or_network_settings(build):
     _, _, _, _, program, _ = build
     text = program.read_text()

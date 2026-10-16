@@ -247,6 +247,24 @@ def verify_download(download_dir: Path, *, machine: str) -> tuple[LockedWheel, .
     return wheels
 
 
+def classify_build(exit_status: int | None, *, timed_out: bool, log_dir: Path) -> tuple[str, tuple[dict, ...]]:
+    """Map a failed build job to a model-safe failure code and bounded diagnostics."""
+
+    if timed_out:
+        return "BUILD_TIMEOUT", ({"code": "BUILD_TIMEOUT"},)
+    fixed = {BuildExit.UNAVAILABLE: "BUILDER_UNAVAILABLE", BuildExit.PROBE_FAILED: "VERIFICATION_FAILED"}
+    if exit_status in fixed:
+        code = fixed[BuildExit(exit_status)]
+        return code, ({"code": code},)
+    if exit_status == BuildExit.INSTALL_FAILED:
+        text = _tail(log_dir / "install.log")
+        code = diagnose_pip_log(text)
+        return code, pip_log_diagnostics(text, code)
+    if exit_status == BuildExit.CHECK_FAILED:
+        return "PIP_CHECK_FAILED", ({"code": "PIP_CHECK_FAILED"},)
+    return "BUILD_FAILED", ({"code": "BUILD_FAILED"},)
+
+
 def classify_download(exit_status: int | None, *, timed_out: bool, log_dir: Path) -> tuple[str, tuple[dict, ...]]:
     """Map a download outcome to a model-safe failure code and bounded diagnostics."""
 
@@ -364,6 +382,8 @@ def render_build_program(
         "set -u",
         "umask 077",
         f"A={quote(str(apptainer_binary))}",
+        # Packing a SIF needs mksquashfs, which sites install beside Apptainer or in sbin.
+        f'export PATH={quote(str(apptainer_binary.parent))}:/usr/local/sbin:/usr/sbin:/sbin:"$PATH"',
         "ISOLATION=(" + " ".join(quote(item) for item in ISOLATION_ARGUMENTS) + ")",
         *_SIGNAL_SAFE_STEPS,
         f"work=$(mktemp -d {quote(str(build_dir))}/labbio-build.XXXXXXXX) || exit {unavailable}",
