@@ -364,6 +364,24 @@ class NativeKernelStageInvoker:
             no_progress_ms=self.assembly.max_no_progress_seconds * 1000,
         )
         self._emit(stage_input, TraceEventType.CAPABILITY_PHASE_STARTED, "STARTED", {})
+
+        def completion_feedback():
+            completed = {
+                item.capability_name for host in hosts for item in host.evidence_items()
+                if item.status is CapabilityEvidenceStatus.COMPLETED
+            }
+            missing = tuple(name for name in self.assembly.required_capabilities if name not in completed)
+            if not missing:
+                return None
+            self._emit(stage_input, TraceEventType.CAPABILITY_COMPLETION_REJECTED, "REJECTED", {
+                "missing_required_capabilities": list(missing),
+            })
+            return json.dumps({
+                "authority": "CONTROL_STATE",
+                "missing_required_capabilities": missing,
+                "reason": "No completed capability evidence exists for these requirements. A prose plan is not a tool call. Use the exposed tools within the remaining budget; choose their arguments and order yourself.",
+            })
+
         try:
             result = await runtime.run_leader(
                 identity=KernelIdentity(
@@ -379,6 +397,7 @@ class NativeKernelStageInvoker:
                 deadline_monotonic=(
                     monotonic() + self.assembly.max_no_progress_seconds
                 ),
+                completion_feedback=completion_feedback,
             )
         except Exception as exc:
             self._project_kernel_events(stage_input, runtime.events)
@@ -616,7 +635,12 @@ class NativeKernelStageInvoker:
                 "NATIVE_INVOCATION_FAILED",
                 "Native finalization failed before a valid result was returned.",
             )
-            self._emit_failure(stage_input, TraceEventType.FINALIZATION_PHASE_FAILED, error)
+            self._emit_failure(
+                stage_input, TraceEventType.FINALIZATION_PHASE_FAILED, error,
+                cause_code=exc.code if isinstance(exc, KernelContractError) else "UNCLASSIFIED_KERNEL_FAILURE",
+                validation_type=getattr(exc, "validation_type", None),
+                validation_fields=getattr(exc, "validation_fields", ()),
+            )
             raise error from exc
         self._emit(stage_input, TraceEventType.FINALIZATION_PHASE_COMPLETED, "COMPLETED", {
             "result_id": str(result.result_id),

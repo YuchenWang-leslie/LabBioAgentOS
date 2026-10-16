@@ -296,6 +296,7 @@ class CollaborationRuntime:
         messages: Iterable[PublicMessage],
         deadline_monotonic: float,
         max_output_tokens: int = 8_192,
+        completion_feedback: Callable[[], str | None] | None = None,
     ) -> TeamRunResult:
         if self._started:
             raise RuntimeError("CollaborationRuntime instances are single-use")
@@ -309,6 +310,7 @@ class CollaborationRuntime:
             identity=identity,
             agent_chain=(leader_id,),
             deadline_monotonic=deadline_monotonic,
+            completion_feedback=completion_feedback,
         )
         leader_messages = (
             PublicMessage(
@@ -337,6 +339,7 @@ class CollaborationRuntime:
         identity: KernelIdentity,
         agent_chain: tuple[str, ...],
         deadline_monotonic: float,
+        completion_feedback: Callable[[], str | None] | None = None,
     ) -> AgentLoop:
         profile = self.registry.profile(agent_id)
         host_registry = self.tool_registries[agent_id]
@@ -414,6 +417,7 @@ class CollaborationRuntime:
             interrupt_token=self.interrupt_token,
             no_progress_ms=self.no_progress_ms,
             event_sink=self._capture_event,
+            completion_feedback=completion_feedback,
         )
 
     async def _delegate(

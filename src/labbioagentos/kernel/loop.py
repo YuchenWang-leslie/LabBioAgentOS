@@ -57,6 +57,7 @@ class AgentLoop:
         no_progress_ms: int = 30_000,
         clock: Callable[[], float] | None = None,
         event_sink: Callable[[KernelEvent], None] | None = None,
+        completion_feedback: Callable[[], str | None] | None = None,
     ):
         if no_progress_ms < 1:
             raise ValueError("no_progress_ms must be positive")
@@ -86,6 +87,7 @@ class AgentLoop:
         self.no_progress_ms = no_progress_ms
         self.clock = clock or monotonic
         self.event_sink = event_sink
+        self.completion_feedback = completion_feedback
         self.messages: tuple[PublicMessage, ...] = ()
         self.observations: list[ProviderTurnObservation] = []
         self.argument_observations: list[tuple[ToolArgumentObservation, ...]] = []
@@ -113,6 +115,7 @@ class AgentLoop:
             self._emit(KernelEventKind.FINALIZATION_STARTED, status_code="RUNNING")
         last_progress = self.clock()
         turn_index = 0
+        completion_corrected = False
         try:
             while True:
                 self.interrupt_token.raise_if_requested()
@@ -331,6 +334,17 @@ class AgentLoop:
                         *self.messages,
                         PublicMessage(role="ASSISTANT", content=turn.content),
                     )
+                    if (
+                        not completion_corrected
+                        and self.completion_feedback is not None
+                        and self.budget_ledger.usage.provider_turns
+                        < self.budget_ledger.limits.provider_turns
+                    ):
+                        feedback = self.completion_feedback()
+                        if feedback is not None:
+                            self.messages = (*self.messages, PublicMessage(role="USER", content=feedback))
+                            completion_corrected = True
+                            continue
                     self._emit(KernelEventKind.KERNEL_FINISHED, status_code="SUCCEEDED")
                     return self._result(
                         output=turn.content,

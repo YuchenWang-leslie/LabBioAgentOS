@@ -427,13 +427,32 @@ async def test_missing_required_capability_is_a_malformed_result_after_evidence_
 
 
 @pytest.mark.asyncio
-async def test_completed_required_capability_reaches_typed_finalization(tmp_path):
+@pytest.mark.parametrize("early_handoff", [False, True])
+async def test_completed_required_capability_reaches_typed_finalization(tmp_path, early_handoff):
+    class CompletionProvider(CapabilityProvider):
+        premature = early_handoff
+
+        async def generate(self, request):
+            if self.premature:
+                self.premature = False
+                return ModelTurn(
+                    content="I plan to call artifact_list next.",
+                    finish_reason=FinishReason.STOP,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            if early_handoff and self.calls == 0:
+                feedback = json.loads(request.messages[-1].content)
+                assert feedback["authority"] == "CONTROL_STATE"
+                assert feedback["missing_required_capabilities"] == ["artifact_list"]
+            return await super().generate(request)
+
     stage_input = _stage_input()
-    fixture = _toolset(tmp_path, stage_input)
+    recorder = RunTraceRecorder(InMemoryTraceSink())
+    fixture = _toolset(tmp_path, stage_input, recorder)
     providers = []
 
     def builder(_model):
-        provider = CapabilityProvider() if not providers else WorkflowProvider([])
+        provider = CompletionProvider() if not providers else WorkflowProvider([])
         providers.append(provider)
         return provider
 
@@ -444,14 +463,19 @@ async def test_completed_required_capability_reaches_typed_finalization(tmp_path
             prompt_template_key="runtime-generic",
             capability_allowlist=("artifact_list",),
             required_capabilities=("artifact_list",),
+            max_capability_turns=4,
         ),
         factory=NativeRuntimeFactory(_capability_catalog(), builder),
         principal=fixture.binding.principal,
         workspace=fixture.binding.workspace,
         services=fixture.services,
+        trace_recorder=recorder,
     )
 
     result = await invoker.invoke(stage_input)
+    rejected = [event for event in recorder.events(stage_input.run_id)
+                if event.event_type.value == "CAPABILITY_COMPLETION_REJECTED"]
+    assert len(rejected) == int(early_handoff)
 
     assert result.stage_id is WorkflowStage.INTAKE
     assert providers[0].calls == 2
@@ -525,7 +549,8 @@ async def test_native_stage_stops_after_repeated_host_feedback(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol_failure", [False, True])
-async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, protocol_failure):
+@pytest.mark.parametrize("capability_phase", [False, True])
+async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, protocol_failure, capability_phase):
     class FailingProvider:
         binding = WorkflowProvider.binding
 
@@ -537,6 +562,8 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
             raise ProviderTransportError()
 
     stage_input = _stage_input()
+    if not capability_phase:
+        stage_input = stage_input.model_copy(update={"allowed_capabilities": ()})
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink)
     legacy_fixture = _toolset(tmp_path, stage_input, recorder)
@@ -545,7 +572,8 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
             stage_id=WorkflowStage.INTAKE,
             root_profile_key="coordinator",
             prompt_template_key="runtime-generic",
-            capability_allowlist=("artifact_list",),
+            capability_allowlist=("artifact_list",) if capability_phase else (),
+            capability_phase_enabled=capability_phase,
         ),
         factory=NativeRuntimeFactory(
             _capability_catalog(), lambda _model: FailingProvider()
@@ -559,12 +587,14 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
     with pytest.raises(RuntimeIntegrationError) as captured:
         await invoker.invoke(stage_input)
 
-    assert captured.value.error_code == "NATIVE_CAPABILITY_FAILED"
+    error_code = "NATIVE_CAPABILITY_FAILED" if capability_phase else "NATIVE_INVOCATION_FAILED"
+    assert captured.value.error_code == error_code
     failed = next(
         event for event in recorder.events(stage_input.run_id)
-        if event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+        if event.event_type is (TraceEventType.CAPABILITY_PHASE_FAILED if capability_phase
+                                else TraceEventType.FINALIZATION_PHASE_FAILED)
     )
-    assert failed.payload["error_code"] == "NATIVE_CAPABILITY_FAILED"
+    assert failed.payload["error_code"] == error_code
     assert failed.payload["cause_code"] == (
         "PROVIDER_PROTOCOL_ERROR" if protocol_failure else "PROVIDER_TRANSPORT_ERROR"
     )

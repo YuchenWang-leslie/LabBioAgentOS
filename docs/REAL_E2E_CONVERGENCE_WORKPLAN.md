@@ -179,10 +179,30 @@ response body is logged and the protocol validator is unchanged. The merged
 source suite passes 1379 tests with 10 skips. Production still points to
 `native-p8-20261014T025522Z`.
 
-The unique continuation is to build one clean immutable candidate containing
-the merged safe-feedback/diagnostic fixes, inspect fresh validation, and complete
-activation/live verification under the existing deployment authorization. Do not repeat the
-two rejected candidate attempts without new persisted or external evidence.
+Candidate `native-p8-20261016T084218Z` was also rejected before activation.
+Its run `f6fc00d1-c176-4392-807d-3406d7e3ce17` returned only an INTAKE tool
+plan without calling the required capability. This exposed a completion
+feedback gap: required capabilities were checked only after the loop ended.
+The runtime now returns the exact missing required-capability facts for one
+model-owned correction within the original loop budget. It does not interpret
+prose as a call or execute any action for the model. Persistent noncompliance
+still fails the existing required-capability validator. Both the correcting and
+non-correcting neighboring paths are covered by regressions. Safe protocol
+diagnostics now also cover finalization failures.
+
+Fresh source run `387a5824-2014-4944-bcbb-ae86c133eb8f` completed through LEARN
+with no issue codes. The Agent corrected rejected review/object and limit/integer
+arguments, executed successfully as `0b2e0401-d198-4354-a87b-e72d5767c72e`,
+registered queryable output `e5078a3b-3372-4320-9836-6d288c801470` and report
+`aafcbdf4-9352-4fc2-92aa-87ca3507a37b`. Its exported report SHA-256 is
+`4571ab7e660ac515fdd4f151126673a4795bdee48588b32b74c18f8891cf0ec5`.
+The merged source suite passes 1382 tests with 10 skips.
+
+The unique continuation is to build a clean immutable release from the
+validated source, verify its isolated installation and exact package content,
+then activate it with rollback available and perform fresh active-current live
+validation under the existing deployment authorization. Do not repeat rejected
+attempts without new persisted or external evidence.
 
 At the end of the 2026-10-14 validation, no active LabBio process or retained
 task container remained. Run directories
