@@ -172,6 +172,12 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     assert artifact_list["offset"]["minimum"] == 0
     assert artifact_list["limit"]["minimum"] == 1
     assert artifact_list["limit"]["maximum"] == 100
+    artifact_query = schemas["artifact_query"]["properties"]
+    assert "policy default" in artifact_query["limit"]["description"]
+    assert "next_offset" in artifact_query["limit"]["description"]
+    file_read = schemas["file_read"]["properties"]
+    assert "copy the returned next_offset" in file_read["offset"]["description"]
+    assert "same Artifact" in file_read["offset"]["description"]
     environment_list = schemas["environment_list"]["properties"]
     assert environment_list["requirements"]["maxItems"] == 64
     assert environment_list["limit"]["maximum"] == 10
@@ -188,9 +194,17 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
         execution_submit["properties"]["requested_outputs"]["description"]
     )
     descriptions = {spec.name: spec.description for spec in registry.specs}
+    assert "policy-bounded default" in descriptions["artifact_query"]
+    assert "next_offset" in descriptions["artifact_query"]
+    assert "copy the returned next_offset" in descriptions["file_read"]
+    assert "REPEATED_NO_PROGRESS_REQUEST" in descriptions["file_read"]
     assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_submit"]
     assert "manifest[str(artifact_uuid)]" in descriptions["execution_submit"]
     assert "LABBIO_OUTPUT_DIR" in descriptions["execution_submit"]
+    assert "currently authorized" in descriptions["execution_submit"]
+    assert "separate user authorization" in descriptions["execution_submit"]
+    assert "current EXECUTE receipt" in descriptions["execution_submit"]
+    assert "VALIDATE cannot create" in descriptions["execution_submit"]
     execution_revise = schemas["execution_revise"]["properties"]
     assert "preserves the original selection" in (
         execution_revise["input_artifact_ids"]["description"]
@@ -199,7 +213,7 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     assert "direct JSON mapping" in descriptions["execution_revise"]
 
 
-def test_required_output_count_is_projected_into_current_submit_schema():
+def test_required_output_count_keeps_additional_local_outputs_representable():
     host = RecordingHost()
     required = RuntimeExecutionCapabilityView(
         runtime=ExecutionRuntime.PYTHON,
@@ -223,14 +237,15 @@ def test_required_output_count_is_projected_into_current_submit_schema():
     requested_outputs = schemas["execution_submit"]["properties"]["requested_outputs"]
     assert requested_outputs["minItems"] == 1
     assert set(requested_outputs["items"]["required"]) == {
-        "relative_path",
-        "artifact_type",
-        "requested_exposure",
-        "output_contract_id",
+        "relative_path", "artifact_type"
     }
-    assert requested_outputs["items"]["properties"]["requested_exposure"][
-        "const"
-    ] == "DERIVED"
+    assert set(requested_outputs["items"]["properties"]["requested_exposure"][
+        "enum"
+    ]) == {"RAW", "STRUCTURAL", "AGGREGATE", "DERIVED", "USER_APPROVED"}
+    assert "at least 1 DERIVED" in requested_outputs["description"]
+    assert "Additional local-only outputs may use RAW" in (
+        requested_outputs["description"]
+    )
 
 
 def test_zero_output_count_keeps_submit_outputs_optional():

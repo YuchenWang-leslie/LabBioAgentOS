@@ -257,6 +257,14 @@ class ArtifactView(BaseModel):
     truncated: bool = False
     offset: int = Field(default=0, ge=0)
     next_offset: int | None = Field(default=None, ge=0)
+    suggested_next_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Policy-bounded page size that can cover the remaining TOP_N records "
+            "in the fewest requests; null when there is no next page."
+        ),
+    )
     provenance: ArtifactProvenance
 
     @field_validator("metadata", "summary")
@@ -315,6 +323,16 @@ class ArtifactView(BaseModel):
             or self.next_offset >= self.available_count
         ):
             raise ValueError("next_offset must identify the next available record page")
+        if self.next_offset is None:
+            if self.suggested_next_limit is not None:
+                raise ValueError("suggested_next_limit requires a next record page")
+        elif (
+            self.suggested_next_limit is None
+            or self.suggested_next_limit > self.available_count - self.next_offset
+        ):
+            raise ValueError(
+                "suggested_next_limit must be bounded by the remaining records"
+            )
         validate_model_visible_json(
             self.model_dump(mode="json"),
             max_serialized_bytes=128_000,

@@ -202,7 +202,7 @@ class ArtifactModelViewProjector:
         }
     )
 
-    def build(self, ref, representation, query, decision) -> ArtifactView:
+    def build(self, ref, representation, query, decision, *, max_top_n) -> ArtifactView:
         metadata = {}
         if query.view_type is ArtifactViewType.METADATA:
             metadata = {
@@ -250,6 +250,12 @@ class ArtifactModelViewProjector:
             validate_model_visible_json(records, reject_absolute_paths=True)
             truncated = representation.record_count > len(records)
 
+        next_offset = (
+            query.offset + len(records)
+            if query.view_type is ArtifactViewType.TOP_N
+            and query.offset + len(records) < len(representation.records)
+            else None
+        )
         return ArtifactView(
             artifact_id=ref.artifact_id,
             artifact_type=ref.artifact_type,
@@ -270,9 +276,11 @@ class ArtifactModelViewProjector:
             effective_limit=decision.effective_limit,
             truncated=truncated,
             offset=query.offset,
-            next_offset=(query.offset + len(records)
-                if query.view_type is ArtifactViewType.TOP_N
-                and query.offset + len(records) < len(representation.records) else None),
+            next_offset=next_offset,
+            suggested_next_limit=(
+                min(max_top_n, len(representation.records) - next_offset)
+                if next_offset is not None else None
+            ),
             provenance=ArtifactProvenance(
                 owner_user_id=ref.owner_user_id,
                 project_id=ref.project_id,
@@ -342,7 +350,11 @@ class ArtifactExposureService:
 
         stored = self.store.load_for_view(identifier)
         view = self.projector.build(
-            stored.ref, stored.representation, validated_query, decision
+            stored.ref,
+            stored.representation,
+            validated_query,
+            decision,
+            max_top_n=self.policy.max_top_n,
         )
         if (validated_query.view_type is ArtifactViewType.METADATA
                 and ref.exposure_class is ArtifactExposureClass.RAW
@@ -364,6 +376,7 @@ class ArtifactExposureService:
                 "truncated": view.truncated,
                 "offset": view.offset,
                 "next_offset": view.next_offset,
+                "suggested_next_limit": view.suggested_next_limit,
             },
         )
         return view

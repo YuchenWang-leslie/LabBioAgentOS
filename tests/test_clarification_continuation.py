@@ -247,3 +247,25 @@ def test_provider_wire_schema_distinguishes_question_approval_and_new_work():
     engine.apply_proposal(run, _question())
     _answer(engine, run)
     assert "continue_stage" in actions()
+
+
+def test_resolved_clarification_scope_is_explicit_in_control_and_provider_schema():
+    engine, run = _started()
+    engine.apply_proposal(run, _question(issue="delivery-choice"))
+    _answer(engine, run, "The Agent is delegated to make this technical choice.")
+    engine.apply_proposal(run, NextActionProposal(action="continue_stage"))
+    engine.apply_proposal(
+        run,
+        NextActionProposal(
+            action="transition", target_stage=WorkflowStage.UNDERSTAND
+        ),
+    )
+
+    control = RuntimeWorkflowControlView.from_run(engine.definition, run)
+    assert control.clarification_closed_issue_keys == ("delivery-choice",)
+
+    schema = runtime_stage_result_format(run.current_stage, control).model_json_schema()
+    serialized = str(schema)
+    assert "delivery-choice" in serialized
+    assert "rename" in serialized
+    assert "technical path" in serialized

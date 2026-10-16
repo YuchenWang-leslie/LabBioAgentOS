@@ -10,6 +10,8 @@ from labbioagentos import (
     AgentProfile,
     ApplicationRunRequest,
     ApplicationRuntimeConfiguration,
+    CapabilityEvidenceBundle,
+    CapabilityEvidenceItem,
     CapabilityProfile,
     ExecuteStageBody,
     InMemoryTraceSink,
@@ -50,6 +52,10 @@ from labbioagentos.kernel import (
     ToolCall,
 )
 from labbioagentos.runtime.native_stage import NativeKernelStageInvoker, NativeRuntimeFactory
+from labbioagentos.runtime.contracts import (
+    ArtifactQueryLimitType,
+    ArtifactQueryRequestAudit,
+)
 from test_runtime_milestone_c2 import _catalog as _capability_catalog
 from test_runtime_milestone_c2 import _stage_input, _toolset
 
@@ -220,6 +226,20 @@ async def test_invalid_native_result_records_no_accepted_stage_result(tmp_path):
     assert record.workflow_run.stage_results == ()
     assert record.runtime_results == ()
     assert len(calls) == 2
+    events = application.trace_events(handle)
+    observed = [
+        event for event in events
+        if event.event_type is TraceEventType.PROVIDER_TURN_OBSERVED
+        and event.stage_id is WorkflowStage.INTAKE
+    ]
+    assert len(observed) == 2
+    failed = next(
+        event for event in events
+        if event.event_type is TraceEventType.FINALIZATION_PHASE_FAILED
+    )
+    assert failed.payload["cause_code"] == "STRUCTURED_RESPONSE_REJECTED"
+    assert failed.payload["validation_type"] in {"literal_error", "missing"}
+    assert failed.payload["validation_fields"] == ["stage_id"]
 
 
 class CapabilityProvider:
@@ -280,8 +300,6 @@ async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
     result = await invoker.invoke(stage_input)
     assert result.stage_id is WorkflowStage.INTAKE
     assert providers[0].calls == 2
-
-    from labbioagentos import CapabilityEvidenceBundle
 
     evidence = CapabilityEvidenceBundle(
         run_id=stage_input.run_id,
@@ -533,6 +551,315 @@ async def test_capability_provider_turn_limit_is_the_declared_limit(tmp_path):
         event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
         for event in recorder.events(stage_input.run_id)
     )
+
+
+@pytest.mark.asyncio
+async def test_capability_provider_usage_limit_preserves_evidence_and_finalizes(tmp_path):
+    class OverBudgetProvider:
+        binding = WorkflowProvider.binding
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            return ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id=f"artifact-list-{self.calls}",
+                    name="artifact_list",
+                    arguments_json=json.dumps({"offset": self.calls - 1}),
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(
+                    total_tokens=2 if self.calls == 1 else 131_071
+                ),
+            )
+
+    stage_input = _stage_input()
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    fixture = _toolset(tmp_path, stage_input, recorder)
+    provider = OverBudgetProvider()
+    providers = []
+
+    def builder(_model):
+        selected = provider if not providers else WorkflowProvider([])
+        providers.append(selected)
+        return selected
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+            max_capability_turns=4,
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        trace_recorder=recorder,
+    )
+
+    result = await invoker.invoke(stage_input)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert provider.calls == 2
+    assert not any(
+        event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+        for event in recorder.events(stage_input.run_id)
+    )
+    completed = next(
+        event for event in recorder.events(stage_input.run_id)
+        if event.event_type is TraceEventType.CAPABILITY_PHASE_COMPLETED
+    )
+    assert completed.payload["capability_count"] == 1
+    assert completed.payload["provider_turn_count"] == 2
+    assert completed.payload["termination_reason"] == "PROVIDER_USAGE_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_later_provider_transport_failure_preserves_evidence_and_finalizes(tmp_path):
+    class LaterTransportFailure:
+        binding = WorkflowProvider.binding
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="artifact-list-before-transport-failure",
+                        name="artifact_list",
+                        arguments_json="{}",
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            raise ProviderTransportError()
+
+    stage_input = _stage_input()
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    fixture = _toolset(tmp_path, stage_input, recorder)
+    provider = LaterTransportFailure()
+    providers = []
+
+    def builder(_model):
+        selected = provider if not providers else WorkflowProvider([])
+        providers.append(selected)
+        return selected
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        trace_recorder=recorder,
+    )
+
+    result = await invoker.invoke(stage_input)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert provider.calls == 2
+    completed = next(
+        event for event in recorder.events(stage_input.run_id)
+        if event.event_type is TraceEventType.CAPABILITY_PHASE_COMPLETED
+    )
+    assert completed.payload["capability_count"] == 1
+    assert completed.payload["termination_reason"] == "PROVIDER_TRANSPORT_STOP"
+    assert not any(
+        event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+        for event in recorder.events(stage_input.run_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_later_incomplete_provider_turn_preserves_evidence_and_finalizes(tmp_path):
+    class LaterIncompleteTurn:
+        binding = WorkflowProvider.binding
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="artifact-list-before-incomplete-turn",
+                        name="artifact_list",
+                        arguments_json="{}",
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            return ModelTurn(content="partial", finish_reason=FinishReason.LENGTH)
+
+    stage_input = _stage_input()
+    sink = InMemoryTraceSink()
+    recorder = RunTraceRecorder(sink)
+    fixture = _toolset(tmp_path, stage_input, recorder)
+    provider = LaterIncompleteTurn()
+    providers = []
+
+    def builder(_model):
+        selected = provider if not providers else WorkflowProvider([])
+        providers.append(selected)
+        return selected
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+        trace_recorder=recorder,
+    )
+
+    result = await invoker.invoke(stage_input)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert provider.calls == 2
+    completed = next(
+        event for event in recorder.events(stage_input.run_id)
+        if event.event_type is TraceEventType.CAPABILITY_PHASE_COMPLETED
+    )
+    assert completed.payload["capability_count"] == 1
+    assert completed.payload["termination_reason"] == "INCOMPLETE_PROVIDER_STOP"
+    assert not any(
+        event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
+        for event in recorder.events(stage_input.run_id)
+    )
+
+
+@pytest.mark.asyncio
+async def test_large_capability_evidence_is_bounded_before_finalization(tmp_path):
+    stage_input = _stage_input()
+    fixture = _toolset(tmp_path, stage_input)
+    evidence = CapabilityEvidenceBundle(
+        run_id=stage_input.run_id,
+        stage_id=stage_input.stage_id,
+        invocation_id=stage_input.invocation_id,
+        items=tuple(
+            CapabilityEvidenceItem(
+                capability_name="artifact_query",
+                actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent",
+                information_authority="AUTHORITATIVE_EVIDENCE",
+                status="COMPLETED",
+                safe_result={"content": f"{index}:" + "x" * 4_000},
+            )
+            for index in range(20)
+        ),
+        explicit_completion="Inspection complete; use the persisted evidence identities.",
+    )
+    calls = []
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(
+            _capability_catalog(), lambda _model: WorkflowProvider(calls)
+        ),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+    )
+
+    result = await invoker.finalize_recovered(stage_input, evidence)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    finalization_content = calls[0].messages[-1].content
+    assert len(finalization_content.encode("utf-8")) <= 60_000
+    payload = json.loads(finalization_content)
+    items = payload["capability_evidence"]["items"]
+    assert all(item["safe_result"] is None for item in items)
+    assert all(
+        item["safe_result_projection"]["status"]
+        == "OMITTED_FROM_FINALIZATION_CONTEXT"
+        for item in items
+    )
+    assert all(
+        len(item["safe_result_projection"]["sha256"]) == 64
+        and item["safe_result_projection"]["serialized_bytes"] > 4_000
+        for item in items
+    )
+    assert all(item.safe_result is not None for item in evidence.items)
+
+
+@pytest.mark.asyncio
+async def test_many_rich_evidence_items_drop_absent_fields_before_finalization(tmp_path):
+    stage_input = _stage_input()
+    fixture = _toolset(tmp_path, stage_input)
+    evidence = CapabilityEvidenceBundle(
+        run_id=stage_input.run_id,
+        stage_id=stage_input.stage_id,
+        invocation_id=stage_input.invocation_id,
+        items=tuple(
+            CapabilityEvidenceItem(
+                actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent",
+                capability_name="artifact_query",
+                information_authority="AUTHORITATIVE_EVIDENCE",
+                status="COMPLETED",
+                trace_event_ids=(stage_input.invocation_id,),
+                reference_ids=tuple(str(stage_input.run_id) for _ in range(4)),
+                artifact_query_request=ArtifactQueryRequestAudit(
+                    artifact_id=stage_input.run_id,
+                    view_type="TOP_N",
+                    limit=None,
+                    limit_type=ArtifactQueryLimitType.NULL,
+                    offset=index,
+                ),
+                safe_result={"content": f"{index}:" + "x" * 4_000},
+            )
+            for index in range(64)
+        ),
+    )
+    calls = []
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(
+            _capability_catalog(), lambda _model: WorkflowProvider(calls)
+        ),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+    )
+
+    result = await invoker.finalize_recovered(stage_input, evidence)
+
+    assert result.stage_id is WorkflowStage.INTAKE
+    finalization_content = calls[0].messages[-1].content
+    assert len(finalization_content.encode("utf-8")) <= 60_000
+    items = json.loads(finalization_content)["capability_evidence"]["items"]
+    assert len(items) == 64
+    assert all("error_code" not in item for item in items)
+    assert all("error_details" not in item for item in items)
+    assert all(item["safe_result"] is None for item in items)
 
 
 @pytest.mark.asyncio

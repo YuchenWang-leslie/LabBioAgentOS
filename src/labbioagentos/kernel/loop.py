@@ -146,9 +146,41 @@ class AgentLoop:
                 )
                 try:
                     turn = await self.provider.generate(request)
+                except ProviderTransportError:
+                    if (
+                        self.invocation.mode is AgentMode.CAPABILITY
+                        and self.tool_results
+                    ):
+                        self._emit(
+                            KernelEventKind.KERNEL_FINISHED,
+                            status_code="STOPPED",
+                            reason_code="PROVIDER_TRANSPORT_ERROR",
+                        )
+                        return self._result(
+                            output={
+                                "capability_stop_reason": "PROVIDER_TRANSPORT_STOP"
+                            },
+                            termination="PROVIDER_TRANSPORT_STOP",
+                        )
+                    raise
                 except KernelContractError:
                     raise
                 except Exception:
+                    if (
+                        self.invocation.mode is AgentMode.CAPABILITY
+                        and self.tool_results
+                    ):
+                        self._emit(
+                            KernelEventKind.KERNEL_FINISHED,
+                            status_code="STOPPED",
+                            reason_code="PROVIDER_TRANSPORT_ERROR",
+                        )
+                        return self._result(
+                            output={
+                                "capability_stop_reason": "PROVIDER_TRANSPORT_STOP"
+                            },
+                            termination="PROVIDER_TRANSPORT_STOP",
+                        )
                     raise ProviderTransportError() from None
                 finished = self.clock()
                 elapsed_ms = max(0, int(round((finished - started) * 1000)))
@@ -167,12 +199,36 @@ class AgentLoop:
                     if turn.provider_request_id
                     else (),
                 )
-                self.budget_ledger.reserve(
-                    BudgetDelta(
-                        tokens=turn.usage.total_tokens,
-                        wall_time_ms=elapsed_ms,
+                try:
+                    self.budget_ledger.reserve(
+                        BudgetDelta(
+                            tokens=turn.usage.total_tokens,
+                            wall_time_ms=elapsed_ms,
+                        )
                     )
-                )
+                except BudgetExceededError as exc:
+                    if (
+                        self.invocation.mode is not AgentMode.CAPABILITY
+                        or exc.dimension not in {"tokens", "wall_time_ms"}
+                    ):
+                        raise
+                    reason_code = (
+                        "PROVIDER_TOKEN_LIMIT"
+                        if exc.dimension == "tokens"
+                        else "PROVIDER_WALL_TIME_LIMIT"
+                    )
+                    self._emit(
+                        KernelEventKind.KERNEL_FINISHED,
+                        status_code="STOPPED",
+                        reason_code=reason_code,
+                    )
+                    return self._result(
+                        output={
+                            "capability_stop_reason": "PROVIDER_USAGE_LIMIT",
+                            "budget_dimension": exc.dimension,
+                        },
+                        termination="PROVIDER_USAGE_LIMIT",
+                    )
                 if observation.observable_progress:
                     last_progress = finished
                 elif int(round((finished - last_progress) * 1000)) >= self.no_progress_ms:
@@ -201,8 +257,9 @@ class AgentLoop:
                         PublicMessage(
                             role="USER",
                             content=(
-                                "The previous response did not match the required schema. "
-                                "Return only one complete JSON object matching that schema."
+                                "The previous response was incomplete or did not match the "
+                                "required schema. Return a shorter response containing only "
+                                "one complete JSON object matching that schema."
                             ),
                         ),
                     )
@@ -253,6 +310,19 @@ class AgentLoop:
                     FinishReason.LENGTH,
                     FinishReason.CONTENT_FILTER,
                 }:
+                    if self.tool_results:
+                        self._emit(
+                            KernelEventKind.KERNEL_FINISHED,
+                            status_code="STOPPED",
+                            reason_code="INCOMPLETE_PROVIDER_RESPONSE",
+                        )
+                        return self._result(
+                            output={
+                                "capability_stop_reason": "INCOMPLETE_PROVIDER_STOP",
+                                "finish_reason": turn.finish_reason.value,
+                            },
+                            termination="INCOMPLETE_PROVIDER_STOP",
+                        )
                     raise IncompleteProviderResponseError(
                         finish_reason=turn.finish_reason.value
                     )
@@ -385,6 +455,7 @@ class AgentLoop:
                     error=ToolError(
                         code=exc.code,
                         message=str(exc),
+                        validation_fields=exc.validation_fields,
                     ),
                 )
                 for call in raw_calls
@@ -395,6 +466,7 @@ class AgentLoop:
                     tool_name=call.name,
                     parse_mode="REJECTED",
                     rejection_reason=exc.code,
+                    validation_fields=exc.validation_fields,
                 )
                 for call in raw_calls
             )
@@ -450,31 +522,49 @@ class AgentLoop:
                     )
                 except ValidationError as exc:
                     issues = exc.errors(include_url=False, include_input=False)
+                    first = issues[0] if issues else None
                     error = FinalizationRejectedError(
-                        validation_type=issues[0]["type"] if issues else "invalid"
+                        validation_type=first["type"] if first else "invalid",
+                        validation_fields=tuple(
+                            str(item) for item in first.get("loc", ())
+                        ) if first else (),
                     )
                     parsed = None
                 if parsed is None:
-                    if turn.finish_reason is not FinishReason.STOP or (
+                    attempts_exhausted = (
                         self.budget_ledger.usage.finalization_attempts
                         >= self.budget_ledger.limits.finalization_attempts
-                    ):
+                    )
+                    if attempts_exhausted or turn.finish_reason not in {
+                        FinishReason.STOP,
+                        FinishReason.LENGTH,
+                    }:
                         raise error
                     return None
-                if turn.finish_reason in {
-                    FinishReason.LENGTH,
-                    FinishReason.CONTENT_FILTER,
-                }:
+                if turn.finish_reason is FinishReason.LENGTH:
+                    if (
+                        self.budget_ledger.usage.finalization_attempts
+                        < self.budget_ledger.limits.finalization_attempts
+                    ):
+                        return None
+                    raise IncompleteProviderResponseError(
+                        finish_reason=turn.finish_reason.value
+                    )
+                if turn.finish_reason is FinishReason.CONTENT_FILTER:
                     raise IncompleteProviderResponseError(
                         finish_reason=turn.finish_reason.value
                     )
                 if turn.finish_reason is not FinishReason.STOP:
                     raise FinalizationProtocolError()
                 return parsed.model_dump(mode="json")
-        if turn.finish_reason is not FinishReason.STOP or (
+        attempts_exhausted = (
             self.budget_ledger.usage.finalization_attempts
             >= self.budget_ledger.limits.finalization_attempts
-        ):
+        )
+        if attempts_exhausted or turn.finish_reason not in {
+            FinishReason.STOP,
+            FinishReason.LENGTH,
+        }:
             raise error
         return None
 

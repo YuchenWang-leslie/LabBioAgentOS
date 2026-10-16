@@ -34,7 +34,9 @@ async def test_only_interpretation_gets_reasoning_and_network(settings_file, mon
             assert model.thinking_enabled is interpret
             assert model.private_tool_reasoning_continuity is interpret
             assert model.max_output_tokens == settings.provider.max_output_tokens
-            assert spec.max_capability_turns == 16
+            assert spec.max_capability_turns == (
+                24 if spec.stage_id is WorkflowStage.REPORT else 16
+            )
         assert app.capability_services.literature_search is not None
         assert not app.execution_policy.allow_network
         assert app.configuration.retry_limit == 1

@@ -74,7 +74,10 @@ SafeIdentifier = Annotated[
 MAX_CAPABILITY_EVIDENCE_ITEMS = 64
 MAX_CAPABILITY_COMPLETION_CHARS = 64_000
 CapabilityTerminationReason = Literal[
-    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED",
+    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "PROVIDER_USAGE_LIMIT",
+    "PROVIDER_TRANSPORT_STOP",
+    "INCOMPLETE_PROVIDER_STOP",
+    "CAPABILITY_EVIDENCE_LIMIT", "RUNTIME_RETURNED",
     "REPEATED_NON_RETRYABLE_REQUEST", "REPEATED_NO_PROGRESS_REQUEST",
 ]
 
@@ -339,8 +342,11 @@ class RuntimeExecutionCapabilityView(BaseModel):
         ge=0,
         le=128,
         description=(
-            "Minimum outputs that must pass an approved release contract so "
-            "downstream runtime stages can query execution evidence."
+            "Minimum outputs that a successful receipt from the current EXECUTE "
+            "invocation must register through approved release contracts before "
+            "transitioning downstream. Historical outputs are inputs, not a current "
+            "receipt, and VALIDATE cannot create this execution evidence. Zero means "
+            "that a current execution receipt is optional."
         ),
     )
     mountable_input_artifact_ids: tuple[UUID, ...] = Field(
@@ -500,6 +506,24 @@ class ArtifactQueryConstraints(BaseModel):
     top_n_max_returned: ArtifactQueryLimit = Field(
         description="Policy cap on returned records, not a maximum allowed request limit."
     )
+    required_followup_offset: int | None = Field(
+        default=None,
+        ge=1,
+        description="Exact next_offset from a prior delivered TOP_N page, when applicable.",
+    )
+    suggested_next_limit: ArtifactQueryLimit | None = Field(
+        default=None,
+        description=(
+            "Exact suggested_next_limit from that prior delivered page; copy it "
+            "into the next request's limit."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def validate_followup_guidance(self) -> "ArtifactQueryConstraints":
+        if (self.required_followup_offset is None) != (self.suggested_next_limit is None):
+            raise ValueError("Follow-up offset and suggested limit must be projected together")
+        return self
 
     @classmethod
     def from_authorized_artifact(
@@ -563,6 +587,14 @@ class ReportEvidenceItem(BaseModel):
     reference_kind: StrictStr | None = Field(default=None, max_length=64)
     record_count: int | None = Field(default=None, ge=0)
     next_offset: int | None = Field(default=None, ge=0)
+    suggested_limit: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Policy-bounded TOP_N page size that can cover the remaining unread "
+            "records in the fewest requests; null when no table page is required."
+        ),
+    )
 
 
 class ReportEvidenceCheck(BaseModel):
@@ -936,6 +968,14 @@ class RuntimeWorkflowControlView(BaseModel):
     clarification_rounds_remaining: int = Field(default=0, ge=0, le=3)
     clarification_followup_ids: tuple[StrictStr, ...] = Field(default=(), max_length=3,
         description="Exact answered question IDs still eligible for one follow-up on the same issue. Empty means followup_to must be null.")
+    clarification_closed_issue_keys: tuple[StrictStr, ...] = Field(
+        default=(),
+        max_length=3,
+        description=(
+            "Exact issue scopes already resolved by user input. They remain closed "
+            "across later stages and cannot be reopened under renamed or aliased keys."
+        ),
+    )
     continue_stage_available: bool = False
     retry_available: bool
     retry_transition_targets: tuple[WorkflowStage, ...] = Field(
@@ -984,6 +1024,11 @@ class RuntimeWorkflowControlView(BaseModel):
             clarification_followup_ids=tuple(item.question_id for item in run.clarifications
                 if item.status == "ANSWERED" and len(run.clarifications) < 3
                 and sum(other.question.issue_key == item.question.issue_key for other in run.clarifications) == 1),
+            clarification_closed_issue_keys=tuple(
+                item.question.issue_key
+                for item in run.clarifications
+                if item.status == "RESOLVED"
+            ),
             continue_stage_available=any(item.status == "ANSWERED" and item.source_stage is stage
                                          for item in run.clarifications),
             retry_available=retry_available,
@@ -1092,6 +1137,12 @@ class RuntimeStageInput(BaseModel):
     allowed_capabilities: tuple[SafeIdentifier, ...] = Field(
         default=(),
         max_length=64,
+        description=(
+            "Exact capability names the trusted host currently authorizes in this "
+            "stage. When execution_submit is present, using it within the user task "
+            "and execution_capability requires no separate free-text user permission; "
+            "the Agent still chooses the technical program and parameters."
+        ),
     )
     gate_decisions: tuple[RuntimeGateDecisionView, ...] = Field(
         default=(),
@@ -1327,6 +1378,7 @@ def _runtime_stage_result_format(
     clarification_available: bool = False,
     continue_stage_available: bool = False,
     clarification_followup_ids: tuple[str, ...] = (),
+    clarification_closed_issue_keys: tuple[str, ...] = (),
 ) -> type[RuntimeStageProposal]:
     """Constrain provider generation to the assembly's exact trusted stage."""
 
@@ -1349,6 +1401,7 @@ def _runtime_stage_result_format(
                 clarification_available=clarification_available,
                 continue_stage_available=continue_stage_available,
                 clarification_followup_ids=clarification_followup_ids,
+                clarification_closed_issue_keys=clarification_closed_issue_keys,
             ),
             ...,
         )
@@ -1379,4 +1432,5 @@ def runtime_stage_result_format(
         workflow_control.clarification_available,
         workflow_control.continue_stage_available,
         workflow_control.clarification_followup_ids,
+        workflow_control.clarification_closed_issue_keys,
     )

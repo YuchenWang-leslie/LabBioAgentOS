@@ -232,8 +232,14 @@ class ClarificationQuestion(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     issue_key: StrictStr = Field(min_length=1, max_length=128,
-        description="Stable identity of the missing decision; reuse for its single follow-up.")
-    prompt: StrictStr = Field(min_length=1, max_length=2000)
+        description=(
+            "Stable identity of the missing user-owned fact or choice; reuse for "
+            "its single follow-up. Renaming or aliasing a resolved issue is invalid."
+        ))
+    prompt: StrictStr = Field(min_length=1, max_length=2000, description=(
+        "Question for a fact or preference only the user can supply. Do not ask "
+        "the user to select a technical path that the Agent can decide from evidence."
+    ))
     why_needed: StrictStr = Field(min_length=1, max_length=1000,
         description="Why this missing user fact materially changes the task and cannot be inferred from available context.")
     followup_to: StrictStr | None = Field(default=None, min_length=1, max_length=256,
@@ -265,7 +271,8 @@ class ClarificationRecord(BaseModel):
 class _RequestClarificationActionProposal(_ActionProposalBase):
     action: Literal[NextAction.REQUEST_CLARIFICATION] = Field(description=(
         "Pause for a critical missing user fact or choice. Check existing answers first; "
-        "do not ask users to do routine technical work or repeat resolved decisions."
+        "do not ask users to choose a technical path, do routine technical work, "
+        "or repeat or rename a resolved decision."
     ))
     question: ClarificationQuestion
 
@@ -376,6 +383,7 @@ def governed_next_action_proposal_format(
     clarification_available: bool = False,
     continue_stage_available: bool = False,
     clarification_followup_ids: tuple[str, ...] = (),
+    clarification_closed_issue_keys: tuple[str, ...] = (),
 ) -> type[RootModel]:
     """Build the provider proposal union from authoritative workflow control."""
 
@@ -404,8 +412,27 @@ def governed_next_action_proposal_format(
         variants.append(_RequestUserInputActionProposal)
     if clarification_available:
         followup_type = Literal.__getitem__(clarification_followup_ids) | None if clarification_followup_ids else type(None)
+        closed_scopes = ", ".join(clarification_closed_issue_keys) or "none"
         question_type = create_model(
             "GovernedClarificationQuestion", __base__=ClarificationQuestion,
+            issue_key=(StrictStr, Field(
+                min_length=1,
+                max_length=128,
+                description=(
+                    "Stable identity of a genuinely new missing user-owned fact "
+                    "or choice. Resolved scopes are closed and must not be "
+                    f"repeated, renamed, or aliased: {closed_scopes}."
+                ),
+            )),
+            prompt=(StrictStr, Field(
+                min_length=1,
+                max_length=2000,
+                description=(
+                    "Question for a fact or preference only the user can supply. "
+                    "Do not ask the user to select a technical path that the Agent "
+                    "can decide from the task, existing answers, or evidence."
+                ),
+            )),
             followup_to=(followup_type, Field(default=None,
                 description=ClarificationQuestion.model_fields["followup_to"].description)),
         )

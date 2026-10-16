@@ -31,6 +31,7 @@ from labbioagentos import (
     RuntimeCoordinatorService,
     RuntimeEvidenceReference,
     RuntimeEvidenceRole,
+    RuntimeExecutionCapabilityView,
     RuntimeReference,
     RuntimeReferenceKind,
     RuntimeResultValidationError,
@@ -290,10 +291,21 @@ def test_runtime_input_exposes_only_bounded_values(trusted_boundary):
         "body",
     }
     assert dumped["input_artifact_usage"] == []
+    allowed_description = RuntimeStageInput.model_fields[
+        "allowed_capabilities"
+    ].description
+    assert "currently authorizes" in allowed_description
+    assert "execution_submit" in allowed_description
+    minimum_output_description = RuntimeExecutionCapabilityView.model_fields[
+        "minimum_queryable_output_count"
+    ].description
+    assert "current EXECUTE invocation" in minimum_output_description
+    assert "VALIDATE cannot create" in minimum_output_description
     assert dumped["workflow_control"] == {
         "clarification_available": True,
         "clarification_rounds_remaining": 3,
-        "clarification_followup_ids": [],
+            "clarification_followup_ids": [],
+            "clarification_closed_issue_keys": [],
         "continue_stage_available": False,
         "authority": "CONTROL_STATE",
         "current_stage": "INTAKE",

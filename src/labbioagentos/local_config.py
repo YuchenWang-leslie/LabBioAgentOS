@@ -337,7 +337,10 @@ def build_application(
         capability_phase_enabled=bool(stage.capabilities),
         preserve_capability_completion=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
-        max_capability_turns=16,
+        # REPORT must both establish complete citation coverage and submit the
+        # final prose. Its accumulated governed pages make the token ledger,
+        # rather than tool-turn count, the tighter bound in real runs.
+        max_capability_turns=24 if stage.stage is WorkflowStage.REPORT else 16,
         max_no_progress_seconds=settings.provider.max_model_phase_seconds,
         retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
         user_input_enabled=stage.user_input_enabled,

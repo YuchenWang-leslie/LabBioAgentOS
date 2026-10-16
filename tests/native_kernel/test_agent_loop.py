@@ -30,6 +30,7 @@ from labbioagentos.kernel import (
     ModelTurn,
     NoObservableProgressError,
     ProviderBinding,
+    ProviderTransportError,
     PublicMessage,
     TokenUsage,
     ToolCall,
@@ -108,7 +109,8 @@ def _limits(
 
 
 def _tool_loop(
-    turns, *, clock=None, no_progress_ms=30_000, tool_calls=8
+    turns, *, clock=None, no_progress_ms=30_000, provider_turns=8,
+    tokens=10_000, tool_calls=8
 ):
     effects = []
 
@@ -123,7 +125,11 @@ def _tool_loop(
         arguments_model=RecordArguments,
         handler=record,
     )
-    budget = BudgetLedger(_limits(tool_calls=tool_calls))
+    budget = BudgetLedger(_limits(
+        provider_turns=provider_turns,
+        tokens=tokens,
+        tool_calls=tool_calls,
+    ))
     provider = FakeProvider(binding=_binding(), turns=turns)
     dispatcher = ToolDispatcher(
         registry,
@@ -179,6 +185,169 @@ async def test_capability_loop_stops_before_batch_crosses_tool_budget():
     assert len(provider.requests) == 2
     assert result.events[-1].status_code == "STOPPED"
     assert result.events[-1].reason_code == "CAPABILITY_EVIDENCE_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_stops_before_over_budget_provider_turn_dispatches():
+    loop, provider, effects = _tool_loop(
+        (
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="within-token-budget",
+                    name="record_value",
+                    arguments_json='{"value":"kept"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(total_tokens=4),
+            ),
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="over-token-budget",
+                    name="record_value",
+                    arguments_json='{"value":"must-not-run"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(total_tokens=7),
+            ),
+        ),
+        tokens=10,
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run within the bound."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "PROVIDER_USAGE_LIMIT"
+    assert result.output == {
+        "capability_stop_reason": "PROVIDER_USAGE_LIMIT",
+        "budget_dimension": "tokens",
+    }
+    assert effects == [{"value": "kept", "nested": None}]
+    assert len(provider.requests) == 2
+    assert len(result.observations) == 2
+    assert [item.call_id for item in result.tool_results] == ["within-token-budget"]
+    assert result.budget_usage.tokens == 4
+    assert result.events[-1].status_code == "STOPPED"
+    assert result.events[-1].reason_code == "PROVIDER_TOKEN_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_dispatches_turn_that_exactly_reaches_token_limit():
+    loop, provider, effects = _tool_loop(
+        (
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="first",
+                    name="record_value",
+                    arguments_json='{"value":"first"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(total_tokens=4),
+            ),
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="at-limit",
+                    name="record_value",
+                    arguments_json='{"value":"second"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+                usage=TokenUsage(total_tokens=6),
+            ),
+        ),
+        provider_turns=2,
+        tokens=10,
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Reach the exact bound."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "PROVIDER_TURN_LIMIT"
+    assert effects == [
+        {"value": "first", "nested": None},
+        {"value": "second", "nested": None},
+    ]
+    assert len(provider.requests) == 2
+    assert result.budget_usage.tokens == 10
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_preserves_prior_evidence_on_later_transport_failure():
+    class LaterTransportFailure:
+        binding = _binding()
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="persisted-before-transport-failure",
+                        name="record_value",
+                        arguments_json='{"value":"kept"}',
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=4),
+                )
+            raise ProviderTransportError()
+
+    provider = LaterTransportFailure()
+    loop, _fixture_provider, effects = _tool_loop(())
+    loop.provider = provider
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Preserve completed evidence."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "PROVIDER_TRANSPORT_STOP"
+    assert result.output == {
+        "capability_stop_reason": "PROVIDER_TRANSPORT_STOP"
+    }
+    assert effects == [{"value": "kept", "nested": None}]
+    assert [item.call_id for item in result.tool_results] == [
+        "persisted-before-transport-failure"
+    ]
+    assert result.events[-1].status_code == "STOPPED"
+    assert result.events[-1].reason_code == "PROVIDER_TRANSPORT_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_preserves_prior_evidence_on_later_incomplete_turn():
+    loop, provider, effects = _tool_loop((
+        ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="persisted-before-incomplete-turn",
+                name="record_value",
+                arguments_json='{"value":"kept"}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+            usage=TokenUsage(total_tokens=4),
+        ),
+        ModelTurn(content="partial", finish_reason=FinishReason.LENGTH),
+    ))
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Preserve completed evidence."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "INCOMPLETE_PROVIDER_STOP"
+    assert result.output == {
+        "capability_stop_reason": "INCOMPLETE_PROVIDER_STOP",
+        "finish_reason": "LENGTH",
+    }
+    assert effects == [{"value": "kept", "nested": None}]
+    assert len(provider.requests) == 2
+    assert [item.call_id for item in result.tool_results] == [
+        "persisted-before-incomplete-turn"
+    ]
+    assert result.events[-1].status_code == "STOPPED"
+    assert result.events[-1].reason_code == "INCOMPLETE_PROVIDER_RESPONSE"
 
 
 @pytest.mark.asyncio
@@ -330,6 +499,42 @@ async def test_invalid_batch_returns_bounded_feedback_without_effect_then_recove
     )
     feedback = json.loads(next(item for item in replay if item.role == "TOOL").content)
     assert feedback["error"]["code"] == "INVALID_JSON_OBJECT"
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_feedback_names_only_schema_fields():
+    loop, provider, effects = _tool_loop(
+        (
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="bad-type",
+                    name="record_value",
+                    arguments_json='{"value":7}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(content="complete", finish_reason=FinishReason.STOP),
+        )
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run the fixture."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert effects == []
+    observation = result.argument_observations[0][0]
+    assert observation.rejection_reason == "INVALID_TOOL_ARGUMENTS"
+    assert observation.validation_fields == ("value",)
+    feedback = json.loads(
+        next(
+            item
+            for item in provider.requests[1].messages
+            if item.role == "TOOL"
+        ).content
+    )
+    assert feedback["error"]["code"] == "INVALID_TOOL_ARGUMENTS"
+    assert feedback["error"]["validation_fields"] == ["value"]
 
 
 @pytest.mark.asyncio
@@ -602,6 +807,66 @@ async def test_finalization_is_tool_free_and_performs_one_format_correction():
     assert "schema" in provider.requests[1].messages[-1].content.lower()
     assert "wrong" not in repr(provider.requests[1].messages)
     assert result.budget_usage.finalization_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_length_truncated_finalization_gets_one_bounded_format_correction():
+    provider = FakeProvider(
+        binding=_binding(),
+        turns=(
+            ModelTurn(
+                content='{"result":{"count":',
+                finish_reason=FinishReason.LENGTH,
+            ),
+            ModelTurn(
+                content='{"result":{"count":7}}',
+                finish_reason=FinishReason.STOP,
+            ),
+        ),
+    )
+    budget = BudgetLedger(_limits(finalization_attempts=2))
+    loop = AgentLoop(
+        provider=provider,
+        invocation=_invocation(final=True),
+        budget_ledger=budget,
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Finalize."),),
+        deadline_monotonic=10_000_000_000.0,
+        response_model=FinalEnvelope,
+    )
+
+    assert result.output == {"result": {"count": 7}}
+    assert len(provider.requests) == 2
+    correction = provider.requests[1].messages[-1].content
+    assert "short" in correction.lower()
+    assert "count\":" not in repr(provider.requests[1].messages)
+    assert result.budget_usage.finalization_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_length_truncated_finalization_fails_when_retry_budget_is_exhausted():
+    provider = FakeProvider(
+        binding=_binding(),
+        turns=(ModelTurn(
+            content='{"result":{"count":',
+            finish_reason=FinishReason.LENGTH,
+        ),),
+    )
+    loop = AgentLoop(
+        provider=provider,
+        invocation=_invocation(final=True),
+        budget_ledger=BudgetLedger(_limits(finalization_attempts=1)),
+    )
+
+    with pytest.raises(FinalizationRejectedError):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Finalize."),),
+            deadline_monotonic=10_000_000_000.0,
+            response_model=FinalEnvelope,
+        )
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio

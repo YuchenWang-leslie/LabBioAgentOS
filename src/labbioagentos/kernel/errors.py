@@ -140,12 +140,18 @@ class FinalizationProtocolError(KernelContractError):
 
 
 class FinalizationRejectedError(KernelContractError):
-    def __init__(self, *, validation_type: str):
+    def __init__(
+        self,
+        *,
+        validation_type: str,
+        validation_fields: tuple[str, ...] = (),
+    ):
         super().__init__(
             "STRUCTURED_RESPONSE_REJECTED",
             "The final response did not match the required structured contract",
         )
         self.validation_type = validation_type
+        self.validation_fields = validation_fields
 
 
 class ProviderProtocolError(KernelContractError):

@@ -73,6 +73,8 @@ async def test_report_check_collects_all_reference_problems_without_registering(
     assert [item['status'] for item in check['items']] == [
         'REPORT_EVIDENCE_INCOMPLETE', 'ARTIFACT_NOT_FOUND', 'INVALID_IDENTIFIER']
     assert check['items'][0]['next_offset'] == 0
+    assert check['items'][0]['suggested_limit'] == check['items'][0]['record_count'] == 15
+    assert check['items'][1]['suggested_limit'] is None
     assert check['items'][1]['artifact_id'] == unknown
     assert check['items'][2]['artifact_id'] is None
     assert 'PRIVATE_NOT_A_UUID' not in str(result)
@@ -81,9 +83,13 @@ async def test_report_check_collects_all_reference_problems_without_registering(
     assert len(failed['error']['report_evidence']['items']) == 2 and not calls
     assert tools.evidence_items()[-1].error_details.report_evidence is not None
     await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 10)
-    await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 10, offset=10)
+    partially_ready = await tools.report_check([str(ref.artifact_id)])
+    assert partially_ready['data']['items'][0]['next_offset'] == 10
+    assert partially_ready['data']['items'][0]['suggested_limit'] == 5
+    await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 5, offset=10)
     ready = await tools.report_check([str(ref.artifact_id)])
     assert ready['data']['ready'] and not calls
+    assert ready['data']['items'][0]['suggested_limit'] is None
     accepted = await tools.report_submit('Synthetic', 'Synthetic report', [str(ref.artifact_id)])
     assert accepted['success'] and len(calls) == 1
 

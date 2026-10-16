@@ -90,6 +90,7 @@ async def test_qi1_integer_limit_preserves_value_and_type(query_boundary):
     result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N", 12)
 
     assert result["success"] is True
+    assert result["data"]["suggested_next_limit"] == 6
     assert _request(toolset) == {
         "artifact_id": str(ref.artifact_id),
         "view_type": "TOP_N",
@@ -107,6 +108,7 @@ async def test_qi2_null_limit_has_explicit_null_type(query_boundary):
     result = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
 
     assert result["success"] is True
+    assert result["data"]["suggested_next_limit"] == 8
     assert _request(toolset) == {
         "artifact_id": str(ref.artifact_id),
         "view_type": "TOP_N",
@@ -115,6 +117,72 @@ async def test_qi2_null_limit_has_explicit_null_type(query_boundary):
         "normalization_applied": False,
         "offset": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_followup_page_reuses_policy_default_when_limit_is_omitted(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    result = await toolset.artifact_query(
+        str(ref.artifact_id), "TOP_N", limit=None, offset=10
+    )
+
+    assert result["success"] is True
+    assert result["data"]["offset"] == 10
+    assert len(result["data"]["records"]) == 8
+    assert result["data"]["next_offset"] is None
+    assert _request(toolset) == {
+        "artifact_id": str(ref.artifact_id),
+        "view_type": "TOP_N",
+        "limit": None,
+        "limit_type": "NULL",
+        "normalization_applied": False,
+        "offset": 10,
+    }
+
+
+@pytest.mark.asyncio
+async def test_followup_page_with_omitted_limit_progresses_after_prior_page(query_boundary):
+    _, _, ref, toolset = query_boundary
+    first = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
+    toolset.mark_feedback_delivered()
+
+    result = await toolset.artifact_query(
+        str(ref.artifact_id), "TOP_N", limit=None, offset=10
+    )
+
+    assert first["data"]["next_offset"] == 10
+    assert first["data"]["suggested_next_limit"] == 8
+    assert result["success"] is True
+    assert result["data"]["offset"] == 10
+    assert len(result["data"]["records"]) == 8
+    assert result["data"]["next_offset"] is None
+
+
+@pytest.mark.asyncio
+async def test_repeated_top_n_page_requires_cursor_progress_before_runtime_stop(
+    query_boundary,
+):
+    _, _, ref, toolset = query_boundary
+    first = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
+    toolset.mark_feedback_delivered()
+
+    repeated = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
+
+    assert repeated["success"] is False
+    assert repeated["error"]["error_code"] == "PAGINATION_PROGRESS_REQUIRED"
+    constraints = repeated["error"]["query_constraints"]
+    assert constraints["required_followup_offset"] == first["data"]["next_offset"]
+    assert constraints["suggested_next_limit"] == first["data"]["suggested_next_limit"]
+    assert toolset.stop_reason is None
+
+    corrected = await toolset.artifact_query(
+        str(ref.artifact_id),
+        "TOP_N",
+        offset=constraints["required_followup_offset"],
+    )
+    assert corrected["success"] is True
+    assert corrected["data"]["next_offset"] is None
 
 
 @pytest.mark.asyncio
@@ -304,6 +372,7 @@ async def test_partial_completeness_metadata_survives_capability_evidence(
         "truncated": True,
     }
     safe_result = toolset.evidence_items()[-1].safe_result
+    assert safe_result["suggested_next_limit"] == 8
     assert {
         key: safe_result[key]
         for key in (

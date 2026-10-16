@@ -38,6 +38,8 @@ def _feedback(boundary, response, ref, views):
         "limit_allowed_view_type": "TOP_N", "limit_minimum": 1,
         "top_n_default_limit": policy.default_top_n,
         "top_n_max_returned": policy.max_top_n,
+        "required_followup_offset": None,
+        "suggested_next_limit": None,
     }
     item = tools.evidence_items()[-1]
     assert type(item).model_validate_json(item.model_dump_json()) == item

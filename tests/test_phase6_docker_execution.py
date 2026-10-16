@@ -1030,6 +1030,47 @@ def test_zero_required_queryable_outputs_preserves_empty_and_raw_runs(tmp_path, 
     assert len(result.output_artifact_refs) == int(raw_output)
 
 
+def test_required_queryable_output_allows_additional_local_raw_delivery(tmp_path):
+    contract = StructuredOutputContract(
+        contract_id="safe-output",
+        schema_id="synthetic.v1",
+        allowed_fields=frozenset({"record_type", "value"}),
+        required_fields=frozenset({"record_type"}),
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
+    )
+
+    def write_outputs(root):
+        (root / "result.json").write_text(json.dumps({
+            "schema_id": "synthetic.v1",
+            "records": [{"record_type": "metric", "value": 1}],
+        }))
+        (root / "figure.png").write_bytes(b"synthetic-local-figure")
+
+    runner = FakeDockerRunner(output_writer=write_outputs)
+    _, executor, _ = _environment(
+        tmp_path, runner, contracts=(contract,), minimum_queryable_output_count=1,
+    )
+    result = executor.execute(_plan(requested_outputs=(
+        OutputArtifactSpec(
+            relative_path="result.json",
+            artifact_type="synthetic-result",
+            requested_exposure=ArtifactExposureClass.DERIVED,
+            output_contract_id=contract.contract_id,
+        ),
+        OutputArtifactSpec(
+            relative_path="figure.png",
+            artifact_type="analysis-figure",
+            requested_exposure=ArtifactExposureClass.RAW,
+        ),
+    )))
+
+    assert result.status is ExecutionStatus.SUCCEEDED
+    assert [ref.exposure_class for ref in result.output_artifact_refs] == [
+        ArtifactExposureClass.DERIVED,
+        ArtifactExposureClass.RAW,
+    ]
+
+
 @pytest.mark.parametrize("invalid_document", ("not json", '{"schema_id":"synthetic.v1","records":[{"value":{"nested":1}}]}'))
 def test_declaration_precheck_does_not_replace_actual_output_validation(tmp_path, invalid_document):
     contract = StructuredOutputContract(

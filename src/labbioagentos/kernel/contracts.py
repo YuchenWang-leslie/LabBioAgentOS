@@ -177,6 +177,7 @@ class ToolError(KernelModel):
     code: Identifier
     message: Annotated[StrictStr, StringConstraints(min_length=1, max_length=1_000)]
     retryable: bool = False
+    validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
 
 
 class ToolResult(KernelModel):
@@ -324,11 +325,14 @@ class ToolArgumentObservation(KernelModel):
     tool_name: Identifier
     parse_mode: Literal["STRICT_JSON", "REJECTED"]
     rejection_reason: Identifier | None = None
+    validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
     def rejection_matches_mode(self) -> "ToolArgumentObservation":
         if (self.parse_mode == "REJECTED") != (self.rejection_reason is not None):
             raise ValueError("Rejected arguments require one bounded reason code")
+        if self.parse_mode != "REJECTED" and self.validation_fields:
+            raise ValueError("Accepted arguments cannot carry validation fields")
         return self
 
 
@@ -341,6 +345,9 @@ class AgentLoopResult(KernelModel):
         "STRUCTURED_OUTPUT_ACCEPTED",
         "RUNTIME_STOPPED",
         "PROVIDER_TURN_LIMIT",
+        "PROVIDER_USAGE_LIMIT",
+        "PROVIDER_TRANSPORT_STOP",
+        "INCOMPLETE_PROVIDER_STOP",
         "CAPABILITY_EVIDENCE_LIMIT",
     ]
     messages: tuple[PublicMessage, ...] = Field(max_length=256)

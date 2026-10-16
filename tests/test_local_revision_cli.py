@@ -158,6 +158,62 @@ def test_explicit_report_revision_excludes_execution_diagnostics(revision_cli):
     assert observed["explicit_provider_loads"] == [True]
 
 
+def test_execution_report_revision_imports_registered_sibling_outputs(
+    revision_cli,
+):
+    settings, directory, observed, _, record, *_ = revision_cli
+    application = build_application(settings, directory, load_provider=False)
+    execution_id = str(uuid4())
+    registered = []
+    for name, kind, content in (
+        ("report.md", "report_text", b"Sibling-aware report"),
+        ("figure.png", "figure", b"\x89PNG\r\n\x1a\nfixture"),
+        ("records.json", "analysis_records", b'{"records":[]}'),
+    ):
+        path = directory / name
+        path.write_bytes(content)
+        registered.append(application.artifact_store.register_file(
+            path,
+            artifact_type=kind,
+            exposure_class=ArtifactExposureClass.RAW,
+            representation=ArtifactRepresentation(),
+            owner_user_id=settings.principal.user_id,
+            project_id=settings.workspace.project_id,
+            lab_id=settings.workspace.lab_id,
+            run_id=record.run_id,
+            stage_id=WorkflowStage.EXECUTE,
+            metadata={
+                "execution_id": execution_id,
+                "requested_exposure": "RAW",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+            },
+        ))
+    diagnostic_path = directory / "stdout.log"
+    diagnostic_path.write_bytes(b"PRIVATE_PROCESS_STREAM")
+    diagnostic = application.artifact_store.register_file(
+        diagnostic_path,
+        artifact_type="execution-stdout",
+        exposure_class=ArtifactExposureClass.RAW,
+        representation=ArtifactRepresentation(),
+        owner_user_id=settings.principal.user_id,
+        project_id=settings.workspace.project_id,
+        lab_id=settings.workspace.lab_id,
+        run_id=record.run_id,
+        stage_id=WorkflowStage.EXECUTE,
+        metadata={"execution_id": execution_id},
+    )
+    cli._close(application)
+
+    assert cli.main(_args(revision_cli, selected=registered[0].artifact_id)) == 2
+
+    revised = read_run_record(settings.result_root / "revision")
+    imported = set((*revised.input_artifact_ids, *revised.context_artifact_ids))
+    assert {item.artifact_id for item in registered}.issubset(imported)
+    assert diagnostic.artifact_id not in imported
+    assert observed["explicit_provider_loads"] == [True]
+
+
 def test_default_revision_omits_narratives_but_preserves_results_and_source(revision_cli, monkeypatch):
     settings, directory, observed, report_id, record, *_ = revision_cli
     application = build_application(settings, directory, load_provider=False)

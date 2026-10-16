@@ -83,15 +83,82 @@ P8 activation. There is no API or worker service in this release surface; the
 deployed surface is the local CLI. PostgreSQL and Redis/RQ are therefore not
 part of this activation.
 
+## Advanced annotated H5AD validation — 2026-10-14
+
+A fresh source-runtime validation used the public annotated
+`pbmc68k_reduced_annotated.h5ad` dataset (700 cells by 765 genes; SHA-256
+`e71d41e737c941559b7c57c9243bdb3d2c889c2adfdf00e3422ac6b46783676f`).
+The Agent, not Codex, selected the exploratory cell-type/cell-cycle analysis,
+built the additional Python environment, authored the programs, corrected an
+indexing failure and a removed scikit-learn argument, and produced 91 structured
+records, four real PNG figures, and a Chinese report in execution
+`9408c790-658e-44bc-b301-1d11e712ab96` of run
+`237209b1-6665-4b06-be14-8c7fc465f4c8`. The report explicitly preserves the
+absence of donor/sample replication and treats cell-level results as exploratory.
+The generated files were visually and structurally checked, but the run did not
+complete governed `report_submit`; it is evidence of real analysis execution,
+not a completed final-report workflow.
+
+The harder run exposed generic runtime failures rather than a task-specific
+scientific defect. Failing-first regressions and fresh runs 15 through 25 closed
+the resulting source-runtime root-cause chain:
+
+- resolved clarification issue keys are projected as closed scopes, and the
+  clarification schema forbids asking the same decision again under a renamed
+  key;
+- EXECUTE now exposes the current receipt requirement as trusted control state,
+  requires `execution_submit`, and projects safe field-level schema errors so
+  the Agent can correct its own tool arguments;
+- an explicitly selected execution-produced report imports its registered
+  sibling outputs and source program. This restored the four real PNGs and
+  structured records that earlier revision runs had silently omitted;
+- repeated TOP_N pages return the exact next cursor. An omitted TOP_N `limit`
+  now consistently uses the policy-bounded default on both first and later
+  pages, removing an unnecessary coupled argument that repeatedly blocked
+  cursor progress;
+- a length-truncated typed finalization receives the already-budgeted single
+  compact correction attempt without replaying the partial response. Exhausting
+  that second attempt still fails closed;
+- REPORT alone uses 24 capability turns instead of 16. This gives its token
+  ledger room to establish complete citation coverage and then call the still
+  mandatory `report_submit`; no report is auto-registered and all other stages
+  remain at 16 turns.
+
+Runs 15--24 are retained as failure provenance. They separately demonstrated
+repeated clarification rejection, missing current execution receipts, invalid
+pagination, omitted sibling outputs, finalization truncation, and REPORT token
+exhaustion. Run 24 provided the key model-correction evidence: its first
+execution failed because a required manifest UUID was absent, the Agent revised
+its own program, and execution `b46a8fb5-4524-4b26-a945-4098cdea4a06`
+succeeded. Codex did not choose or edit the scientific program.
+
+Fresh run `896e728b-d531-46c3-98d7-f8277058618d` (run 25) completed through
+`LEARN` with no issue codes. The Agent selected reuse rather than a new
+scientific analysis, authored and executed its own delivery-verification
+program, and execution `146ca84a-8cbb-4302-be89-7a79ecf6ecf7` succeeded with
+queryable output `a512902b-2a70-49f5-98dd-bb25f14168df`. REPORT completed
+coverage checking and registered final report
+`74ca5b5a-6dfc-41cb-b15c-957c00f004c1`; the exported report SHA-256 is
+`c579e139d5da3177b3489894e34b01158d2ed4c173684165c45d75d226d984e6`.
+The report preserves the no-biological-replicate, cell-level-exploratory and
+failure-lineage boundaries and adds no new scientific claim.
+
+These fixes remain source-only. Production still points to the immutable P8
+release above; no profile or Skill was activated or promoted. The final source
+tree passes 1375 tests with 10 intentional skips under Python 3.11.
+
 ## Cleanup and unique continuation
 
-No active LabBio process or retained task container remained after activation.
-Failed and rolled-back run directories are retained as provenance rather than
-deleted. The temporary build worktree and activation-only source configuration
-were removed after release sealing.
+No active LabBio process or retained task container remains. Run directories
+15--25 and their execution evidence are retained as provenance; no live Docker
+sandbox remains. The persistent empty `.writer.lock` is an inactive lock file,
+not an owned/open lease.
 
-The only incomplete handoff item is GitHub synchronization of the local source
-and documentation commits. Retry that exact push when the configured GitHub
-network path is healthy, then verify both `main` and `feat/native-kernel-p8`
-resolve to the documentation commit. Do not rerun the production task or
-reactivate P8 merely to complete GitHub synchronization.
+The advanced-task clarification/autonomy, pagination, execution correction and
+final report path now have fresh live proof. Remaining handoff items are
+immutable release construction, production activation, and GitHub
+synchronization. The unique continuation is
+to build and activate a new immutable release from this exact source only after
+explicit deployment authorization. Retry the GitHub push separately when its
+network path is healthy; do not mutate production `current` or promote a
+profile/Skill as part of synchronization.

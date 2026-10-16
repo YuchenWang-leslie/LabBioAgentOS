@@ -2,6 +2,7 @@
 
 import pytest
 
+from labbioagentos import WorkflowStage
 from labbioagentos.local_config import build_application, load_settings, runtime_manifest
 from labbioagentos.runtime.native_stage import (
     NativeRuntimeFactory,
@@ -43,8 +44,15 @@ def test_reasoning_configuration_reaches_native_model_profile(
         assert model.provider_tool_schema_strict is provider_strict
         assert model.max_output_tokens == original.provider.max_output_tokens
         assert application.configuration.retry_limit == 1
-        assert all(stage.max_capability_turns == 16
-                   for stage in application.configuration.stage_assemblies)
+        assert next(
+            stage for stage in application.configuration.stage_assemblies
+            if stage.stage_id is WorkflowStage.REPORT
+        ).max_capability_turns == 24
+        assert all(
+            stage.max_capability_turns == 16
+            for stage in application.configuration.stage_assemblies
+            if stage.stage_id is not WorkflowStage.REPORT
+        )
     finally:
         application.run_state_store.close()
 

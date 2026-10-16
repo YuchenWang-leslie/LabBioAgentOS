@@ -175,6 +175,14 @@ class _ArtifactQueryFailure(ValueError):
         self.query_constraints = query_constraints
 
 
+class _ArtifactPaginationProgressRequired(ValueError):
+    """A delivered TOP_N page was repeated instead of following its cursor."""
+
+    def __init__(self, query_constraints: ArtifactQueryConstraints):
+        self.query_constraints = query_constraints
+        super().__init__("PAGINATION_PROGRESS_REQUIRED")
+
+
 class _RepeatedCapabilityRequest(ValueError):
     def __init__(self, previous_capability_invocation_id: UUID):
         self.previous_capability_invocation_id = previous_capability_invocation_id
@@ -551,6 +559,7 @@ class LabBioRuntimeToolSet:
         if error.retryable or error.error_code not in {
             'INVALID_ENUM_VALUE', 'INVALID_QUERY_SHAPE', 'ARTIFACT_EXPOSURE_DENIED',
             'ARTIFACT_NOT_FOUND', 'INVALID_REFERENCE_KIND', 'AUTHORIZATION_DENIED',
+            'PAGINATION_PROGRESS_REQUIRED',
         }:
             return error
         for prior in reversed(self._evidence_items[:self._feedback_boundary]):
@@ -965,7 +974,8 @@ class LabBioRuntimeToolSet:
             limit: Optional positive integer for TOP_N only. For every other
                 view, omit limit or use JSON null, not a string. For TOP_N,
                 omitting limit or using null selects the policy default; policy
-                may cap the number returned below the requested limit.
+                may cap the number returned below the requested limit. The same
+                policy default applies when following next_offset.
             offset: Zero-based record offset, TOP_N only. Follow next_offset to
                 read all governed records across bounded pages. A truncated
                 page is not the full result and missing pages are not missing data.
@@ -1625,9 +1635,20 @@ class LabBioRuntimeToolSet:
                     break
                 end = max(end, stop)
             incomplete = bool(count and end < count)
+            suggested_limit = None
+            if incomplete:
+                constraints = ArtifactQueryConstraints.from_authorized_artifact(
+                    ref,
+                    exposure_policy=self.services.artifact_exposure.policy,
+                )
+                suggested_limit = min(
+                    count - end,
+                    constraints.top_n_max_returned,
+                )
             items.append(ReportEvidenceItem(**fields,
                 status="REPORT_EVIDENCE_INCOMPLETE" if incomplete else "READY",
-                record_count=count, next_offset=end if incomplete else None))
+                record_count=count, next_offset=end if incomplete else None,
+                suggested_limit=suggested_limit))
         return ReportEvidenceCheck(ready=all(item.status == "READY" for item in items), items=tuple(items))
 
     def _artifact_list(self, offset: int, limit: int) -> list[ArtifactListItem]:
@@ -1720,10 +1741,43 @@ class LabBioRuntimeToolSet:
             typed_view = ArtifactViewType(view_type)
         except ValueError as exc:
             raise _ArtifactQueryFailure("INVALID_ENUM_VALUE", constraints) from exc
+        if self._feedback_boundary is not None and typed_view is ArtifactViewType.TOP_N:
+            for prior in reversed(self._evidence_items[: self._feedback_boundary]):
+                previous = prior.artifact_query_request
+                result = prior.safe_result
+                if (
+                    prior.capability_name != "artifact_query"
+                    or prior.error_code is not None
+                    or previous is None
+                    or previous.artifact_id != identifier
+                    or previous.view_type != ArtifactViewType.TOP_N.value
+                    or previous.offset != offset
+                    or previous.limit != limit
+                    or not isinstance(result, dict)
+                ):
+                    continue
+                next_offset = result.get("next_offset")
+                suggested_limit = result.get("suggested_next_limit")
+                if (
+                    type(next_offset) is int
+                    and next_offset > offset
+                    and type(suggested_limit) is int
+                    and suggested_limit >= 1
+                ):
+                    raise _ArtifactPaginationProgressRequired(
+                        constraints.model_copy(update={
+                            "required_followup_offset": next_offset,
+                            "suggested_next_limit": suggested_limit,
+                        })
+                    )
+                break
         try:
             query = ArtifactQuery(view_type=typed_view, limit=limit, offset=offset)
         except ValidationError as exc:
-            raise _ArtifactQueryFailure("INVALID_QUERY_SHAPE", constraints) from exc
+            raise _ArtifactQueryFailure(
+                "INVALID_QUERY_SHAPE",
+                constraints,
+            ) from exc
         try:
             view = self.services.artifact_exposure.artifact_query(
                 identifier,
@@ -2064,6 +2118,16 @@ class LabBioRuntimeToolSet:
             return ToolError(error_code="ARTIFACT_PAGE_TRANSPORT_LIMIT", safe_message=(
                 "The requested record page cannot be transported intact. Request a smaller "
                 "TOP_N limit at the same offset. It was not counted as delivered evidence."))
+        if isinstance(exc, _ArtifactPaginationProgressRequired):
+            return ToolError(
+                error_code="PAGINATION_PROGRESS_REQUIRED",
+                safe_message=(
+                    "This TOP_N page was already delivered. No new records were read. "
+                    "Copy query_constraints.required_followup_offset into offset and "
+                    "query_constraints.suggested_next_limit into limit for the next page."
+                ),
+                query_constraints=exc.query_constraints,
+            )
         if isinstance(exc, _ReportEvidenceIncomplete):
             first = next(item for item in exc.check.items if item.status != "READY")
             return ToolError(error_code=first.status, safe_message=(
@@ -2077,6 +2141,12 @@ class LabBioRuntimeToolSet:
         if isinstance(exc, EnvironmentRequestError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, _ArtifactQueryFailure):
+            invalid_query_message = (
+                "The artifact view and limit combination is invalid. A non-null "
+                "limit is allowed only for query_constraints.limit_allowed_view_type "
+                "and must be an integer at least query_constraints.limit_minimum. "
+                "Other views require an omitted limit or JSON null, not a string."
+            )
             messages = {
                 "INVALID_ENUM_VALUE": (
                     "The artifact view type is not supported. See query_constraints "
@@ -2084,12 +2154,7 @@ class LabBioRuntimeToolSet:
                     "means no query view is authorized, not a missing view name. "
                     "available_file_readers lists separately authorized file-reading tools."
                 ),
-                "INVALID_QUERY_SHAPE": (
-                    "The artifact view and limit combination is invalid. A non-null "
-                    "limit is allowed only for query_constraints.limit_allowed_view_type "
-                    "and must be an integer at least query_constraints.limit_minimum. "
-                    "Other views require an omitted limit or JSON null, not a string."
-                ),
+                "INVALID_QUERY_SHAPE": invalid_query_message,
                 "ARTIFACT_EXPOSURE_DENIED": (
                     "Remote exposure policy denies this Artifact/view combination. "
                     "See query_constraints for its current permitted remote views. "

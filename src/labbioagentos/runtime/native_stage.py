@@ -426,6 +426,12 @@ class NativeKernelStageInvoker:
                 if result.leader_result.termination == "CAPABILITY_EVIDENCE_LIMIT"
                 else "PROVIDER_TURN_LIMIT"
                 if result.leader_result.termination == "PROVIDER_TURN_LIMIT"
+                else "PROVIDER_USAGE_LIMIT"
+                if result.leader_result.termination == "PROVIDER_USAGE_LIMIT"
+                else "PROVIDER_TRANSPORT_STOP"
+                if result.leader_result.termination == "PROVIDER_TRANSPORT_STOP"
+                else "INCOMPLETE_PROVIDER_STOP"
+                if result.leader_result.termination == "INCOMPLETE_PROVIDER_STOP"
                 else "MODEL_RETURNED"
             ),
             provider_turn_count=result.budget_usage.provider_turns,
@@ -435,6 +441,7 @@ class NativeKernelStageInvoker:
             "evidence_id": str(bundle.evidence_id),
             "capability_count": len(bundle.items),
             "provider_turn_count": bundle.provider_turn_count,
+            "termination_reason": bundle.termination_reason,
         })
         return bundle
 
@@ -484,14 +491,28 @@ class NativeKernelStageInvoker:
             report_control = report_result_control(effective_input, evidence)
             response_format = report_result_response_format(response_format, report_control)
         payload = {"stage_input": effective_input.model_dump(mode="json")}
-        if evidence is not None:
-            payload["capability_evidence"] = finalization_evidence(evidence)
         if retrieval_control is not None:
             payload["skill_retrieval_control"] = retrieval_control
         if execution_control is not None:
             payload["execution_result_control"] = execution_control
         if report_control is not None:
             payload["report_result_control"] = report_control
+        if evidence is not None:
+            payload["capability_evidence"] = finalization_evidence(evidence)
+        finalization_content = json.dumps(
+            payload, separators=(",", ":"), ensure_ascii=False
+        )
+        if len(finalization_content) > 60_000 and evidence is not None:
+            payload["capability_evidence"] = finalization_evidence(
+                evidence, include_safe_results=False
+            )
+            finalization_content = json.dumps(
+                payload, separators=(",", ":"), ensure_ascii=False
+            )
+        if len(finalization_content) > 60_000:
+            raise RuntimeProfileConfigurationError(
+                "Finalization context exceeds its bounded public message envelope"
+            )
         finalization_invocation_id = uuid4()
         identity = KernelIdentity(
             thread_id=stage_input.run_id,
@@ -528,7 +549,7 @@ class NativeKernelStageInvoker:
                     PublicMessage(role="SYSTEM", content=prompt.sanitized_text),
                     PublicMessage(
                         role="USER",
-                        content=json.dumps(payload, separators=(",", ":")),
+                        content=finalization_content,
                     ),
                 ),
                 deadline_monotonic=(
@@ -554,13 +575,41 @@ class NativeKernelStageInvoker:
         except (ValidationError, ValueError, TypeError, PydanticCustomError,
                 FinalizationRejectedError,
                 ExecutionGroundingError, ReportGroundingError) as exc:
+            self._project_kernel_events(stage_input, loop.events)
             error = RuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Native runtime returned a result that violates the stage contract.",
             )
-            self._emit_failure(stage_input, TraceEventType.FINALIZATION_PHASE_FAILED, error)
+            cause_code = (
+                exc.code
+                if isinstance(exc, KernelContractError)
+                else "RESULT_VALIDATION_ERROR"
+                if isinstance(exc, ValidationError)
+                else "RESULT_CONTRACT_ERROR"
+            )
+            validation_type = None
+            validation_fields = ()
+            if isinstance(exc, FinalizationRejectedError):
+                validation_type = exc.validation_type
+                validation_fields = exc.validation_fields
+            elif isinstance(exc, ValidationError):
+                issues = exc.errors(include_url=False, include_input=False)
+                first = issues[0] if issues else None
+                validation_type = first["type"] if first else "invalid"
+                validation_fields = tuple(
+                    str(item) for item in first.get("loc", ())
+                ) if first else ()
+            self._emit_failure(
+                stage_input,
+                TraceEventType.FINALIZATION_PHASE_FAILED,
+                error,
+                cause_code=cause_code,
+                validation_type=validation_type,
+                validation_fields=validation_fields,
+            )
             raise error from exc
         except Exception as exc:
+            self._project_kernel_events(stage_input, loop.events)
             error = RuntimeIntegrationError(
                 "NATIVE_INVOCATION_FAILED",
                 "Native finalization failed before a valid result was returned.",
@@ -762,6 +811,8 @@ class NativeKernelStageInvoker:
         error,
         *,
         cause_code: str | None = None,
+        validation_type: str | None = None,
+        validation_fields: tuple[str, ...] = (),
     ) -> None:
         payload = {
             "error_code": error.error_code,
@@ -769,4 +820,8 @@ class NativeKernelStageInvoker:
         }
         if cause_code is not None:
             payload["cause_code"] = cause_code
+        if validation_type is not None:
+            payload["validation_type"] = validation_type
+        if validation_fields:
+            payload["validation_fields"] = list(validation_fields)
         self._emit(stage_input, event_type, "FAILED", payload)

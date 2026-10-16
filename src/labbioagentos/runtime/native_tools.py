@@ -18,7 +18,6 @@ from labbioagentos.execution.models import (
     ExecutionRuntime,
     ExecutionScriptContent,
     ExecutionSourceEdit,
-    OutputArtifactSpec,
     RequestedResources,
 )
 from labbioagentos.kernel import (
@@ -66,7 +65,10 @@ class ArtifactQueryArguments(NativeToolArguments):
     )
     limit: ArtifactQueryLimit | None = Field(
         default=None,
-        description="Optional positive page size for TOP_N; null uses the policy default.",
+        description=(
+            "Optional positive page size for TOP_N; null uses the policy default. "
+            "The same policy default applies when following next_offset."
+        ),
     )
     offset: int = Field(
         default=0,
@@ -165,8 +167,21 @@ class ExecutionSubmitArguments(NativeToolArguments):
 
 class FileReadArguments(NativeToolArguments):
     artifact_id: UUID
-    offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=4_000, ge=1, le=8_000)
+    offset: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Unicode-character offset. After a page for the same Artifact returns "
+            "a non-null next_offset, copy the returned next_offset here for the "
+            "following page; restarting an already delivered page is not progress."
+        ),
+    )
+    limit: int = Field(
+        default=4_000,
+        ge=1,
+        le=8_000,
+        description="Page size in Unicode characters; use up to 8000 to finish bounded text efficiently.",
+    )
     expected_sha256: StrictStr | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{64}$",
@@ -408,8 +423,24 @@ _CAPABILITY_DESCRIPTIONS = {
     name: f"Invoke the governed {name} capability with strict arguments."
     for name in ALL_CAPABILITIES
 }
+_CAPABILITY_DESCRIPTIONS["artifact_query"] = (
+    "Request a governed Artifact view. For TOP_N pagination, follow next_offset; "
+    "an omitted limit continues to use the policy-bounded default page size."
+)
+_CAPABILITY_DESCRIPTIONS["file_read"] = (
+    "Read one authorized generated file page by Artifact UUID. For the same Artifact, "
+    "copy the returned next_offset into the next call until it is null; requesting an "
+    "already delivered page after feedback makes no progress and can end the capability "
+    "loop with REPEATED_NO_PROGRESS_REQUEST. That loop termination does not prove any "
+    "execution capability was attempted."
+)
 _CAPABILITY_DESCRIPTIONS["execution_submit"] = (
-    "Submit one complete program for governed execution. Explicitly select task "
+    "Submit one complete program for governed execution. Exposure of this tool "
+    "means it is currently authorized by the trusted host; no separate user authorization "
+    "is required for in-scope technical use. When execution_capability requires "
+    "queryable output, this tool produces the current EXECUTE receipt needed before "
+    "a downstream transition; historical evidence cannot replace it and VALIDATE cannot create "
+    "it. Explicitly select task "
     "inputs by UUID. LABBIO_INPUT_MANIFEST_PATH names a JSON object whose keys "
     "are the selected UUID strings and whose values are their absolute read-only "
     "container path strings; load it and access a path directly as "
@@ -446,45 +477,17 @@ def build_labbio_tool_registry(
         if (capability_name == "execution_submit"
                 and execution_capability is not None
                 and execution_capability.minimum_queryable_output_count > 0):
-            queryable_output_model = create_model(
-                "QueryableOutputArtifactSpec",
-                __base__=OutputArtifactSpec,
-                requested_exposure=(
-                    Literal["DERIVED"],
-                    Field(
-                        description=(
-                            "Required DERIVED classification for an output that "
-                            "satisfies the current nonzero queryable-output minimum."
-                        ),
-                    ),
-                ),
-                output_contract_id=(
-                    StrictStr,
-                    Field(
-                        min_length=1,
-                        max_length=128,
-                        description=(
-                            "Required approved contract ID copied from the current "
-                            "execution_capability.approved_output_contracts."
-                        ),
-                    ),
-                ),
-            )
-            queryable_outputs = Annotated[
-                tuple[queryable_output_model, ...],
-                Field(
-                    min_length=execution_capability.minimum_queryable_output_count,
-                    max_length=128,
-                ),
-            ]
             required_fields = {
                 "requested_outputs": (
-                    queryable_outputs,
+                    ExecutionRequestedOutputs,
                     Field(
                         description=(
-                            "Required nonempty output declarations because the "
-                            "current execution_capability minimum is nonzero. "
-                            "Use DERIVED exposure and an approved output contract."
+                            "Declare enough outputs to include at least "
+                            f"{execution_capability.minimum_queryable_output_count} "
+                            "DERIVED output with an approved output contract. "
+                            "Additional local-only outputs may use RAW and omit "
+                            "output_contract_id; the host validates the required "
+                            "queryable count before execution."
                         ),
                         min_length=execution_capability.minimum_queryable_output_count,
                     ),

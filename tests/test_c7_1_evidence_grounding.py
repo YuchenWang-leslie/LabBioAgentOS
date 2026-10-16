@@ -149,6 +149,7 @@ def test_g3_default_top_n_explicitly_reports_partial_collection(tmp_path):
     assert view.available_count == 14
     assert view.effective_limit == 10
     assert view.truncated is True
+    assert view.suggested_next_limit == 4
 
 
 def test_g4_explicit_bounded_query_reports_complete_collection(tmp_path):
@@ -165,6 +166,7 @@ def test_g4_explicit_bounded_query_reports_complete_collection(tmp_path):
     assert view.available_count == 14
     assert view.effective_limit == 14
     assert view.truncated is False
+    assert view.suggested_next_limit is None
 
 
 def test_g5_collection_larger_than_policy_maximum_remains_partial(tmp_path):
@@ -181,6 +183,7 @@ def test_g5_collection_larger_than_policy_maximum_remains_partial(tmp_path):
     assert view.available_count == 150
     assert view.effective_limit == 100
     assert view.truncated is True
+    assert view.suggested_next_limit == 50
 
 
 def test_g6_model_context_cannot_be_promoted_by_reprojection():
@@ -224,6 +227,7 @@ def test_g7_completeness_metadata_preserves_the_leak_boundary(tmp_path):
         "effective_limit",
         "offset",
         "next_offset",
+        "suggested_next_limit",
         "truncated",
         "provenance",
     }
