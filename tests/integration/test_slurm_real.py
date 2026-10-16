@@ -13,6 +13,7 @@ filesystem shared by login and compute nodes.
 Optional: LABBIO_SLURM_ACCOUNT, LABBIO_SLURM_QOS,
 LABBIO_APPTAINER_RESOURCE_ENFORCEMENT ("scheduler" by default) and
 LABBIO_KEEP_TEST_FILES=1 to keep each test's directory for inspection.
+Where Slurm accounting (sacct) is available, the timeout test also checks it.
 """
 
 from __future__ import annotations
@@ -75,18 +76,19 @@ ENFORCEMENT = os.environ.get("LABBIO_APPTAINER_RESOURCE_ENFORCEMENT", "scheduler
 MAX_FILE_BYTES = 16 * 1024 * 1024
 
 
-def _policy() -> SchedulerPolicy:
+def _policy(**overrides) -> SchedulerPolicy:
     return SchedulerPolicy(
         max_output_file_bytes=MAX_FILE_BYTES,
         partition=os.environ["LABBIO_SLURM_PARTITION"],
         account=os.environ.get("LABBIO_SLURM_ACCOUNT") or None,
         qos=os.environ.get("LABBIO_SLURM_QOS") or None,
         walltime_margin_seconds=120, poll_interval_seconds=5, completion_grace_seconds=60,
+        **overrides,
     )
 
 
 @pytest.fixture
-def cluster():
+def cluster(request):
     base = Path(os.environ["LABBIO_SHARED_DIR"]) / f"slurm-{uuid4().hex[:12]}"
     base.mkdir(parents=True)
     binary = os.environ["LABBIO_APPTAINER_BINARY"]
@@ -108,7 +110,8 @@ def cluster():
     recorder = RunTraceRecorder(sink)
     store = LocalArtifactStore(base / "artifacts", trace_recorder=recorder)
     ledger = JobLedger(base / "jobs.sqlite")
-    launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_policy(),
+    launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"],
+                                 policy=_policy(**getattr(request, "param", {})),
                                  workspace_root=base / "executions")
     executor = ContainerExecutor(
         store=store,
@@ -136,10 +139,32 @@ def _plan(script: str, timeout: float = 300.0) -> ExecutionPlan:
     )
 
 
-def _squeue_lists(job_id: str) -> bool:
+def _squeue_state(job_id: str) -> str:
+    """The job's Slurm state, or an empty string once it is no longer listed."""
     result = subprocess.run(["squeue", "--noheader", "--jobs", job_id, "--format", "%T"],
                             capture_output=True, text=True, check=False)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _accounting(job_id: str) -> tuple[str, ...] | None:
+    """State and exit code from Slurm accounting, or None where accounting is unavailable."""
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                ["sacct", "--noheader", "--parsable2", "--allocations", "--jobs", job_id,
+                 "--format", "State,ExitCode"],
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        line = result.stdout.strip().split("\n")[0]
+        if line and not line.startswith(("PENDING", "RUNNING", "COMPLETING")):
+            return tuple(line.split("|"))
+        time.sleep(2)
+    return None
 
 
 @pytest.mark.asyncio
@@ -198,31 +223,49 @@ async def test_sandbox_holds_inside_a_scheduled_job(cluster, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_timeout_is_enforced_inside_the_job(cluster):
-    executor, _, _, _ = cluster
+    executor, ledger, _, _ = cluster
+    plan = _plan("import time\ntime.sleep(600)\n", timeout=20)
     started = time.monotonic()
 
-    result = await executor.execute_async(_plan("import time\ntime.sleep(600)\n", timeout=20))
+    result = await executor.execute_async(plan)
 
     assert result.status is ExecutionStatus.TIMED_OUT
     assert time.monotonic() - started < 600
+    accounting = _accounting(ledger.get(plan.execution_id).job_id)
+    if accounting is not None:  # Operators see the timeout in Slurm's own records.
+        assert accounting[0] == "FAILED" and accounting[1].split(":")[0] in {"124", "137"}, accounting
 
 
 @pytest.mark.asyncio
-async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster):
+@pytest.mark.parametrize("cluster, phase", [
+    ({"extra_directives": ("--hold",)}, "queued"),  # Held, so it is still queued when lost.
+    ({}, "running"),
+], indirect=["cluster"], ids=["queued", "running"])
+async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster, phase):
     executor, ledger, _, base = cluster
-    plan = _plan("import time\ntime.sleep(900)\n", timeout=1200)
+    plan = _plan(
+        "import os, time\n"
+        "open(os.path.join(os.environ['LABBIO_OUTPUT_DIR'], 'started'), 'w').close()\n"
+        "time.sleep(900)\n",
+        timeout=1200,
+    )
+    workspace = base / "executions" / str(plan.execution_id)
     task = asyncio.create_task(executor.execute_async(plan))
     deadline = time.monotonic() + 300
-    entry = None
-    while time.monotonic() < deadline:
-        entry = ledger.get(plan.execution_id)
-        if entry is not None and entry.state is JobLedgerState.SUBMITTED:
-            break
+    entry, reached = None, False
+    while time.monotonic() < deadline and not reached:
         await asyncio.sleep(1)
-    task.cancel()  # The control plane is lost; the job keeps running in Slurm.
+        entry = ledger.get(plan.execution_id)
+        if entry is None or entry.state is not JobLedgerState.SUBMITTED:
+            continue
+        if phase == "queued":
+            reached = _squeue_state(entry.job_id) == "PENDING"
+        else:  # The program itself has started inside the container.
+            reached = (workspace / "outputs" / "started").exists()
+    task.cancel()  # The control plane is lost; the job stays in Slurm.
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert entry is not None and _squeue_lists(entry.job_id)
+    assert entry is not None and _squeue_state(entry.job_id)
 
     restarted_ledger = JobLedger(base / "jobs.sqlite")
     restarted = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_policy(),
@@ -236,8 +279,11 @@ async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster):
         restarted_ledger.close()
 
     assert [(item.job_id, item.action) for item in results] == [(entry.job_id, OrphanAction.CANCELLED)]
-    assert not _squeue_lists(entry.job_id)
-    assert not (base / "executions" / str(plan.execution_id)).exists()
+    assert not _squeue_state(entry.job_id)
+    assert not workspace.exists()
+    assert not (base / "scratch" / plan.execution_id.hex).exists()
+    if not reached:  # Cleaned up either way; only the intended phase was not observed.
+        pytest.skip(f"the job was not observed {phase} within 300s on this partition")
 
 
 def test_scheduler_preflight_accepts_the_configured_script(cluster):

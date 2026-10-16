@@ -134,6 +134,8 @@ def render_job_script(
         f'&& [ "$elapsed" -ge {timeout} ]; then timed_out=1; fi',
         f"printf '%s %s %s\\n' \"$status\" \"$elapsed\" \"$timed_out\" > {quote(str(temporary))}"
         f" && mv -f -- {quote(str(temporary))} {quote(str(exit_path))}",
+        # Scheduler accounting shows the program's status; LabBio reads the exit record.
+        'exit "$status"',
     ]
     return "\n".join(lines) + "\n"
 

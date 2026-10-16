@@ -133,9 +133,10 @@ def _run(tmp_path, program, *, timeout=60.0, policy=None, cleanup=(), leaked=Non
     script = job_dir / "job.sh"
     script.write_text(text)
     process = run_job_script(script, shim, leaked)
-    assert process.wait(timeout=60) == 0
+    returncode = process.wait(timeout=60)
     record = EXIT_RECORD.fullmatch((job_dir / "exit_code").read_text())
     assert record is not None and not (job_dir / "exit_code.tmp").exists()
+    assert returncode == int(record.group(1))  # The scheduler sees the program's status.
     return record, job_dir
 
 
