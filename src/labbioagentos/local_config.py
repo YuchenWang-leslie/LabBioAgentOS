@@ -97,10 +97,58 @@ class LocalExecutionSettings(_SettingsModel):
         return self
 
 
+def _plain_endpoint(url: str) -> bool:
+    parsed = urlsplit(url)
+    return (parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment
+            and not any(char.isspace() for char in url))
+
+
+class LocalClusterBuildSettings(_SettingsModel):
+    """Cluster environment builds (DECIDED-C13-8); required for [environment] with Apptainer.
+
+    Wheels are downloaded inside the base SIF on the login node or in a job on
+    a network-capable partition; the build itself runs in a network-disabled job.
+    """
+
+    # CPU architecture of the compute nodes and base SIFs, as in wheel tags; no default.
+    machine: str = Field(pattern=r"^[a-z0-9_]{1,32}$")
+    # Node-local directory on compute nodes for the sandbox; taken literally, never
+    # resolved on the login node.
+    build_dir: Path = Path("/tmp")
+    cpus: float = Field(default=4.0, gt=0, le=1024)
+    memory_mb: int = Field(default=16_384, ge=256, le=4_194_304, strict=True)
+    build_timeout_seconds: float = Field(default=7200.0, gt=0, le=86_400)
+    # Largest file a build or download job may write, such as the packed SIF.
+    max_file_bytes: int = Field(default=34_359_738_368, ge=1, strict=True)
+    partition: str | None = None  # Build jobs; the launcher's partition when unset.
+    extra_directives: tuple[str, ...] = ()
+    download_placement: Literal["login", "job"] = "login"
+    download_partition: str | None = None  # Required for "job": a partition with network.
+    download_work_root: Path = Path("/tmp")  # Taken literally, like build_dir.
+    download_timeout_seconds: float = Field(default=1800.0, ge=1, le=86_400)
+    download_cpu_seconds: int = Field(default=1800, ge=1, le=86_400, strict=True)
+    download_memory_mb: int = Field(default=4096, ge=256, le=1_048_576, strict=True)
+    cache_dir: Path | None = None  # pip cache on the shared filesystem.
+    index_url: str | None = None  # A package index without credentials.
+    ca_bundle: Path | None = None  # For proxies that re-sign HTTPS.
+
+    @model_validator(mode="after")
+    def validate_build(self) -> "LocalClusterBuildSettings":
+        if not self.build_dir.is_absolute() or not self.download_work_root.is_absolute():
+            raise ValueError("build_dir and download_work_root must be absolute paths")
+        if (self.download_placement == "job") != (self.download_partition is not None):
+            raise ValueError("download_partition is required for, and only for, download_placement = 'job'")
+        if self.index_url is not None and not _plain_endpoint(self.index_url):
+            raise ValueError("index_url must be an HTTP(S) endpoint without credentials")
+        return self
+
+
 class LocalEnvironmentSettings(_SettingsModel):
     root: Path
     build_proxy: str | None = None
     build_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    cluster: LocalClusterBuildSettings | None = None
 
     @model_validator(mode="after")
     def validate_proxy(self) -> "LocalEnvironmentSettings":
@@ -173,8 +221,10 @@ class LocalSettings(_SettingsModel):
         if self.execution.backend == "apptainer":
             if not Path(self.execution.apptainer.binary).is_absolute():
                 raise ValueError("Scheduler mode requires an absolute Apptainer binary path")
-            if self.environment is not None:
-                raise ValueError("Environment builds are not available with the Apptainer backend yet")
+        if self.environment is not None:
+            # Docker builds on the control-plane host; cluster builds need their own settings.
+            if (self.execution.backend == "apptainer") != (self.environment.cluster is not None):
+                raise ValueError("[environment.cluster] is required with, and only with, the Apptainer backend")
         return self
 
     @property
@@ -218,7 +268,7 @@ def load_settings(path: Path) -> LocalSettings:
     if managed_root is not None:
         managed_root = managed_root.expanduser()
         managed_root = (managed_root if managed_root.is_absolute() else path.parent / managed_root).absolute()
-    return settings.model_copy(update={
+    settings = settings.model_copy(update={
         "result_root": absolute(settings.result_root),
         "input_roots": tuple(absolute(value) for value in settings.input_roots),
         "profile": absolute(settings.profile) if settings.profile else None,
@@ -226,12 +276,29 @@ def load_settings(path: Path) -> LocalSettings:
         "gold_root": absolute(settings.gold_root) if settings.gold_root else None,
         "environment": settings.environment.model_copy(update={
             "root": absolute(settings.environment.root),
+            "cluster": _absolute_cluster_build(settings.environment.cluster, absolute),
         }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
         "execution": settings.execution.model_copy(update={
             "apptainer": _absolute_apptainer(settings.execution.apptainer, absolute),
         }) if settings.execution.apptainer else settings.execution,
         "launcher": _absolute_launcher(settings.launcher, absolute),
+    })
+    if settings.environment is not None and settings.environment.cluster is not None:
+        # Partitions and directives are checked as the build and download jobs will use them.
+        environment_scheduler_policy(settings)
+        environment_scheduler_policy(settings, download=True)
+    return settings
+
+
+def _absolute_cluster_build(cluster: LocalClusterBuildSettings | None, absolute):
+    if cluster is None:
+        return None
+    # Shared-filesystem paths resolve like the rest; build_dir and download_work_root
+    # are node-local and stay literal.
+    return cluster.model_copy(update={
+        "cache_dir": absolute(cluster.cache_dir) if cluster.cache_dir else None,
+        "ca_bundle": absolute(cluster.ca_bundle) if cluster.ca_bundle else None,
     })
 
 
@@ -350,6 +417,89 @@ def scheduler_policy(settings: LocalSettings):
         extra_directives=launcher.extra_directives,
         apptainer_cache_dir=apptainer.cache_dir, apptainer_tmp_dir=apptainer.tmp_dir,
     )
+
+
+def environment_scheduler_policy(settings: LocalSettings, *, download: bool = False):
+    """Scheduler policy of environment build jobs, or of download jobs (DECIDED-C13-8)."""
+    from .execution.launchers import SchedulerPolicy, validate_extra_directives
+
+    apptainer, launcher = settings.execution.apptainer, settings.launcher
+    cluster = settings.environment.cluster
+    validate_extra_directives(launcher.scheduler_template(), cluster.extra_directives)
+    partition = cluster.download_partition if download else cluster.partition
+    return SchedulerPolicy(
+        max_output_file_bytes=cluster.max_file_bytes,
+        partition=partition or launcher.partition, account=launcher.account, qos=launcher.qos,
+        walltime_margin_seconds=launcher.walltime_margin_seconds,
+        poll_interval_seconds=launcher.poll_interval_seconds,
+        max_queue_seconds=launcher.max_queue_seconds,
+        completion_grace_seconds=launcher.completion_grace_seconds,
+        extra_directives=cluster.extra_directives,
+        apptainer_cache_dir=apptainer.cache_dir, apptainer_tmp_dir=apptainer.tmp_dir,
+    )
+
+
+def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> dict:
+    """Environment builds: Docker on the control-plane host, or cluster builds in jobs."""
+    from .execution.environments import EnvironmentService
+
+    environment = settings.environment
+    if environment.cluster is None:
+        from .execution.environment_builder import DockerEnvironmentBuilder
+
+        def docker_service(registry):
+            return EnvironmentService(
+                root=environment.root, image_registry=registry,
+                builder=DockerEnvironmentBuilder(
+                    proxy_url=environment.build_proxy, timeout_seconds=environment.build_timeout_seconds,
+                ),
+                owner_user_id=settings.principal.user_id,
+            )
+
+        return {"environment_service_factory": docker_service}
+
+    from .execution.apptainer import SifStore
+    from .execution.apptainer_build import DownloadRunner
+    from .execution.apptainer_environment_builder import ApptainerBuildPolicy, ApptainerEnvironmentBuilder
+    from .execution.launchers import SchedulerLauncher
+
+    apptainer, cluster = settings.execution.apptainer, environment.cluster
+    template = settings.launcher.scheduler_template()
+    jobs_root = run_root / "environment-jobs"
+    jobs_root.mkdir(mode=0o700, exist_ok=True)
+    build_launcher = SchedulerLauncher(template=template, policy=environment_scheduler_policy(settings),
+                                       workspace_root=jobs_root)
+    placement = (
+        {"download_runner": DownloadRunner(max_file_bytes=cluster.max_file_bytes,
+                                           cpu_seconds=cluster.download_cpu_seconds,
+                                           cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir)}
+        if cluster.download_placement == "login" else
+        {"download_launcher": SchedulerLauncher(
+            template=template, policy=environment_scheduler_policy(settings, download=True),
+            workspace_root=jobs_root)}
+    )
+    policy = ApptainerBuildPolicy(
+        apptainer_binary=Path(apptainer.binary), machine=cluster.machine, build_dir=cluster.build_dir,
+        download_work_root=cluster.download_work_root,
+        resources=RequestedResources(cpus=cluster.cpus, memory_mb=cluster.memory_mb,
+                                     timeout_seconds=cluster.build_timeout_seconds),
+        download_timeout_seconds=cluster.download_timeout_seconds,
+        download_memory_mb=cluster.download_memory_mb, cache_dir=cluster.cache_dir,
+        index_url=cluster.index_url, proxy_url=environment.build_proxy, ca_bundle=cluster.ca_bundle,
+    )
+
+    def cluster_service(registry):
+        return EnvironmentService(
+            root=environment.root, image_registry=registry,
+            builder=ApptainerEnvironmentBuilder(
+                sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
+                job_ledger=job_ledger, **placement,
+            ),
+            owner_user_id=settings.principal.user_id,
+        )
+
+    # Crash cleanup reaches build and download jobs through the launcher of their shared root.
+    return {"environment_service_factory": cluster_service, "environment_job_launcher": build_launcher}
 
 
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
@@ -481,21 +631,6 @@ def build_application(
             handle.write(json.dumps({"kind": kind, "payload": payload}, sort_keys=True) + "\n")
 
     resources = settings.execution.resources
-    environment_service_factory = None
-    if settings.environment is not None:
-        from .execution.environment_builder import DockerEnvironmentBuilder
-        from .execution.environments import EnvironmentService
-
-        def environment_service_factory(registry):
-            return EnvironmentService(
-                root=settings.environment.root, image_registry=registry,
-                builder=DockerEnvironmentBuilder(
-                    proxy_url=settings.environment.build_proxy,
-                    timeout_seconds=settings.environment.build_timeout_seconds,
-                ),
-                owner_user_id=settings.principal.user_id,
-            )
-
     with ExitStack() as cleanup:
         skill_service = None
         handlers = ()
@@ -512,6 +647,10 @@ def build_application(
         if settings.execution.backend == "apptainer":
             execution_wiring = _cluster_execution(settings, run_root)
             cleanup.callback(execution_wiring["job_ledger"].close)
+        environment_wiring = {}
+        if settings.environment is not None:
+            # Build jobs share the execution ledger, so the run's crash cleanup covers them.
+            environment_wiring = _environment_wiring(settings, run_root, execution_wiring.get("job_ledger"))
         application = LabBioApplication(ApplicationRuntimeConfiguration(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
@@ -539,9 +678,9 @@ def build_application(
             run_state_store=run_store,
             boundary_observer=observe, retry_limit=1,
             skill_service=skill_service, domain_decision_handlers=handlers,
-            environment_service_factory=environment_service_factory,
             literature_search=LiteratureSearchService(),
             **execution_wiring,
+            **environment_wiring,
         ))
         cleanup.pop_all()  # The caller now owns both stores, including failure cleanup.
         return application

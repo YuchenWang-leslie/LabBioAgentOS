@@ -221,6 +221,59 @@ def render_download_program(
     return "\n".join(lines) + "\n"
 
 
+def download_check_argv(
+    *,
+    apptainer_binary: Path,
+    base_sif: Path,
+    work_dir: Path,
+    index_url: str | None = None,
+    proxy_url: str | None = None,
+    ca_bundle: Path | None = None,
+) -> tuple[str, ...]:
+    """Operator check: the base image's pip can resolve from the index with the download settings.
+
+    pip resolves itself, ignoring the installed copy, so the index must be
+    reached; --dry-run --report also proves the pip version the download needs.
+    """
+
+    for path in (apptainer_binary, base_sif, work_dir, *((ca_bundle,) if ca_bundle else ())):
+        _check_path(path)
+    for url in (index_url, proxy_url):
+        if url is not None and not _plain_url(url):
+            raise ValueError("Index and proxy settings must be HTTP(S) endpoints without credentials")
+    argv = [str(apptainer_binary), "--silent", "exec", *CONTAIN_ARGUMENTS, "--workdir", str(work_dir),
+            "--bind", f"{work_dir}:/labbio/check:rw"]
+    options = []
+    if ca_bundle is not None:
+        argv += ["--bind", f"{ca_bundle}:/labbio/ca.pem:ro"]
+        options += ["--cert", "/labbio/ca.pem"]
+    if index_url is not None:
+        options += ["--index-url", index_url]
+    if proxy_url is not None:
+        options += ["--proxy", proxy_url]
+    return (*argv, str(base_sif), "python", "-I", "-m", "pip", "install", "--dry-run", "--ignore-installed",
+            "--no-deps", "--only-binary=:all:", "--disable-pip-version-check", "--no-input",
+            "--progress-bar", "off", "--no-cache-dir", "--report", "/labbio/check/report.json",
+            *options, "pip")
+
+
+def classify_download_check(exit_code: int | None, *, timed_out: bool, output: str, report: Path) -> str:
+    """OK, PIP_TOO_OLD, BUILD_TIMEOUT, or the pip failure code (NETWORK_FAILURE, TLS_FAILURE, ...)."""
+
+    if timed_out:
+        return "BUILD_TIMEOUT"
+    if exit_code == 0:
+        try:
+            if json.loads(report.read_text(encoding="utf-8"))["version"] == "1":
+                return "OK"
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            pass
+        return "VERIFICATION_FAILED"
+    if "no such option" in output:  # --dry-run and --report need pip 22.2 or later.
+        return "PIP_TOO_OLD"
+    return diagnose_pip_log(output)
+
+
 def verify_download(download_dir: Path, *, machine: str) -> tuple[LockedWheel, ...]:
     """Lock the downloaded wheels and require them to be exactly pip's resolution."""
 

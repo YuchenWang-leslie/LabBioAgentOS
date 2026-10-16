@@ -58,3 +58,31 @@ poll_interval_seconds = 30
 max_queue_seconds = 86400       # Longer queues are cancelled and reported as a timeout.
 completion_grace_seconds = 60   # Shared-filesystem lag allowed for the exit record.
 extra_directives = []           # Single plain lines, e.g. "--constraint=avx2".
+
+# Optional: let the runtime model build verified Python environments (wheels only).
+# Downloading wheels is the only networked step; installing, checking, packing the
+# SIF and the import check run in a network-disabled scheduler job.
+[environment]
+root = "/shared/lab/labbio/environments"       # Shared filesystem: jobs read and write here.
+# build_proxy = "http://proxy.example:3128"    # Reaches only the download step; no credentials.
+
+[environment.cluster]
+machine = "x86_64"              # Required: CPU architecture of compute nodes and base SIFs.
+build_dir = "/tmp"              # Node-local on compute nodes; holds the unpacked sandbox.
+cpus = 4.0                      # Build job resources.
+memory_mb = 16384
+build_timeout_seconds = 7200.0
+max_file_bytes = 34359738368    # Largest file a build job may write: the packed SIF.
+# partition = "regular"         # Build jobs; defaults to [launcher] partition.
+extra_directives = []
+# "login": download on the login node at low priority, with CPU and time limits.
+# The base image needs pip 22.2 or later; backend-check confirms it reaches the index.
+# "job": download in a job on a partition with network (set download_partition).
+download_placement = "login"
+# download_partition = "transfer"
+download_work_root = "/tmp"
+download_timeout_seconds = 1800.0
+download_cpu_seconds = 1800
+cache_dir = "/shared/lab/labbio/pip-cache"
+# index_url = "https://pypi.example/simple"  # A mirror without credentials.
+# ca_bundle = "/etc/pki/tls/certs/site-ca.pem"   # For proxies that re-sign HTTPS.
