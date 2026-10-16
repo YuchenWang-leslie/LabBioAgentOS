@@ -546,7 +546,10 @@ Phases:
    generated job scripts; job ledger; non-blocking execution.
    Jobs are awaited inside one tool call; suspending runs in a new workflow
    state (3b) is a recorded fallback that needs its own decision.
-4. Login-node Apptainer environment builds.
+4. Apptainer environment builds: wheels are downloaded inside the base SIF
+   (on the login node, or in a job on a network-capable partition) and pinned
+   by sha256; locked installation, SIF packing, and the import probe run in a
+   network-disabled scheduler job.
 
 Important:
 
@@ -566,7 +569,8 @@ Do not install Apptainer, a scheduler, or Docker. Use generic mock tasks only.
   when the scheduler loads the user's login environment
 * each execution's scratch directory is removed after the execution
 * a crash during a job never resubmits it and still fails closed
-* gated real runs pass: Apptainer on Linux, then a Slurm template end to end
+* gated real runs pass: Apptainer on Linux, then a Slurm template end to end,
+  then a cluster environment build end to end
 
 Full list: the numbered criteria in the gap memo.
 
