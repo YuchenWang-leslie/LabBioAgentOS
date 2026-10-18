@@ -18,6 +18,8 @@ registration. Phase 7 adds user-approved immutable Gold Skill records. Phase 8
 adds identity/scope authorization, project isolation, governed persistent
 Memory, and deterministic workspace resolution without adding authentication,
 bioinformatics methods, runtime scientific reasoning, or production services.
+C13 adds cluster execution, Scheduler + Apptainer, beside Local + Docker; see
+"C13 cluster execution boundary".
 
 The inspected PantheonOS upstream baseline is version `0.6.4`, commit
 `5d3d459ac5752ed9d39432232d76ad1581296012`. The frozen LabBio-required
@@ -477,6 +479,10 @@ semantic PII classifier. Those limitations must not be bypassed through direct
 store access.
 
 ### Phase 6 Docker execution contract
+
+> Since C13 this is the Local + Docker form of execution. The same
+> `ExecutionPlan` also runs under Scheduler + Apptainer; see "C13 cluster
+> execution boundary".
 
 The implemented execution path is:
 
@@ -991,7 +997,73 @@ architecture bypass. Frozen Pantheon remains unchanged at
 claim is made. See `C12_CORE_ARCHITECTURE_ACCEPTANCE.md` and
 `KNOWN_LIMITATIONS.md`.
 
+## C13 cluster execution boundary
+
+C13 was accepted on 2026-10-18 (`C13_APPTAINER_EXECUTION_ACCEPTANCE.md`). It
+adds cluster execution without changing the C12 contracts, the model-visible
+tool surface or Pantheon. Decisions: DECIDED-C13-0 to DECIDED-C13-9 in
+`OPEN_DECISIONS.md`. Operator guide: `CLUSTER_DEPLOYMENT.md`.
+
+Execution has two independent axes:
+
+- **Container runtime** (Docker or Apptainer) decides isolation. Both
+  implement `ContainerCommandBuilder` and pass one sandbox contract: no
+  network, read-only inputs, only the output directory writable, a cleared
+  environment, and the script at `/labbio/script.py`.
+- **Launcher** (Local or Scheduler) decides where the process runs. A
+  `JobLauncher` submits, polls, cancels, attaches and collects. The
+  `SchedulerLauncher` is driven by a configuration template (Slurm, PBS and LSF
+  are bundled) and calls scheduler command-line tools.
+
+Configuration accepts only Local + Docker (workstation) and Scheduler +
+Apptainer (the only cluster mode). The control plane, LLM calls and job
+submission run on the login node; analysis runs on compute nodes.
+
+```text
+runtime-generated ExecutionPlan            (unchanged)
+  -> ApprovedImageRegistry + ExecutionPolicy + MountResolver + workspace
+  -> ApptainerCommandBuilder argv          (image = SIF by sha256 in SifStore)
+  -> job ledger intent -> SchedulerLauncher submit
+       (fixed job script: export disabled, env -i allowlist, file-size limit,
+        timeout, atomic exit record, scratch removed on exit)
+  -> wait inside the tool call -> exit record read from the shared filesystem
+  -> OutputCollector -> ArtifactRegistrationPolicy -> existing exposure
+```
+
+Boundaries:
+
+- An Apptainer image is identified by the sha256 of its SIF, stored read-only
+  in a content-addressed store (DECIDED-C13-2).
+- A capability probe runs in `backend-check` and before the first execution.
+  Security items fail closed, including unprivileged `--net --network none`
+  (DECIDED-C13-9); degradations such as missing cgroup limits are recorded in
+  the trusted trace, and the scheduler allocation then enforces resources
+  (DECIDED-C13-6).
+- The control plane waits for a job inside one tool call (DECIDED-C13-3).
+  Every job is recorded in a durable job ledger before polling. After a crash,
+  reconciliation only cleans up: it cancels queued or running orphans, deletes
+  finished ones' files, never resubmits, and the run stays `BLOCKED`
+  (DECIDED-C13-4).
+- A filesystem shared by login and compute nodes is a prerequisite; no data
+  staging is performed (DECIDED-C13-7).
+- Environment builds on the cluster (DECIDED-C13-8) implement the same
+  `EnvironmentBuilder` protocol as Docker. Wheels are resolved and downloaded
+  inside the base SIF, on the login node or as a job on a network-capable
+  partition, and pinned by sha256. A network-disabled build job installs
+  exactly the locked wheels, checks, packs and import-checks the SIF, and the
+  control plane registers it, keeping the lock list as provenance. Build jobs
+  belong to the requesting run, so its crash cleanup covers them.
+- Model-visible content names no backend, launcher, scheduler or SIF.
+  Apptainer's own log lines are removed from stderr before the model sees
+  it; the raw log Artifact is unchanged.
+
+C13 adds no scientific decision logic and no Pantheon change
+(`UPSTREAM_MODIFICATIONS.md`).
+
 ## Out of scope after the C12 checkpoint
+
+C13 lifts the scheduler part of the "no production scheduler" item below, for
+Scheduler + Apptainer execution only. The rest of the list stands.
 
 - no production scRNA-seq or bulk RNA-seq pipeline;
 - no scientific method-selection rules;
