@@ -87,7 +87,10 @@ bound run/stage/invocation and workspace ownership. It authorizes every input
 artifact before mount resolution and ensures registered outputs inherit the
 same scope. It does not pass model-supplied Docker flags or paths. The current
 `ExecutionResult` is internal because nested `ArtifactRef.storage_locator`
-values reveal host paths.
+values reveal host paths. Since C13 the same tool runs under Local + Docker or
+Scheduler + Apptainer. The container runtime and launcher are host
+configuration: the model cannot choose them, and results never name the
+backend, scheduler, job or SIF.
 
 ### Gold Skill capabilities
 
@@ -169,6 +172,9 @@ The runtime model must never receive direct access to:
 - arbitrary filesystem, shell, subprocess, or host path APIs;
 - Docker CLI, Docker socket, raw argv construction, image registry credentials,
   arbitrary mounts, or executor configuration;
+- Apptainer CLI, SIF files or the SIF store, scheduler commands, job scripts,
+  job IDs, partitions, accounts, the job ledger, launcher or environment-build
+  configuration, and build proxy, CA bundle or package-index settings (C13);
 - `ArtifactStore`, `get_ref`, `load_for_view`, storage locators, raw blobs, or
   unrestricted file-content reads;
 - raw biological matrices, arbitrary dataframe rows, FASTQ/BAM contents, or
