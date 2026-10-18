@@ -9,8 +9,8 @@ C13 APPTAINER CLUSTER EXECUTION ACCEPTED
 Decided by MOHAN CUI. Phases 1 and 2 were accepted on 2026-10-15, phase 3a on
 2026-10-16 and phase 4 on 2026-10-18. Phase 1 changed no behaviour and was
 accepted on the unit suite; phases 2 to 4 were each also run on a real
-cluster. Criteria 1-21 and 23 are met. Criterion 22 is met in code;
-its record in `UPSTREAM_MODIFICATIONS.md` is still to be written.
+cluster. All 23 criteria are met; the record criterion 22 requires was added
+to `UPSTREAM_MODIFICATIONS.md` in `f8c2796`.
 
 Two parts of criteria 20 and 21 could not be exercised on the test cluster
 and are accepted on deterministic tests alone, as site-dependent:
@@ -77,7 +77,7 @@ warning.
 | 19 | Template adapter passes fake-CLI tests for Slurm, PBS and LSF; gated Slurm test completes a mock task | Met. `tests/test_scheduler_templates.py`, `tests/test_scheduler_launcher.py`; `test_slurm_real.py` 6 passed on the test cluster. PBS and LSF are verified against fake command output only. |
 | 20 | `ApptainerEnvironmentBuilder`: shared protocol; wheels downloaded in the base SIF and pinned by sha256; locked install, `pip check`, packing and import probe in a network-disabled job; registered with the lock list; ledger-recorded under the run; crash cleanup; `BUILDER_UNAVAILABLE`; gated real build | Met, with downloads as jobs not exercised for real. `tests/test_apptainer_build.py`, `tests/test_apptainer_download.py`, `tests/test_apptainer_environment_builder.py`, `tests/test_job_ledger_reconcile.py`, `tests/test_cluster_environment_configuration.py`. On the test cluster, `requests==2.32.3` resolved to five locked wheels. It was built in an 18 s job into a 49.9 MB SIF and imported by a scheduled, network-disabled task. A held build job was cancelled by its run's cleanup, and no node-local build directory remained. |
 | 21 | Proxy, CA bundle and index settings reach only the download step | Met in code and tests. The build program never receives them; only the download's pip calls carry them, and only when configured (`test_apptainer_build.py`, `test_apptainer_download.py`, `test_apptainer_environment_builder.py`). The test cluster uses none of these settings, so only their absence was observed for real. |
-| 22 | No Pantheon core changes; `UPSTREAM_MODIFICATIONS.md` records none | Code: met. C13 changes only `src/labbioagentos`, `tests`, `docs`, `examples` and `Roadmap.md`; the Pantheon pin and `pyproject.toml` are unchanged. Record: pending, scheduled with the other living-document updates. |
+| 22 | No Pantheon core changes; `UPSTREAM_MODIFICATIONS.md` records none | Code: met. C13 changes only `src/labbioagentos`, `tests`, `docs`, `examples` and `Roadmap.md`; the Pantheon pin and `pyproject.toml` are unchanged. Record: written in `UPSTREAM_MODIFICATIONS.md` (`f8c2796`). |
 | 23 | Model-visible content names no backend, launcher, scheduler or SIF | Met. `tests/test_c13_model_visible_boundary.py` covers execution results under Apptainer and the scheduler, Apptainer's own stderr lines, and every environment build failure receipt (including the former "Docker builder" wording). The lock list is stored as provenance and never returned (`tests/test_execution_environments.py`). |
 
 ## Real-cluster defects found and fixed
@@ -122,9 +122,8 @@ warning.
   execution where `--net --network none` is unavailable.
 - OPEN-C13-I (Gold Skill image identity across backends) remains open for the
   development report.
-- Living documents still to update: `UPSTREAM_MODIFICATIONS.md` (criterion
-  22), `LABBIO_ARCHITECTURE.md`, `RUNTIME_TOOL_SURFACE.md` and
-  `REAL_E2E_CONVERGENCE_WORKPLAN.md`.
+- Living documents still to update: `LABBIO_ARCHITECTURE.md`,
+  `RUNTIME_TOOL_SURFACE.md` and `REAL_E2E_CONVERGENCE_WORKPLAN.md`.
 
 ## Commits
 
