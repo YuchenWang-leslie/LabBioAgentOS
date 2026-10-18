@@ -1,8 +1,10 @@
 # Cluster Deployment
 
-> **Status:** execution through a real scheduler is accepted on a test cluster
-> (C13 phase 3a). Environment builds (phase 4) are implemented and pending
-> real-cluster acceptance. Example configuration:
+> **Status:** accepted on a test cluster: execution through a real scheduler
+> (C13 phase 3a) and environment builds with login-node downloads (phase 4).
+> Not verifiable on that cluster and therefore unverified on real hardware:
+> downloads running as jobs on a network-capable partition, and a build proxy,
+> CA bundle or private package index (the site has none). Example configuration:
 > `examples/cluster-runtime.toml`. Design and decisions:
 > `C13_APPTAINER_EXECUTION_GAP_MEMO.md` and the C13 section of
 > `OPEN_DECISIONS.md` (environment builds: DECIDED-C13-8).
