@@ -5802,3 +5802,42 @@ Pre-publication regression in the correct project: 1396 passed, 34 skipped,
 one existing Uvicorn warning (32.93 s). An initial parent-directory invocation
 collected unrelated backup/deliverable suites and failed collection; it was
 corrected without changing code and is not a project regression result.
+
+## 2026-10-18 — C13 Apptainer cluster execution accepted
+
+MOHAN CUI authorized C13 on 2026-10-15 (DECIDED-C13-0) as a new milestone after
+the C12 freeze: scheduler-based Apptainer execution for HPC clusters, beside
+the unchanged Local + Docker mode. The work was done on branch
+`add-apptainer` from `main` `df51fbc`, in four phases, each stopped for review:
+
+1. runtime-neutral `ContainerExecutor` with Docker behaviour unchanged;
+2. Apptainer backend: SIF store by sha256, command builder, capability probe,
+   runner;
+3. (3a) template-driven scheduler launcher (Slurm, PBS, LSF bundled), job
+   scripts, job ledger with cleanup-only reconciliation, non-blocking
+   execution, in-call waiting;
+4. cluster environment builds (DECIDED-C13-8): wheels downloaded inside the
+   base SIF and pinned by sha256, then built in a network-disabled job.
+
+Every phase passed the full macOS suite. Phases 2 to 4 also ran on a real test
+cluster (Linux, Slurm 25.11.5, Apptainer 1.4.1, unprivileged), operated by
+MOHAN CUI; the cluster reports were kept outside the repository. Real runs
+found and fixed four defects:
+- timed-out jobs showed as completed in scheduler accounting;
+- cancelling a running orphan job was untested;
+- a configured pip cache was never created;
+- unclosed ledger reads left test directories on NFS.
+
+Final results: macOS 1825 passed, 48 skipped (pre-C13 1479, 34); Linux 1826
+passed, 47 skipped; gated real tests Apptainer 2/2, Slurm 6/6, environment
+build 4 passed with 1 skipped. The skip is downloads as a job, because no
+network-capable partition was known. A build proxy, CA bundle or private
+index could not be exercised either; both are accepted on deterministic tests
+alone.
+
+No Pantheon change (Pantheon stays at `07675c45`), no scientific logic, no
+deployment, and no push; `main` is unchanged. Records:
+`C13_APPTAINER_EXECUTION_ACCEPTANCE.md`, `C13_APPTAINER_EXECUTION_GAP_MEMO.md`,
+`CLUSTER_DEPLOYMENT.md`, and DECIDED-C13-0 to DECIDED-C13-9 in
+`OPEN_DECISIONS.md`. OPEN-C13-I (Gold Skill image identity across backends)
+remains open.
