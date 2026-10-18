@@ -122,8 +122,9 @@ warning.
   execution where `--net --network none` is unavailable.
 - OPEN-C13-I (Gold Skill image identity across backends) remains open for the
   development report.
-- Living documents still to update: `LABBIO_ARCHITECTURE.md`,
-  `RUNTIME_TOOL_SURFACE.md` and `REAL_E2E_CONVERGENCE_WORKPLAN.md`.
+- Living documents were updated after acceptance: `UPSTREAM_MODIFICATIONS.md`
+  (`f8c2796`), `LABBIO_ARCHITECTURE.md` (`f8e0b3e`), `RUNTIME_TOOL_SURFACE.md`
+  (`d518e0e`) and `REAL_E2E_CONVERGENCE_WORKPLAN.md` (`3f22ee6`).
 
 ## Commits
 
