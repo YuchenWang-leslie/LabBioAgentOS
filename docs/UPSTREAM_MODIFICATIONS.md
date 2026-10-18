@@ -297,3 +297,21 @@ this API or the other local changes above. Reproduction currently requires the
 local checkout/diff and recorded source digest. Publishing an immutable revision
 and updating that pin require a separate authorized Git checkpoint; no official
 Pantheon release, fork push, or production deployment is claimed here.
+
+## 2026-10-18 — C13 Apptainer cluster execution: no Pantheon change
+
+C13 (scheduler + Apptainer execution, cluster environment builds) made no
+change to Pantheon. The required revision stays
+`07675c45b538f7d27b9b16b1b7d8b72f37365293`, and the pin in `constraints/` and
+`pyproject.toml` is unchanged. Every C13 change is in `src/labbioagentos`,
+`tests`, `docs`, `examples` and `Roadmap.md`.
+
+The new execution paths reuse existing LabBio extension points:
+`ContainerExecutor` with injected command builders and process runners, a
+LabBio `JobLauncher` interface with scheduler templates, the job ledger, and
+the `EnvironmentBuilder` protocol. Waiting for a scheduler job inside one tool
+call relies on Pantheon behaviour that was verified, not changed. With
+`allow_background_tools=False`, a long tool call is not cut off, and
+`max_no_progress_seconds` counts only provider time
+(`tests/test_c13_long_tool_wait.py`; C13 gap memo, Q4). This satisfies C13
+acceptance criterion 22 (`C13_APPTAINER_EXECUTION_ACCEPTANCE.md`).
