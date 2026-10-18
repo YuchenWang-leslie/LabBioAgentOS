@@ -289,11 +289,15 @@ This refines DECIDED-C13-1: only the network-dependent download step runs on
 the login node (or on a configured network-capable partition); the build
 itself runs in a network-disabled job.
 
-### OPEN-C13-E — Unprivileged network isolation
+### DECIDED-C13-9 — Unprivileged network isolation
 
-Whether `--net --network none` works unprivileged depends on Apptainer version
-and site configuration. Proposed: probe at startup and fail closed where it
-is unavailable; such sites are unsupported.
+Decided by MOHAN CUI on 2026-10-18. Whether `--net --network none` works
+unprivileged depends on the Apptainer version and site configuration. The
+capability probe checks it in `backend-check` and before the first execution;
+where it is unavailable, execution is refused and the site is unsupported.
+Security never relies on the site's compute-node network policy. On the test
+cluster (Apptainer 1.4.1, unprivileged user namespaces) isolation was
+available, and scheduled jobs had no network.
 
 ### OPEN-C13-I — Gold Skill image identity across backends
 
