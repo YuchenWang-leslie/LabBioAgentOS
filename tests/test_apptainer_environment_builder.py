@@ -16,6 +16,7 @@ import sqlite3
 import stat
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -184,7 +185,8 @@ def _attempt(cluster):
 
 def _jobs(cluster, run_id):
     """Every ledger entry of one run, in submission order."""
-    with sqlite3.connect(cluster.tmp_path / "jobs.sqlite") as connection:
+    # closing(): a connection used as a context manager only commits; it stays open.
+    with closing(sqlite3.connect(cluster.tmp_path / "jobs.sqlite")) as connection:
         rows = connection.execute("SELECT execution_id FROM jobs WHERE run_id = ? ORDER BY created_at",
                                   (str(run_id),)).fetchall()
     return [cluster.ledger.get(UUID(row[0])) for row in rows]

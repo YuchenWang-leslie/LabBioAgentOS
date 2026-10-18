@@ -128,7 +128,9 @@ def cluster(request):
     yield executor, ledger, sink, base
     ledger.close()
     if os.environ.get("LABBIO_KEEP_TEST_FILES") != "1":
-        shutil.rmtree(base, ignore_errors=True)
+        # Not ignored: on a shared filesystem a file still open somewhere keeps the
+        # directory alive, and that should fail the run rather than leave it behind.
+        shutil.rmtree(base)
 
 
 def _plan(script: str, timeout: float = 300.0) -> ExecutionPlan:
