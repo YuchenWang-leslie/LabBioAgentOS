@@ -114,6 +114,40 @@ def test_successful_receipt_with_required_output_can_advance():
     assert result.body.output_artifact_references[0].reference_id == str(output_id)
 
 
+def test_revised_execution_survives_provider_json_round_trip():
+    from labbioagentos.runtime.contracts import RuntimeStageResult
+
+    failed = _receipt(outputs=(uuid4(),))
+    succeeded = _receipt(status=ExecutionStatus.SUCCEEDED, outputs=(uuid4(), uuid4()))
+    response_format = _format(_input(minimum_outputs=1), failed, succeeded)
+    payload = _payload(succeeded)
+    payload["body"]["output_artifact_references"] = payload["body"]["output_artifact_references"][:1]
+
+    parsed = response_format.model_validate_json(json.dumps(payload), strict=True)
+    dumped = parsed.model_dump(mode="json")
+
+    assert len(dumped["body"]["output_artifact_references"]) == 1
+    response_format.model_validate(dumped)
+    RuntimeStageResult.model_validate(parsed.model_dump(mode="python"))
+
+
+def test_required_output_omission_is_rejected_before_default_fills_it():
+    receipt = _receipt(status=ExecutionStatus.SUCCEEDED, outputs=(uuid4(),))
+    response_format = _format(_input(minimum_outputs=1), receipt)
+    omitted = _payload(receipt)
+    del omitted["body"]["output_artifact_references"]
+
+    with pytest.raises(ValidationError) as raised:
+        response_format.model_validate_json(json.dumps(omitted), strict=True)
+    assert raised.value.errors(include_url=False)[0]["type"] == "missing"
+
+    optional = _payload()
+    del optional["body"]["output_artifact_references"]
+    assert _format(_input(minimum_outputs=0)).model_validate_json(
+        json.dumps(optional), strict=True
+    ).body.output_artifact_references == ()
+
+
 def test_data_bearing_run_cannot_advance_from_an_empty_input_execution():
     input_id = uuid4()
     output_id = uuid4()

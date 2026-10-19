@@ -123,13 +123,13 @@ def execution_result_response_format(
             output_ref = create_model(f"CurrentExecutionOutputReference{index}", __base__=RuntimeReference,
                 kind=(Literal[RuntimeReferenceKind.ARTIFACT], ...),
                 reference_id=(Literal[output_ids], ...))
+        required_outputs = (minimum_queryable_output_count
+                            if receipt["execution_id"] in qualifying_execution_ids else 0)
         variants.append(create_model(f"CurrentExecutionBody{index}", __base__=ExecuteStageBody,
             execution_status=(Literal[receipt["status"]], ...),
             execution_reference=(execution_ref, ...),
             output_artifact_references=(tuple[output_ref, ...],
-                Field(default=(),
-                    min_length=(minimum_queryable_output_count
-                                if receipt["execution_id"] in qualifying_execution_ids else 0),
+                Field(default=... if required_outputs else (), min_length=required_outputs,
                     max_length=128 if output_ids else 0))))
     if not variants:
         variants.append(create_model("NotExecutedBody", __base__=ExecuteStageBody,
