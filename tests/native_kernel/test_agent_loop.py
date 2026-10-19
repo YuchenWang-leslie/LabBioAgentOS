@@ -222,6 +222,68 @@ async def test_capability_loop_stops_before_batch_crosses_tool_budget():
 
 
 @pytest.mark.asyncio
+async def test_capability_tool_feedback_exposes_remaining_shared_budget():
+    loop, provider, effects = _tool_loop((
+        ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="accepted",
+                name="record_value",
+                arguments_json='{"value":"kept"}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),
+        ModelTurn(content="done", finish_reason=FinishReason.STOP),
+    ), tool_calls=1)
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run within the bound."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.output == "done"
+    assert effects == [{"value": "kept", "nested": None}]
+    assert provider.requests[1].messages[-1].role == "TOOL"
+    assert json.loads(provider.requests[1].messages[-1].content)["control_state"] == {
+        "authority": "CONTROL_STATE",
+        "kernel_budget": {
+            "tool_calls_remaining": 0,
+            "evidence_entries_remaining": 7,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_rejected_tool_batch_exposes_consumed_evidence_budget():
+    loop, provider, effects = _tool_loop((
+        ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="rejected",
+                name="record_value",
+                arguments_json='{"value":42}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),
+        ModelTurn(content="done", finish_reason=FinishReason.STOP),
+    ))
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run within the bound."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.output == "done"
+    assert effects == []
+    assert provider.requests[1].messages[-1].role == "TOOL"
+    assert json.loads(provider.requests[1].messages[-1].content)["control_state"] == {
+        "authority": "CONTROL_STATE",
+        "kernel_budget": {
+            "tool_calls_remaining": 8,
+            "evidence_entries_remaining": 7,
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_capability_loop_stops_before_over_budget_provider_turn_dispatches():
     loop, provider, effects = _tool_loop(
         (

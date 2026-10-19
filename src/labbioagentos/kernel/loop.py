@@ -522,7 +522,20 @@ class AgentLoop:
                 validation_fields=exc.validation_fields,
                 numeric_facts={"tool_call_count": len(raw_calls)},
             )
-        feedback = tuple(self._tool_feedback(result) for result in results)
+        budget_state = {
+            "authority": "CONTROL_STATE",
+            "kernel_budget": {
+                "tool_calls_remaining": (
+                    self.budget_ledger.limits.tool_calls
+                    - self.budget_ledger.usage.tool_calls
+                ),
+                "evidence_entries_remaining": (
+                    self.budget_ledger.limits.evidence_entries
+                    - self.budget_ledger.usage.evidence_entries
+                ),
+            },
+        }
+        feedback = tuple(self._tool_feedback(result, budget_state) for result in results)
         self.argument_observations[-1] = argument_observations
         self.tool_results.extend(results)
         for result in results:
@@ -615,9 +628,11 @@ class AgentLoop:
         return None
 
     @staticmethod
-    def _tool_feedback(result: ToolResult) -> PublicMessage:
+    def _tool_feedback(result: ToolResult, budget_state: dict) -> PublicMessage:
+        payload = result.model_dump(mode="json", exclude_none=True)
+        payload["control_state"] = budget_state
         content = json.dumps(
-            result.model_dump(mode="json", exclude_none=True),
+            payload,
             ensure_ascii=False,
             allow_nan=False,
             separators=(",", ":"),
