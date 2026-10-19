@@ -6,9 +6,11 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
+import httpx
 
 from labbioagentos.kernel import (
     FinishReason,
+    HttpxChatCompletionTransport,
     ModelRequest,
     OpenAICompatibleChatProvider,
     ProviderBinding,
@@ -38,6 +40,36 @@ class RecordingTransport:
         if isinstance(response, Exception):
             raise response
         return deepcopy(response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_or_error,expected_type", [
+    (httpx.Response(503, json={"private": "PRIVATE_CANARY"}), "HTTP_503"),
+    (httpx.ReadTimeout("PRIVATE_CANARY"), "TIMEOUT"),
+])
+async def test_http_transport_reports_only_safe_failure_class(
+    monkeypatch, response_or_error, expected_type,
+):
+    real_client = httpx.AsyncClient
+
+    async def handler(_request):
+        if isinstance(response_or_error, Exception):
+            raise response_or_error
+        return response_or_error
+
+    monkeypatch.setattr(
+        "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await HttpxChatCompletionTransport().post_json(
+            url="https://provider.invalid/v1/chat/completions",
+            headers={}, payload={"model": "fixture"}, timeout_seconds=1,
+        )
+
+    assert caught.value.validation_type == expected_type
+    assert "PRIVATE_CANARY" not in str(caught.value)
 
 
 @pytest.mark.asyncio

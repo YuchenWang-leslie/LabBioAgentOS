@@ -71,8 +71,18 @@ class HttpxChatCompletionTransport:
             if not isinstance(value, dict):
                 raise ValueError("Provider response must be an object")
             return value
+        except httpx.HTTPStatusError as exc:
+            raise ProviderTransportError(
+                validation_type=f"HTTP_{exc.response.status_code}"
+            ) from None
+        except httpx.TimeoutException:
+            raise ProviderTransportError(validation_type="TIMEOUT") from None
+        except httpx.TransportError:
+            raise ProviderTransportError(validation_type="NETWORK") from None
+        except (UnicodeDecodeError, ValueError):
+            raise ProviderTransportError(validation_type="INVALID_JSON") from None
         except Exception:
-            raise ProviderTransportError() from None
+            raise ProviderTransportError(validation_type="OTHER") from None
 
 
 class OpenAICompatibleChatProvider:
@@ -119,7 +129,7 @@ class OpenAICompatibleChatProvider:
         except ProviderTransportError:
             raise
         except Exception:
-            raise ProviderTransportError() from None
+            raise ProviderTransportError(validation_type="ADAPTER") from None
         return self._parse_response(request, response)
 
     def clear_invocation(self, kernel_run_id, invocation_id) -> None:

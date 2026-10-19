@@ -167,11 +167,12 @@ class ProviderProtocolError(KernelContractError):
 
 
 class ProviderTransportError(KernelContractError):
-    def __init__(self):
+    def __init__(self, *, validation_type: str | None = None):
         super().__init__(
             "PROVIDER_TRANSPORT_ERROR",
             "The provider request could not complete",
         )
+        self.validation_type = validation_type
 
 
 class AgentHistoryLimitError(KernelContractError):

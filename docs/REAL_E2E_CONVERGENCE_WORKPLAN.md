@@ -75,6 +75,20 @@ capability phase ends explicitly as `PROVIDER_DEADLINE_STOP`; without it,
 regressions, but no live deadline-stop claim is made. Fresh real-task closure
 is still pending.
 
+Fresh run `17738975-613a-4362-9476-97ca731eb319` completed execution
+`8e15eb70-afe9-4206-8221-a20de5328a34` and VALIDATE, then its first
+INTERPRET provider call failed as `PROVIDER_TRANSPORT_ERROR` before any
+INTERPRET capability evidence. No interpretation or final report exists;
+the run remains an in-flight checkpoint and must not be called complete.
+This repeats an external-transport class seen earlier, but the adapter had
+discarded the safe failure subtype, so the historical cause cannot be
+determined from persisted evidence. The adapter now records only a bounded
+HTTP status class or `TIMEOUT`/`NETWORK`/`INVALID_JSON`/`OTHER` category;
+provider bodies, URLs, keys and private text are not persisted. The source
+does not silently retry or switch models. Future live validation should
+first establish provider health/category, then use a fresh run; repeated
+blind reruns of this task are not justified.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review

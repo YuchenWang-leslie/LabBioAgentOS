@@ -181,6 +181,7 @@ class AgentLoop:
                             KernelEventKind.KERNEL_FINISHED,
                             status_code="STOPPED",
                             reason_code=exc.code,
+                            validation_type=getattr(exc, "validation_type", None),
                         )
                         return self._result(
                             output={"capability_stop_reason": stop_reason},

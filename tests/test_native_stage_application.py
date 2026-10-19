@@ -559,7 +559,7 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
                 raise ProviderProtocolError(
                     validation_type="value_error", validation_fields=("usage",)
                 )
-            raise ProviderTransportError()
+            raise ProviderTransportError(validation_type="HTTP_503")
 
     stage_input = _stage_input()
     if not capability_phase:
@@ -605,6 +605,9 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
         assert failed.payload["validation_type"] == "value_error"
         assert failed.payload["validation_fields"] == ["usage"]
         expected_keys.update({"validation_type", "validation_fields"})
+    else:
+        assert failed.payload["validation_type"] == "HTTP_503"
+        expected_keys.add("validation_type")
     assert set(failed.payload) == expected_keys
 
 
