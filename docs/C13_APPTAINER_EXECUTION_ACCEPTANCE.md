@@ -35,7 +35,7 @@ DECIDED-C13-0 to DECIDED-C13-9 in `OPEN_DECISIONS.md`. Operator guide:
 | Frozen Pantheon revision | `07675c45b538f7d27b9b16b1b7d8b72f37365293`, pinned in `constraints/`; unchanged |
 | Development machine | macOS, conda Python 3.11; Docker for local execution |
 | Test cluster | Linux x86_64, Slurm 25.11.5, Apptainer 1.4.1 in unprivileged user-namespace mode; cgroup limits unavailable to users; shared NFS between login and compute nodes |
-| Push state | `add-apptainer` is local and not pushed; `main` is unchanged |
+| Push state | `add-apptainer` was pushed to `origin` by MOHAN CUI on 2026-10-19; C13 does not change `main` |
 
 ## Test results
 

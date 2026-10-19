@@ -5841,3 +5841,6 @@ deployment, and no push; `main` is unchanged. Records:
 `CLUSTER_DEPLOYMENT.md`, and DECIDED-C13-0 to DECIDED-C13-9 in
 `OPEN_DECISIONS.md`. OPEN-C13-I (Gold Skill image identity across backends)
 remains open.
+
+2026-10-19 addendum: MOHAN CUI pushed `add-apptainer` to `origin`; `main`
+was not changed by C13.
