@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from .environments import EnvironmentBuildResult, EnvironmentRequestError, normalize_modules, normalize_requirements
 from .images import ApprovedImage
@@ -29,6 +30,39 @@ print(json.dumps({'installed_packages': packages, 'failed_imports': failed}, sor
 """
 
 
+def diagnose_pip_log(text: str) -> str:
+    """Map pip output to a model-safe failure code; unrecognized output is BUILD_FAILED."""
+    patterns = (
+        ("PIP_NO_MATCH", ("No matching distribution found", "Could not find a version that satisfies")),
+        ("PIP_RESOLUTION_CONFLICT", ("ResolutionImpossible", "conflicting dependencies")),
+        ("PYTHON_VERSION_INCOMPATIBLE", ("requires a different Python", "Requires-Python")),
+        ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
+        ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
+        ("PIP_CHECK_FAILED", ("has requirement", "which is not installed")),
+    )
+    return next((code for code, matches in patterns if any(value in text for value in matches)), "BUILD_FAILED")
+
+
+def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
+    """Bounded, re-validated dependency facts from pip output; no log text is copied."""
+    diagnostics = []
+    for match in re.finditer(r"No matching distribution found for ([^\r\n]{1,256})", text):
+        try:
+            requirement = normalize_requirements((match.group(1).strip(),))[0]
+        except EnvironmentRequestError:
+            continue
+        diagnostics.append({"code": "PIP_NO_MATCH", "requirement": requirement})
+    pattern = r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,127}) ([A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}) depends on ([^\r\n]{1,256})"
+    for match in re.finditer(pattern, text):
+        try:
+            dependency = normalize_requirements((match.group(3).strip(),))[0]
+        except EnvironmentRequestError:
+            continue
+        diagnostics.append({"code": "PIP_RESOLUTION_CONFLICT", "package": match.group(1),
+                            "version": match.group(2), "dependency": dependency})
+    return tuple(diagnostics[:8]) or ({"code": code},)
+
+
 class DockerEnvironmentBuilder:
     def __init__(self, proxy_url: str | None = None, timeout_seconds: float = 600):
         if not 1 <= timeout_seconds <= 3600:
@@ -42,7 +76,9 @@ class DockerEnvironmentBuilder:
         self.proxy_url, self.timeout_seconds = proxy_url, timeout_seconds
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
-                    import_modules: tuple[str, ...], build_root: Path, request_hash: str) -> EnvironmentBuildResult:
+                    import_modules: tuple[str, ...], build_root: Path, request_hash: str,
+                    run_id: UUID | None = None) -> EnvironmentBuildResult:
+        # Docker builds run on the control-plane host and submit no job, so run_id is unused.
         requirements, import_modules = normalize_requirements(requirements), normalize_modules(import_modules, max_count=256)
         return await asyncio.to_thread(self._build, base_image, requirements, import_modules, build_root, request_hash)
 
@@ -78,36 +114,8 @@ class DockerEnvironmentBuilder:
             stream.seek(max(0, path.stat().st_size - 65_536))
             return stream.read(65_536).decode("utf-8", errors="replace")
 
-    @staticmethod
-    def _diagnose(text: str) -> str:
-        patterns = (
-            ("PIP_NO_MATCH", ("No matching distribution found", "Could not find a version that satisfies")),
-            ("PIP_RESOLUTION_CONFLICT", ("ResolutionImpossible", "conflicting dependencies")),
-            ("PYTHON_VERSION_INCOMPATIBLE", ("requires a different Python", "Requires-Python")),
-            ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
-            ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
-            ("PIP_CHECK_FAILED", ("has requirement", "which is not installed")),
-        )
-        return next((code for code, matches in patterns if any(value in text for value in matches)), "BUILD_FAILED")
-
-    @staticmethod
-    def _diagnostics(text: str, code: str) -> tuple[dict, ...]:
-        diagnostics = []
-        for match in re.finditer(r"No matching distribution found for ([^\r\n]{1,256})", text):
-            try:
-                requirement = normalize_requirements((match.group(1).strip(),))[0]
-            except EnvironmentRequestError:
-                continue
-            diagnostics.append({"code": "PIP_NO_MATCH", "requirement": requirement})
-        pattern = r"\b([A-Za-z0-9][A-Za-z0-9._-]{0,127}) ([A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}) depends on ([^\r\n]{1,256})"
-        for match in re.finditer(pattern, text):
-            try:
-                dependency = normalize_requirements((match.group(3).strip(),))[0]
-            except EnvironmentRequestError:
-                continue
-            diagnostics.append({"code": "PIP_RESOLUTION_CONFLICT", "package": match.group(1),
-                                "version": match.group(2), "dependency": dependency})
-        return tuple(diagnostics[:8]) or ({"code": code},)
+    _diagnose = staticmethod(diagnose_pip_log)
+    _diagnostics = staticmethod(pip_log_diagnostics)
 
     def _cleanup(self, build_root: Path, *, probe_name: str | None = None) -> None:
         if probe_name is not None:

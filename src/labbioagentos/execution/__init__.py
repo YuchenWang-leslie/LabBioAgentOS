@@ -1,11 +1,29 @@
-"""Deterministic Docker-isolated execution boundary."""
+"""Deterministic container-isolated execution boundary."""
 
+from .apptainer import (
+    ApptainerCommandBuilder,
+    SifStore,
+    SifStoreError,
+    SubprocessApptainerRunner,
+)
+from .backend import ContainerCommandBuilder, ProcessOutcome, ProcessRunner
 from .docker import (
     DockerCommandBuilder,
     DockerExecutor,
     DockerProcessRunner,
-    ProcessOutcome,
     SubprocessDockerRunner,
+)
+from .executor import ContainerExecutor
+from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState, JobPurpose
+from .job_reconciliation import OrphanAction, ReconciledJob, reconcile_orphan_jobs
+from .launchers import (
+    JobHandle,
+    JobLauncher,
+    JobLauncherError,
+    JobNotFoundError,
+    JobSpec,
+    JobState,
+    LocalLauncher,
 )
 from .errors import (
     ContainerStartError,
@@ -56,11 +74,14 @@ from .preflight import (
 )
 
 __all__ = [
+    "ApptainerCommandBuilder",
     "ApprovedImage",
     "ApprovedImageRegistry",
     "ArtifactRegistrationDecision",
     "ArtifactRegistrationPolicy",
     "CollectedOutput",
+    "ContainerCommandBuilder",
+    "ContainerExecutor",
     "ContainerStartError",
     "DockerCommandBuilder",
     "DockerExecutor",
@@ -89,17 +110,35 @@ __all__ = [
     "ExecutionWorkspaceManager",
     "ExecutorPort",
     "ImageNotApprovedError",
+    "JobHandle",
+    "JobLauncher",
+    "JobLauncherError",
+    "JobLedger",
+    "JobLedgerEntry",
+    "JobLedgerState",
+    "JobPurpose",
+    "JobNotFoundError",
+    "JobSpec",
+    "JobState",
+    "LocalLauncher",
     "MountResolutionError",
     "MountResolver",
+    "OrphanAction",
     "OutputArtifactSpec",
     "OutputContractFailureCode",
     "OutputDeclassificationMode",
     "OutputCollectionError",
     "OutputCollector",
     "ProcessOutcome",
+    "ProcessRunner",
+    "ReconciledJob",
     "PreflightInputRequirement",
     "RequestedResources",
     "ResolvedMount",
+    "SifStore",
+    "SifStoreError",
     "StructuredOutputContract",
+    "SubprocessApptainerRunner",
     "SubprocessDockerRunner",
+    "reconcile_orphan_jobs",
 ]

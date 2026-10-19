@@ -51,6 +51,17 @@ def environment(tmp_path):
     return SimpleNamespace(root=root, base=base, registry=registry, builder=builder, service=service)
 
 
+@pytest.mark.asyncio
+async def test_builder_is_told_which_run_requested_the_build(environment):
+    from uuid import uuid4
+
+    run_id = uuid4()
+    await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",), run_id=run_id)
+    await environment.service.build_environment("base", ("examplepkg==2.0", "basepkg==1.0"), ("examplepkg",))
+
+    assert [call["run_id"] for call in environment.builder.calls] == [run_id, None]
+
+
 def test_registry_registration_is_idempotent_and_never_overwrites_identity():
     base = _image()
     registry = ApprovedImageRegistry((base,))
@@ -312,7 +323,8 @@ def test_invalid_pagination_does_not_return_an_unbounded_inventory(environment, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("corruption", ("invalid_json", "missing_image", "wrong_owner", "missing_owner", "symlink_record"))
+@pytest.mark.parametrize("corruption", ("invalid_json", "missing_image", "wrong_owner", "missing_owner", "symlink_record",
+                                        "bad_locked_wheels"))
 async def test_corrupted_persisted_cache_fails_closed_on_restart(environment, corruption):
     from labbioagentos.execution.environments import EnvironmentRequestError, EnvironmentService
 
@@ -330,6 +342,8 @@ async def test_corrupted_persisted_cache_fails_closed_on_restart(environment, co
         payload = json.loads(record.read_text(encoding="utf-8"))
         if corruption == "missing_image":
             payload.pop("image")
+        elif corruption == "bad_locked_wheels":
+            payload["locked_wheels"] = [{"name": "examplepkg", "version": "2.0", "sha256": "not-a-digest"}]
         else:
             payload["owner_user_id"] = "different-user"
         record.write_text(json.dumps(payload), encoding="utf-8")
@@ -339,6 +353,47 @@ async def test_corrupted_persisted_cache_fails_closed_on_restart(environment, co
     assert error.value.code == "ENVIRONMENT_CACHE_INVALID"
     assert PRIVATE not in str(error.value)
     assert registry.list() == (environment.base,)
+
+
+@pytest.mark.asyncio
+async def test_lock_list_is_kept_as_provenance_and_never_shown(environment):
+    from labbioagentos.execution.environments import EnvironmentBuildResult
+
+    digest = "e" * 64
+    environment.builder.result = EnvironmentBuildResult(
+        image_id=DIGEST, installed_packages={"basepkg": "1.0", "examplepkg": "2.0"},
+        available_python_modules=("basepkg", "examplepkg"),
+        locked_wheels=({"name": "examplepkg", "version": "2.0", "sha256": digest},),
+    )
+
+    response = await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",))
+
+    record = json.loads((environment.service.records_root / (response["request_hash"] + ".json")).read_text())
+    assert record["locked_wheels"] == [{"name": "examplepkg", "version": "2.0", "sha256": digest}]
+    assert digest not in json.dumps(response)
+    assert digest not in json.dumps(environment.service.list_environments())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locked", (
+    ({"name": "ExamplePkg", "version": "2.0", "sha256": "e" * 64},),
+    ({"name": "examplepkg", "version": "two", "sha256": "e" * 64},),
+    ({"name": "examplepkg", "version": "2.0", "sha256": "E" * 64},),
+    ({"name": "examplepkg", "version": "2.0", "sha256": "e" * 64, "url": "https://x"},),
+    ({"name": "examplepkg", "version": "2.0", "sha256": "e" * 64},) * 2,
+))
+async def test_malformed_lock_lists_are_never_recorded(environment, locked):
+    from labbioagentos.execution.environments import EnvironmentBuildResult
+
+    environment.builder.result = EnvironmentBuildResult(
+        image_id=DIGEST, installed_packages={"basepkg": "1.0", "examplepkg": "2.0"},
+        available_python_modules=("basepkg", "examplepkg"), locked_wheels=locked,
+    )
+
+    response = await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",))
+
+    assert response["failure_code"] == "VERIFICATION_FAILED"
+    assert list(environment.service.records_root.iterdir()) == []
 
 
 @pytest.mark.asyncio

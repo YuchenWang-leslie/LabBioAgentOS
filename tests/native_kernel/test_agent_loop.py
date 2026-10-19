@@ -110,11 +110,13 @@ def _limits(
 
 def _tool_loop(
     turns, *, clock=None, no_progress_ms=30_000, provider_turns=8,
-    tokens=10_000, tool_calls=8
+    tokens=10_000, tool_calls=8, on_record=None
 ):
     effects = []
 
     async def record(arguments: RecordArguments):
+        if on_record is not None:
+            on_record()
         effects.append(arguments.model_dump())
         return {"recorded": arguments.value, "nested": arguments.nested}
 
@@ -145,6 +147,35 @@ def _tool_loop(
         clock=clock,
     )
     return loop, provider, effects
+
+
+@pytest.mark.asyncio
+async def test_long_tool_wait_does_not_expire_model_phase_deadline():
+    now = [0.0]
+    loop, provider, effects = _tool_loop(
+        (
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="scheduled-job",
+                    name="record_value",
+                    arguments_json='{"value":"completed"}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(content="done", finish_reason=FinishReason.STOP),
+        ),
+        clock=lambda: now[0],
+        on_record=lambda: now.__setitem__(0, 120.0),
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run the fixture."),),
+        deadline_monotonic=60.0,
+    )
+
+    assert result.output == "done"
+    assert effects[0]["value"] == "completed"
+    assert len(provider.requests) == 2
 
 
 @pytest.mark.asyncio

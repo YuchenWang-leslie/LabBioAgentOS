@@ -1,5 +1,6 @@
 """Fixed-recipe Docker backend boundaries without contacting a Docker daemon."""
 
+import inspect
 import json
 import stat
 import subprocess
@@ -10,6 +11,7 @@ import pytest
 from labbioagentos import ApprovedImage, ExecutionRuntime
 from labbioagentos.execution import environment_builder
 from labbioagentos.execution.environment_builder import DockerEnvironmentBuilder
+from labbioagentos.execution.environments import EnvironmentBuilder
 
 
 BASE_ID = "sha256:" + "b" * 64
@@ -55,6 +57,10 @@ async def build(boundary):
         import_modules=("examplepkg",), build_root=boundary.root,
         request_hash=REQUEST_HASH,
     )
+
+
+def test_builder_matches_the_environment_builder_protocol():
+    assert inspect.signature(DockerEnvironmentBuilder.build) == inspect.signature(EnvironmentBuilder.build)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,28 @@
 # Real E2E Convergence Workplan
 
+## PR #2 cluster integration review — 2026-10-19
+
+GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
+at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
+pre-Native base. Its cluster backend was brought into an isolated local review
+branch from Native source `32e7b617de11c3cd6bafc91e6f17cd11ec36a76a`.
+Direct merge conflicted with repository cleanup and the existing contract
+that collects checkpoints from failed executions; the candidate preserves both.
+It also keeps long governed tool waits outside the model-phase deadline while
+retaining provider-call and tool timeouts. Old documents and tests tied to the
+retired kernel were not reintroduced.
+
+The isolated Python 3.11 candidate passed 1728 tests with 23 skips, including
+the original failed-checkpoint regressions and new Native long-tool-wait and
+delegation regressions. This host has no Apptainer or scheduler client; gated
+cluster tests were not run here.
+
+The candidate is for user review only: `main` and production `current` have
+not changed, and no cluster backend, profile, or Skill has been activated.
+Deterministic tests cannot replace fresh real-cluster validation. The upstream
+cluster acceptance and the unconfirmed-submission crash window are described
+in [C13 integration review](C13_APPTAINER_EXECUTION_ACCEPTANCE.md).
+
 ## Current state — 2026-10-16
 
 LabBioAgentOS uses one independently designed LabBio Native Kernel. The source,

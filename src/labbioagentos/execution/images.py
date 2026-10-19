@@ -49,7 +49,7 @@ class ApprovedImage(BaseModel):
     @classmethod
     def validate_reference(cls, value: str) -> str:
         if value.startswith("-") or any(character.isspace() for character in value):
-            raise ValueError("Approved image reference must be one Docker argv token")
+            raise ValueError("Approved image reference must be one argv token")
         return value
 
     @field_validator("digest")

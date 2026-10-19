@@ -6,6 +6,7 @@ import json
 from uuid import uuid4
 
 import pytest
+from pydantic import BaseModel, ConfigDict
 
 from labbioagentos.kernel import (
     AgentProfile,
@@ -73,7 +74,7 @@ def _limits(
     )
 
 
-def _team(*, include_second: bool = False) -> TeamSpec:
+def _team(*, include_second: bool = False, leader_tools: tuple[str, ...] = ()) -> TeamSpec:
     specialists = [
         AgentSpec(
             agent_id="writer",
@@ -90,7 +91,7 @@ def _team(*, include_second: bool = False) -> TeamSpec:
             )
         )
     return TeamSpec(
-        leader=AgentSpec(agent_id="leader", role="LEADER"),
+        leader=AgentSpec(agent_id="leader", role="LEADER", tool_names=leader_tools),
         specialists=tuple(specialists),
     )
 
@@ -126,8 +127,10 @@ def _runtime(
     interrupt_token: InterruptToken | None = None,
     providers: dict[str, ModelProvider] | None = None,
     max_tasks: int = 16,
+    leader_tools: tuple[str, ...] = (),
+    tool_registry: ToolRegistry | None = None,
 ):
-    team = _team(include_second=include_second)
+    team = _team(include_second=include_second, leader_tools=leader_tools)
     provider_map: dict[str, ModelProvider] = {
         "leader": FakeProvider(binding=_binding(), turns=leader_turns),
         **{
@@ -145,13 +148,63 @@ def _runtime(
     budget = BudgetLedger(limits or _limits())
     runtime = CollaborationRuntime(
         registry=registry,
-        tool_registry=ToolRegistry(),
+        tool_registry=tool_registry or ToolRegistry(),
         projector=ModelResultProjector(max_bytes=60_000),
         budget_ledger=budget,
         interrupt_token=interrupt_token,
         max_tasks=max_tasks,
     )
     return runtime, provider_map, budget
+
+
+@pytest.mark.asyncio
+async def test_delegate_after_long_tool_wait_inherits_remaining_model_deadline(monkeypatch):
+    class WaitArguments(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True)
+
+    now = [0.0]
+    monkeypatch.setattr("labbioagentos.kernel.loop.monotonic", lambda: now[0])
+
+    async def wait(_arguments: WaitArguments):
+        now[0] = 120.0
+        return {"completed": True}
+
+    tools = ToolRegistry()
+    tools.register(
+        name="wait", description="Wait for one synthetic job.",
+        arguments_model=WaitArguments, handler=wait,
+    )
+    runtime, providers, _budget = _runtime(
+        leader_tools=("wait",), tool_registry=tools,
+        leader_turns=(
+            ModelTurn(
+                tool_calls=(ToolCall(call_id="wait-1", name="wait", arguments_json="{}"),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="delegate-1", name="delegate",
+                    arguments_json=(
+                        '{"target_agent_id":"writer","instruction":"Finish the draft.",'
+                        '"expected_output_type":"draft"}'
+                    ),
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(content="done", finish_reason=FinishReason.STOP),
+        ),
+        child_turns={"writer": (ModelTurn(content="draft", finish_reason=FinishReason.STOP),)},
+    )
+
+    result = await runtime.run_leader(
+        identity=_identity(),
+        messages=(PublicMessage(role="USER", content="Run the fixture."),),
+        deadline_monotonic=60.0,
+    )
+
+    assert result.leader_result.output == "done"
+    assert result.delegations[0].status == "SUCCEEDED"
+    assert len(providers["writer"].requests) == 1
 
 
 def test_registry_discovery_is_trusted_order_without_ranking_or_instructions():

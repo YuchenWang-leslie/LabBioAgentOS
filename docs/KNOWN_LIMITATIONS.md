@@ -46,6 +46,13 @@ daemon-level quotas.
 The platform trusts the local Docker engine, host kernel, configured images,
 and local administrator. It does not defend against their compromise.
 
+The source-only Scheduler + Apptainer candidate has not been validated on a
+real cluster with the Native Kernel or deployed. In a narrow crash window
+between scheduler acceptance and persistence of the returned job ID, orphan
+reconciliation records `UNCONFIRMED` and requires operator inspection; it
+cannot guarantee automatic cancellation. See
+[C13 integration review](C13_APPTAINER_EXECUTION_ACCEPTANCE.md).
+
 ## Persistence and concurrency
 
 SQLite state, JSONL trace, Artifact storage, Docker operations, and provider

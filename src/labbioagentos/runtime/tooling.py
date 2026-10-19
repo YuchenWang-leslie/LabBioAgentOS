@@ -912,7 +912,7 @@ class LabBioRuntimeToolSet:
         return await self._call("environment_build", lambda: (
             self._environment_service().build_environment(
                 base_image_key=base_image_key, requirements=tuple(requirements),
-                import_modules=tuple(import_modules),
+                import_modules=tuple(import_modules), run_id=self.binding.run_id,
             )
         ))
 

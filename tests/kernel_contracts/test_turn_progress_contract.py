@@ -82,7 +82,7 @@ async def test_observable_progress_resets_no_progress_clock(
             TurnSpec(content="complete"),
         ),
         no_progress_seconds=3,
-        clock_values=(0.0, 2.0, 2.0, 4.0, 4.0, 6.0, 6.0, 8.0),
+        clock_values=(0.0, 2.0, 2.0, 4.0, 4.0, 4.0, 6.0, 6.0, 8.0),
     )
 
     assert capture.error is None

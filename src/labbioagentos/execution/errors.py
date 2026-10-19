@@ -85,7 +85,7 @@ class MountResolutionError(ExecutionBoundaryError):
 
 
 class ContainerStartError(ExecutionBoundaryError):
-    """Docker could not be launched."""
+    """The container runtime could not be launched."""
 
     def __init__(self, message: str):
         super().__init__(message, ExecutionFailureClass.CONTAINER_START_FAILURE)

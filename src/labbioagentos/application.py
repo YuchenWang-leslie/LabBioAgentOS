@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import (
@@ -54,9 +54,9 @@ from .execution import (
     ApprovedImage,
     ApprovedImageRegistry,
     ArtifactRegistrationPolicy,
+    ContainerCommandBuilder,
+    ContainerExecutor,
     DockerCommandBuilder,
-    DockerExecutor,
-    DockerProcessRunner,
     ExecutionPolicy,
     ExecutionReceipt,
     ExecutionPreflightError,
@@ -68,6 +68,13 @@ from .execution import (
     MountResolver,
     OutputCollector,
     PreflightInputRequirement,
+    ProcessRunner,
+    SubprocessDockerRunner,
+    JobLauncher,
+    JobLedger,
+    LocalLauncher,
+    ReconciledJob,
+    reconcile_orphan_jobs,
     RequestedResources,
     StructuredOutputContract,
 )
@@ -568,7 +575,15 @@ class ApplicationRuntimeConfiguration:
     exposure_policy: ExposurePolicy = field(default_factory=ExposurePolicy)
     trace_sink: TraceSink | None = None
     run_state_store: RunStateStore | None = None
-    process_runner: DockerProcessRunner | None = None
+    process_runner: ProcessRunner | None = None
+    # Where jobs run (None: the control-plane host) and their durable record.
+    job_launcher: JobLauncher | None = None
+    job_ledger: JobLedger | None = None
+    # The launcher that owns environment build jobs, for cleanup after a crash.
+    environment_job_launcher: JobLauncher | None = None
+    # How to isolate executions (None: Docker) and a check run before the first one.
+    command_builder: ContainerCommandBuilder | None = None
+    backend_check: Callable[[], Mapping[str, Any]] | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
@@ -728,7 +743,7 @@ class LabBioApplication:
             if profile is not None
             else None
         )
-        self.docker_executor = DockerExecutor(
+        self.container_executor = ContainerExecutor(
             store=self.artifact_store,
             image_registry=self.image_registry,
             execution_policy=self.execution_policy,
@@ -748,16 +763,21 @@ class LabBioApplication:
                     self.execution_policy.max_collected_output_bytes
                 ),
             ),
-            process_runner=configuration.process_runner,
-            command_builder=DockerCommandBuilder(
+            process_runner=configuration.process_runner or SubprocessDockerRunner(),
+            launcher=configuration.job_launcher,
+            job_ledger=configuration.job_ledger,
+            command_builder=configuration.command_builder or DockerCommandBuilder(
                 max_output_file_bytes=self.execution_policy.max_output_file_bytes,
                 tmpfs_size_mb=self.execution_policy.tmpfs_size_mb,
             ),
+            backend_check=configuration.backend_check,
             trace_recorder=self.trace_recorder,
             minimum_queryable_output_count=(
                 profile.minimum_queryable_output_count if profile is not None else 0
             ),
         )
+        # Compatibility name from before the runtime-neutral executor.
+        self.docker_executor = self.container_executor
         self.execution_submission = ExecutionSubmissionService(
             artifact_store=self.artifact_store,
             access_service=self.access_service,
@@ -1167,6 +1187,27 @@ class LabBioApplication:
         return ApplicationReconciliationStatus(
             recovery=status, continuation_action=action,
             confirmed_calls=calls, uncertain_side_effects=unknown,
+        )
+
+    async def reconcile_jobs(
+        self, run_id: UUID, *, principal: Principal, workspace: WorkspaceContext,
+    ) -> tuple[ReconciledJob, ...]:
+        """Clean up jobs orphaned by a lost process; never resubmit or change run state.
+
+        The caller must hold the run writer lease, which proves the process that
+        launched the jobs is gone. Without a job ledger there is nothing to do.
+        """
+        self.recovery_status(run_id, principal=principal, workspace=workspace)
+        ledger = self.configuration.job_ledger
+        if ledger is None:
+            return ()
+        launcher = self.configuration.job_launcher or LocalLauncher(
+            self.docker_executor.process_runner
+        )
+        return await reconcile_orphan_jobs(
+            ledger=ledger, launcher=launcher, run_id=run_id,
+            cleanup_paths=self.docker_executor.command_builder.cleanup_paths,
+            environment_launcher=self.configuration.environment_job_launcher,
         )
 
     async def continue_run(

@@ -94,6 +94,7 @@ class AgentLoop:
         self.tool_results: list[ToolResult] = []
         self.events: list[KernelEvent] = []
         self._sequence = 0
+        self.current_deadline_monotonic: float | None = None
 
     async def run(
         self,
@@ -110,6 +111,7 @@ class AgentLoop:
             raise ValueError("Finalization requires a response model")
         if self.invocation.mode is AgentMode.CAPABILITY and response_model is not None:
             raise ValueError("Capability mode cannot accept a response model")
+        self.current_deadline_monotonic = deadline_monotonic
         self._emit(KernelEventKind.KERNEL_STARTED, status_code="RUNNING")
         if self.invocation.mode is AgentMode.FINALIZE:
             self._emit(KernelEventKind.FINALIZATION_STARTED, status_code="RUNNING")
@@ -120,7 +122,7 @@ class AgentLoop:
             while True:
                 self.interrupt_token.raise_if_requested()
                 started = self.clock()
-                if started >= deadline_monotonic:
+                if started >= self.current_deadline_monotonic:
                     raise KernelDeadlineExceededError()
                 turn_index += 1
                 if len(self.messages) > 256:
@@ -142,7 +144,7 @@ class AgentLoop:
                         else None
                     ),
                     max_output_tokens=max_output_tokens,
-                    deadline_monotonic=deadline_monotonic,
+                    deadline_monotonic=self.current_deadline_monotonic,
                     kernel_run_id=self.invocation.identity.kernel_run_id,
                     invocation_id=self.invocation.identity.invocation_id,
                     turn_index=turn_index,
@@ -271,6 +273,11 @@ class AgentLoop:
                 if turn.tool_calls:
                     try:
                         await self._handle_tool_turn(turn)
+                        # External tool duration is governed by the tool itself;
+                        # it must not consume the model-phase deadline.
+                        self.current_deadline_monotonic += max(
+                            0.0, self.clock() - finished
+                        )
                     except BudgetExceededError as exc:
                         if exc.dimension not in {"tool_calls", "evidence_entries"}:
                             raise

@@ -380,7 +380,11 @@ class CollaborationRuntime:
                     caller_agent_id=agent_id,
                     agent_chain=agent_chain,
                     arguments=arguments,
-                    deadline_monotonic=deadline_monotonic,
+                    deadline_monotonic=(
+                        loop.current_deadline_monotonic
+                        if loop.current_deadline_monotonic is not None
+                        else deadline_monotonic
+                    ),
                 )
 
             local_tools.register(
@@ -409,7 +413,7 @@ class CollaborationRuntime:
             tool_names=local_tools.names,
             delegation_allowed=can_delegate,
         )
-        return AgentLoop(
+        loop = AgentLoop(
             provider=self.registry.provider(agent_id),
             invocation=invocation,
             budget_ledger=self.budget_ledger,
@@ -419,6 +423,7 @@ class CollaborationRuntime:
             event_sink=self._capture_event,
             completion_feedback=completion_feedback,
         )
+        return loop
 
     async def _delegate(
         self,

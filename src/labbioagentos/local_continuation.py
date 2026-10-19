@@ -160,6 +160,15 @@ async def reconcile_or_continue(args, settings):
     with run_writer(directory):
         application = cli.build_application(settings, directory, load_provider=False)
         try:
+            # The lease proves the launching process is gone: clean up its orphan jobs.
+            jobs = await application.reconcile_jobs(
+                args.run_id, principal=settings.principal, workspace=settings.workspace,
+            )
+            if jobs:
+                cli._emit({"event": "jobs_reconciled", "run_id": str(args.run_id), "jobs": [
+                    {"execution_id": str(job.execution_id), "job_id": job.job_id,
+                     "launcher": job.launcher, "action": job.action.value} for job in jobs
+                ]})
             assessment = application.reconcile_run(
                 args.run_id, principal=settings.principal, workspace=settings.workspace,
             )

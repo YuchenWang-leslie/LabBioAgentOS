@@ -44,6 +44,16 @@ async def test_environment_tools_are_real_provider_schemas(artifact_query_bounda
 
 
 @pytest.mark.asyncio
+async def test_environment_build_is_owned_by_the_calling_run(artifact_query_boundary, environment):
+    toolset, _ = _tools(artifact_query_boundary, environment)
+
+    await toolset.environment_build("base", ["examplepkg>=2"], ["examplepkg"])
+
+    assert toolset.binding.run_id is not None
+    assert environment.builder.calls[-1]["run_id"] == toolset.binding.run_id
+
+
+@pytest.mark.asyncio
 async def test_discovery_build_feedback_and_submission_share_registry(artifact_query_boundary, environment):
     toolset, submission = _tools(artifact_query_boundary, environment)
     page = await toolset.environment_list(requirements=["examplepkg>=2"])
