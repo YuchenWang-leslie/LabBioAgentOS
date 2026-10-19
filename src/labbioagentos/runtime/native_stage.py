@@ -24,6 +24,7 @@ from labbioagentos.kernel import (
     BudgetLimits,
     CollaborationRuntime,
     FinalizationRejectedError,
+    HttpxChatCompletionTransport,
     KernelContractError,
     KernelIdentity,
     KernelEventKind,
@@ -81,7 +82,7 @@ from .tooling import RuntimeCapabilityContext, RuntimeCapabilityServices
 NativeProviderBuilder = Callable[[ModelProfile], ModelProvider]
 
 
-def environment_native_provider(model: ModelProfile) -> ModelProvider:
+def environment_native_provider(model: ModelProfile, *, trust_env: bool = True) -> ModelProvider:
     """Build the one supported native provider from externally loaded secrets."""
 
     endpoint = os.environ.get("OPENAI_API_BASE")
@@ -101,6 +102,7 @@ def environment_native_provider(model: ModelProfile) -> ModelProvider:
             finalization_json_object=model.finalization_json_object,
         ),
         api_key=api_key,
+        transport=HttpxChatCompletionTransport(trust_env=trust_env),
     )
 
 

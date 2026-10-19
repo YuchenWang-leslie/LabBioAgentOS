@@ -52,13 +52,17 @@ class ChatCompletionTransport(Protocol):
 
 
 class HttpxChatCompletionTransport:
-    """Small dependency-free JSON POST transport with no retry or fallback."""
+    """One HTTP transport with explicit environment policy and no fallback."""
+
+    def __init__(self, *, trust_env: bool = True):
+        self.trust_env = trust_env
 
     async def post_json(self, *, url, headers, payload, timeout_seconds):
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout_seconds),
                 follow_redirects=False,
+                trust_env=self.trust_env,
             ) as client:
                 async with client.stream(
                     "POST", url, headers=dict(headers), json=dict(payload)

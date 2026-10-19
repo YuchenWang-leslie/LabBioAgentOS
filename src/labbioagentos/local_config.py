@@ -37,6 +37,7 @@ class LocalProviderSettings(_SettingsModel):
     api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     base_url_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     model_identifier: str = Field(min_length=1, max_length=256)
+    trust_env: bool = Field(default=True, strict=True)
     thinking_enabled: bool = False
     interpretation_thinking_enabled: bool = True
     provider_tool_schema_strict: bool = False
@@ -53,7 +54,7 @@ class LocalApptainerSettings(_SettingsModel):
     tmp_dir: Path | None = None
     # No default: a site must state who enforces CPU, memory and process limits.
     resource_enforcement: Literal["scheduler", "apptainer-cgroups"]
-    verify_sif_on_execute: bool = Field(default=False, strict=True)
+    verify_sif_on_execute: bool = Field(default=True, strict=True)
 
 
 class LocalExecutionSettings(_SettingsModel):
@@ -573,6 +574,8 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
+    from .runtime.native_stage import environment_native_provider
+
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     if load_provider:
@@ -700,6 +703,9 @@ def build_application(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
             runtime_backend=RuntimeBackend(settings.runtime_backend),
+            native_provider_builder=lambda model: environment_native_provider(
+                model, trust_env=settings.provider.trust_env,
+            ),
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,

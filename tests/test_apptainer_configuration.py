@@ -93,6 +93,7 @@ def test_apptainer_settings_resolve_paths_and_enter_the_runtime_identity(tmp_pat
     assert settings.execution.backend == "apptainer"
     assert apptainer.sif_store == tmp_path / "sif" and apptainer.scratch_root == tmp_path / "scratch"
     assert apptainer.cache_dir == tmp_path / "cache" and apptainer.tmp_dir is None
+    assert apptainer.verify_sif_on_execute is True
     assert runtime_manifest(settings)["configuration"]["execution"]["apptainer"]["resource_enforcement"] == (
         "scheduler"
     )

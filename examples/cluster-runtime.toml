@@ -18,6 +18,7 @@ env_file = "~/.config/labbioagent/provider.env"
 api_key_env = "PROVIDER_API_KEY"
 base_url_env = "PROVIDER_BASE_URL"
 model_identifier = "<model>"
+# trust_env = false  # Provider-only direct route; also ignores host certificate environment.
 
 [execution]
 backend = "apptainer"
@@ -45,7 +46,7 @@ tmp_dir = "/shared/lab/labbio/apptainer-tmp"
 # Required, no default: "scheduler" when the allocation enforces CPU, memory and
 # process limits; "apptainer-cgroups" only where backend-check confirms cgroups.
 resource_enforcement = "scheduler"
-verify_sif_on_execute = false                  # Re-hash multi-GB SIFs only if required.
+verify_sif_on_execute = true                   # Re-hash each SIF use; false requires an externally immutable store.
 
 [launcher]
 kind = "template"

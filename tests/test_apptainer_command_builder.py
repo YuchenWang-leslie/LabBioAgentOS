@@ -18,7 +18,7 @@ from labbioagentos import (
 from labbioagentos.execution import ApptainerCommandBuilder, SifStoreError
 from labbioagentos.execution.apptainer import ISOLATION_ARGUMENTS
 
-from apptainer_fixtures import apptainer_environment, bind_fields, register_sif
+from apptainer_fixtures import apptainer_environment, apptainer_image, bind_fields, register_sif
 from test_phase6_docker_execution import FakeDockerRunner, _plan
 
 EXPECTED_ENV = {
@@ -159,6 +159,20 @@ def test_verify_on_execute_rehashes_the_sif(tmp_path):
 
     with pytest.raises(SifStoreError):
         executor.build_command(_plan())
+
+
+def test_default_builder_rejects_registered_sif_changed_after_registration(tmp_path):
+    sif_store, reference = register_sif(tmp_path)
+    stored = sif_store.path_for(reference)
+    stored.chmod(0o644)
+    stored.write_bytes(b"altered SIF fixture\n")
+    stored.chmod(0o444)
+    builder = ApptainerCommandBuilder(
+        sif_store, scratch_root=tmp_path / "scratch", resource_enforcement="scheduler",
+    )
+
+    with pytest.raises(SifStoreError):
+        builder.import_probe_argv(apptainer_image(reference), ("-I", "-S", "-c", "pass"))
 
 
 def test_isolation_record_reaches_trusted_trace_but_not_the_receipt(tmp_path):

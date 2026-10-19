@@ -43,6 +43,27 @@ class RecordingTransport:
 
 
 @pytest.mark.asyncio
+async def test_http_transport_provider_only_proxy_policy(monkeypatch):
+    real_client = httpx.AsyncClient
+    options = []
+
+    def client(**kwargs):
+        options.append(kwargs["trust_env"])
+        return real_client(transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"ok": True})
+        ), **kwargs)
+
+    monkeypatch.setattr("labbioagentos.kernel.openai_chat.httpx.AsyncClient", client)
+    for trust_env in (False, True):
+        response = await HttpxChatCompletionTransport(trust_env=trust_env).post_json(
+            url="https://provider.invalid/v1/chat/completions",
+            headers={}, payload={"model": "fixture"}, timeout_seconds=1,
+        )
+        assert response == {"ok": True}
+    assert options == [False, True]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response_or_error,expected_type", [
     (httpx.Response(503, json={"private": "PRIVATE_CANARY"}), "HTTP_503"),
     (httpx.ReadTimeout("PRIVATE_CANARY"), "TIMEOUT"),

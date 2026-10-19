@@ -158,7 +158,7 @@ class ApptainerCommandBuilder:
         scratch_root: str | Path,
         resource_enforcement: ResourceEnforcement,
         apptainer_binary: str = "apptainer",
-        verify_sif_on_execute: bool = False,
+        verify_sif_on_execute: bool = True,
     ):
         if (not apptainer_binary or apptainer_binary.startswith("-")
                 or any(character.isspace() for character in apptainer_binary)):

@@ -56,10 +56,33 @@ def test_settings_are_explicit_relative_and_frozen(settings_file):
     assert settings.provider.env_file == settings_file.parent / "provider.env"
     assert settings.provider.max_model_phase_seconds == 300
     assert settings.provider.finalization_json_object is False
+    assert settings.provider.trust_env is True
     assert settings.principal.user_id == settings.workspace.user_id == "user-local"
     assert settings.workspace.project_id == "project-local"
     with pytest.raises(ValidationError):
         settings.default_format = "h5ad"
+
+
+@pytest.mark.parametrize("trust_env", [False, True])
+def test_provider_proxy_policy_reaches_only_native_provider(
+    settings_file, monkeypatch, trust_env,
+):
+    settings_file.write_text(settings_file.read_text().replace(
+        "[provider]", f"[provider]\ntrust_env = {str(trust_env).lower()}",
+    ))
+    settings = load_settings(settings_file)
+    monkeypatch.setenv("OPENAI_API_BASE", "https://provider.invalid/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
+    original_proxy = os.environ.get("HTTPS_PROXY")
+    application = build_application(settings, settings.result_root / "provider-route", load_provider=False)
+    try:
+        model = next(iter(application.configuration.profile_catalog.models.values()))
+        provider = application.configuration.native_provider_builder(model)
+        assert provider._transport.trust_env is trust_env
+        assert os.environ.get("HTTPS_PROXY") == original_proxy
+        assert runtime_manifest(settings)["configuration"]["provider"]["trust_env"] is trust_env
+    finally:
+        application.run_state_store.close()
 
 
 def test_unknown_configuration_is_not_an_import_or_plugin_path(settings_file):
