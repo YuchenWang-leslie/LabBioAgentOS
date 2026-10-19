@@ -5806,7 +5806,7 @@ corrected without changing code and is not a project regression result.
 ## 2026-10-18 — C13 Apptainer cluster execution accepted
 
 MOHAN CUI authorized C13 on 2026-10-15 (DECIDED-C13-0) as a new milestone after
-the C12 freeze: scheduler-based Apptainer execution for HPC clusters, beside
+the C12 freeze: scheduler-based Apptainer execution for compute clusters, beside
 the unchanged Local + Docker mode. The work was done on branch
 `add-apptainer` from `main` `df51fbc`, in four phases, each stopped for review:
 

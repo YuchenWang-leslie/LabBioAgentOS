@@ -524,7 +524,7 @@ Gap analysis and numbered acceptance criteria:
 
 ## Goal
 
-Run the same constrained execution on an HPC cluster that Docker provides
+Run the same constrained execution on a compute cluster that Docker provides
 locally. The login node runs the control plane, LLM calls, and job submission;
 compute nodes run analysis through the site scheduler inside Apptainer.
 Cluster support must be generic across most site types.

@@ -9,7 +9,7 @@
 > `C13_APPTAINER_EXECUTION_GAP_MEMO.md` and the C13 section of
 > `OPEN_DECISIONS.md` (environment builds: DECIDED-C13-8).
 
-Audience: an operator installing LabBioAgentOS on an HPC cluster for a lab.
+Audience: an operator installing LabBioAgentOS on a compute cluster for a lab.
 
 ## 1. Topology
 

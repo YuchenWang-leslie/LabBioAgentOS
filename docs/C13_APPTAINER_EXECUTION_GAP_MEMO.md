@@ -18,7 +18,7 @@ pinned in `constraints/pantheon-runtime.txt` and recorded in
 
 ## Target
 
-On an HPC cluster, Apptainer must provide the same constrained execution that
+On a compute cluster, Apptainer must provide the same constrained execution that
 Docker provides locally. The control plane, LLM calls, and job submission run
 on the login node. Analysis scripts run on compute nodes through the site
 scheduler. Cluster support must be generic enough for most sites.
