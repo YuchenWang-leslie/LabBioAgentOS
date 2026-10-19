@@ -244,6 +244,7 @@ class _StageProfile(_SettingsModel):
     root: str
     capabilities: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
+    required_any_capabilities: tuple[str, ...] = ()
     capability_protocol: str = ""
     user_input_enabled: bool = False
     clarification_enabled: bool = True
@@ -644,6 +645,13 @@ def build_application(
                 "capability mode; allowed capabilities not listed here remain optional."
                 if stage.required_capabilities else ""
             )
+            + (
+                " CONTROL_STATE_REQUIRED_ANY_CAPABILITIES="
+                + json.dumps(stage.required_any_capabilities)
+                + ". Complete at least one listed capability successfully before ending "
+                "capability mode; the others remain optional."
+                if stage.required_any_capabilities else ""
+            )
         )} if stage.capabilities else {},
         finalization_prompt_values={"protocol": (
             shared_context + profile.finalization_protocol.format(stage=stage.stage.value)
@@ -651,6 +659,7 @@ def build_application(
         capability_phase_enabled=bool(stage.capabilities),
         preserve_capability_completion=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
+        required_any_capabilities=stage.required_any_capabilities,
         # REPORT must both establish complete citation coverage and submit the
         # final prose. Its accumulated governed pages make the token ledger,
         # rather than tool-turn count, the tighter bound in real runs.

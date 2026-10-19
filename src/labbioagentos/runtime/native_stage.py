@@ -371,16 +371,24 @@ class NativeKernelStageInvoker:
                 if item.status is CapabilityEvidenceStatus.COMPLETED
             }
             missing = tuple(name for name in self.assembly.required_capabilities if name not in completed)
-            if not missing:
+            missing_any = (self.assembly.required_any_capabilities
+                           if self.assembly.required_any_capabilities
+                           and not completed.intersection(self.assembly.required_any_capabilities)
+                           else ())
+            if not missing and not missing_any:
                 return None
-            self._emit(stage_input, TraceEventType.CAPABILITY_COMPLETION_REJECTED, "REJECTED", {
-                "missing_required_capabilities": list(missing),
-            })
-            return json.dumps({
+            facts = {
                 "authority": "CONTROL_STATE",
                 "missing_required_capabilities": missing,
-                "reason": "No completed capability evidence exists for these requirements. A prose plan is not a tool call. Use the exposed tools within the remaining budget; choose their arguments and order yourself.",
+                "reason": "No completed capability evidence exists for these requirements. JSON or prose in assistant.content is not dispatched as a tool call. Invoke an exposed capability through the provider tool_calls channel within the remaining budget; choose its arguments and order yourself.",
+            }
+            if missing_any:
+                facts["missing_required_any_capabilities"] = missing_any
+            self._emit(stage_input, TraceEventType.CAPABILITY_COMPLETION_REJECTED, "REJECTED", {
+                "missing_required_capabilities": list(missing),
+                **({"missing_required_any_capabilities": list(missing_any)} if missing_any else {}),
             })
+            return json.dumps(facts)
 
         try:
             result = await runtime.run_leader(
@@ -695,7 +703,9 @@ class NativeKernelStageInvoker:
             item for item in self.assembly.required_capabilities
             if item not in completed
         )
-        if missing:
+        missing_any = (self.assembly.required_any_capabilities
+                       and not completed.intersection(self.assembly.required_any_capabilities))
+        if missing or missing_any:
             raise RuntimeIntegrationError(
                 "MALFORMED_RUNTIME_RESULT",
                 "Native runtime ended capability mode without completing required capabilities.",

@@ -37,6 +37,7 @@ class RuntimeStageAssemblySpec:
     capability_phase_enabled: bool = True
     preserve_capability_completion: bool = False
     required_capabilities: tuple[str, ...] = ()
+    required_any_capabilities: tuple[str, ...] = ()
     max_capability_turns: int = 24
     max_no_progress_seconds: int = 300
     retry_enabled: bool = True
@@ -64,11 +65,14 @@ class RuntimeStageAssemblySpec:
             raise ValueError("max_no_progress_seconds must be between 30 and 1800")
         if not set(self.required_capabilities).issubset(self.capability_allowlist):
             raise ValueError("required_capabilities must be within the allowlist")
+        if not set(self.required_any_capabilities).issubset(self.capability_allowlist):
+            raise ValueError("required_any_capabilities must be within the allowlist")
         if not self.capability_phase_enabled and (
             self.capability_allowlist
             or self.capability_peer_specs
             or self.preserve_capability_completion
             or self.required_capabilities
+            or self.required_any_capabilities
         ):
             raise ValueError(
                 "Disabled capability phase cannot expose capabilities or peers"

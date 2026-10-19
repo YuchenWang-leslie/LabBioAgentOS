@@ -267,7 +267,8 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
         # This fixture tests governance only. It deliberately configures no
         # execution profile and no required scientific capability, never Docker.
         config = replace(composed.configuration, execution_profile=None,
-                         stage_assemblies=tuple(replace(stage, required_capabilities=())
+                         stage_assemblies=tuple(replace(stage, required_capabilities=(),
+                                                        required_any_capabilities=())
                                                 for stage in composed.configuration.stage_assemblies))
         application = LabBioApplication(config)
         state["applications"].append(application)

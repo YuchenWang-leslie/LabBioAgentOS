@@ -1,5 +1,60 @@
 # Real E2E Convergence Workplan
 
+## Fresh real H5AD closure on review source — 2026-10-19
+
+Fresh run `28a7cca5-6394-4e9e-ab04-c10b6513d49a` in
+`result/native-pr2-real-h5ad-20261019-14` is `COMPLETED` through LEARN, with
+no issue codes. The only input was the annotated 700-cell × 765-gene H5AD
+`pbmc68k_reduced_annotated.h5ad` (SHA-256
+`e71d41e737c941559b7c57c9243bdb3d2c889c2adfdf00e3422ac6b46783676f`).
+The user asked the Agent to choose and execute its own suitable scientific
+question and methods. Codex did not supply an analysis program, parameters,
+interpretation, or report text. The Agent's two earlier executions failed the
+output contract; it corrected its own program and selected successful execution
+`67eb8bda-2b82-4f41-8cdb-8442bf09e114` (exit code 0) with six registered
+outputs. The registered derived JSON evidence table has 94 records. VALIDATE,
+INTERPRET and REPORT completed; `report_check` returned ready, two cited
+resources were ready, and `report_submit` registered the Chinese report
+`dfdb53e2-907c-4c18-9b53-96d47dc1391f`. The final report is
+`delivery/REPORT.md`, SHA-256
+`cfb95165536afbe880b82d94a9f357524e60b95b9fd599a21a6f8a3b115f4f63`.
+All six selected output hashes and the report hash match `delivery/RESULT.json`;
+failed execution outputs remain historical, not selected. This establishes a
+real local Agent workflow and exported report, not independent scientific
+peer review, production activation, or cluster acceptance.
+
+The failures preceding this run were diagnosed from persisted model turns,
+tool input/output and terminal state. Provider calls through this host's proxy
+ended in `NETWORK_REMOTE_PROTOCOL`/`NETWORK_READ` errors; the successful run
+used a process-scoped direct route (`NO_PROXY='*'`, `no_proxy='*'`). A later
+host-specific direct SSE probe (`NO_PROXY`/`no_proxy` set only to
+`token-plan-cn.xiaomimimo.com`) returned HTTP 200 and `[DONE]` in 1.97 seconds.
+This supports, but does not prove, proxy-path instability. Production's proxy
+configuration was not changed; a provider-host-specific bypass or equivalent
+network repair is still needed before routine deployment. Do not set a global
+direct route for literature and other external services: an earlier such run
+hit `LITERATURE_TIMEOUT`.
+
+The source repair streams and assembles the provider's complete SSE response,
+rejects truncated responses, and records safe transport categories without
+retrying or exposing bodies. EXECUTE now accepts a completed `execution_submit`
+*or* `execution_revise`, matching its existing legal capabilities, instead of
+requiring a submit on every invocation. Generic feedback now explains that
+assistant-content JSON is not a dispatched tool call and that an integer field
+needs an unquoted JSON integer; neither response is auto-executed or silently
+coerced. Failing-first and adjacent-state regressions passed with the full
+source suite: `1749 passed, 23 skipped`. No one-off task route, scientific
+decision heuristic, hidden fallback or relaxed provenance check was added.
+
+The candidate remains on isolated `review/pr2-native-integration`. `main`,
+production `current` (`native-p8-20261016T085718Z`), profiles and Skills are
+unchanged. `sandbox-docker` remains preserved at
+`32e7b617de11c3cd6bafc91e6f17cd11ec36a76a`. No CLI task or Docker
+container remained active after the completed run. Before release, review the
+source diff, apply a provider-specific network route in the deployment
+environment, build an immutable candidate, and validate it afresh; Apptainer
+and scheduler behavior still require the actual cluster.
+
 ## PR #2 cluster integration review — 2026-10-19
 
 The pre-merge Docker-default Native source is preserved locally and on GitHub

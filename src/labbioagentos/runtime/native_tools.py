@@ -66,7 +66,7 @@ class ArtifactQueryArguments(NativeToolArguments):
     limit: ArtifactQueryLimit | None = Field(
         default=None,
         description=(
-            "Optional positive page size for TOP_N; null uses the policy default. "
+            "Optional unquoted JSON integer page size for TOP_N; null uses the policy default. "
             "The same policy default applies when following next_offset."
         ),
     )

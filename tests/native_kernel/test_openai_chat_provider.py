@@ -46,6 +46,8 @@ class RecordingTransport:
 @pytest.mark.parametrize("response_or_error,expected_type", [
     (httpx.Response(503, json={"private": "PRIVATE_CANARY"}), "HTTP_503"),
     (httpx.ReadTimeout("PRIVATE_CANARY"), "TIMEOUT"),
+    (httpx.RemoteProtocolError("PRIVATE_CANARY"), "NETWORK_REMOTE_PROTOCOL"),
+    (httpx.ReadError("PRIVATE_CANARY"), "NETWORK_READ"),
 ])
 async def test_http_transport_reports_only_safe_failure_class(
     monkeypatch, response_or_error, expected_type,
@@ -70,6 +72,61 @@ async def test_http_transport_reports_only_safe_failure_class(
 
     assert caught.value.validation_type == expected_type
     assert "PRIVATE_CANARY" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_http_transport_reassembles_streamed_tool_call_and_usage(monkeypatch):
+    events = (
+        '{"id":"request-1","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"PRIVATE_"},"finish_reason":null}]}',
+        '{"id":"request-1","choices":[{"index":0,"delta":{"reasoning_content":"REASONING","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"inspect","arguments":"{\\"view\\":"}}]},"finish_reason":null}]}',
+        '{"id":"request-1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"SUMMARY\\"}"}}]},"finish_reason":"tool_calls"}]}',
+        '{"id":"request-1","choices":[],"usage":{"prompt_tokens":9,"completion_tokens":12,"total_tokens":21}}',
+    )
+    body = "".join(f"data: {event}\n\n" for event in events) + "data: [DONE]\n\n"
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        assert request.read() == b'{"model":"fixture","stream":true}'
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+
+    monkeypatch.setattr(
+        "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    response = await HttpxChatCompletionTransport().post_json(
+        url="https://provider.invalid/v1/chat/completions",
+        headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
+    )
+
+    assert response == {
+        "id": "request-1",
+        "choices": [{"finish_reason": "tool_calls", "message": {
+            "role": "assistant", "content": None,
+            "reasoning_content": "PRIVATE_REASONING",
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {
+                "name": "inspect", "arguments": '{"view":"SUMMARY"}',
+            }}],
+        }}],
+        "usage": {"prompt_tokens": 9, "completion_tokens": 12, "total_tokens": 21},
+    }
+
+
+@pytest.mark.asyncio
+async def test_http_transport_rejects_truncated_stream(monkeypatch):
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(
+            200, headers={"content-type": "text/event-stream"},
+            text='data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+        )), **kwargs),
+    )
+
+    with pytest.raises(ProviderProtocolError):
+        await HttpxChatCompletionTransport().post_json(
+            url="https://provider.invalid/v1/chat/completions",
+            headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
+        )
 
 
 @pytest.mark.asyncio

@@ -444,6 +444,8 @@ async def test_completed_required_capability_reaches_typed_finalization(tmp_path
                 feedback = json.loads(request.messages[-1].content)
                 assert feedback["authority"] == "CONTROL_STATE"
                 assert feedback["missing_required_capabilities"] == ["artifact_list"]
+                assert "assistant.content" in feedback["reason"]
+                assert "tool_calls" in feedback["reason"]
             return await super().generate(request)
 
     stage_input = _stage_input()
@@ -479,6 +481,105 @@ async def test_completed_required_capability_reaches_typed_finalization(tmp_path
 
     assert result.stage_id is WorkflowStage.INTAKE
     assert providers[0].calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("complete", [False, True])
+async def test_required_any_capability_accepts_alternate_completed_tool(tmp_path, complete):
+    class Provider(CapabilityProvider):
+        async def generate(self, request):
+            if not complete:
+                return ModelTurn(
+                    content="No governed call.", finish_reason=FinishReason.STOP,
+                    usage=TokenUsage(total_tokens=2),
+                )
+            return await super().generate(request)
+
+    stage_input = _stage_input().model_copy(update={
+        "allowed_capabilities": ("artifact_list", "artifact_query"),
+    })
+    fixture = _toolset(tmp_path, stage_input)
+    providers = []
+
+    def builder(_model):
+        provider = Provider() if not providers else WorkflowProvider([])
+        providers.append(provider)
+        return provider
+
+    catalog = _capability_catalog()
+    configured = catalog.capabilities["coordinator-capabilities"]
+    catalog.capabilities["coordinator-capabilities"] = configured.model_copy(update={
+        "capability_allowlist": ("artifact_list", "artifact_query"),
+    })
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE,
+            root_profile_key="coordinator",
+            prompt_template_key="runtime-generic",
+            capability_allowlist=("artifact_list", "artifact_query"),
+            required_any_capabilities=("artifact_query", "artifact_list"),
+            max_capability_turns=4,
+        ),
+        factory=NativeRuntimeFactory(catalog, builder),
+        principal=fixture.binding.principal,
+        workspace=fixture.binding.workspace,
+        services=fixture.services,
+    )
+
+    if complete:
+        assert (await invoker.invoke(stage_input)).stage_id is WorkflowStage.INTAKE
+    else:
+        with pytest.raises(RuntimeIntegrationError, match="required capabilities"):
+            await invoker.invoke(stage_input)
+
+
+@pytest.mark.asyncio
+async def test_integer_argument_feedback_leads_to_a_real_corrected_tool_call(tmp_path):
+    class CorrectingProvider:
+        binding = WorkflowProvider.binding
+        calls = 0
+
+        async def generate(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(tool_calls=(ToolCall(
+                    call_id="quoted-limit", name="artifact_list",
+                    arguments_json='{"limit":"20"}',
+                ),), finish_reason=FinishReason.TOOL_CALLS, usage=TokenUsage(total_tokens=2))
+            if self.calls == 2:
+                feedback = json.loads(request.messages[-1].content)
+                assert feedback["error"]["validation_type"] == "int_type"
+                assert feedback["error"]["validation_fields"] == ["limit"]
+                assert "JSON integer" in feedback["error"]["message"]
+                return ModelTurn(tool_calls=(ToolCall(
+                    call_id="integer-limit", name="artifact_list",
+                    arguments_json='{"limit":20}',
+                ),), finish_reason=FinishReason.TOOL_CALLS, usage=TokenUsage(total_tokens=2))
+            return ModelTurn(content="Done.", finish_reason=FinishReason.STOP,
+                             usage=TokenUsage(total_tokens=2))
+
+    stage_input = _stage_input()
+    fixture = _toolset(tmp_path, stage_input)
+    providers = []
+
+    def builder(_model):
+        provider = CorrectingProvider() if not providers else WorkflowProvider([])
+        providers.append(provider)
+        return provider
+
+    invoker = NativeKernelStageInvoker(
+        assembly=RuntimeStageAssemblySpec(
+            stage_id=WorkflowStage.INTAKE, root_profile_key="coordinator",
+            prompt_template_key="runtime-generic", capability_allowlist=("artifact_list",),
+            required_capabilities=("artifact_list",),
+        ),
+        factory=NativeRuntimeFactory(_capability_catalog(), builder),
+        principal=fixture.binding.principal, workspace=fixture.binding.workspace,
+        services=fixture.services,
+    )
+
+    assert (await invoker.invoke(stage_input)).stage_id is WorkflowStage.INTAKE
+    assert providers[0].calls == 3
 
 
 @pytest.mark.asyncio

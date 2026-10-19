@@ -305,6 +305,8 @@ class ToolRegistry:
                 ("The reported field requires a JSON object matching the registered schema; "
                  "omit it if optional instead of sending prose"
                  if issues and issues[0]["type"] == "model_type"
+                 else "The reported field requires an unquoted JSON integer; omit it if optional instead of sending a string or other type"
+                 if issues and issues[0]["type"] == "int_type"
                  else "Tool arguments do not match the registered schema"),
                 call_id=call.call_id,
                 tool_name=call.name,

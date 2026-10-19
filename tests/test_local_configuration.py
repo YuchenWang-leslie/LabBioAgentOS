@@ -101,7 +101,10 @@ build_proxy = "http://127.0.0.1:12199"
         assert "environment_list" in stages[WorkflowStage.PLAN].capability_allowlist
         assert "environment_build" in stages[WorkflowStage.EXECUTE].capability_allowlist
         assert "environment_build" not in stages[WorkflowStage.PLAN].capability_allowlist
-        assert stages[WorkflowStage.EXECUTE].required_capabilities == ("execution_submit",)
+        assert stages[WorkflowStage.EXECUTE].required_capabilities == ()
+        assert stages[WorkflowStage.EXECUTE].required_any_capabilities == (
+            "execution_submit", "execution_revise",
+        )
     finally:
         app.run_state_store.close()
 
@@ -203,7 +206,10 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
             if stage is not WorkflowStage.REPORT
         )
         assert assemblies[WorkflowStage.UNDERSTAND].required_capabilities == ()
-        assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ("execution_submit",)
+        assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ()
+        assert assemblies[WorkflowStage.EXECUTE].required_any_capabilities == (
+            "execution_submit", "execution_revise",
+        )
         assert assemblies[WorkflowStage.REPORT].required_capabilities == ("report_submit",)
         assert 'CONTROL_STATE_REQUIRED_CAPABILITIES=["artifact_list"]' in (
             assemblies[WorkflowStage.INTAKE].capability_prompt_values["protocol"]
@@ -330,7 +336,9 @@ def test_both_model_phases_see_the_configured_capability_owners(settings_file, s
         ).sanitized_text
         assert "EXECUTE owns analysis evidence, not final user-report submission" in execute_prompt
         assert "REPORT owns final report creation and submission" in execute_prompt
-        assert execute.required_capabilities == ("execution_submit",)
+        assert execute.required_capabilities == ()
+        assert execute.required_any_capabilities == ("execution_submit", "execution_revise")
+        assert 'CONTROL_STATE_REQUIRED_ANY_CAPABILITIES=["execution_submit", "execution_revise"]' in execute_prompt
         assert "termination reason applies to the capability loop" in execute_prompt
         assert "does not prove execution_submit was attempted" in execute_prompt
         # This is a description of configured ownership, never additional grants.
