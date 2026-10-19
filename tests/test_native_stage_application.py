@@ -928,7 +928,7 @@ async def test_large_capability_evidence_is_bounded_before_finalization(tmp_path
 
 @pytest.mark.asyncio
 async def test_many_rich_evidence_items_drop_absent_fields_before_finalization(tmp_path):
-    stage_input = _stage_input()
+    stage_input = _stage_input().model_copy(update={"instruction": "Review " + "x" * 7_800})
     fixture = _toolset(tmp_path, stage_input)
     evidence = CapabilityEvidenceBundle(
         run_id=stage_input.run_id,
@@ -976,7 +976,9 @@ async def test_many_rich_evidence_items_drop_absent_fields_before_finalization(t
     assert result.stage_id is WorkflowStage.INTAKE
     finalization_content = calls[0].messages[-1].content
     assert len(finalization_content.encode("utf-8")) <= 60_000
-    items = json.loads(finalization_content)["capability_evidence"]["items"]
+    projected = json.loads(finalization_content)["capability_evidence"]
+    assert projected["projection"]["status"] == "COMPACT_PROVENANCE"
+    items = projected["items"]
     assert len(items) == 64
     assert all("error_code" not in item for item in items)
     assert all("error_details" not in item for item in items)

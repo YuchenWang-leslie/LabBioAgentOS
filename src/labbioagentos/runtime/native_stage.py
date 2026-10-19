@@ -532,6 +532,13 @@ class NativeKernelStageInvoker:
             finalization_content = json.dumps(
                 payload, separators=(",", ":"), ensure_ascii=False
             )
+        if len(finalization_content) > 60_000 and evidence is not None:
+            payload["capability_evidence"] = finalization_evidence(
+                evidence, include_safe_results=False, compact=True
+            )
+            finalization_content = json.dumps(
+                payload, separators=(",", ":"), ensure_ascii=False
+            )
         if len(finalization_content) > 60_000:
             raise RuntimeProfileConfigurationError(
                 "Finalization context exceeds its bounded public message envelope"

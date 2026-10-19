@@ -4,23 +4,31 @@ import hashlib
 import json
 
 
-def finalization_evidence(evidence, *, include_safe_results: bool = True) -> dict:
+def finalization_evidence(evidence, *, include_safe_results: bool = True,
+                          compact: bool = False) -> dict:
     # Optional nulls carry no evidence. Keeping them for every item can make the
     # metadata envelope larger than the bounded result bodies it replaced.
     value = evidence.model_dump(mode='json', exclude_none=True)
+    if compact:
+        value['projection'] = {
+            'status': 'COMPACT_PROVENANCE',
+            'full_evidence_id': str(evidence.evidence_id),
+        }
     seen = {}
     for item in value['items']:
+        if compact:
+            item.pop('trace_event_ids', None)
         result = item.get('safe_result')
         if result is None:
             continue
         identity = json.dumps(result, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
         if not include_safe_results:
             item['safe_result'] = None
-            item['safe_result_projection'] = {
-                'status': 'OMITTED_FROM_FINALIZATION_CONTEXT',
-                'serialized_bytes': len(identity.encode('utf-8')),
-                'sha256': hashlib.sha256(identity.encode('utf-8')).hexdigest(),
-            }
+            projection = {'status': 'OMITTED_FROM_FINALIZATION_CONTEXT'}
+            if not compact:
+                projection['serialized_bytes'] = len(identity.encode('utf-8'))
+                projection['sha256'] = hashlib.sha256(identity.encode('utf-8')).hexdigest()
+            item['safe_result_projection'] = projection
             continue
         # Tiny values are cheaper to repeat than to reference. Retain every call,
         # outcome, authority, error and provenance; deduplicate exact bodies only.

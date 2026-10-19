@@ -43,6 +43,21 @@ feedback explains the expected object/omission choice without filling any
 Agent-owned value. Both facts have failing-first tests; a fresh live check is
 still needed. Do not retry the failed run or claim a report exists.
 
+Run `39bc5a87-1db5-4341-9f93-7ab9a97d9844` answered an INTAKE question by
+repeating the original user choice that the Agent select its own question and
+method. The Agent then failed one output contract, revised its own program,
+executed successfully and entered VALIDATE. Reviewer completed 55 distinct
+governed calls, but finalization could not begin: the ordinary evidence
+projection still exceeded the 60,000-character public-message envelope after
+large result bodies were omitted. The complete bundle is persisted; no
+scientific validation or report was completed. A compact third projection
+now omits per-item trace IDs and body digests while retaining each call ID,
+tool, status, authority, request audit and lookup to the full evidence ID.
+It is labeled `COMPACT_PROVENANCE`, remains bounded and does not silently
+truncate source reads. Both a rich 55-item size regression and the runtime
+finalization path are covered. Explicit reconciliation of the prior run is
+`BLOCKED` by `RUNTIME_REVISION_MISMATCH`; do not resume it under changed code.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review
