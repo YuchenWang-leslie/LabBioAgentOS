@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable, Iterable
 from time import monotonic
@@ -123,6 +124,7 @@ class AgentLoop:
             while True:
                 self.interrupt_token.raise_if_requested()
                 started = self.clock()
+                started_wall = monotonic()
                 if started >= self.current_deadline_monotonic:
                     raise KernelDeadlineExceededError()
                 turn_index += 1
@@ -151,17 +153,30 @@ class AgentLoop:
                     turn_index=turn_index,
                 )
                 try:
-                    turn = await self.provider.generate(request)
-                except (ProviderTransportError, ProviderProtocolError) as exc:
+                    remaining = (self.current_deadline_monotonic - started
+                                 - (monotonic() - started_wall))
+                    if remaining <= 0:
+                        raise KernelDeadlineExceededError()
+                    try:
+                        turn = await asyncio.wait_for(
+                            self.provider.generate(request), timeout=remaining
+                        )
+                    except asyncio.TimeoutError:
+                        if self.clock() >= self.current_deadline_monotonic:
+                            raise KernelDeadlineExceededError() from None
+                        raise ProviderTransportError() from None
+                except (ProviderTransportError, ProviderProtocolError,
+                        KernelDeadlineExceededError) as exc:
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
                     ):
-                        stop_reason = (
-                            "PROVIDER_PROTOCOL_STOP"
-                            if isinstance(exc, ProviderProtocolError)
-                            else "PROVIDER_TRANSPORT_STOP"
-                        )
+                        if isinstance(exc, KernelDeadlineExceededError):
+                            stop_reason = "PROVIDER_DEADLINE_STOP"
+                        elif isinstance(exc, ProviderProtocolError):
+                            stop_reason = "PROVIDER_PROTOCOL_STOP"
+                        else:
+                            stop_reason = "PROVIDER_TRANSPORT_STOP"
                         self._emit(
                             KernelEventKind.KERNEL_FINISHED,
                             status_code="STOPPED",

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from time import monotonic
 from uuid import uuid4
 
 import pytest
@@ -370,6 +372,61 @@ async def test_capability_loop_without_evidence_rejects_protocol_failure():
             messages=(PublicMessage(role="USER", content="No evidence yet."),),
             deadline_monotonic=10_000_000_000.0,
         )
+
+
+@pytest.mark.asyncio
+async def test_provider_call_obeys_absolute_model_deadline():
+    class HangingProvider:
+        binding = _binding()
+        cancelled = False
+
+        async def generate(self, _request):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+
+    loop, _fixture_provider, _effects = _tool_loop(())
+    provider = HangingProvider()
+    loop.provider = provider
+
+    with pytest.raises(KernelDeadlineExceededError):
+        await asyncio.wait_for(loop.run(
+            messages=(PublicMessage(role="USER", content="Wait for the provider."),),
+            deadline_monotonic=monotonic() + 0.02,
+        ), timeout=0.2)
+
+    assert provider.cancelled
+
+
+@pytest.mark.asyncio
+async def test_provider_deadline_after_tool_preserves_completed_evidence():
+    class ToolThenHang:
+        binding = _binding()
+        calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(tool_calls=(ToolCall(
+                    call_id="before-deadline", name="record_value",
+                    arguments_json='{"value":"kept"}',
+                ),), finish_reason=FinishReason.TOOL_CALLS)
+            await asyncio.Event().wait()
+
+    loop, _fixture_provider, effects = _tool_loop(())
+    loop.provider = ToolThenHang()
+
+    result = await asyncio.wait_for(loop.run(
+        messages=(PublicMessage(role="USER", content="Preserve the completed tool."),),
+        deadline_monotonic=monotonic() + 0.05,
+    ), timeout=0.2)
+
+    assert result.termination == "PROVIDER_DEADLINE_STOP"
+    assert result.events[-1].reason_code == "KERNEL_DEADLINE_EXCEEDED"
+    assert effects == [{"value": "kept", "nested": None}]
+    assert [item.call_id for item in result.tool_results] == ["before-deadline"]
 
 
 @pytest.mark.asyncio

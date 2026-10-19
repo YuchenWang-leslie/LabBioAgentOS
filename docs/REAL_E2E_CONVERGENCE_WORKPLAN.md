@@ -58,6 +58,23 @@ truncate source reads. Both a rich 55-item size regression and the runtime
 finalization path are covered. Explicit reconciliation of the prior run is
 `BLOCKED` by `RUNTIME_REVISION_MISMATCH`; do not resume it under changed code.
 
+Fresh run `b9152ba7-1cec-4f22-ab4e-957a48f4e868` clarified that the only
+authorized data is the supplied reduced H5AD, then completed one real
+execution. VALIDATE completed at 04:00:30 UTC, and INTERPRET was already
+querying evidence by 04:00:35. Codex mistakenly relied on an earlier trace
+tail and interrupted the still-progressing control process at 04:01 UTC;
+it exited 130. This was a supervision error, not a confirmed provider failure
+or a failed validation. No report was completed. With the exact prior source
+commit, reconciliation is `BLOCKED` as `STAGE_IN_FLIGHT` because INTERPRET
+had not persisted a completed capability bundle; the run must not be resumed.
+No Docker container remains. The near-deadline provider call motivated a
+separate hard-deadline safeguard: the loop now enforces the absolute remaining
+deadline around each provider request. If completed tool evidence exists, the
+capability phase ends explicitly as `PROVIDER_DEADLINE_STOP`; without it,
+`KERNEL_DEADLINE_EXCEEDED` remains fatal. Both adjacent paths have deterministic
+regressions, but no live deadline-stop claim is made. Fresh real-task closure
+is still pending.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review
