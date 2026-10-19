@@ -135,7 +135,10 @@ class ExecutionReviseArguments(NativeToolArguments):
         ),
     )
     parameters: dict[str, JsonValue] | None = None
-    review: ExecutionReview | None = None
+    review: ExecutionReview | None = Field(
+        default=None,
+        description="Optional JSON object with a required rationale string; omit when no review is needed. Not a prose string.",
+    )
 
 
 class ExecutionSubmitArguments(NativeToolArguments):
@@ -162,7 +165,10 @@ class ExecutionSubmitArguments(NativeToolArguments):
     )
     resources: RequestedResources = Field(default_factory=RequestedResources)
     network_required: bool = False
-    review: ExecutionReview | None = None
+    review: ExecutionReview | None = Field(
+        default=None,
+        description="Optional JSON object with a required rationale string; omit when no review is needed. Not a prose string.",
+    )
 
 
 class FileReadArguments(NativeToolArguments):

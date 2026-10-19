@@ -17,6 +17,7 @@ from labbioagentos.runtime.capability_catalog import (
 )
 from labbioagentos.runtime.native_tools import (
     ArtifactAggregateArguments,
+    ExecutionReviseArguments,
     ExecutionSubmitArguments,
     NativeCapabilityBinding,
     NativeCapabilityDispatcher,
@@ -27,6 +28,29 @@ from labbioagentos.runtime.native_tools import (
 
 IDENTITY = "11111111-1111-4111-8111-111111111111"
 OTHER_IDENTITY = "22222222-2222-4222-8222-222222222222"
+
+
+@pytest.mark.parametrize("arguments_model", [ExecutionSubmitArguments, ExecutionReviseArguments])
+def test_execution_review_tool_schema_says_optional_object_not_prose(arguments_model):
+    review = arguments_model.model_json_schema()["properties"]["review"]
+
+    assert "object" in review["description"].lower()
+    assert "omit" in review["description"].lower()
+
+
+def test_rejected_model_field_explains_expected_json_object():
+    arguments = dict(VALID_ARGUMENTS["execution_submit"], review="brief prose")
+    registry = build_labbio_tool_registry(RecordingHost())
+
+    with pytest.raises(ToolBatchRejectedError) as caught:
+        registry.validate_batch((ToolCall(
+            call_id="invalid-review", name="execution_submit",
+            arguments_json=json.dumps(arguments),
+        ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+
+    assert caught.value.validation_type == "model_type"
+    assert caught.value.validation_fields == ("review",)
+    assert "JSON object" in str(caught.value)
 
 
 VALID_ARGUMENTS = {

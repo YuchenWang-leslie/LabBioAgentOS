@@ -302,7 +302,10 @@ class ToolRegistry:
             )
             raise ToolBatchRejectedError(
                 "INVALID_TOOL_ARGUMENTS",
-                "Tool arguments do not match the registered schema",
+                ("The reported field requires a JSON object matching the registered schema; "
+                 "omit it if optional instead of sending prose"
+                 if issues and issues[0]["type"] == "model_type"
+                 else "Tool arguments do not match the registered schema"),
                 call_id=call.call_id,
                 tool_name=call.name,
                 validation_type=issues[0]["type"] if issues else None,

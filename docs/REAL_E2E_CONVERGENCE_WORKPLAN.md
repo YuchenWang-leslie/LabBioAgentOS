@@ -31,6 +31,18 @@ oversize response is truncated or accepted. Targeted and full regressions
 passed 1734 tests with 23 skips before a test-only simplification; a fresh
 real-task validation of this second fix is still required.
 
+Fresh run `36038188-baf2-4a72-a56e-eeb02a6c16b5` did not reach execution:
+the provider repeatedly supplied a prose value to the optional `review`
+object in `execution_submit`. The validator correctly rejected all calls as
+`INVALID_TOOL_ARGUMENTS` (`model_type`, `review`), and the run ended `FAILED`
+with no derived output. This is a distinct model-visible tool-contract gap,
+not evidence that the previous execution-grounding or protocol fixes failed.
+The tool schema now states at the field itself that `review` is an optional
+JSON object with a required rationale string, and generic `model_type`
+feedback explains the expected object/omission choice without filling any
+Agent-owned value. Both facts have failing-first tests; a fresh live check is
+still needed. Do not retry the failed run or claim a report exists.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review
