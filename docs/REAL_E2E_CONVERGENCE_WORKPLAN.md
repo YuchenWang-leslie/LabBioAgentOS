@@ -1,6 +1,64 @@
 # Real E2E Convergence Workplan
 
+## Source stress repair and fresh H5AD closure — 2026-10-19
+
+The reviewed Native source, including Scheduler + Apptainer integration, passed
+`1757 passed, 23 skipped`. Eight consecutive rounds of the selected scheduler,
+launcher/reconciliation, provider-SSE and SIF command tests passed 55 checks
+per round (440 repeated checks). These are source-level checks; this host has
+no Apptainer or scheduler client, so real-cluster acceptance remains open.
+
+Stress exposed two deployment-boundary defects. The Apptainer builder and local
+configuration previously defaulted to skipping the registered SIF's SHA-256
+recheck; a read-only file could be changed by its owner and restored to
+read-only mode before use. The default now verifies on each use, including
+import probes. Explicit opt-out remains only for an externally immutable SIF
+store, with the multi-GB rehash cost documented. The provider previously
+needed a process-wide proxy bypass for this host's direct route, which also
+changed literature traffic. The trusted `[provider].trust_env` setting now
+applies only to the model HTTP client; the fresh task below used `false`
+without changing process-wide `NO_PROXY`. The option also disables that
+client's host certificate environment, so private-CA sites must verify it.
+
+Fresh H5AD run `4e745c3d-bf7e-4b28-a821-8ee684f61304` reached REPORT but
+failed `MALFORMED_RUNTIME_RESULT` after 44 valid REPORT capabilities and
+rejected argument batches exhausted the shared evidence budget before
+`report_submit`. Run `4d7757e6-a341-48dd-836d-7a06fd258464` also failed
+in REPORT after the Agent saw remaining tool/evidence counts. The repeated
+`artifact_query.limit` `int_type` rejection exposed the earliest contract
+mismatch: the lower governed query already accepts and audits canonical
+decimal strings, but the Native registry rejected them before that code ran.
+The registry now exposes that exact audited option for `limit` only, retains
+strict `offset` and rejects noncanonical strings. Failing-first and adjacent
+state tests cover both the shared budget feedback and the Native-to-governed
+query path. Neither fix chooses scientific methods or writes Agent output.
+
+Fresh run `66b915b1-29cf-4e33-b11f-34e55baf63a9` in
+`result/native-pr2-stress-h5ad-20261019-17` used only the annotated
+700-cell × 765-gene H5AD and the same open-ended Chinese task. It is
+`COMPLETED` through LEARN with `issue_codes=[]`. The Agent selected successful
+execution `d6660e82-28ab-45e1-82be-b00b6e026b62`, registered report
+`a5ae80c0-6659-4853-94c3-72635f0b5932`, and the reporting evidence check
+returned `READY`. `delivery/REPORT.md` has SHA-256
+`70350dd05f81c4112e0196bde3dc6613508ab85516b3829fb3d1f36cf5c68f9a`;
+its hash and all three selected output hashes match `delivery/RESULT.json`.
+The Agent corrected its own execution after failures. REPORT also rejected
+three malformed *later* `report_submit` calls, but the earlier valid report
+registration remained selected. The completed workflow is local source
+validation, not independent scientific review, release activation, or
+real-cluster validation.
+
+This source integration is intended for GitHub `main`; production `current`
+remains immutable release `native-p8-20261016T085718Z` (Native + local Docker).
+No profile or Skill is activated or promoted. The next deployment gate is an
+immutable candidate and fresh validation; Scheduler + Apptainer additionally
+requires a real-cluster acceptance run. Preserve both failed stress runs as
+diagnostic evidence, not resumable work.
+
 ## Fresh real H5AD closure on review source — 2026-10-19
+
+Historical checkpoint; the newer source status and provider-route repair are
+recorded above.
 
 Fresh run `28a7cca5-6394-4e9e-ab04-c10b6513d49a` in
 `result/native-pr2-real-h5ad-20261019-14` is `COMPLETED` through LEARN, with

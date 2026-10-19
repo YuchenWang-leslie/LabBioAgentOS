@@ -7,10 +7,10 @@ governed lifecycle closed; it does not establish that a scientific method,
 result, interpretation, or report is correct. Independent review remains
 required.
 
-Current real-task evidence covers a bounded PBMC3k descriptive task and an
-exploratory annotated-H5AD source task with a separate delivery revision. It is not
-a repeatability study or validation across data types, methods, providers, and
-failure modes.
+Current real-task evidence covers a bounded PBMC3k descriptive task and fresh
+annotated-H5AD source runs, including two failed stress runs and one completed
+Agent-authored report. It is not a repeatability study or validation across
+data types, methods, providers, and failure modes.
 
 ## Provider behavior
 
@@ -46,8 +46,8 @@ daemon-level quotas.
 The platform trusts the local Docker engine, host kernel, configured images,
 and local administrator. It does not defend against their compromise.
 
-The source-only Scheduler + Apptainer candidate has not been validated on a
-real cluster with the Native Kernel or deployed. In a narrow crash window
+The source Scheduler + Apptainer backend has not been validated on a real
+cluster with the Native Kernel or deployed. In a narrow crash window
 between scheduler acceptance and persistence of the returned job ID, orphan
 reconciliation records `UNCONFIRMED` and requires operator inspection; it
 cannot guarantee automatic cancellation. See

@@ -77,8 +77,8 @@ Finalization consumes a frozen evidence bundle and cannot call tools.
 
 Raw data remains local. Artifact policy decides which metadata, bounded preview,
 or derived result is visible to a remote model. The active production backend
-is Local + Docker. The source-only cluster integration candidate adds Scheduler
-+ Apptainer behind the same governed execution contract; it has not been
+is Local + Docker. The source cluster backend adds Scheduler + Apptainer behind
+the same governed execution contract; it has not been
 validated or activated on a cluster under the Native Kernel. Execution receives
 read-only registered inputs, declared writable output locations, resource
 limits, and network policy. Outputs become evidence only after collection,

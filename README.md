@@ -26,7 +26,7 @@ flowchart TD
     W --> K[LabBio Native Kernel]
     K --> A[Agent reasoning and dynamic collaboration]
     A --> P[Policy-governed capabilities]
-    P --> E[Local Docker execution]
+    P --> E[Docker or configured Scheduler + Apptainer execution]
     P --> R[Artifact and exposure rules]
     E --> R
     R --> W
@@ -59,8 +59,9 @@ The default workflow is:
 - **Native multi-Agent runtime:** exact provider binding, strict schemas,
   foreground tool dispatch, dynamic delegation, isolated child context,
   budgets, interruption, and typed outcomes.
-- **Local execution:** policy-controlled Docker runs with registered inputs,
-  declared outputs, resource ceilings, and immutable receipts.
+- **Governed execution:** policy-controlled Docker or configured Scheduler +
+  Apptainer runs with registered inputs, declared outputs, resource ceilings,
+  and immutable receipts.
 - **Artifact governance:** scoped identities, exposure decisions, bounded views,
   lineage, and content hashes.
 - **Trace and continuation:** persisted run state, event records, safe status
@@ -74,31 +75,33 @@ and independent human review.
 
 ## Current status
 
-As of 2026-10-16:
+As of 2026-10-19:
 
 - active source and tests use only the LabBio Native Kernel, and package
   metadata declares its transport dependency directly;
-- the deterministic test snapshot is **1382 passed, 10 skipped**;
+- the deterministic test snapshot is **1757 passed, 23 skipped**;
 - a bounded PBMC3k ordinary-user task completed real-provider interaction,
   Docker execution, governed Agent validation and interpretation, and Chinese
   report export;
-- that single task demonstrates the bounded end-to-end path only. It does not
-  establish independent scientific peer review, repeat-run reliability, or
+- a fresh annotated-H5AD task completed the Native + Docker workflow through
+  LEARN, with an Agent-authored Chinese report and hash-verified delivery;
+- source includes a Scheduler + Apptainer backend, but that integration has not
+  been validated with the Native Kernel on a real cluster or activated in
+  production. Neither task establishes independent scientific peer review or
   correctness for arbitrary tasks.
 
-An annotated-H5AD source validation also exercised Agent-owned environment
-setup, program correction, real figures, and final delivery through a governed
-revision. It remains bounded exploratory evidence.
+The H5AD task exercised Agent-owned program correction after failed executions.
+Two preceding stress runs failed in REPORT and remain diagnostic evidence; the
+source fixes project the shared tool budget and align one audited query-limit
+wire contract. See the [real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md)
+for exact run identities and limits.
 
 Immutable release `native-p8-20261016T085718Z` is active in production. Its
 6310-entry manifest, isolated install, rollback rehearsal, provider-free status/export, and a
 fresh active-current data task through selected report delivery passed. No
-profile or Skill was automatically promoted. GitHub synchronization of the
-latest source commit remains pending because the configured SSH network path
-timed out on 2026-10-16. Fresh bioinformatics validation on this release and
-independent scientific review remain outstanding. See the
-[real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md) for the
-evidence ladder and remaining gates.
+profile or Skill was automatically promoted. The newer source and H5AD result
+are not deployed to that release; fresh bioinformatics validation on the
+production release and independent scientific review remain outstanding.
 
 ## Install and verify
 
@@ -115,13 +118,15 @@ A real task additionally requires:
 
 1. an OpenAI-compatible Chat provider with credentials stored outside the
    repository;
-2. an existing, deployment-approved immutable Docker image;
+2. an existing, deployment-approved Docker image, or a registered SIF for a
+   configured cluster backend;
 3. an external `runtime.toml` defining identity, allowed input roots, result
    root, resource limits, provider binding, and execution settings.
 
 Start from `examples/local-runtime.toml`. The configuration references secret
 environment variables; it must not contain API keys. See the
-[local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the complete contract.
+[local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the local contract, or
+[cluster deployment guide](docs/CLUSTER_DEPLOYMENT.md) for site prerequisites.
 
 ## Submit a task
 
