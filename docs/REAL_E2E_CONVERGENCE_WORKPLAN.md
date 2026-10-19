@@ -89,6 +89,14 @@ does not silently retry or switch models. Future live validation should
 first establish provider health/category, then use a fresh run; repeated
 blind reruns of this task are not justified.
 
+The reviewed source through `fadbe40` passed `1742 passed, 23 skipped`.
+An archive-only wheel build produced SHA-256
+`5a3e8ca74a85396779103de8e9ce73b9eaba226ea8fccdd25e3ae12ca514dee3`;
+it includes Native Kernel and Apptainer modules and has no Pantheon content
+match. Production remains `native-p8-20261016T085718Z` and the default local
+execution backend remains Docker. No PR merge, production activation, profile
+or Skill promotion, or final scientific report is claimed.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review
