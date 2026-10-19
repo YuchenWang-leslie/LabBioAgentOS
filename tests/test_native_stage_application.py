@@ -737,8 +737,12 @@ async def test_capability_provider_usage_limit_preserves_evidence_and_finalizes(
 
 
 @pytest.mark.asyncio
-async def test_later_provider_transport_failure_preserves_evidence_and_finalizes(tmp_path):
-    class LaterTransportFailure:
+@pytest.mark.parametrize("failure,stop_reason", [
+    (ProviderTransportError, "PROVIDER_TRANSPORT_STOP"),
+    (ProviderProtocolError, "PROVIDER_PROTOCOL_STOP"),
+])
+async def test_later_provider_failure_preserves_evidence_and_finalizes(tmp_path, failure, stop_reason):
+    class LaterProviderFailure:
         binding = WorkflowProvider.binding
 
         def __init__(self):
@@ -756,13 +760,13 @@ async def test_later_provider_transport_failure_preserves_evidence_and_finalizes
                     finish_reason=FinishReason.TOOL_CALLS,
                     usage=TokenUsage(total_tokens=2),
                 )
-            raise ProviderTransportError()
+            raise failure()
 
     stage_input = _stage_input()
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink)
     fixture = _toolset(tmp_path, stage_input, recorder)
-    provider = LaterTransportFailure()
+    provider = LaterProviderFailure()
     providers = []
 
     def builder(_model):
@@ -793,7 +797,7 @@ async def test_later_provider_transport_failure_preserves_evidence_and_finalizes
         if event.event_type is TraceEventType.CAPABILITY_PHASE_COMPLETED
     )
     assert completed.payload["capability_count"] == 1
-    assert completed.payload["termination_reason"] == "PROVIDER_TRANSPORT_STOP"
+    assert completed.payload["termination_reason"] == stop_reason
     assert not any(
         event.event_type is TraceEventType.CAPABILITY_PHASE_FAILED
         for event in recorder.events(stage_input.run_id)

@@ -31,6 +31,7 @@ from labbioagentos.kernel import (
     NoObservableProgressError,
     ProviderBinding,
     ProviderTransportError,
+    ProviderProtocolError,
     PublicMessage,
     TokenUsage,
     ToolCall,
@@ -305,8 +306,14 @@ async def test_capability_loop_dispatches_turn_that_exactly_reaches_token_limit(
 
 
 @pytest.mark.asyncio
-async def test_capability_loop_preserves_prior_evidence_on_later_transport_failure():
-    class LaterTransportFailure:
+@pytest.mark.parametrize("failure,stop_reason", [
+    (ProviderTransportError, "PROVIDER_TRANSPORT_STOP"),
+    (ProviderProtocolError, "PROVIDER_PROTOCOL_STOP"),
+])
+async def test_capability_loop_preserves_prior_evidence_on_later_provider_failure(
+    failure, stop_reason,
+):
+    class LaterProviderFailure:
         binding = _binding()
 
         def __init__(self):
@@ -324,9 +331,9 @@ async def test_capability_loop_preserves_prior_evidence_on_later_transport_failu
                     finish_reason=FinishReason.TOOL_CALLS,
                     usage=TokenUsage(total_tokens=4),
                 )
-            raise ProviderTransportError()
+            raise failure()
 
-    provider = LaterTransportFailure()
+    provider = LaterProviderFailure()
     loop, _fixture_provider, effects = _tool_loop(())
     loop.provider = provider
 
@@ -335,16 +342,34 @@ async def test_capability_loop_preserves_prior_evidence_on_later_transport_failu
         deadline_monotonic=10_000_000_000.0,
     )
 
-    assert result.termination == "PROVIDER_TRANSPORT_STOP"
+    assert result.termination == stop_reason
     assert result.output == {
-        "capability_stop_reason": "PROVIDER_TRANSPORT_STOP"
+        "capability_stop_reason": stop_reason
     }
     assert effects == [{"value": "kept", "nested": None}]
     assert [item.call_id for item in result.tool_results] == [
         "persisted-before-transport-failure"
     ]
     assert result.events[-1].status_code == "STOPPED"
-    assert result.events[-1].reason_code == "PROVIDER_TRANSPORT_ERROR"
+    assert result.events[-1].reason_code == failure().code
+
+
+@pytest.mark.asyncio
+async def test_capability_loop_without_evidence_rejects_protocol_failure():
+    class ImmediateProtocolFailure:
+        binding = _binding()
+
+        async def generate(self, _request):
+            raise ProviderProtocolError(validation_type="too_long", validation_fields=("model_turn", "content"))
+
+    loop, _fixture_provider, _effects = _tool_loop(())
+    loop.provider = ImmediateProtocolFailure()
+
+    with pytest.raises(ProviderProtocolError):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="No evidence yet."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,7 @@ from .errors import (
     KernelDeadlineExceededError,
     KernelInterruptedError,
     NoObservableProgressError,
+    ProviderProtocolError,
     ProviderTransportError,
     ToolBatchRejectedError,
 )
@@ -151,21 +152,24 @@ class AgentLoop:
                 )
                 try:
                     turn = await self.provider.generate(request)
-                except ProviderTransportError:
+                except (ProviderTransportError, ProviderProtocolError) as exc:
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
                     ):
+                        stop_reason = (
+                            "PROVIDER_PROTOCOL_STOP"
+                            if isinstance(exc, ProviderProtocolError)
+                            else "PROVIDER_TRANSPORT_STOP"
+                        )
                         self._emit(
                             KernelEventKind.KERNEL_FINISHED,
                             status_code="STOPPED",
-                            reason_code="PROVIDER_TRANSPORT_ERROR",
+                            reason_code=exc.code,
                         )
                         return self._result(
-                            output={
-                                "capability_stop_reason": "PROVIDER_TRANSPORT_STOP"
-                            },
-                            termination="PROVIDER_TRANSPORT_STOP",
+                            output={"capability_stop_reason": stop_reason},
+                            termination=stop_reason,
                         )
                     raise
                 except KernelContractError:

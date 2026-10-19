@@ -60,6 +60,24 @@ async def test_protocol_error_identifies_component_without_response_values(inval
     assert "PRIVATE_CANARY" not in str(caught.value)
 
 
+@pytest.mark.asyncio
+async def test_protocol_error_identifies_overlong_public_content_field():
+    response = {"choices": [{"finish_reason": "stop", "message": {
+        "content": "PRIVATE_CANARY" + "x" * 64_000,
+    }}]}
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding, api_key="secret-token",
+        transport=RecordingTransport((response,)),
+    )
+
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding, (PublicMessage(role="USER", content="Run."),)))
+
+    assert caught.value.validation_fields == ("model_turn", "content")
+    assert "PRIVATE_CANARY" not in str(caught.value)
+
+
 def _binding(
     *,
     thinking="ENABLED",

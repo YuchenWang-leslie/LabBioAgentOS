@@ -349,6 +349,7 @@ class AgentLoopResult(KernelModel):
         "PROVIDER_TURN_LIMIT",
         "PROVIDER_USAGE_LIMIT",
         "PROVIDER_TRANSPORT_STOP",
+        "PROVIDER_PROTOCOL_STOP",
         "INCOMPLETE_PROVIDER_STOP",
         "CAPABILITY_EVIDENCE_LIMIT",
     ]

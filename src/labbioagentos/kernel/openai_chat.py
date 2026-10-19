@@ -279,7 +279,8 @@ class OpenAICompatibleChatProvider:
             issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
             raise ProviderProtocolError(
                 validation_type=issues[0]["type"] if issues else type(exc).__name__,
-                validation_fields=(component,),
+                validation_fields=(component, *(str(item) for item in issues[0]["loc"]))
+                if issues and component == "model_turn" else (component,),
             ) from None
 
     @staticmethod

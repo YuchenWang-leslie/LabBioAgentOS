@@ -451,6 +451,8 @@ class NativeKernelStageInvoker:
                 if result.leader_result.termination == "PROVIDER_USAGE_LIMIT"
                 else "PROVIDER_TRANSPORT_STOP"
                 if result.leader_result.termination == "PROVIDER_TRANSPORT_STOP"
+                else "PROVIDER_PROTOCOL_STOP"
+                if result.leader_result.termination == "PROVIDER_PROTOCOL_STOP"
                 else "INCOMPLETE_PROVIDER_STOP"
                 if result.leader_result.termination == "INCOMPLETE_PROVIDER_STOP"
                 else "MODEL_RETURNED"

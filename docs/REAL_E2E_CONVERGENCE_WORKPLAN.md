@@ -2,6 +2,35 @@
 
 ## PR #2 cluster integration review — 2026-10-19
 
+The pre-merge Docker-default Native source is preserved locally and on GitHub
+as `sandbox-docker` at `32e7b617de11c3cd6bafc91e6f17cd11ec36a76a`.
+The isolated review branch now also includes source fix `a12447a`: a
+qualifying EXECUTE receipt's required output references have no empty default.
+Fresh real H5AD run `53583e3f-07b4-4145-a57a-a34a4644792c` exposed the
+previous gap: the Agent submitted, inspected and revised its own program;
+execution `69c5d1e0-cb06-4950-afe1-b4a869695c61` succeeded with two derived
+outputs, but finalization omitted `output_artifact_references`. Pydantic accepted
+the omitted field's empty default during the first parse and rejected the
+materialized empty list as `too_short` only after the model loop ended. The run
+is terminal `FAILED`, not a completed analysis. A failing-first omission test,
+an allowed optional-field neighbor and a successful revised-receipt round trip
+now pass; the source suite passed 1730 tests with 23 skips. Fresh live rerun
+`28b3f474-1374-44cd-b0c1-992b131edd2c` confirmed the repaired EXECUTE
+handoff: the Agent selected successful execution
+`9220cec1-edb1-49d7-93c0-7a7b8b6808c5` and its real output artifact
+`acfaa715-ee69-4d3b-9cde-98241c7337d0`, then entered VALIDATE. VALIDATE
+completed governed queries, but a later provider response exceeded the Native
+public-message bound. The adapter correctly rejected it as
+`PROVIDER_PROTOCOL_ERROR`; this second run remains an uncertain in-flight
+checkpoint, not a completed analysis or report. The candidate now records the
+bounded validation field (`model_turn.content`) and, only when the capability
+phase already has completed tool evidence, stops that phase explicitly as
+`PROVIDER_PROTOCOL_STOP` so independent finalization can use the persisted
+evidence. With no completed evidence, protocol failure still propagates. No
+oversize response is truncated or accepted. Targeted and full regressions
+passed 1734 tests with 23 skips before a test-only simplification; a fresh
+real-task validation of this second fix is still required.
+
 GitHub [PR #2](https://github.com/YuchenWang-leslie/LabBioAgentOS/pull/2)
 at `06f27e7b217548d026ad706e1ea9a971cf4e77e1` was developed from a
 pre-Native base. Its cluster backend was brought into an isolated local review
