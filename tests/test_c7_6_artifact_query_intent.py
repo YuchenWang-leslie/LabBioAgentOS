@@ -7,8 +7,9 @@ from uuid import uuid4
 
 import pytest
 from native_test_provider import LocalProvider
-from pydantic import ValidationError
 
+from labbioagentos.kernel import FinishReason, ToolBatchRejectedError, ToolCall
+from labbioagentos.runtime.native_tools import build_labbio_tool_registry
 from labbioagentos import (
     ArtifactExposureClass,
     ArtifactExposureService,
@@ -81,6 +82,61 @@ def query_boundary(tmp_path):
 
 def _request(toolset):
     return toolset.evidence_items()[-1].artifact_query_request.model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_native_query_registry_reaches_audited_canonical_limit(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    class QueryHost:
+        async def invoke(self, capability_name, arguments):
+            assert capability_name == "artifact_query"
+            return await toolset.artifact_query(**arguments.model_dump(mode="json"))
+
+    registry = build_labbio_tool_registry(QueryHost())
+    parsed = registry.validate_batch((ToolCall(
+        call_id="canonical-limit", name="artifact_query",
+        arguments_json=json.dumps({
+            "artifact_id": str(ref.artifact_id), "view_type": "TOP_N", "limit": "12",
+        }),
+    ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)[0]
+    result = await parsed.definition.handler(parsed.arguments)
+
+    assert result["success"] is True
+    assert result["data"]["returned_count"] == 12
+    assert _request(toolset)["limit"] == 12
+    assert _request(toolset)["limit_type"] == "STRING"
+    assert _request(toolset)["normalization_applied"] is True
+
+
+@pytest.mark.asyncio
+async def test_native_query_registry_keeps_invalid_limit_and_offset_rejected(query_boundary):
+    _, _, ref, toolset = query_boundary
+
+    class QueryHost:
+        async def invoke(self, capability_name, arguments):
+            return await toolset.artifact_query(**arguments.model_dump(mode="json"))
+
+    registry = build_labbio_tool_registry(QueryHost())
+    parsed = registry.validate_batch((ToolCall(
+        call_id="noncanonical-limit", name="artifact_query",
+        arguments_json=json.dumps({
+            "artifact_id": str(ref.artifact_id), "view_type": "TOP_N", "limit": "012",
+        }),
+    ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)[0]
+    result = await parsed.definition.handler(parsed.arguments)
+    assert result["error"]["error_code"] == "INVALID_QUERY_SHAPE"
+    assert _request(toolset)["normalization_applied"] is False
+    assert _request(toolset)["limit_type"] == "STRING"
+
+    with pytest.raises(ToolBatchRejectedError) as caught:
+        registry.validate_batch((ToolCall(
+            call_id="quoted-offset", name="artifact_query",
+            arguments_json=json.dumps({
+                "artifact_id": str(ref.artifact_id), "view_type": "TOP_N", "offset": "1",
+            }),
+        ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    assert caught.value.validation_fields == ("offset",)
 
 
 @pytest.mark.asyncio
@@ -293,19 +349,21 @@ async def test_qi8_native_tool_facade_preserves_wire_type_before_normalization(
             "limit": 12,
         },
     )
-    with pytest.raises(ValidationError):
-        await provider.call_tool(
-            "artifact_query",
-            {
-                "artifact_id": str(ref.artifact_id),
-                "view_type": "TOP_N",
-                "limit": "12",
-            },
-        )
+    normalized_result = await provider.call_tool(
+        "artifact_query",
+        {
+            "artifact_id": str(ref.artifact_id),
+            "view_type": "TOP_N",
+            "limit": "10",
+        },
+    )
 
     assert valid_result["success"] is True
+    assert normalized_result["success"] is True
     assert toolset.evidence_items()[0].artifact_query_request.limit_type == "INTEGER"
-    assert len(toolset.evidence_items()) == 1
+    assert toolset.evidence_items()[1].artifact_query_request.limit_type == "STRING"
+    assert toolset.evidence_items()[1].artifact_query_request.normalization_applied is True
+    assert len(toolset.evidence_items()) == 2
     capability_events = [
         event
         for event in sink.read(binding.run_id)
@@ -317,6 +375,8 @@ async def test_qi8_native_tool_facade_preserves_wire_type_before_normalization(
         }
     ]
     assert [event.event_type for event in capability_events] == [
+        TraceEventType.CAPABILITY_INVOKED,
+        TraceEventType.CAPABILITY_COMPLETED,
         TraceEventType.CAPABILITY_INVOKED,
         TraceEventType.CAPABILITY_COMPLETED,
     ]
@@ -344,7 +404,7 @@ async def test_native_tool_facade_exposes_exact_non_strict_query_schema(query_bo
         "METADATA", "SCHEMA", "SUMMARY", "TOP_N"
     ]
     assert parameters["properties"]["limit"]["anyOf"] == [
-        {"minimum": 1, "type": "integer"}, {"type": "null"}
+        {"minimum": 1, "type": "integer"}, {"type": "string"}, {"type": "null"}
     ]
 
 

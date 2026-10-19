@@ -63,11 +63,12 @@ class ArtifactQueryArguments(NativeToolArguments):
     view_type: Literal["METADATA", "SCHEMA", "SUMMARY", "TOP_N"] = Field(
         description="Governed view requested from the artifact exposure service."
     )
-    limit: ArtifactQueryLimit | None = Field(
+    limit: ArtifactQueryLimit | StrictStr | None = Field(
         default=None,
         description=(
-            "Optional unquoted JSON integer page size for TOP_N; null uses the policy default. "
-            "The same policy default applies when following next_offset."
+            "Optional positive JSON integer page size for TOP_N; a canonical decimal "
+            "integer string is also audited and normalized by artifact_query. "
+            "Null uses the policy default when following next_offset."
         ),
     )
     offset: int = Field(
@@ -431,7 +432,8 @@ _CAPABILITY_DESCRIPTIONS = {
 }
 _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "Request a governed Artifact view. For TOP_N pagination, follow next_offset; "
-    "an omitted limit continues to use the policy-bounded default page size."
+    "the returned suggested_next_limit is a policy-safe page size. An omitted "
+    "limit continues to use the policy-bounded default page size."
 )
 _CAPABILITY_DESCRIPTIONS["file_read"] = (
     "Read one authorized generated file page by Artifact UUID. For the same Artifact, "

@@ -414,6 +414,7 @@ async def test_provider_schema_exposes_existing_artifact_query_contract(
     assert parameters["properties"]["view_type"]["type"] == "string"
     assert parameters["properties"]["limit"]["anyOf"] == [
         {"type": "integer", "minimum": 1},
+        {"type": "string"},
         {"type": "null"},
     ]
     assert parameters["required"] == ["artifact_id", "view_type"]

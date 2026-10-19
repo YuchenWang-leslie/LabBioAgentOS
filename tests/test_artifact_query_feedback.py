@@ -193,7 +193,7 @@ async def test_actual_provider_schema_shares_nullable_positive_limit_contract(ar
     assert schema["properties"]["view_type"]["enum"] == ["METADATA", "SCHEMA", "SUMMARY", "TOP_N"]
     assert schema["properties"]["view_type"]["type"] == "string"
     assert schema["properties"]["limit"]["anyOf"] == [
-        {"type": "integer", "minimum": 1}, {"type": "null"}]
+        {"type": "integer", "minimum": 1}, {"type": "string"}, {"type": "null"}]
     assert ArtifactQuery.model_json_schema()["properties"]["limit"]["anyOf"] == [
         {"type": "integer", "minimum": 1}, {"type": "null"}]
     assert schema["required"] == ["artifact_id", "view_type"]
