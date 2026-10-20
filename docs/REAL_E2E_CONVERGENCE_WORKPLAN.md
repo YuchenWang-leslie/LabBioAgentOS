@@ -2,6 +2,28 @@
 
 ## Native reliability candidate and controlled comparison — 2026-10-20
 
+Current hold: the first two real tasks on frozen `1d2188f` ended with
+`HANDOFF_REQUIRED`, after successful analysis executions but without report
+delivery. The autonomous task stopped at VALIDATE; annotation stopped at EXECUTE.
+Both reached capability usage limits without a valid final handoff. All original
+records remain, and neither task has matching Docker residue. The remaining
+sixteen scheduled tasks have not started.
+
+Independent replay of already recorded public observations confirms legal
+handoff selections can succeed. However, different invalid selections collapse
+to the same generic error, and their original requested identities were not
+audited. Their exact historical causes remain unknown. A separate
+`feat/native-handoff-selection-feedback` worktree corrects only this diagnostic
+contract: fixed duplicate/not-delivered errors, precise identity declarations
+and bounded canonical-UUID selection audit, without summaries or rejected text.
+It does not choose evidence or modify Agent programs. Legal handoffs, old-handoff
+clearing, source permissions and capacity limits remain unchanged.
+The latest user reply authorizes increasing attempts until the validation runs
+through, superseding their earlier reply to retain twenty. The immediate next
+schedule is twenty-two candidates in total, including eighteen on the corrected
+frozen revision. Preserve all failures, diagnose before repeating, and retain the
+same per-task budgets and two-task concurrency limit.
+
 An isolated `feat/native-runtime-reliability` worktree implements the approved
 stop/accounting/feedback, bounded context, exact observation handoff, scoped
 report citation and Local + Apptainer contracts. The original worktree,
@@ -10,7 +32,7 @@ acceptance details are in [NATIVE_RUNTIME_RELIABILITY.md](NATIVE_RUNTIME_RELIABI
 and [LOCAL_APPTAINER.md](LOCAL_APPTAINER.md).
 
 The comparison baseline is frozen at `d7b1000251ccc00656b30a96e37785dcec07e4a2`.
-Six baseline and twenty candidate tasks use the same model, Docker images,
+The current schedule of six baseline and twenty-two candidate tasks uses the same model, Docker images,
 input hashes and resource settings, with at most two active tasks. All failed
 attempts are retained. The first autonomous baseline produced an execution but
 failed before report submission; it is not a successful delivery. Runtime
@@ -19,18 +41,18 @@ The first candidate failed before analysis because a complete 8,007-character
 EXECUTE prompt was bound to one 8,000-character variable. Shared context, phase
 instructions and stage protocol now have separate bindings with unchanged
 component and total limits; every stage is validated before runtime startup.
-The user explicitly authorized two additional candidates in total. Preserve
-the first failure and the `9598e86` intermediate success, then run eighteen
-attempts on the final corrected frozen source. Independent boundary checks also
+The earlier authorization added two candidates, preserving the first failure
+and the `9598e86` intermediate success. The two further failed `1d2188f` tasks
+are now also retained under the newest authorization above. Independent boundary checks also
 exposed omitted finalization control bytes, non-durable execution-submission
 bindings after restart, and unconfirmed receipt-publication windows; these are
 closed before final-source repetitions, without repairing Agent programs.
 
-The corrected candidate source suite passes `2002 passed, 26 skipped`; five opt-in real
+The selection-feedback candidate source suite passes `2012 passed, 26 skipped`; five opt-in real
 Docker input-isolation/file-limit checks also pass on the same source. Eight
-further deterministic rounds each pass 272 checks, covering the final handoff
+further deterministic rounds each pass 282 checks, covering the final handoff
 and restart boundaries. Source regression and real
-Docker checks do not establish scientific validity or complete the 26-attempt comparison.
+Docker checks do not establish scientific validity or complete the current 28-attempt comparison.
 The intermediate successful task's scientific review found specific reporting
 issues, so its verified delivery is not a scientific pass. All six baselines
 have ended (three deliveries); the recovery delivery separately failed its

@@ -201,6 +201,14 @@ class _RepeatedCapabilityRequest(ValueError):
         self.previous_capability_invocation_id = previous_capability_invocation_id
 
 
+class _HandoffSelectionError(ValueError):
+    def __init__(self, code: Literal[
+        "HANDOFF_DUPLICATE_OBSERVATION", "HANDOFF_OBSERVATION_NOT_DELIVERED",
+    ]):
+        self.code = code
+        super().__init__(code)
+
+
 class _InvalidExecutionDraft(ValueError):
     """execution_submit received a draft rejected by its canonical model."""
 
@@ -679,10 +687,12 @@ class LabBioRuntimeToolSet:
         def prepare():
             self.prepared_handoff = None
             ids = tuple(UUID(str(value)) for value in observation_ids)
-            if not ids or len(ids) > 64 or len(set(ids)) != len(ids):
+            if not ids or len(ids) > 64:
                 raise ValueError("Select distinct bounded observation identities")
+            if len(set(ids)) != len(ids):
+                raise _HandoffSelectionError("HANDOFF_DUPLICATE_OBSERVATION")
             if any(value not in self._delivered_observations for value in ids):
-                raise ValueError("Handoff observations must have been delivered to this Agent")
+                raise _HandoffSelectionError("HANDOFF_OBSERVATION_NOT_DELIVERED")
             items = tuple(self._delivered_observations[value] for value in ids)
             for item in items:
                 if item.artifact_read_receipt is not None:
@@ -707,7 +717,9 @@ class LabBioRuntimeToolSet:
             return {"status": "READY", "serialized_bytes": len(encoded), "max_bytes": 60_000,
                     "observation_ids": [str(value) for value in ids],
                     "summary_authority": "MODEL_CONTEXT"}
-        return await self._call("prepare_handoff", prepare)
+        return await self._call("prepare_handoff", prepare, request_ids={
+            "handoff_observation_ids": observation_ids,
+        })
 
     def _review_execution(self, value: ExecutionReview | dict) -> ExecutionReview:
         try:
@@ -2450,6 +2462,22 @@ class LabBioRuntimeToolSet:
     def _safe_error(exc: Exception) -> ToolError:
         if isinstance(exc, (ObservationNotAvailableError, ObservationPageError)):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
+        if isinstance(exc, _HandoffSelectionError):
+            reason = {
+                "HANDOFF_DUPLICATE_OBSERVATION": "observation_ids contains duplicate identities.",
+                "HANDOFF_OBSERVATION_NOT_DELIVERED": (
+                    "One or more observation_ids has not been fully delivered to the "
+                    "current model invocation."
+                ),
+            }[exc.code]
+            return ToolError(error_code=exc.code, safe_message=(
+                reason + " Select distinct capability_invocation_id values from inner "
+                "governed tool responses (content), not Artifact IDs, execution_id or "
+                "outer tool_invocation_id values. Observations from a previous invocation "
+                "require all authorized evidence_read pages to be delivered in this invocation. "
+                "No handoff is prepared; "
+                "the host has not selected replacement observations."
+            ))
         if isinstance(exc, _RepeatedCapabilityRequest):
             return ToolError(
                 error_code="REPEATED_NON_RETRYABLE_REQUEST",
@@ -2892,7 +2920,7 @@ class LabBioRuntimeToolSet:
 
     @staticmethod
     def _bounded_identifiers(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        """Trace canonical IDs, versions and bounded page numbers, never content."""
+        """Trace canonical IDs, bounded selections and page numbers, never content."""
 
         bounded: dict[str, JsonValue] = {}
         for key, value in values.items():
@@ -2907,6 +2935,14 @@ class LabBioRuntimeToolSet:
                 bounded[key] = value
             elif key == "observation_limit" and type(value) is int and 1 <= value <= 8_000:
                 bounded[key] = value
+            elif (key == "handoff_observation_ids" and isinstance(value, list)
+                  and len(value) <= 64 and all(isinstance(item, str) for item in value)):
+                try:
+                    identities = [str(UUID(item)) for item in value]
+                except ValueError:
+                    continue
+                bounded[key] = identities
+                bounded["handoff_observation_count"] = len(identities)
         return bounded
 
     @staticmethod

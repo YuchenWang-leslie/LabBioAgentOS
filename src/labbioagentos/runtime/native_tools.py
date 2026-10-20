@@ -327,8 +327,17 @@ class EvidenceReadArguments(NativeToolArguments):
     limit: int = Field(default=8_000, ge=1, le=8_000)
 
 
+_HANDOFF_SELECTION_DESCRIPTION = (
+    "Select distinct capability_invocation_id values from inner governed tool responses "
+    "(content), not Artifact IDs, execution_id or outer tool_invocation_id values. "
+    "Each selected observation must have been fully delivered to the current model "
+    "invocation, directly or through all authorized evidence_read pages."
+)
+
+
 class PrepareHandoffArguments(NativeToolArguments):
-    observation_ids: list[UUID] = Field(min_length=1, max_length=64)
+    observation_ids: list[UUID] = Field(
+        min_length=1, max_length=64, description=_HANDOFF_SELECTION_DESCRIPTION)
     summary: StrictStr = Field(min_length=1, max_length=8_000)
     limitations: list[Annotated[StrictStr, Field(max_length=2_000)]] = Field(
         default_factory=list, max_length=16)
@@ -453,6 +462,12 @@ _CAPABILITY_DESCRIPTIONS["evidence_read"] = (
     "Read an exact archived public tool response using its capability_invocation_id "
     "as observation_id, not an Artifact ID. Follow next_offset to finish its Unicode "
     "text pages. Partial pages do not grant full observation read credit."
+)
+_CAPABILITY_DESCRIPTIONS["prepare_handoff"] = (
+    _HANDOFF_SELECTION_DESCRIPTION
+    + " The Agent writes summary and limitations; the host copies the selected responses "
+    "unchanged. An invoked replacement clears the previous selection even if rejected "
+    "or oversized; no substitute evidence is selected by the host."
 )
 for _report_capability in ("report_check", "report_submit"):
     _CAPABILITY_DESCRIPTIONS[_report_capability] = (

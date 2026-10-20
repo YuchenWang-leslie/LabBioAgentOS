@@ -25,6 +25,14 @@ baselines and twenty candidates, including eighteen on the final frozen revision
 Neither failed history nor the intermediate success replaces a final-version
 repetition.
 
+The first two attempts on `1d2188f` subsequently failed with `HANDOFF_REQUIRED`
+despite successful executions. Further launches are held until the correction
+is verified and frozen. The latest user reply authorizes additional attempts
+until validation runs through, superseding their earlier twenty-attempt limit.
+The immediate schedule is twenty-two candidates in total: four retained earlier
+attempts plus eighteen same-revision repetitions. This does not authorize blind
+repetition, larger per-task budgets or changes to scientific ownership.
+
 `scripts/runtime_stress.py` submits ordinary tasks through the CLI. It contains no
 analysis programs or method presets. Each attempt records input hashes, task,
 preferences, configuration, runner hash, source identity and process result.
@@ -68,6 +76,12 @@ per-turn tokens in its trace.
   unavailable observation, without exposing whether a foreign observation exists.
   Validated requested UUIDs and page coordinates are audited; rejected content is
   not echoed and the host does not choose a replacement observation.
+- Handoff selection declares the exact inner `capability_invocation_id`
+  namespace and current-invocation delivery requirement. Duplicate and
+  not-delivered selections have separate safe errors. The trace records only
+  bounded canonical UUID selections and counts, not summaries, limitations or
+  rejected strings. Unknown and foreign observations have indistinguishable
+  not-delivered feedback; no substitute selection is supplied.
 - `provider.max_request_bytes` bounds the complete request, including tool and
   output schemas. UTF-8 bytes and token usage are separate measurements.
 - Original public observations are archived outside the bounded model window.
@@ -137,19 +151,27 @@ task delivery are evaluated separately.
 
 ## Acceptance status and remaining limitations
 
-The corrected candidate source suite passes **2002 tests, 26 skipped**. Five opt-in
+The selection-feedback source suite passes **2012 tests, 26 skipped**. Five opt-in
 real Docker input-isolation and file-limit checks also pass. The skipped tests
 are not counted as backend acceptance. No final benchmark acceptance is claimed
 by this document. Current raw records are retained under
 `result/native-runtime-reliability-20261020` in the parent workspace.
-The corresponding records are `verification/full-regression-7.xml` and
-`verification/docker-boundaries-5.xml`; earlier failing regression records remain.
-Eight further deterministic rounds each pass 272 checks, including the final
-handoff and restart changes (`verification/deterministic-stress-9.xml` through
-`verification/deterministic-stress-16.xml`). These 2,176 repeated checks are not
+The corresponding records are `verification/full-regression-8.xml` and
+`verification/docker-boundaries-6.xml`; earlier failing regression records remain.
+Eight further deterministic rounds each pass 282 checks, including the final
+handoff and restart changes (`verification/deterministic-stress-17.xml` through
+`verification/deterministic-stress-24.xml`). These 2,256 repeated checks are not
 independent Agent successes. Checkpoint tests cover both live and restarted
 services: only the explicitly selected producer's source must remain available,
 while its identity, authorization and hash checks remain mandatory.
+
+Real tasks on the earlier `1d2188f` source did not pass: `candidate-autonomous-3` ended at VALIDATE
+and `candidate-annotation-1` at EXECUTE, both with `HANDOFF_REQUIRED`. Successful
+execution artifacts exist, but neither has a selected report or valid final
+report-and-output delivery. The generic invalid-handoff feedback does not retain
+enough information to reconstruct those selections. Legal reconstruction using
+their archived public responses succeeds; this is not evidence of a universally
+broken read-credit path or proof of which mistake either Agent made.
 
 The first candidate's configured EXECUTE prompt contained 8,007 characters,
 incorrectly packed into one variable with an 8,000-character limit. No analysis
