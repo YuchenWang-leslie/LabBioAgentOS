@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from uuid import UUID, uuid4
 
@@ -28,9 +29,15 @@ from .contracts import (
     TaskTransition,
     TeamRunResult,
     TeamSpec,
+    ToolResult,
 )
 from .control import BudgetLedger, InterruptToken
-from .errors import BudgetExceededError, KernelContractError, ToolExecutionFailure
+from .errors import (
+    BudgetExceededError,
+    KernelContractError,
+    KernelInterruptedError,
+    ToolExecutionFailure,
+)
 from .loop import AgentLoop
 from .tooling import (
     ModelResultProjector,
@@ -225,13 +232,17 @@ class CollaborationRuntime:
         registry: AgentRegistry,
         tool_registry: ToolRegistry | None = None,
         tool_registries: Mapping[str, ToolRegistry] | None = None,
-        tool_batch_observers: Mapping[str, Callable[[], None]] | None = None,
+        tool_batch_observers: Mapping[
+            str, Callable[[tuple[ToolResult, ...]], None]
+        ] | None = None,
         tool_stop_requests: Mapping[str, Callable[[], str | None]] | None = None,
+        tool_invocation_starts: Mapping[str, Callable[[KernelIdentity], None]] | None = None,
         projector: ModelResultProjector,
         budget_ledger: BudgetLedger,
         interrupt_token: InterruptToken | None = None,
         max_tasks: int = 256,
         no_progress_ms: int = 30_000,
+        max_request_bytes: int = 256_000,
     ):
         if (tool_registry is None) == (tool_registries is None):
             raise ValueError(
@@ -272,13 +283,19 @@ class CollaborationRuntime:
             set(registry.team.member_ids)
         ):
             raise ValueError("Tool stop requests must belong to team members")
+        if tool_invocation_starts is not None and not set(tool_invocation_starts).issubset(
+            set(registry.team.member_ids)
+        ):
+            raise ValueError("Tool invocation callbacks must belong to team members")
         self.tool_batch_observers = dict(tool_batch_observers or {})
         self.tool_stop_requests = dict(tool_stop_requests or {})
+        self.tool_invocation_starts = dict(tool_invocation_starts or {})
         self.projector = projector
         self.budget_ledger = budget_ledger
         self.interrupt_token = interrupt_token or InterruptToken()
         self.task_board = TaskBoard(max_tasks=max_tasks)
         self.no_progress_ms = no_progress_ms
+        self.max_request_bytes = max_request_bytes
         self._events: list[KernelEvent] = []
         self._delegations: list[DelegationResult] = []
         self._event_sequence = 0
@@ -342,6 +359,9 @@ class CollaborationRuntime:
         completion_feedback: Callable[[], str | None] | None = None,
     ) -> AgentLoop:
         profile = self.registry.profile(agent_id)
+        begin_invocation = self.tool_invocation_starts.get(agent_id)
+        if begin_invocation is not None:
+            begin_invocation(identity)
         host_registry = self.tool_registries[agent_id]
         local_tools = ToolRegistry()
         for name in profile.spec.tool_names:
@@ -422,6 +442,7 @@ class CollaborationRuntime:
             no_progress_ms=self.no_progress_ms,
             event_sink=self._capture_event,
             completion_feedback=completion_feedback,
+            max_request_bytes=self.max_request_bytes,
         )
         return loop
 
@@ -506,6 +527,7 @@ class CollaborationRuntime:
             agent_chain=(*agent_chain, target.agent_id),
             deadline_monotonic=deadline_monotonic,
         )
+        cancellation = None
         try:
             child_result = await child_loop.run(
                 messages=(
@@ -524,21 +546,36 @@ class CollaborationRuntime:
                     for reference in result.evidence_references
                 )
             )
+            completed = child_result.termination == "MODEL_COMPLETED"
+            stop_reason = None if completed else child_result.termination
+            if not completed and isinstance(child_result.output, dict):
+                stop_reason = child_result.output.get(
+                    "capability_stop_reason", stop_reason
+                )
             outcome = DelegationResult(
                 task_id=task_id,
                 parent_invocation_id=caller_identity.invocation_id,
                 child_invocation_id=child_invocation_id,
                 target_agent_id=target.agent_id,
                 expected_output_type=arguments.expected_output_type,
-                status="SUCCEEDED",
+                status="SUCCEEDED" if completed else "STOPPED",
                 content=child_result.output,
+                content_authority="AGENT_PROSE" if completed else "CONTROL_STATE",
                 evidence_references=references,
+                error_code=stop_reason,
+                termination=child_result.termination,
             )
             self.projector.project(outcome)
-            self._task_transition(task_id, TaskState.SUCCEEDED)
-        except Exception as exc:
+            self._task_transition(
+                task_id, TaskState.SUCCEEDED if completed else TaskState.BLOCKED,
+                reason_code=stop_reason,
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            cancelled = isinstance(exc, (KernelInterruptedError, asyncio.CancelledError))
+            if isinstance(exc, asyncio.CancelledError):
+                cancellation = exc
             error_code = (
-                exc.code
+                "ASYNC_CANCELLED" if cancellation is not None else exc.code
                 if isinstance(exc, KernelContractError)
                 else "CHILD_INVOCATION_FAILED"
             )
@@ -548,12 +585,24 @@ class CollaborationRuntime:
                 child_invocation_id=child_invocation_id,
                 target_agent_id=target.agent_id,
                 expected_output_type=arguments.expected_output_type,
-                status="FAILED",
+                status="CANCELLED" if cancelled else "FAILED",
                 error_code=error_code,
+                termination=error_code,
+                cancellation_reason=(
+                    "ASYNC_CANCELLED" if cancellation is not None else
+                    exc.signal.reason_code if isinstance(exc, KernelInterruptedError)
+                    else None
+                ),
+                evidence_references=tuple(dict.fromkeys(
+                    reference
+                    for result in child_loop.tool_results
+                    for reference in result.evidence_references
+                )),
             )
             self._task_transition(
                 task_id,
-                TaskState.FAILED,
+                TaskState.CANCELLED if cancelled
+                else TaskState.FAILED,
                 reason_code=error_code,
             )
         self._delegations.append(outcome)
@@ -568,6 +617,8 @@ class CollaborationRuntime:
             reason_code=outcome.error_code,
             references=outcome.evidence_references,
         )
+        if cancellation is not None:
+            raise cancellation
         return outcome
 
     def _task_transition(

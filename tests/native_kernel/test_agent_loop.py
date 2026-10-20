@@ -27,6 +27,7 @@ from labbioagentos.kernel import (
     InterruptToken,
     KernelDeadlineExceededError,
     KernelIdentity,
+    KernelContractError,
     KernelInterruptedError,
     ModelResultProjector,
     ModelTurn,
@@ -39,6 +40,7 @@ from labbioagentos.kernel import (
     ToolCall,
     ToolDispatcher,
     ToolRegistry,
+    ToolResult,
 )
 
 
@@ -323,9 +325,13 @@ async def test_capability_loop_stops_before_over_budget_provider_turn_dispatches
     assert len(provider.requests) == 2
     assert len(result.observations) == 2
     assert [item.call_id for item in result.tool_results] == ["within-token-budget"]
-    assert result.budget_usage.tokens == 4
+    assert result.budget_usage.tokens == 11
     assert result.events[-1].status_code == "STOPPED"
     assert result.events[-1].reason_code == "PROVIDER_TOKEN_LIMIT"
+    turns = [event for event in result.events if event.kind == "MODEL_TURN_OBSERVED"]
+    assert [event.numeric_facts["total_tokens"] for event in turns] == [4, 7]
+    assert all(event.numeric_facts["input_tokens"] is None for event in turns)
+    assert all(event.numeric_facts["output_tokens"] is None for event in turns)
 
 
 @pytest.mark.asyncio
@@ -416,6 +422,7 @@ async def test_capability_loop_preserves_prior_evidence_on_later_provider_failur
     ]
     assert result.events[-1].status_code == "STOPPED"
     assert result.events[-1].reason_code == failure().code
+    assert result.budget_usage.tokens is None
 
 
 @pytest.mark.asyncio
@@ -980,8 +987,550 @@ async def test_finalization_is_tool_free_and_performs_one_format_correction():
     assert provider.requests[0].response_schema is not None
     assert provider.requests[1].messages[-1].role == "USER"
     assert "schema" in provider.requests[1].messages[-1].content.lower()
+    assert "int_type" in provider.requests[1].messages[-1].content
+    assert "result.count" in provider.requests[1].messages[-1].content
     assert "wrong" not in repr(provider.requests[1].messages)
     assert result.budget_usage.finalization_attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_interrupt_between_batch_tools_preserves_completed_and_not_started():
+    token = InterruptToken()
+    loop, _provider, effects = _tool_loop(
+        (ModelTurn(
+            tool_calls=tuple(ToolCall(
+                call_id=f"call-{number}", name="record_value",
+                arguments_json=json.dumps({"value": str(number)}),
+            ) for number in (1, 2)),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),),
+        on_record=lambda: token.request(
+            InterruptReason.USER_REQUESTED, reason_code="TEST_STOP"
+        ),
+    )
+    loop.interrupt_token = token
+    with pytest.raises(KernelInterruptedError):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Stop inside batch."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert effects == [{"value": "1", "nested": None}]
+    assert loop.tool_results[0].status == "SUCCEEDED"
+    assert loop.tool_results[1].error.code == "TOOL_NOT_STARTED_INTERRUPTED"
+    starts = [event for event in loop.events if event.kind == "TOOL_CALL_STARTED"]
+    assert [event.references for event in starts] == [("call-1",)]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_after_provider_return_prevents_first_tool():
+    token = InterruptToken()
+    loop, provider, effects = _tool_loop((ModelTurn(
+        tool_calls=(ToolCall(
+            call_id="not-started", name="record_value",
+            arguments_json='{"value":"must-not-run"}',
+        ),),
+        finish_reason=FinishReason.TOOL_CALLS,
+        usage=TokenUsage(total_tokens=4),
+    ),))
+    original = provider.generate
+
+    async def interrupted_generate(request):
+        turn = await original(request)
+        token.request(InterruptReason.USER_REQUESTED, reason_code="TEST_STOP")
+        return turn
+
+    provider.generate = interrupted_generate
+    loop.interrupt_token = token
+    with pytest.raises(KernelInterruptedError):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Stop before dispatch."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert effects == []
+    assert loop.budget_ledger.usage.tokens == 4
+    assert not [event for event in loop.events if event.kind == "TOOL_CALL_STARTED"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("arguments,tool_budget,observed_tokens", [
+    ('{"value":"not-started"}', 8, 4),
+    ('{"value":', 8, 4),
+    ('{"value":7}', 8, 4),
+    ('{"value":"not-started"}', 0, 4),
+    ('{"value":"not-started"}', 8, 11),
+])
+async def test_interrupt_after_provider_return_audits_raw_calls_without_validation(
+    monkeypatch, arguments, tool_budget, observed_tokens,
+):
+    token = InterruptToken()
+    calls = tuple(ToolCall(
+        call_id=f"unstarted-{number}", name="record_value", arguments_json=arguments,
+    ) for number in range(2))
+    loop, provider, effects = _tool_loop((ModelTurn(
+        tool_calls=calls, finish_reason=FinishReason.TOOL_CALLS,
+        usage=TokenUsage(total_tokens=observed_tokens),
+    ),), tool_calls=tool_budget, tokens=10)
+    original_generate = provider.generate
+    original_validate = loop.dispatcher.registry.validate_batch
+    validations = []
+
+    async def interrupted_generate(request):
+        turn = await original_generate(request)
+        token.request(InterruptReason.USER_REQUESTED, reason_code="TEST_STOP")
+        return turn
+
+    def validate(*args, **kwargs):
+        validations.append(True)
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(provider, "generate", interrupted_generate)
+    monkeypatch.setattr(loop.dispatcher.registry, "validate_batch", validate)
+    loop.interrupt_token = token
+    with pytest.raises(KernelInterruptedError):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Stop before dispatch."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert effects == []
+    assert validations == []
+    assert loop.budget_ledger.usage.tokens == observed_tokens
+    assert loop.budget_ledger.usage.tool_calls == 0
+    assert loop.budget_ledger.usage.evidence_entries == 0
+    assert len(provider.requests) == 1
+    assert [result.call_id for result in loop.tool_results] == [call.call_id for call in calls]
+    assert all(result.error.code == "TOOL_NOT_STARTED_INTERRUPTED" for result in loop.tool_results)
+    assert not [event for event in loop.events if event.kind == "TOOL_CALL_STARTED"]
+    finished = [event for event in loop.events if event.kind == "TOOL_CALL_FINISHED"]
+    assert len(finished) == 2
+    assert all(event.reason_code == "TOOL_NOT_STARTED_INTERRUPTED" for event in finished)
+    assert any(event.kind == "INTERRUPT_OBSERVED" for event in loop.events)
+
+
+@pytest.mark.asyncio
+async def test_finalization_feedback_does_not_echo_unrecognized_keys_or_values():
+    provider = FakeProvider(binding=_binding(), turns=(
+        ModelTurn(
+            content='{"result":{"count":1},"private-secret-key":"private-secret-value"}',
+            finish_reason=FinishReason.STOP,
+        ),
+        ModelTurn(content='{"result":{"count":1}}', finish_reason=FinishReason.STOP),
+    ))
+    loop = AgentLoop(
+        provider=provider, invocation=_invocation(final=True),
+        budget_ledger=BudgetLedger(_limits()),
+    )
+    await loop.run(
+        messages=(PublicMessage(role="USER", content="Finalize."),),
+        deadline_monotonic=10_000_000_000.0, response_model=FinalEnvelope,
+    )
+    feedback = provider.requests[1].messages[-1].content
+    assert "extra_forbidden" in feedback
+    assert "unknown_field" in feedback
+    assert "private-secret" not in feedback
+
+
+@pytest.mark.asyncio
+async def test_aggregate_context_limit_blocks_66_large_messages_before_provider():
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
+    ))
+    with pytest.raises(KernelContractError, match="capacity") as raised:
+        await loop.run(
+            messages=tuple(PublicMessage(role="USER", content="x" * 50_000)
+                           for _ in range(66)),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert raised.value.code == "CONTEXT_CAPACITY_EXCEEDED"
+    assert provider.requests == ()
+    assert loop.budget_ledger.usage.provider_turns == 0
+
+
+def _observed_batch(number, *, failed=False, has_reference=True, archived=True):
+    observation_id = str(uuid4())
+    call = ToolCall(
+        call_id=f"history-{number}", name="record_value",
+        arguments_json='{"value":"requested"}',
+    )
+    payload = {
+        "tool_invocation_id": str(uuid4()), "call_id": call.call_id,
+        "name": call.name, "status": "SUCCEEDED",
+        "content": {
+            "success": not failed,
+            "observation_archived": archived,
+            "data": "x" * 48_000,
+            **({"capability_invocation_id": observation_id} if has_reference else {}),
+            **({"error": {"error_code": "KNOWN_FAILURE"}} if failed else {}),
+        },
+        "evidence_references": ["artifact:kept"],
+    }
+    return observation_id, (
+        PublicMessage(role="ASSISTANT", content="a" * 48_000, tool_calls=(call,)),
+        AgentLoop._tool_feedback(ToolResult.model_validate_json(json.dumps(payload)), {
+            "authority": "CONTROL_STATE",
+            "kernel_budget": {"tool_calls_remaining": 8, "evidence_entries_remaining": 8},
+        }),
+    )
+
+
+def _enable_evidence_reader(loop):
+    loop.dispatcher.registry.register(
+        name="evidence_read", description="Reread a persisted observation.",
+        arguments_model=RecordArguments, handler=lambda _args: {},
+    )
+    loop.invocation = loop.invocation.model_copy(update={
+        "tool_names": (*loop.invocation.tool_names, "evidence_read"),
+    })
+
+
+@pytest.mark.asyncio
+async def test_context_replaces_only_old_completed_batches_with_reread_references():
+    roots = (
+        PublicMessage(role="SYSTEM", content="Trusted system."),
+        PublicMessage(role="USER", content="Original task."),
+    )
+    observations = [_observed_batch(number) for number in range(32)]
+    messages = roots + tuple(message for _reference, batch in observations
+                             for message in batch)
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Done.", finish_reason=FinishReason.STOP),
+    ))
+    _enable_evidence_reader(loop)
+    discarded = []
+    provider.discard_tool_batch = lambda run_id, invocation_id, calls, **_kwargs: discarded.append(
+        (run_id, invocation_id, calls)
+    )
+    await loop.run(messages=messages, deadline_monotonic=10_000_000_000.0)
+    request = provider.requests[0]
+    assert len(request.model_dump_json().encode("utf-8")) <= 256_000
+    assert request.messages[:2] == roots
+    assert request.messages[-2:] == observations[-1][1]
+    marker = json.loads(request.messages[2].content)
+    assert marker["authority"] == "CONTROL_STATE"
+    assert marker["context_replacement"] == "COMPLETED_TOOL_BATCH"
+    assert marker["observations"][0]["observation_id"] == observations[0][0]
+    assert marker["observations"][0]["evidence_references"] == ["artifact:kept"]
+    assert marker["reread_tool"] == "evidence_read"
+    assert "x" * 100 not in request.messages[2].content
+    event = next(item for item in loop.events if item.kind == "MODEL_REQUEST_PREPARED")
+    assert event.numeric_facts["public_request_bytes"] <= 256_000
+    assert event.numeric_facts["compacted_batches"] > 0
+    assert len(discarded) == event.numeric_facts["compacted_batches"]
+    assert discarded[0][2] == observations[0][1][0].tool_calls
+    assert all(item[2] != observations[-1][1][0].tool_calls for item in discarded)
+
+
+@pytest.mark.asyncio
+async def test_context_compaction_handles_dispatcher_generated_feedback_end_to_end():
+    effects = []
+    registry = ToolRegistry()
+
+    def archived(arguments):
+        effects.append(arguments.value)
+        return {"success": True, "observation_archived": True,
+                "capability_invocation_id": str(uuid4()), "data": "x" * 12_000}
+
+    registry.register(name="archive", description="Synthetic archival host.",
+                      arguments_model=RecordArguments, handler=archived)
+    registry.register(name="evidence_read", description="Read an archived observation.",
+                      arguments_model=RecordArguments, handler=lambda _args: {})
+    turns = tuple(ModelTurn(
+        tool_calls=(ToolCall(call_id=f"archive-{number}", name="archive",
+            arguments_json=json.dumps({"value": str(number)})),),
+        finish_reason=FinishReason.TOOL_CALLS,
+    ) for number in range(4)) + (ModelTurn(content="Done.", finish_reason=FinishReason.STOP),)
+    provider = FakeProvider(binding=_binding(), turns=turns)
+    budget = BudgetLedger(_limits())
+    loop = AgentLoop(
+        provider=provider, invocation=_invocation().model_copy(update={
+            "tool_names": ("archive", "evidence_read")}),
+        budget_ledger=budget, max_request_bytes=30_000,
+        dispatcher=ToolDispatcher(registry, ModelResultProjector(max_bytes=16_000),
+                                  budget_ledger=budget),
+    )
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Exercise actual feedback."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    assert result.termination == "MODEL_COMPLETED"
+    assert effects == ["0", "1", "2", "3"]
+    assert len(provider.requests) == 5
+    actual_feedback = next(message for message in provider.requests[1].messages if message.role == "TOOL")
+    assert json.loads(actual_feedback.content)["control_state"]["authority"] == "CONTROL_STATE"
+    assert any(message.role == "USER" and "COMPLETED_TOOL_BATCH" in message.content
+               for message in provider.requests[-1].messages)
+    assert all(len(request.model_dump_json().encode("utf-8")) <= 30_000 for request in provider.requests)
+
+
+@pytest.mark.asyncio
+async def test_context_does_not_advertise_unavailable_evidence_reader():
+    batches = [_observed_batch(number)[1] for number in range(4)]
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
+    ))
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Keep readable evidence."),
+                      *(message for batch in batches for message in batch)),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert provider.requests == ()
+
+
+@pytest.mark.asyncio
+async def test_context_replacement_keeps_multi_call_batches_atomic():
+    first_id, first = _observed_batch(1)
+    second_id, second = _observed_batch(2)
+    _last_id, latest = _observed_batch(3)
+    joint_assistant = first[0].model_copy(update={
+        "tool_calls": (*first[0].tool_calls, *second[0].tool_calls),
+    })
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Done.", finish_reason=FinishReason.STOP),
+    ))
+    _enable_evidence_reader(loop)
+    loop.max_request_bytes = 150_000
+    await loop.run(
+        messages=(PublicMessage(role="USER", content="Preserve call pairing."),
+                  joint_assistant, first[1], second[1], *latest),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    sent = provider.requests[0].messages
+    assert len(sent) == 4
+    assert sent[-2:] == latest
+    marker = json.loads(sent[1].content)
+    assert [item["observation_id"] for item in marker["observations"]] == [
+        first_id, second_id,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preserve", ("error", "no_reference", "not_archived"))
+async def test_context_capacity_never_drops_unreadable_or_error_batches(preserve):
+    _reference, batch = _observed_batch(
+        1, failed=preserve == "error", has_reference=preserve != "no_reference",
+        archived=preserve != "not_archived",
+    )
+    _new_reference, latest = _observed_batch(2)
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
+    ))
+    loop.max_request_bytes = 110_000
+    _enable_evidence_reader(loop)
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Keep errors."), *batch, *latest),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert provider.requests == ()
+    assert loop.messages[1:3] == batch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ("extra_control", "wrong_authority", "bad_counter", "extra_result"))
+async def test_context_does_not_accept_arbitrary_extra_feedback_fields(corruption):
+    _, batch = _observed_batch(1)
+    _, latest = _observed_batch(2)
+    payload = json.loads(batch[1].content)
+    if corruption == "extra_control":
+        payload["control_state"]["untrusted_extra"] = True
+    elif corruption == "wrong_authority":
+        payload["control_state"]["authority"] = "AGENT_PROSE"
+    elif corruption == "bad_counter":
+        payload["control_state"]["kernel_budget"]["tool_calls_remaining"] = "8"
+    else:
+        payload["untrusted_extra"] = True
+    altered = batch[1].model_copy(update={"content": json.dumps(payload)})
+    loop, provider, _ = _tool_loop((ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),))
+    loop.max_request_bytes = 110_000
+    _enable_evidence_reader(loop)
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Keep intact."), batch[0], altered, *latest),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert provider.requests == ()
+    assert loop.messages[2] == altered
+
+
+@pytest.mark.asyncio
+async def test_context_capacity_accounts_for_output_schema_before_provider():
+    provider = FakeProvider(binding=_binding(), turns=(
+        ModelTurn(content='{"result":{"count":1}}', finish_reason=FinishReason.STOP),
+    ))
+    loop = AgentLoop(
+        provider=provider, invocation=_invocation(final=True),
+        budget_ledger=BudgetLedger(_limits()),
+    )
+    loop.max_request_bytes = 350
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Finalize."),),
+            deadline_monotonic=10_000_000_000.0, response_model=FinalEnvelope,
+        )
+    assert provider.requests == ()
+
+
+@pytest.mark.asyncio
+async def test_context_capacity_includes_registered_tool_schema():
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
+    ))
+    class LargeArguments(BaseModel):
+        model_config = ConfigDict(
+            extra="forbid", strict=True,
+            json_schema_extra={"description": "A" * 260_000},
+        )
+
+    loop.dispatcher.registry.register(
+        name="large_schema", description="Large declared interface.",
+        arguments_model=LargeArguments, handler=lambda _args: {},
+    )
+    loop.invocation = loop.invocation.model_copy(update={
+        "tool_names": (*loop.invocation.tool_names, "large_schema"),
+    })
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Small message."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert provider.requests == ()
+
+
+@pytest.mark.asyncio
+async def test_context_capacity_checks_provider_wire_size_without_private_contents():
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
+    ))
+    provider.request_size_bytes = lambda _request: 300_000
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Small public request."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    event = next(item for item in loop.events if item.kind == "MODEL_REQUEST_PREPARED")
+    assert event.numeric_facts["request_bytes"] == 300_000
+    assert event.numeric_facts["public_request_bytes"] < 256_000
+    assert provider.requests == ()
+
+
+@pytest.mark.asyncio
+async def test_feedback_observer_receives_only_final_projected_results_after_delivery():
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(tool_calls=(
+            ToolCall(call_id="large", name="record_value",
+                     arguments_json=json.dumps({"value": "x" * 500})),
+            ToolCall(call_id="small", name="record_value",
+                     arguments_json='{"value":"ok"}'),
+        ), finish_reason=FinishReason.TOOL_CALLS),
+        ModelTurn(content="Observed final feedback.", finish_reason=FinishReason.STOP),
+    ))
+    loop.dispatcher.projector = ModelResultProjector(max_bytes=100)
+    delivered = []
+    loop.dispatcher.batch_observer = lambda results=(): delivered.append(results)
+    original = provider.generate
+
+    async def verify_delivery_boundary(request):
+        assert delivered == []
+        return await original(request)
+
+    provider.generate = verify_delivery_boundary
+    await loop.run(
+        messages=(PublicMessage(role="USER", content="Run both."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    assert len(delivered) == 1
+    assert delivered[0][0].error.code == "MODEL_RESULT_TOO_LARGE"
+    assert delivered[0][0].content is None
+    assert delivered[0][1].content == {"recorded": "ok", "nested": None}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupted", (False, True))
+async def test_unreceived_feedback_does_not_grant_delivery_credit(interrupted):
+    token = InterruptToken()
+    loop, provider, _effects = _tool_loop(
+        (ModelTurn(tool_calls=(ToolCall(
+            call_id="pending", name="record_value", arguments_json='{"value":"pending"}',
+        ),), finish_reason=FinishReason.TOOL_CALLS),),
+        on_record=(
+            lambda: token.request(InterruptReason.USER_REQUESTED, reason_code="TEST_STOP")
+        ) if interrupted else None,
+    )
+    loop.interrupt_token = token
+    delivered = []
+    loop.dispatcher.batch_observer = lambda results=(): delivered.append(results)
+    original = provider.generate
+
+    async def fail_after_first_turn(request):
+        if request.turn_index == 2:
+            raise ProviderTransportError()
+        return await original(request)
+
+    provider.generate = fail_after_first_turn
+    if interrupted:
+        with pytest.raises(KernelInterruptedError):
+            await loop.run(
+                messages=(PublicMessage(role="USER", content="Run then stop."),),
+                deadline_monotonic=10_000_000_000.0,
+            )
+    else:
+        result = await loop.run(
+            messages=(PublicMessage(role="USER", content="Run then stop."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+        assert result.termination == "PROVIDER_TRANSPORT_STOP"
+    assert delivered == []
+
+
+@pytest.mark.asyncio
+async def test_feedback_delivery_includes_host_failure_exactly_once():
+    loop, _provider, _effects = _tool_loop((
+        ModelTurn(tool_calls=(ToolCall(
+            call_id="host-failure", name="failed_read", arguments_json='{"value":"test"}',
+        ),), finish_reason=FinishReason.TOOL_CALLS),
+        ModelTurn(finish_reason=FinishReason.OTHER, private_reasoning_present=True),
+        ModelTurn(content="Failure observed.", finish_reason=FinishReason.STOP),
+    ))
+    public_failure = {
+        "success": False, "capability_invocation_id": str(uuid4()),
+        "error": {"error_code": "FIXTURE_DENIED"},
+    }
+    loop.dispatcher.registry.register(
+        name="failed_read", description="Return a bounded host failure.",
+        arguments_model=RecordArguments, handler=lambda _args: public_failure,
+    )
+    loop.invocation = loop.invocation.model_copy(update={
+        "tool_names": (*loop.invocation.tool_names, "failed_read"),
+    })
+    delivered = []
+    loop.dispatcher.batch_observer = lambda results: delivered.append(results)
+    await loop.run(
+        messages=(PublicMessage(role="USER", content="Observe failure."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    assert len(delivered) == 1
+    assert delivered[0][0].status == "SUCCEEDED"
+    assert delivered[0][0].content == public_failure
+
+
+@pytest.mark.asyncio
+async def test_context_rejected_feedback_is_not_credited_as_delivered():
+    loop, provider, _effects = _tool_loop((ModelTurn(
+        tool_calls=(ToolCall(
+            call_id="too-big-for-next-request", name="record_value",
+            arguments_json=json.dumps({"value": "x" * 5_000}),
+        ),), finish_reason=FinishReason.TOOL_CALLS,
+    ),))
+    loop.max_request_bytes = 3_000
+    delivered = []
+    loop.dispatcher.batch_observer = lambda results: delivered.append(results)
+    with pytest.raises(KernelContractError, match="capacity"):
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Check delivery."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+    assert len(provider.requests) == 1
+    assert delivered == []
 
 
 @pytest.mark.asyncio

@@ -51,6 +51,25 @@ print(json.dumps({"inputs_present": inputs_present, "inputs_read_only": inputs_r
                   "outputs_writable": outputs_writable}))
 '''
 
+CGROUP_PROBE = r'''
+import json
+from pathlib import Path
+relative = next(line[3:] for line in Path("/proc/self/cgroup").read_text().splitlines()
+                if line.startswith("0::"))
+directory = Path("/sys/fs/cgroup") / relative.lstrip("/")
+if ".." in directory.parts:
+    raise ValueError("Invalid cgroup path")
+print(json.dumps({name: (directory / name).read_text().strip()
+                  for name in ("cpu.max", "memory.max", "pids.max")}))
+'''
+
+
+def cgroup_limits_enforced(limits: dict) -> bool:
+    """Accept observed finite cgroup v2 limits, never a successful no-op."""
+    from .launchers._local_supervisor import enforced
+
+    return enforced(limits, 1, 256 * 1024 * 1024, 32)
+
 
 class ApptainerUnsupportedError(RuntimeError):
     """The site cannot provide the required constrained execution."""
@@ -154,10 +173,11 @@ def probe_capabilities(
     finally:
         shutil.rmtree(probe_root, ignore_errors=True)
 
-    cgroup_limits = _run(runner, (
+    limits = _json(_run(runner, (
         *exec_prefix, "--cpus", "1", "--memory", "256M", "--pids-limit", "32",
-        *interpreter, "pass",
-    )) is not None
+        *interpreter, CGROUP_PROBE,
+    )))
+    cgroup_limits = limits is not None and cgroup_limits_enforced(limits)
     return ApptainerCapabilities(
         version=version,
         version_supported=version_supported,

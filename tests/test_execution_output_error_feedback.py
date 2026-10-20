@@ -179,6 +179,52 @@ async def test_other_document_failures_keep_existing_code(boundary, tmp_path, do
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("count", [0, 2, 3])
+async def test_record_limit_feedback_contains_observed_and_allowed_counts_only(
+    boundary, tmp_path, count,
+):
+    contract = StructuredOutputContract(
+        contract_id="bounded-counts", schema_id="synthetic.records.v1",
+        allowed_fields=frozenset({"record_type", "value"}),
+        required_fields=frozenset({"record_type"}), max_records=2,
+        declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS,
+    )
+    document = json.dumps({
+        "schema_id": contract.schema_id,
+        "records": [{"record_type": "PRIVATE_CONTENT" if count > 2 else "synthetic", "value": 1}
+                    for _ in range(count)],
+    }).encode()
+    tools, runner, _ = _execution_tools(boundary, tmp_path, document, contract=contract)
+    result = await _submit(tools, contract)
+    if count <= 2:
+        assert result["data"]["status"] == "SUCCEEDED"
+        assert result["data"]["output_issues"] == []
+        return
+    [issue] = result["data"]["output_issues"]
+    assert issue["detail_code"] == "RECORD_LIMIT_EXCEEDED"
+    assert issue["observed_records"] == 3 and issue["max_records"] == 2
+    assert len(runner.calls) == 1  # No host retry, record selection or repair.
+    events = boundary[1].events(tools.binding.run_id)
+    failed = next(event for event in events
+                  if event.event_type is TraceEventType.EXECUTION_FAILED
+                  and "output_issues" in event.payload)
+    assert failed.payload["output_issues"][0]["observed_records"] == 3
+    assert failed.payload["output_issues"][0]["max_records"] == 2
+    encoded = json.dumps({"result": result, "trace": [event.model_dump(mode="json") for event in events]})
+    assert "PRIVATE_CONTENT" not in encoded
+    ref = _output_ref(boundary[5], result["data"]["execution_id"])
+    assert Path(ref.storage_locator).read_bytes() == document
+
+
+@pytest.mark.asyncio
+async def test_invalid_output_document_has_no_invented_record_count(boundary, tmp_path):
+    tools, _, contract = _execution_tools(boundary, tmp_path, b"invalid")
+    result = await _submit(tools, contract)
+    [issue] = result["data"]["output_issues"]
+    assert issue.get("observed_records") is None and issue.get("max_records") is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("minimum", [0, 1])
 @pytest.mark.parametrize("value", [
     "/private/PRIVATE_INPUT.h5ad",

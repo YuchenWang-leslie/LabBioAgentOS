@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import Callable, Iterable
 from time import monotonic
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ValidationError
 
@@ -31,6 +31,7 @@ from .control import BudgetLedger, InterruptToken
 from .errors import (
     AgentHistoryLimitError,
     BudgetExceededError,
+    ContextCapacityError,
     FinalizationProtocolError,
     FinalizationRejectedError,
     IncompleteProviderResponseError,
@@ -60,9 +61,12 @@ class AgentLoop:
         clock: Callable[[], float] | None = None,
         event_sink: Callable[[KernelEvent], None] | None = None,
         completion_feedback: Callable[[], str | None] | None = None,
+        max_request_bytes: int = 256_000,
     ):
         if no_progress_ms < 1:
             raise ValueError("no_progress_ms must be positive")
+        if type(max_request_bytes) is not int or max_request_bytes < 1:
+            raise ValueError("max_request_bytes must be a positive integer")
         if invocation.mode is AgentMode.CAPABILITY:
             if dispatcher is None and invocation.tool_names:
                 raise ValueError("Capability tools require a dispatcher")
@@ -90,6 +94,7 @@ class AgentLoop:
         self.clock = clock or monotonic
         self.event_sink = event_sink
         self.completion_feedback = completion_feedback
+        self.max_request_bytes = max_request_bytes
         self.messages: tuple[PublicMessage, ...] = ()
         self.observations: list[ProviderTurnObservation] = []
         self.argument_observations: list[tuple[ToolArgumentObservation, ...]] = []
@@ -97,6 +102,8 @@ class AgentLoop:
         self.events: list[KernelEvent] = []
         self._sequence = 0
         self.current_deadline_monotonic: float | None = None
+        self._finalization_feedback: str | None = None
+        self._delivered_tool_invocations: set[UUID] = set()
 
     async def run(
         self,
@@ -136,7 +143,6 @@ class AgentLoop:
                         1 if self.invocation.mode is AgentMode.FINALIZE else 0
                     ),
                 )
-                self.budget_ledger.reserve(delta)
                 request = ModelRequest(
                     binding=self.provider.binding,
                     messages=self.messages,
@@ -152,6 +158,8 @@ class AgentLoop:
                     invocation_id=self.invocation.identity.invocation_id,
                     turn_index=turn_index,
                 )
+                request = self._bound_request(request)
+                self.budget_ledger.reserve(delta)
                 try:
                     remaining = (self.current_deadline_monotonic - started
                                  - (monotonic() - started_wall))
@@ -167,6 +175,7 @@ class AgentLoop:
                         raise ProviderTransportError() from None
                 except (ProviderTransportError, ProviderProtocolError,
                         KernelDeadlineExceededError) as exc:
+                    self._record_unreported_provider_usage(started)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -189,8 +198,10 @@ class AgentLoop:
                         )
                     raise
                 except KernelContractError:
+                    self._record_unreported_provider_usage(started)
                     raise
                 except Exception:
+                    self._record_unreported_provider_usage(started)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -219,27 +230,35 @@ class AgentLoop:
                         "turn_index": turn_index,
                         "tool_call_count": len(turn.tool_calls),
                         "elapsed_ms": elapsed_ms,
+                        "input_tokens": turn.usage.input_tokens,
+                        "output_tokens": turn.usage.output_tokens,
+                        "total_tokens": turn.usage.total_tokens,
                     },
                     references=(turn.provider_request_id,)
                     if turn.provider_request_id
                     else (),
                 )
+                usage_error = None
                 try:
-                    self.budget_ledger.reserve(
-                        BudgetDelta(
-                            tokens=turn.usage.total_tokens,
-                            wall_time_ms=elapsed_ms,
-                        )
+                    self.budget_ledger.record_observed_usage(
+                        tokens=turn.usage.total_tokens,
+                        wall_time_ms=elapsed_ms,
                     )
                 except BudgetExceededError as exc:
+                    usage_error = exc
+                self._acknowledge_feedback(request)
+                if self.interrupt_token.requested:
+                    self._record_interrupted_tool_calls(turn.tool_calls)
+                    self.interrupt_token.raise_if_requested()
+                if usage_error is not None:
                     if (
                         self.invocation.mode is not AgentMode.CAPABILITY
-                        or exc.dimension not in {"tokens", "wall_time_ms"}
+                        or usage_error.dimension not in {"tokens", "wall_time_ms"}
                     ):
-                        raise
+                        raise usage_error
                     reason_code = (
                         "PROVIDER_TOKEN_LIMIT"
-                        if exc.dimension == "tokens"
+                        if usage_error.dimension == "tokens"
                         else "PROVIDER_WALL_TIME_LIMIT"
                     )
                     self._emit(
@@ -250,7 +269,7 @@ class AgentLoop:
                     return self._result(
                         output={
                             "capability_stop_reason": "PROVIDER_USAGE_LIMIT",
-                            "budget_dimension": exc.dimension,
+                            "budget_dimension": usage_error.dimension,
                         },
                         termination="PROVIDER_USAGE_LIMIT",
                     )
@@ -282,6 +301,7 @@ class AgentLoop:
                         PublicMessage(
                             role="USER",
                             content=(
+                                f"{self._finalization_feedback} "
                                 "The previous response was incomplete or did not match the "
                                 "required schema. Return a shorter response containing only "
                                 "one complete JSON object matching that schema."
@@ -293,6 +313,7 @@ class AgentLoop:
                 if turn.tool_calls:
                     try:
                         await self._handle_tool_turn(turn)
+                        self.interrupt_token.raise_if_requested()
                         # External tool duration is governed by the tool itself;
                         # it must not consume the model-phase deadline.
                         self.current_deadline_monotonic += max(
@@ -413,6 +434,172 @@ class AgentLoop:
             spec for spec in self.dispatcher.registry.specs if spec.name in allowed
         )
 
+    def _request_size(self, request: ModelRequest) -> tuple[int, int]:
+        public_bytes = len(request.model_dump_json().encode("utf-8"))
+        measure = getattr(self.provider, "request_size_bytes", None)
+        wire_bytes = measure(request) if callable(measure) else public_bytes
+        return public_bytes, max(public_bytes, wire_bytes)
+
+    def _acknowledge_feedback(self, request: ModelRequest) -> None:
+        """Credit only exact public tool results consumed by a returned model turn."""
+        if self.dispatcher is None or self.dispatcher.batch_observer is None:
+            return
+        visible = set()
+        for message in request.messages:
+            if message.role != "TOOL":
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                identity = payload.get("tool_invocation_id")
+                if isinstance(identity, str):
+                    visible.add((message.tool_call_id, identity))
+        delivered = tuple(
+            result for result in self.tool_results
+            if result.tool_invocation_id not in self._delivered_tool_invocations
+            and (result.call_id, str(result.tool_invocation_id)) in visible
+        )
+        if delivered:
+            self.dispatcher.batch_observer(delivered)
+            self._delivered_tool_invocations.update(
+                result.tool_invocation_id for result in delivered
+            )
+
+    def _bound_request(self, request: ModelRequest) -> ModelRequest:
+        """Replace rereadable old batches, never summarize or truncate evidence."""
+        messages = list(request.messages)
+        batch_starts = [
+            index for index, item in enumerate(messages) if item.tool_calls
+        ] if any(tool.name == "evidence_read" for tool in request.tools) else []
+        removed_batches = []
+        public_bytes, request_bytes = self._request_size(request)
+        shift = 0
+        for original_start in batch_starts[:-1]:
+            if request_bytes <= self.max_request_bytes:
+                break
+            start = original_start - shift
+            assistant = messages[start]
+            end = start + 1 + len(assistant.tool_calls)
+            replies = messages[start + 1:end]
+            if (
+                len(replies) != len(assistant.tool_calls)
+                or any(item.role != "TOOL" for item in replies)
+                or (end < len(messages) and messages[end].role == "TOOL")
+                or tuple(item.tool_call_id for item in replies)
+                != tuple(item.call_id for item in assistant.tool_calls)
+            ):
+                continue
+            observations = []
+            for reply in replies:
+                try:
+                    result = self._feedback_result(reply.content)
+                    content = result.content
+                    if (
+                        result.status != "SUCCEEDED"
+                        or not isinstance(content, dict)
+                        or content.get("success") is not True
+                        or content.get("observation_archived") is not True
+                    ):
+                        break
+                    observation_id = str(UUID(content["capability_invocation_id"]))
+                except (ValidationError, ValueError, TypeError, KeyError, AttributeError):
+                    break
+                observations.append({
+                    "observation_id": observation_id,
+                    "tool_name": result.name,
+                    "evidence_references": list(result.evidence_references),
+                })
+            if len(observations) != len(replies):
+                continue
+            marker = json.dumps({
+                "authority": "CONTROL_STATE",
+                "context_replacement": "COMPLETED_TOOL_BATCH",
+                "observations": observations,
+                "reread_tool": "evidence_read",
+                "notice": (
+                    "The original results are persisted observations, not shown here. "
+                    "Read the referenced observations before relying on their contents."
+                ),
+            }, ensure_ascii=False, separators=(",", ":"))
+            if len(marker) > 64_000:
+                continue
+            replacement = PublicMessage(role="USER", content=marker)
+            candidate_messages = (
+                *messages[:start], replacement, *messages[end:]
+            )
+            candidate = request.model_copy(update={"messages": candidate_messages})
+            candidate_public_bytes, candidate_bytes = self._request_size(candidate)
+            if candidate_bytes >= request_bytes:
+                continue
+            messages = list(candidate_messages)
+            shift += len(replies)
+            removed_batches.append(assistant.tool_calls)
+            request = candidate
+            public_bytes, request_bytes = candidate_public_bytes, candidate_bytes
+        self._emit(
+            KernelEventKind.MODEL_REQUEST_PREPARED,
+            status_code="READY" if request_bytes <= self.max_request_bytes else "REJECTED",
+            reason_code=None if request_bytes <= self.max_request_bytes
+            else "CONTEXT_CAPACITY_EXCEEDED",
+            numeric_facts={
+                "public_request_bytes": public_bytes,
+                "request_bytes": request_bytes,
+                "max_request_bytes": self.max_request_bytes,
+                "message_count": len(request.messages),
+                "compacted_batches": len(removed_batches),
+                "turn_index": request.turn_index,
+            },
+        )
+        if request_bytes > self.max_request_bytes:
+            raise ContextCapacityError(
+                request_bytes=request_bytes, max_request_bytes=self.max_request_bytes
+            )
+        self.messages = request.messages
+        discard = getattr(self.provider, "discard_tool_batch", None)
+        if callable(discard):
+            for calls in removed_batches:
+                discard(
+                    self.invocation.identity.kernel_run_id,
+                    self.invocation.identity.invocation_id,
+                    calls,
+                    retained_messages=request.messages,
+                )
+        return request
+
+    def _record_unreported_provider_usage(self, started: float) -> None:
+        try:
+            self.budget_ledger.record_observed_usage(
+                tokens=None,
+                wall_time_ms=max(0, int(round((self.clock() - started) * 1000))),
+            )
+        except BudgetExceededError:
+            # The actual usage is retained; the provider failure remains the stop cause.
+            pass
+
+    @staticmethod
+    def _feedback_result(content: str) -> ToolResult:
+        payload, _canonical = parse_strict_json_object(content)
+        if "control_state" in payload:
+            control = payload.pop("control_state")
+            budget_fields = {"tool_calls_remaining", "evidence_entries_remaining"}
+            if (
+                not isinstance(control, dict)
+                or set(control) != {"authority", "kernel_budget"}
+                or control["authority"] != "CONTROL_STATE"
+                or not isinstance(control["kernel_budget"], dict)
+                or set(control["kernel_budget"]) != budget_fields
+                or any(type(value) is not int or value < 0
+                       for value in control["kernel_budget"].values())
+            ):
+                raise ValueError("Invalid kernel feedback control state")
+        # Only the known host-owned envelope is removed. Arbitrary result extras
+        # still fail the same strict ToolResult contract.
+        return ToolResult.model_validate_json(
+            json.dumps(payload, ensure_ascii=False, allow_nan=False), strict=True
+        )
+
     def _observe(self, turn, turn_index: int, elapsed_ms: int):
         if turn.tool_calls:
             progress_kind = "TOOL_CALL"
@@ -436,6 +623,25 @@ class AgentLoop:
             tool_names=tuple(call.name for call in turn.tool_calls),
         )
 
+    def _record_interrupted_tool_calls(self, calls) -> None:
+        """Audit returned calls without validating or admitting stopped work."""
+        for call in calls:
+            result = ToolResult(
+                tool_invocation_id=uuid4(), call_id=call.call_id, name=call.name,
+                status="FAILED",
+                error=ToolError(
+                    code="TOOL_NOT_STARTED_INTERRUPTED",
+                    message="The tool was not started because execution was stopped.",
+                ),
+            )
+            self.tool_results.append(result)
+            self._emit(
+                KernelEventKind.TOOL_CALL_FINISHED,
+                tool_invocation_id=result.tool_invocation_id,
+                status_code=result.status, reason_code=result.error.code,
+                references=(call.call_id,),
+            )
+
     async def _handle_tool_turn(self, turn) -> None:
         if self.dispatcher is None:
             raise FinalizationProtocolError()
@@ -452,7 +658,7 @@ class AgentLoop:
                     evidence_entries=len(parsed),
                 )
             )
-            for item in parsed:
+            def on_tool_started(item):
                 self._emit(
                     KernelEventKind.TOOL_CALL_STARTED,
                     status_code="RUNNING",
@@ -461,6 +667,8 @@ class AgentLoop:
             outcomes = await self.dispatcher.dispatch_parsed(
                 parsed,
                 reserve_budget=False,
+                interrupt_token=self.interrupt_token,
+                on_tool_started=on_tool_started,
             )
             replay_calls = tuple(
                 item.request.model_copy(
@@ -564,6 +772,7 @@ class AgentLoop:
         )
 
     def _handle_finalization_turn(self, turn, *, response_model):
+        self._finalization_feedback = "Validation type: incomplete_response."
         if turn.tool_calls:
             raise FinalizationProtocolError()
         if turn.content is None:
@@ -580,14 +789,19 @@ class AgentLoop:
                         strict=True,
                     )
                 except ValidationError as exc:
-                    issues = exc.errors(include_url=False, include_input=False)
+                    issues = exc.errors(
+                        include_url=False, include_input=False, include_context=False
+                    )
                     first = issues[0] if issues else None
                     error = FinalizationRejectedError(
                         validation_type=first["type"] if first else "invalid",
-                        validation_fields=tuple(
-                            str(item) for item in first.get("loc", ())
+                        validation_fields=(
+                            self._safe_validation_path(
+                                response_model, first.get("loc", ())
+                            ),
                         ) if first else (),
                     )
+                    self._finalization_feedback = self._validation_feedback(error)
                     parsed = None
                 if parsed is None:
                     attempts_exhausted = (
@@ -625,7 +839,36 @@ class AgentLoop:
             FinishReason.LENGTH,
         }:
             raise error
+        self._finalization_feedback = self._validation_feedback(error)
         return None
+
+    @staticmethod
+    def _validation_feedback(error: FinalizationRejectedError) -> str:
+        return json.dumps({
+            "validation_type": error.validation_type,
+            "validation_fields": error.validation_fields,
+        }, separators=(",", ":"))
+
+    @staticmethod
+    def _safe_validation_path(response_model, location) -> str:
+        """Expose schema field names, never model-supplied object keys."""
+        root = response_model.model_json_schema()
+        node = root
+        parts = []
+        for component in location[:8]:
+            while "$ref" in node:
+                reference = node["$ref"]
+                node = root.get("$defs", {}).get(reference.rsplit("/", 1)[-1], {})
+            if isinstance(component, int) and "items" in node:
+                parts.append(str(component))
+                node = node["items"]
+            elif component in node.get("properties", {}):
+                parts.append(component)
+                node = node["properties"][component]
+            else:
+                parts.append("unknown_field")
+                break
+        return ".".join(parts) or "response"
 
     @staticmethod
     def _tool_feedback(result: ToolResult, budget_state: dict) -> PublicMessage:

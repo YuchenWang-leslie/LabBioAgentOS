@@ -43,15 +43,18 @@ async def test_all_170_records_are_reachable_and_citation_coverage_is_exact(arti
     assert first["success"]
     assert first["data"]["returned_count"] == 100
     assert first["data"]["next_offset"] == 100
+    tools.mark_feedback_delivered((first,))
     with pytest.raises(ValueError, match="incomplete"):
         tools._require_report_evidence_coverage((ref.artifact_id,))
     # A last page is not sufficient when a middle page was skipped.
     last = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 20, offset=150)
     assert last["success"]
+    tools.mark_feedback_delivered((last,))
     with pytest.raises(ValueError, match="incomplete"):
         tools._require_report_evidence_coverage((ref.artifact_id,))
     rest = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 100, offset=100)
     assert rest["success"] and rest["data"]["next_offset"] is None
+    tools.mark_feedback_delivered((rest,))
     assert [x["row"] for x in first["data"]["records"] + rest["data"]["records"]] == list(range(170))
     tools._require_report_evidence_coverage((ref.artifact_id,))
     assert tools.evidence_items()[-1].artifact_query_request.offset == 100
@@ -83,8 +86,9 @@ async def test_report_submit_rejects_unread_table_without_registering_then_accep
     response = await tools.report_submit("Synthetic", "Synthetic report", [str(ref.artifact_id)])
     assert response["error"]["error_code"] == "REPORT_EVIDENCE_INCOMPLETE"
     assert not calls
-    await tools.artifact_query(str(ref.artifact_id), "TOP_N", 10)
-    await tools.artifact_query(str(ref.artifact_id), "TOP_N", 10, offset=10)
+    first = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 10)
+    rest = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 10, offset=10)
+    tools.mark_feedback_delivered((first, rest))
     response = await tools.report_submit("Synthetic", "Synthetic report", [str(ref.artifact_id)])
     assert response["success"] and len(calls) == 1
 

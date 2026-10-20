@@ -37,6 +37,31 @@ class BudgetLedger:
     def usage(self) -> BudgetUsage:
         return self._usage
 
+    def record_observed_usage(
+        self, *, tokens: int | None, wall_time_ms: int
+    ) -> BudgetUsage:
+        """Record already incurred provider usage, even when it exceeds a limit."""
+        delta = BudgetDelta(tokens=tokens, wall_time_ms=wall_time_ms)
+        previous = self._usage
+        values = previous.model_dump()
+        values["tokens"] = (
+            None if previous.tokens is None or delta.tokens is None
+            else previous.tokens + delta.tokens
+        )
+        values["wall_time_ms"] += delta.wall_time_ms
+        self._usage = BudgetUsage(**values)
+        for dimension in ("tokens", "wall_time_ms"):
+            value = getattr(self._usage, dimension)
+            limit = getattr(self._limits, dimension)
+            if value is not None and value > limit:
+                raise BudgetExceededError(
+                    dimension=dimension,
+                    limit=limit,
+                    consumed=getattr(previous, dimension),
+                    requested=getattr(delta, dimension),
+                )
+        return self._usage
+
     def reserve(self, delta: BudgetDelta) -> BudgetUsage:
         """Validate every dimension before committing any usage."""
 

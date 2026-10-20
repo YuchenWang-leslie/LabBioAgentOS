@@ -26,7 +26,7 @@ flowchart TD
     W --> K[LabBio Native Kernel]
     K --> A[Agent reasoning and dynamic collaboration]
     A --> P[Policy-governed capabilities]
-    P --> E[Docker or configured Scheduler + Apptainer execution]
+    P --> E[Docker or configured Local/Scheduler + Apptainer execution]
     P --> R[Artifact and exposure rules]
     E --> R
     R --> W
@@ -59,7 +59,7 @@ The default workflow is:
 - **Native multi-Agent runtime:** exact provider binding, strict schemas,
   foreground tool dispatch, dynamic delegation, isolated child context,
   budgets, interruption, and typed outcomes.
-- **Governed execution:** policy-controlled Docker or configured Scheduler +
+- **Governed execution:** policy-controlled Docker or configured Local/Scheduler +
   Apptainer runs with registered inputs, declared outputs, resource ceilings,
   and immutable receipts.
 - **Artifact governance:** scoped identities, exposure decisions, bounded views,
@@ -90,7 +90,7 @@ A real task additionally requires:
 1. an OpenAI-compatible Chat provider with credentials stored outside the
    repository;
 2. an existing, deployment-approved Docker image, or a registered SIF for a
-   configured cluster backend;
+   configured local/cluster backend with enforced resource limits;
 3. an external `runtime.toml` defining identity, allowed input roots, result
    root, resource limits, provider binding, and execution settings.
 
@@ -98,6 +98,10 @@ Start from `examples/local-runtime.toml`. The configuration references secret
 environment variables; it must not contain API keys. See the
 [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the local contract, or
 [cluster deployment guide](docs/CLUSTER_DEPLOYMENT.md) for site prerequisites.
+Local Apptainer requires real cgroup delegation; see its
+[deployment and separate acceptance boundary](docs/LOCAL_APPTAINER.md).
+The [runtime reliability work](docs/NATIVE_RUNTIME_RELIABILITY.md) documents
+observation handoff, scoped report references and repeatable task evaluation.
 
 ## Submit a task
 

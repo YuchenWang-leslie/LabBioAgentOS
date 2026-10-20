@@ -1,0 +1,361 @@
+"""Workload accounting stays descriptive; recovery cannot replay a checkpoint."""
+
+import importlib.util
+import json
+from contextlib import nullcontext
+from pathlib import Path
+import sqlite3
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
+
+import pytest
+
+SPEC = importlib.util.spec_from_file_location(
+    "runtime_stress_report", Path(__file__).parents[1] / "scripts/runtime_stress_report.py")
+metrics = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(metrics)
+
+
+def write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+
+
+def attempt(root, name, status="FAILED"):
+    receipt, directory = root / "receipts" / name, root / "runs" / name
+    run_id = str(uuid4())
+    state = {"run_id": run_id, "record_version": 8,
+        "runtime_revision": "frozen", "runtime_results": [],
+        "workflow_run": {"status": status, "current_stage": "REPORT", "failure_reason": "FIXTURE"},
+        "recovery_state": "STABLE"}
+    write(receipt / "MANIFEST.json", {
+        "arm": name.split("-")[0], "case": "autonomous", "replicate": 1,
+        "source_commit": "frozen-commit", "runner_sha256": "frozen-runner",
+        "inputs": [{"path": "fixture-input", "sha256": "input-sha"}],
+    })
+    write(directory / "RUNTIME.json", {"runtime_revision": "frozen",
+                                      "source": {"labbio_sha256": "frozen-code"}})
+    write(directory / "RUN.json", {"run_id": run_id})
+    con = sqlite3.connect(directory / "state.sqlite")
+    con.execute("CREATE TABLE application_run_state(run_id TEXT,record_version INTEGER,payload TEXT)")
+    con.execute("INSERT INTO application_run_state VALUES(?,?,?)", (run_id, 8, json.dumps(state)))
+    con.commit()
+    con.close()
+    return receipt, directory, state
+
+
+def event(state, name, payload):
+    return {"event_id": str(uuid4()), "run_id": state["run_id"],
+            "event_type": name, "payload": payload, "status": "FIXTURE"}
+
+
+def selected_delivery(directory, state):
+    execution_id, report_id, output_id = (str(uuid4()) for _ in range(3))
+    state["runtime_results"] = [
+        {"stage_id": "EXECUTE", "body": {"execution_status": "SUCCEEDED",
+            "execution_reference": {"reference_id": execution_id}}},
+        {"stage_id": "REPORT", "body": {"report_reference": {"reference_id": report_id}}},
+    ]
+    destination = directory / "deliveries" / str(state["record_version"])
+    rows = []
+    for identity, filename, body in (
+        (report_id, "REPORT.md", "Agent-authored report"),
+        (output_id, "output.csv", "fixture,data\n1,2\n"),
+    ):
+        destination.mkdir(parents=True, exist_ok=True)
+        path = destination / filename
+        path.write_text(body)
+        row = {"artifact_id": identity, "file": filename,
+               "sha256": metrics.digest(path), "size_bytes": path.stat().st_size}
+        rows.append(row)
+        source = directory / "artifacts" / f"{identity}.txt"
+        source.parent.mkdir(exist_ok=True)
+        source.write_text(body)
+        ref = {"artifact_id": identity, "run_id": state["run_id"],
+               "storage_locator": str(source), "metadata": {}}
+        if identity == report_id:
+            ref["release_basis"] = "MODEL_AUTHORED_REPORT"
+        else:
+            row["execution_id"] = execution_id
+            ref["metadata"] = {"execution_id": execution_id, "requested_exposure": "RAW",
+                               "sha256": row["sha256"], "size_bytes": row["size_bytes"]}
+        write(source.with_suffix(".json"), {
+            "ref": ref, "representation": {"stored_content": body}})
+    manifest = {"run_id": state["run_id"], "status": state["workflow_run"]["status"],
+        "selected_execution_id": execution_id, "report_artifact_ids": [report_id],
+        "reports": [rows[0]], "outputs": [rows[1]]}
+    write(destination / "RESULT.json", manifest)
+    return destination, manifest
+
+
+@pytest.mark.parametrize("corruption", [
+    "duplicate_report", "unselected_output", "missing_registered_output", "rewritten_manifest_hash",
+])
+def test_delivery_requires_exact_registered_selected_inventory(tmp_path, corruption):
+    receipt, directory, state = attempt(tmp_path, "candidate-autonomous-1", "COMPLETED")
+    destination, manifest = selected_delivery(directory, state)
+    con = sqlite3.connect(directory / "state.sqlite")
+    con.execute("UPDATE application_run_state SET payload=?", (json.dumps(state),))
+    con.commit()
+    con.close()
+    assert metrics.summarize_attempt(tmp_path, receipt)["delivered_report_and_outputs"]
+    if corruption == "duplicate_report":
+        manifest["reports"] *= 2
+        manifest["outputs"] = []
+    elif corruption == "unselected_output":
+        manifest["outputs"][0]["execution_id"] = str(uuid4())
+    elif corruption == "missing_registered_output":
+        extra = json.loads((directory / "artifacts" / (
+            manifest["outputs"][0]["artifact_id"] + ".json")).read_text())
+        extra["ref"]["artifact_id"] = str(uuid4())
+        write(directory / "artifacts" / (extra["ref"]["artifact_id"] + ".json"), extra)
+    else:
+        output = destination / manifest["outputs"][0]["file"]
+        output.write_text("tampered")
+        manifest["outputs"][0].update(sha256=metrics.digest(output), size_bytes=8)
+    write(destination / "RESULT.json", manifest)
+    assert not metrics.summarize_attempt(tmp_path, receipt)["delivered_report_and_outputs"]
+
+
+def test_every_attempt_is_counted_and_unreported_usage_remains_unknown(tmp_path):
+    _, first, state = attempt(tmp_path, "baseline-autonomous-1")
+    attempt(tmp_path, "candidate-autonomous-1", "COMPLETED")
+    (tmp_path / "receipts" / "candidate-broken-2").mkdir()
+    events = [
+        event(state, "PROVIDER_TURN_OBSERVED", {"numeric_facts": {"elapsed_ms": 20, "total_tokens": 4}}),
+        event(state, "PROVIDER_TURN_OBSERVED", {"numeric_facts": {"elapsed_ms": 35}}),
+    ]
+    (first / "run-trace.jsonl").write_text("\n".join(json.dumps(item) for item in events) + "\n")
+    result = metrics.report(tmp_path)
+    assert result["attempt_count"] == 3
+    assert result["by_arm"]["baseline"]["engine_completed"] == 0
+    assert result["by_arm"]["candidate"]["engine_completed"] == 1
+    assert result["by_arm"]["candidate"]["delivered_report_and_outputs"] == 0
+    sample = result["attempts"][0]
+    assert sample["provider_usage"]["total_tokens"] == {
+        "total": None, "observed_subtotal": 4, "known_turns": 1, "unknown_turns": 1}
+    assert sample["provider_usage"]["elapsed_ms"]["total"] == 55
+    assert sample["request_size"]["max_bytes"] is None
+    assert all(item["scientific_review"] == "NOT_PERFORMED" for item in result["attempts"])
+
+
+def test_residue_checks_exact_execution_identity_not_unrelated_container(monkeypatch):
+    identity = uuid4()
+    sample = {"execution_ids": [str(identity)], "process_result": {"exit_code": 1},
+              "status": "FAILED"}
+    runner = Mock(return_value=SimpleNamespace(stdout="unrelated\n"))
+    monkeypatch.setattr(metrics.subprocess, "run", runner)
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "NO_MATCHING_CONTAINERS"
+    runner.return_value.stdout = f"labbio-{identity.hex}\nunrelated\n"
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "RESIDUE_FOUND"
+    assert sample["remaining_container_names"] == [f"labbio-{identity.hex}"]
+    sample["process_result"] = None
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "ACTIVE_ATTEMPT"
+
+
+def test_residue_unavailable_is_unknown(monkeypatch):
+    monkeypatch.setattr(metrics.subprocess, "run", Mock(side_effect=FileNotFoundError))
+    sample = {}
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "UNKNOWN_DOCKER_UNAVAILABLE"
+
+
+def test_residue_covers_scoped_environment_builds_and_does_not_call_resume_terminal(monkeypatch):
+    build_id = uuid4().hex
+    sample = {"execution_ids": [], "environment_build_ids": [build_id],
+              "process_result": {"exit_code": 75}, "status": "FAILED"}
+    runner = Mock(return_value=SimpleNamespace(stdout=f"builder-container\t{build_id}\nunrelated\tother\n"))
+    monkeypatch.setattr(metrics.subprocess, "run", runner)
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "RESIDUE_FOUND"
+    assert sample["remaining_container_names"] == ["builder-container"]
+    sample["resume_before"] = {"run_id": "fixture"}
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "UNKNOWN_RESUME_STATUS"
+
+
+def test_residue_does_not_claim_absence_when_trace_is_incomplete(monkeypatch):
+    monkeypatch.setattr(metrics.subprocess, "run", Mock(return_value=SimpleNamespace(stdout="")))
+    sample = {"execution_ids": [], "process_result": {"exit_code": 1}, "status": "FAILED",
+              "trace_integrity_valid": False}
+    metrics.check_process_residue([sample])
+    assert sample["process_residue_check"] == "UNKNOWN_EXECUTION_IDENTITIES"
+
+
+def test_truncated_or_invalid_trace_lines_are_not_silently_accepted(tmp_path):
+    path = tmp_path / "trace"
+    path.write_text('{"ok":1}\nmalformed\n{"partial":')
+    records, health = metrics.json_lines(path)
+    assert records == [{"ok": 1}]
+    assert health == {"present": True, "invalid_lines": 1, "partial_final_line": True}
+
+
+def test_wrong_run_trace_is_flagged_without_echoing_sensitive_content(tmp_path):
+    receipt, directory, state = attempt(tmp_path, "baseline-autonomous-1")
+    trace = event(state, "PROVIDER_TURN_OBSERVED", {"secret": "DO_NOT_PRINT"})
+    trace["run_id"] = str(uuid4())
+    (directory / "run-trace.jsonl").write_text(json.dumps(trace) + "\n")
+    result = metrics.summarize_attempt(tmp_path, receipt)
+    assert result["metrics_error"] == "ValueError"
+    assert "DO_NOT_PRINT" not in json.dumps(result)
+
+
+def test_delivery_is_selected_by_persisted_ids_not_mtime_or_largest_version(tmp_path):
+    directory = tmp_path / "run"
+    state = {"run_id": "run-fixture", "record_version": 8,
+        "workflow_run": {"status": "COMPLETED"},
+        "runtime_results": [
+            {"stage_id": "EXECUTE", "body": {"execution_status": "SUCCEEDED",
+                "execution_reference": {"reference_id": "exec-selected"}}},
+            {"stage_id": "REPORT", "body": {"report_reference": {"reference_id": "report-selected"}}},
+        ]}
+    manifest = {"run_id": state["run_id"], "status": "COMPLETED",
+        "selected_execution_id": "exec-selected", "report_artifact_ids": ["report-selected"],
+        "reports": [], "outputs": []}
+    write(directory / "deliveries" / "999" / "RESULT.json", manifest)
+    assert not metrics.delivery_metrics(directory, state)["snapshot_current"]
+    destination = directory / "deliveries" / "8"
+    destination.mkdir()
+    (destination / "REPORT.md").write_text("fixture")
+    manifest["reports"] = [{"artifact_id": "report-selected", "file": "REPORT.md",
+        "sha256": metrics.digest(destination / "REPORT.md"), "size_bytes": 7}]
+    write(directory / "artifacts" / "report-selected.json", {
+        "ref": {"artifact_id": "report-selected", "run_id": state["run_id"],
+                "release_basis": "MODEL_AUTHORED_REPORT", "metadata": {}},
+        "representation": {"stored_content": "fixture"}})
+    write(destination / "RESULT.json", manifest)
+    assert metrics.delivery_metrics(directory, state)["integrity_valid"]
+    (destination / "REPORT.md").write_text("changed")
+    assert not metrics.delivery_metrics(directory, state)["integrity_valid"]
+
+
+def checkpoint():
+    run_id, invocation_id, evidence_id = (str(uuid4()) for _ in range(3))
+    state = {"run_id": run_id, "record_version": 12,
+        "recovery_state": "STAGE_IN_FLIGHT", "inflight_stage": "EXECUTE",
+        "inflight_invocation_id": invocation_id,
+        "inflight_evidence": {"run_id": run_id, "stage_id": "EXECUTE", "invocation_id": invocation_id,
+                             "evidence_id": evidence_id, "items": []}}
+    stop = {"run_id": run_id, "stage": "EXECUTE", "evidence_id": evidence_id,
+            "boundary": "AFTER_DURABLE_CAPABILITY_EVIDENCE"}
+    return state, stop
+
+
+@pytest.mark.parametrize("change", [
+    {"evidence_id": str(uuid4())}, {"run_id": str(uuid4())},
+    {"stage": "PLAN"}, {"boundary": "PROVIDER_RETURNED"},
+])
+def test_injected_stop_must_match_exact_persisted_checkpoint(change):
+    state, stop = checkpoint()
+    with pytest.raises(ValueError, match="exact durable"):
+        metrics.validate_checkpoint(state, {**stop, **change})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action,uncertain,version", [
+    ("STABLE", False, 12), ("BLOCKED", True, 12),
+    ("FINALIZE_ONLY", True, 12), ("FINALIZE_ONLY", False, 13),
+])
+async def test_resume_rejects_uncertain_changed_or_noncheckpoint_state_before_provider(action, uncertain, version):
+    state, stop = checkpoint()
+    assessment = SimpleNamespace(continuation_action=action, uncertain_side_effects=uncertain,
+        recovery=SimpleNamespace(recoverable=True, record_version=version))
+    application = SimpleNamespace(reconcile_run=Mock(return_value=assessment), continue_run=AsyncMock())
+    settings = SimpleNamespace(principal="principal", workspace="workspace", provider="provider")
+    load, export = Mock(), Mock()
+    with pytest.raises(ValueError, match="finalization-only"):
+        await metrics.continue_checked(application, settings, state, stop, load_provider=load, export=export)
+    load.assert_not_called()
+    application.continue_run.assert_not_awaited()
+    export.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_valid_resume_uses_native_continue_once_not_execution_submission():
+    state, stop = checkpoint()
+    assessment = SimpleNamespace(continuation_action="FINALIZE_ONLY", uncertain_side_effects=False,
+        recovery=SimpleNamespace(recoverable=True, record_version=12))
+    outcome = SimpleNamespace(status=SimpleNamespace(value="COMPLETED"))
+    application = SimpleNamespace(reconcile_run=Mock(return_value=assessment),
+                                  reconcile_jobs=AsyncMock(return_value=()),
+                                  continue_run=AsyncMock(return_value=outcome))
+    settings = SimpleNamespace(principal="principal", workspace="workspace", provider="provider")
+    load, export = Mock(), Mock(return_value={"delivery": "fixture"})
+    result, delivery = await metrics.continue_checked(
+        application, settings, state, stop, load_provider=load, export=export)
+    application.continue_run.assert_awaited_once()
+    assert str(application.continue_run.await_args.args[0]) == state["run_id"]
+    load.assert_called_once_with("provider")
+    export.assert_called_once()
+    assert result is outcome and delivery == {"delivery": "fixture"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", [None, "truncated_trace", "foreign_trace", "no_delivery"])
+async def test_full_resume_wrapper_preserves_execution_ids_and_refuses_second_attempt(
+    tmp_path, monkeypatch, corruption,
+):
+    from labbioagentos import cli, local_config, local_continuation
+    root, source = tmp_path / "results", tmp_path / "source"
+    source.mkdir()
+    name = "candidate-recovery-1"
+    receipt, directory = root / "receipts" / name, root / "runs" / name
+    state, stop = checkpoint()
+    state["runtime_revision"] = "frozen"
+    final_state = {**state, "record_version": state["record_version"] + 1,
+                   "workflow_run": {"status": "COMPLETED"}}
+    selected_delivery(directory, final_state)
+    runtime = {"runtime_revision": "frozen"}
+    write(receipt / "MANIFEST.json", {"case": "recovery", "source": str(source),
+        "runner_sha256": metrics.digest(Path(metrics.__file__).with_name("runtime_stress.py")),
+        "inputs": []})
+    write(receipt / "PROCESS_RESULT.json", {"exit_code": 75})
+    write(receipt / "CONFIG.json", {})
+    write(receipt / "INJECTED_STOP.json", stop)
+    write(directory / "RUNTIME.json", runtime)
+    started = event(state, "EXECUTION_STARTED", {"execution_id": "execution-fixture"})
+    (directory / "run-trace.jsonl").write_text(json.dumps(started) + "\n")
+    settings = SimpleNamespace(result_root=root / "runs", principal="principal",
+                               workspace="workspace", provider="provider")
+    assessment = SimpleNamespace(continuation_action="FINALIZE_ONLY", uncertain_side_effects=False,
+        recovery=SimpleNamespace(recoverable=True, record_version=state["record_version"]))
+    application = SimpleNamespace(reconcile_run=Mock(return_value=assessment),
+        reconcile_jobs=AsyncMock(return_value=()),
+        continue_run=AsyncMock(return_value=SimpleNamespace(status=SimpleNamespace(value="COMPLETED"))))
+    build, close, load = Mock(return_value=application), Mock(), Mock()
+    monkeypatch.setattr(metrics, "state_snapshot",
+        lambda _: final_state if application.continue_run.await_count else state)
+    monkeypatch.setattr(local_config, "LocalSettings",
+                        SimpleNamespace(model_validate_json=lambda _: settings))
+    monkeypatch.setattr(local_config, "runtime_manifest", lambda _: runtime)
+    monkeypatch.setattr(local_config, "_load_provider", load)
+    monkeypatch.setattr(local_continuation, "run_writer", lambda _: nullcontext())
+    def export(*_):
+        if corruption == "truncated_trace":
+            with (directory / "run-trace.jsonl").open("a") as stream:
+                stream.write('{"event_type":"EXECUTION_STARTED",')
+        if corruption == "foreign_trace":
+            foreign = event({**state, "run_id": str(uuid4())}, "EXECUTION_COMPLETED", {})
+            with (directory / "run-trace.jsonl").open("a") as stream:
+                stream.write(json.dumps(foreign) + "\n")
+        if corruption == "no_delivery":
+            return None
+        return {"status": "delivered"}
+    monkeypatch.setattr(local_continuation, "export_snapshot", export)
+    monkeypatch.setattr(cli, "build_application", build)
+    monkeypatch.setattr(cli, "_close", close)
+    assert await metrics.resume(root, name, source) == (0 if corruption is None else 2)
+    result = metrics.read_json(receipt / "RESUME_RESULT.json")
+    assert result["no_reexecution"] is (corruption not in {"truncated_trace", "foreign_trace"})
+    assert result["execution_ids_before"] == result["execution_ids_after"] == ["execution-fixture"]
+    assert metrics.read_json(receipt / "RESUME_BEFORE.json")["evidence_id"] == stop["evidence_id"]
+    application.continue_run.assert_awaited_once()
+    with pytest.raises((FileExistsError, ValueError)):
+        await metrics.resume(root, name, source)
+    application.continue_run.assert_awaited_once()
+    load.assert_called_once()
+    assert close.call_count == (1 if corruption in {"truncated_trace", "foreign_trace"} else 2)

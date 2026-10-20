@@ -9,18 +9,14 @@ names; requirements reach the programs only as files.
 
 from __future__ import annotations
 
-import ctypes
 import fcntl
 import hashlib
 import json
 import os
 import re
-import resource
 import shlex
 import shutil
-import signal
 import stat
-import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -370,14 +366,9 @@ class DownloadRunner(SubprocessApptainerRunner):
         self.cpu_seconds = cpu_seconds
         self._parent_pid = os.getpid()
 
-    def child_limits(self) -> None:
-        super().child_limits()
-        resource.setrlimit(resource.RLIMIT_CPU, (self.cpu_seconds, self.cpu_seconds))
-        os.nice(10)
-        if sys.platform.startswith("linux"):
-            ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)  # PR_SET_PDEATHSIG
-            if os.getppid() != self._parent_pid:  # The parent died before prctl took effect.
-                os._exit(1)
+    def entrypoint_options(self) -> tuple[str, ...]:
+        return (*super().entrypoint_options(), "--cpu-seconds", str(self.cpu_seconds),
+                "--parent-pid", str(self._parent_pid), "--nice", "10")
 
 
 @contextmanager

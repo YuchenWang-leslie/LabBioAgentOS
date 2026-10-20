@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 from uuid import UUID
 
 from pydantic import (
@@ -71,6 +71,13 @@ class ClarificationCheckpoint(BaseModel):
         return self
 
 
+RejectedStageFailureCode = Literal[
+    "INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT",
+    "REQUIRED_CAPABILITY_INCOMPLETE", "HANDOFF_REQUIRED",
+]
+REJECTED_STAGE_FAILURE_CODES = frozenset(get_args(RejectedStageFailureCode))
+
+
 class RejectedStageCheckpoint(BaseModel):
     """Completed invocation evidence retained as rejected, never accepted history."""
 
@@ -79,7 +86,7 @@ class RejectedStageCheckpoint(BaseModel):
     stage_input: RuntimeStageInput
     evidence: CapabilityEvidenceBundle | None = None
     result: RuntimeStageResult | None = None
-    failure_code: Literal["INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT"]
+    failure_code: RejectedStageFailureCode
 
     @model_validator(mode="after")
     def matching_invocation(self):

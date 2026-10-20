@@ -709,6 +709,8 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     )
     assert bundle.authority_mode == "ITEM_LEVEL"
     assert set(CAPABILITY_INFORMATION_AUTHORITY) == {
+        "evidence_read",
+        "prepare_handoff",
         "artifact_list",
         "artifact_query",
         "artifact_aggregate",

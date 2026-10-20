@@ -82,11 +82,13 @@ async def test_report_check_collects_all_reference_problems_without_registering(
                                        [str(ref.artifact_id), unknown])
     assert len(failed['error']['report_evidence']['items']) == 2 and not calls
     assert tools.evidence_items()[-1].error_details.report_evidence is not None
-    await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 10)
+    first = await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 10)
+    tools.mark_feedback_delivered((first,))
     partially_ready = await tools.report_check([str(ref.artifact_id)])
     assert partially_ready['data']['items'][0]['next_offset'] == 10
     assert partially_ready['data']['items'][0]['suggested_limit'] == 5
-    await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 5, offset=10)
+    rest = await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 5, offset=10)
+    tools.mark_feedback_delivered((rest,))
     ready = await tools.report_check([str(ref.artifact_id)])
     assert ready['data']['ready'] and not calls
     assert ready['data']['items'][0]['suggested_limit'] is None

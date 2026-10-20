@@ -22,7 +22,7 @@ from .contracts import (
     ToolResult,
     ToolSpec,
 )
-from .control import BudgetLedger
+from .control import BudgetLedger, InterruptToken
 from .errors import (
     ToolBatchRejectedError,
     ToolExecutionFailure,
@@ -378,7 +378,7 @@ class ToolDispatcher:
         *,
         budget_ledger: BudgetLedger | None = None,
         max_calls_per_batch: int = 64,
-        batch_observer: Callable[[], None] | None = None,
+        batch_observer: Callable[[tuple[ToolResult, ...]], None] | None = None,
         stop_requested: Callable[[], str | None] | None = None,
     ):
         if max_calls_per_batch < 1 or max_calls_per_batch > 64:
@@ -412,6 +412,8 @@ class ToolDispatcher:
         parsed: Iterable[ParsedToolCall],
         *,
         reserve_budget: bool,
+        interrupt_token: InterruptToken | None = None,
+        on_tool_started: Callable[[ParsedToolCall], None] | None = None,
     ) -> tuple[DispatchOutcome, ...]:
         parsed = tuple(parsed)
         if reserve_budget and self.budget_ledger is not None:
@@ -420,6 +422,24 @@ class ToolDispatcher:
         outcomes: list[DispatchOutcome] = []
         for item in parsed:
             tool_invocation_id = uuid4()
+            if (
+                interrupt_token is not None and interrupt_token.requested
+            ) or self.stop_reason is not None:
+                interrupted = interrupt_token is not None and interrupt_token.requested
+                outcomes.append(DispatchOutcome(
+                    result=self._failed_result(
+                        item, tool_invocation_id,
+                        code=(
+                            "TOOL_NOT_STARTED_INTERRUPTED" if interrupted
+                            else "TOOL_NOT_STARTED_RUNTIME_STOP"
+                        ),
+                        message="The tool was not started because execution was stopped.",
+                    ),
+                    canonical_arguments=item.canonical_arguments,
+                ))
+                continue
+            if on_tool_started is not None:
+                on_tool_started(item)
             context_token = _TOOL_EXECUTION_CONTEXT.set(
                 ToolExecutionContext(
                     tool_invocation_id=tool_invocation_id,
@@ -473,8 +493,6 @@ class ToolDispatcher:
                     canonical_arguments=item.canonical_arguments,
                 )
             )
-        if self.batch_observer is not None:
-            self.batch_observer()
         return tuple(outcomes)
 
     @staticmethod

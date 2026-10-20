@@ -223,6 +223,32 @@ async def test_successful_batch_runs_in_order_and_keeps_canonical_arguments():
 
 
 @pytest.mark.asyncio
+async def test_runtime_stop_between_tools_preserves_results_and_skips_next():
+    effects = []
+    registry = ToolRegistry()
+
+    def handler(arguments: ExampleArguments):
+        effects.append(arguments.nested.label)
+        return {"done": True}
+
+    registry.register(
+        name="example", description="Example.",
+        arguments_model=ExampleArguments, handler=handler,
+    )
+    dispatcher = ToolDispatcher(
+        registry, ModelResultProjector(max_bytes=1_000),
+        stop_requested=lambda: "RUNTIME_STOP" if effects else None,
+    )
+    outcomes = await dispatcher.dispatch_batch(
+        (_valid_call("first"), _valid_call("second")),
+        finish_reason=FinishReason.TOOL_CALLS,
+    )
+    assert effects == ["VALID"]
+    assert outcomes[0].result.status == "SUCCEEDED"
+    assert outcomes[1].result.error.code == "TOOL_NOT_STARTED_RUNTIME_STOP"
+
+
+@pytest.mark.asyncio
 async def test_incomplete_provider_turn_rejects_batch_before_effects():
     effects = []
 

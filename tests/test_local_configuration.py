@@ -55,6 +55,7 @@ def test_settings_are_explicit_relative_and_frozen(settings_file):
     assert settings.input_roots == (settings_file.parent / "inputs",)
     assert settings.provider.env_file == settings_file.parent / "provider.env"
     assert settings.provider.max_model_phase_seconds == 300
+    assert settings.provider.max_request_bytes == 256_000
     assert settings.provider.finalization_json_object is False
     assert settings.provider.trust_env is True
     assert settings.principal.user_id == settings.workspace.user_id == "user-local"
@@ -88,6 +89,36 @@ def test_provider_proxy_policy_reaches_only_native_provider(
 def test_unknown_configuration_is_not_an_import_or_plugin_path(settings_file):
     content = settings_file.read_text(encoding="utf-8")
     settings_file.write_text('plugin = "untrusted.module:factory"\n' + content, encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_settings(settings_file)
+
+
+def test_request_byte_limit_reaches_stage_assemblies_and_runtime_identity(settings_file):
+    default_settings = load_settings(settings_file)
+    settings_file.write_text(settings_file.read_text().replace(
+        "[provider]", "[provider]\nmax_request_bytes = 123456",
+    ))
+    settings = load_settings(settings_file)
+    application = build_application(
+        settings, settings.result_root / "request-capacity", load_provider=False
+    )
+    try:
+        assert all(
+            assembly.max_request_bytes == 123_456
+            for assembly in application.configuration.stage_assemblies
+        )
+        assert runtime_manifest(settings)["runtime_revision"] != runtime_manifest(
+            default_settings
+        )["runtime_revision"]
+    finally:
+        application.run_state_store.close()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"256000"', "256000.0"])
+def test_request_byte_limit_requires_explicit_positive_integer(settings_file, value):
+    settings_file.write_text(settings_file.read_text().replace(
+        "[provider]", f"[provider]\nmax_request_bytes = {value}",
+    ))
     with pytest.raises(ValidationError):
         load_settings(settings_file)
 

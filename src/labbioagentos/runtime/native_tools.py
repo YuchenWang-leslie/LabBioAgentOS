@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, create_model
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, create_model, model_validator
 
 from labbioagentos.artifacts.models import ArtifactQueryLimit
 from labbioagentos.contracts import WorkflowStage
@@ -23,11 +23,13 @@ from labbioagentos.execution.models import (
 from labbioagentos.kernel import (
     DispatchOutcome,
     FinishReason,
+    KernelIdentity,
     ModelResultProjector,
     ToolBatchRejectedError,
     ToolCall,
     ToolDispatcher,
     ToolRegistry,
+    ToolResult as KernelToolResult,
 )
 from labbioagentos.literature import LiteratureLimit, LiteratureQuery
 from labbioagentos.model_safety import validate_model_visible_json
@@ -43,6 +45,7 @@ from .contracts import (
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
     ExecutionReview,
+    ReportEvidenceReference,
     RuntimeExecutionCapabilityView,
 )
 
@@ -246,16 +249,25 @@ class MemoryProposeUpdateArguments(NativeToolArguments):
 
 
 class ReportCheckArguments(NativeToolArguments):
-    evidence_artifact_ids: list[UUID] = Field(max_length=256)
+    evidence_references: list[ReportEvidenceReference] = Field(
+        min_length=1, max_length=64,
+        description="Required observed-scope citations: source Artifact UUID and actual "
+        "capability_invocation_id observation IDs fully delivered to this Agent. "
+        "The host derives read scope and source hashes; a source UUID alone is not a citation.",
+    )
+
+    @model_validator(mode="after")
+    def bounded_observation_count(self):
+        if sum(
+            len(item.observation_ids) for item in self.evidence_references
+        ) > 64:
+            raise ValueError("At most 64 report observations may be referenced")
+        return self
 
 
-class ReportSubmitArguments(NativeToolArguments):
+class ReportSubmitArguments(ReportCheckArguments):
     title: StrictStr = Field(min_length=1, max_length=256)
     report_text: StrictStr = Field(min_length=1, max_length=64_000)
-    evidence_artifact_ids: list[UUID] | None = Field(
-        default=None,
-        max_length=256,
-    )
 
 
 class SkillSearchArguments(NativeToolArguments):
@@ -303,6 +315,19 @@ class SkillProposeUseArguments(NativeToolArguments):
     ] | None = Field(default=None, max_length=100)
 
 
+class EvidenceReadArguments(NativeToolArguments):
+    observation_id: UUID
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=8_000, ge=1, le=8_000)
+
+
+class PrepareHandoffArguments(NativeToolArguments):
+    observation_ids: list[UUID] = Field(min_length=1, max_length=64)
+    summary: StrictStr = Field(min_length=1, max_length=8_000)
+    limitations: list[Annotated[StrictStr, Field(max_length=2_000)]] = Field(
+        default_factory=list, max_length=16)
+
+
 CAPABILITY_ARGUMENT_MODELS: dict[str, type[NativeToolArguments]] = {
     "artifact_aggregate": ArtifactAggregateArguments,
     "artifact_list": ArtifactListArguments,
@@ -312,11 +337,13 @@ CAPABILITY_ARGUMENT_MODELS: dict[str, type[NativeToolArguments]] = {
     "execution_inspect": ExecutionInspectArguments,
     "execution_revise": ExecutionReviseArguments,
     "execution_submit": ExecutionSubmitArguments,
+    "evidence_read": EvidenceReadArguments,
     "file_read": FileReadArguments,
     "literature_search": LiteratureSearchArguments,
     "memory_propose_update": MemoryProposeUpdateArguments,
     "memory_search": MemorySearchArguments,
     "memory_view": MemoryViewArguments,
+    "prepare_handoff": PrepareHandoffArguments,
     "report_check": ReportCheckArguments,
     "report_read": ReportReadArguments,
     "report_submit": ReportSubmitArguments,
@@ -324,20 +351,6 @@ CAPABILITY_ARGUMENT_MODELS: dict[str, type[NativeToolArguments]] = {
     "skill_search": SkillSearchArguments,
     "skill_view": SkillViewArguments,
 }
-
-_STABLE_READ_CAPABILITIES = frozenset({
-    "artifact_aggregate",
-    "artifact_query",
-    "environment_list",
-    "execution_inspect",
-    "file_read",
-    "memory_search",
-    "memory_view",
-    "report_check",
-    "report_read",
-    "skill_search",
-    "skill_view",
-})
 
 if frozenset(CAPABILITY_ARGUMENT_MODELS) != ALL_CAPABILITIES:
     raise RuntimeError("Native capability argument model catalog is incomplete")
@@ -359,9 +372,9 @@ class NativeRuntimeCapabilityHost:
     def __init__(self, binding, services):
         from .tooling import LabBioRuntimeToolSet
         self._host = LabBioRuntimeToolSet(binding, services)
-        self._stable_read_results: list[tuple[str, dict, JsonValue | None]] = []
-        self._stable_read_feedback_boundary: int | None = None
-        self._stop_reason: str | None = None
+
+    def begin_model_invocation(self, identity: KernelIdentity) -> None:
+        self._host.begin_model_invocation(identity.invocation_id)
 
     async def invoke(
         self,
@@ -372,37 +385,26 @@ class NativeRuntimeCapabilityHost:
             raise ValueError("Unknown native capability")
         method = getattr(self._host, capability_name)
         payload = arguments.model_dump(mode="json")
-        result = await method(**payload)
-        if (
-            capability_name in _STABLE_READ_CAPABILITIES
-            and isinstance(result, dict)
-            and result.get("success") is True
-        ):
-            safe_result = result.get("data")
-            boundary = self._stable_read_feedback_boundary
-            if boundary is not None and any(
-                previous_name == capability_name
-                and previous_payload == payload
-                and previous_result == safe_result
-                for previous_name, previous_payload, previous_result
-                in reversed(self._stable_read_results[:boundary])
-            ):
-                self._stop_reason = "REPEATED_NO_PROGRESS_REQUEST"
-            self._stable_read_results.append(
-                (capability_name, payload, safe_result)
-            )
-        return result
+        return await method(**payload)
 
-    def mark_feedback_delivered(self) -> None:
-        self._host.mark_feedback_delivered()
-        self._stable_read_feedback_boundary = len(self._stable_read_results)
+    def mark_feedback_delivered(self, results: tuple[KernelToolResult, ...]) -> None:
+        # Kernel calls this only after the provider consumed the exact final
+        # projection. A projection failure carries no released original body.
+        self._host.mark_feedback_delivered(tuple(
+            result.content for result in results
+            if result.status == "SUCCEEDED" and isinstance(result.content, dict)
+        ))
 
     @property
     def stop_reason(self) -> str | None:
-        return self._stop_reason or self._host.stop_reason
+        return self._host.stop_reason
 
     def evidence_items(self) -> tuple[CapabilityEvidenceItem, ...]:
         return self._host.evidence_items()
+
+    @property
+    def prepared_handoff(self):
+        return self._host.prepared_handoff
 
 
 @dataclass(frozen=True)
@@ -435,12 +437,20 @@ _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "the returned suggested_next_limit is a policy-safe page size. An omitted "
     "limit continues to use the policy-bounded default page size."
 )
+for _report_capability in ("report_check", "report_submit"):
+    _CAPABILITY_DESCRIPTIONS[_report_capability] = (
+        "Use evidence_references with artifact_id and observation_ids copied from "
+        "successful artifact_query, artifact_aggregate, file_read or report_read "
+        "capability_invocation_id values actually delivered in this invocation. "
+        "The host preserves exact page, aggregate or summary scopes, not whole-table "
+        "read claims or scientific validation. At least one actual observation is "
+        "required; source identities or archived files alone are not read evidence."
+    )
 _CAPABILITY_DESCRIPTIONS["file_read"] = (
     "Read one authorized generated file page by Artifact UUID. For the same Artifact, "
     "copy the returned next_offset into the next call until it is null; requesting an "
-    "already delivered page after feedback makes no progress and can end the capability "
-    "loop with REPEATED_NO_PROGRESS_REQUEST. That loop termination does not prove any "
-    "execution capability was attempted."
+    "already delivered page repeats that page rather than advancing the cursor. "
+    "Reading a generated file does not prove a new execution capability was attempted."
 )
 _CAPABILITY_DESCRIPTIONS["execution_submit"] = (
     "Submit one complete program for governed execution. Exposure of this tool "

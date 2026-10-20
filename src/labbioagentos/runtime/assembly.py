@@ -40,6 +40,7 @@ class RuntimeStageAssemblySpec:
     required_any_capabilities: tuple[str, ...] = ()
     max_capability_turns: int = 24
     max_no_progress_seconds: int = 300
+    max_request_bytes: int = 256_000
     retry_enabled: bool = True
     user_input_enabled: bool = True
     clarification_enabled: bool = True
@@ -63,6 +64,8 @@ class RuntimeStageAssemblySpec:
             raise ValueError("max_capability_turns must be between 4 and 128")
         if self.max_no_progress_seconds < 30 or self.max_no_progress_seconds > 1_800:
             raise ValueError("max_no_progress_seconds must be between 30 and 1800")
+        if type(self.max_request_bytes) is not int or self.max_request_bytes < 1:
+            raise ValueError("max_request_bytes must be a positive integer")
         if not set(self.required_capabilities).issubset(self.capability_allowlist):
             raise ValueError("required_capabilities must be within the allowlist")
         if not set(self.required_any_capabilities).issubset(self.capability_allowlist):

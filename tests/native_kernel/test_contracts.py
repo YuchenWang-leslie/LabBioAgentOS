@@ -276,6 +276,25 @@ def test_budget_reservation_is_atomic_and_unknown_tokens_are_not_zero():
     assert known_ledger.reserve(BudgetDelta(tokens=7)).tokens == 7
 
 
+@pytest.mark.parametrize("unknown_tokens", (False, True))
+def test_observed_usage_is_retained_when_limits_are_exceeded(unknown_tokens):
+    ledger = BudgetLedger(BudgetLimits(
+        provider_turns=2, tokens=10, wall_time_ms=10,
+        tool_calls=1, evidence_entries=1, evidence_bytes=100,
+        delegations=0, delegation_depth=0, finalization_attempts=0,
+    ))
+    ledger.record_observed_usage(tokens=None if unknown_tokens else 4, wall_time_ms=4)
+    with pytest.raises(BudgetExceededError) as raised:
+        ledger.record_observed_usage(tokens=7, wall_time_ms=7)
+    assert raised.value.dimension == ("wall_time_ms" if unknown_tokens else "tokens")
+    assert ledger.usage.tokens == (None if unknown_tokens else 11)
+    assert ledger.usage.wall_time_ms == 11
+    before = ledger.usage
+    with pytest.raises(BudgetExceededError):
+        ledger.reserve(BudgetDelta(provider_turns=1))
+    assert ledger.usage == before
+
+
 def test_interrupt_preserves_first_signal_and_raises_typed_error():
     token = InterruptToken()
     first = token.request(InterruptReason.USER_REQUESTED, reason_code="USER_STOP")

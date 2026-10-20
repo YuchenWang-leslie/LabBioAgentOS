@@ -11,6 +11,7 @@ from labbioagentos import ContainerStartError, ProcessOutcome, ProcessRunner
 from labbioagentos.execution.apptainer import ISOLATION_ARGUMENTS
 from labbioagentos.execution.apptainer_probe import (
     BIND_PROBE,
+    CGROUP_PROBE,
     NETWORK_PROBE,
     ApptainerUnsupportedError,
     probe_capabilities,
@@ -45,8 +46,9 @@ class ScriptedRunner(ProcessRunner):
             return self._outcome(json.dumps({
                 "inputs_present": True, "inputs_read_only": True, "outputs_writable": True,
             }).encode())
-        if script == "pass":
-            return self._outcome(b"", 0 if self.cgroups else 255)
+        if script == CGROUP_PROBE:
+            payload = {"cpu.max": "100000 100000", "memory.max": "268435456", "pids.max": "32"}
+            return self._outcome(json.dumps(payload).encode(), 0 if self.cgroups else 255)
         raise AssertionError(f"unexpected probe argv: {argv}")
 
     @staticmethod

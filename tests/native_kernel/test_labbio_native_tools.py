@@ -9,7 +9,7 @@ from labbioagentos import (
     ExecutionRuntime, RequestedResources, RuntimeExecutionCapabilityView,
 )
 from labbioagentos.contracts import InformationAuthority, WorkflowStage
-from labbioagentos.kernel import FinishReason, ToolBatchRejectedError, ToolCall
+from labbioagentos.kernel import FinishReason, ToolBatchRejectedError, ToolCall, ToolResult
 from labbioagentos.runtime.capability_catalog import (
     ALL_CAPABILITIES,
     CAPABILITY_CEILINGS,
@@ -53,6 +53,23 @@ def test_rejected_model_field_explains_expected_json_object():
     assert "JSON object" in str(caught.value)
 
 
+@pytest.mark.parametrize("capability", ["report_check", "report_submit"])
+@pytest.mark.parametrize("references", [{}, {"evidence_references": []},
+                                       {"evidence_artifact_ids": [IDENTITY]}])
+def test_new_native_reports_require_nonempty_observation_scoped_citations(capability, references):
+    registry = build_labbio_tool_registry(RecordingHost())
+    arguments = {"title": "Synthetic", "report_text": "Synthetic"} if capability == "report_submit" else {}
+    with pytest.raises(ToolBatchRejectedError):
+        registry.validate_batch((ToolCall(
+            call_id="invalid-reference", name=capability,
+            arguments_json=json.dumps({**arguments, **references}),
+        ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    spec = next(spec for spec in registry.specs if spec.name == capability)
+    assert "evidence_artifact_ids" not in spec.parameters["properties"]
+    assert "evidence_references" in spec.parameters["required"]
+    assert spec.parameters["properties"]["evidence_references"]["minItems"] == 1
+
+
 VALID_ARGUMENTS = {
     "artifact_aggregate": {
         "artifact_id": IDENTITY,
@@ -68,6 +85,7 @@ VALID_ARGUMENTS = {
         "requirements": ["example-package==1.0"],
     },
     "environment_list": {},
+    "evidence_read": {"observation_id": IDENTITY, "offset": 0, "limit": 8_000},
     "execution_inspect": {"execution_id": IDENTITY},
     "execution_revise": {
         "execution_id": IDENTITY,
@@ -87,11 +105,19 @@ VALID_ARGUMENTS = {
     },
     "memory_search": {},
     "memory_view": {"memory_id": IDENTITY, "version": 1},
-    "report_check": {"evidence_artifact_ids": []},
+    "prepare_handoff": {
+        "observation_ids": [IDENTITY],
+        "summary": "Agent-authored handoff summary.",
+        "limitations": ["Only the supplied observation was reviewed."],
+    },
+    "report_check": {"evidence_references": [
+        {"artifact_id": IDENTITY, "observation_ids": [OTHER_IDENTITY]}]},
     "report_read": {"artifact_id": IDENTITY},
     "report_submit": {
         "title": "Bounded report",
         "report_text": "Bounded content.",
+        "evidence_references": [
+            {"artifact_id": IDENTITY, "observation_ids": [OTHER_IDENTITY]}],
     },
     "skill_propose_use": {
         "skill_id": IDENTITY,
@@ -107,10 +133,12 @@ VALID_ARGUMENTS = {
 class RecordingHost:
     def __init__(self):
         self.calls = []
+        self.argument_types = []
         self.fail_with = None
 
     async def invoke(self, capability_name, arguments):
         self.calls.append((capability_name, arguments))
+        self.argument_types.append(type(arguments).__name__)
         if self.fail_with is not None:
             raise self.fail_with
         return {"capability": capability_name, "accepted": True}
@@ -145,8 +173,8 @@ class StableRuntimeToolSet:
             "error": None,
         }
 
-    def mark_feedback_delivered(self):
-        pass
+    def mark_feedback_delivered(self, responses):
+        return tuple(UUID(response["capability_invocation_id"]) for response in responses)
 
     def evidence_items(self):
         return ()
@@ -158,6 +186,11 @@ def _runtime_host(monkeypatch, tool_set):
         lambda _binding, _services: tool_set,
     )
     return NativeRuntimeCapabilityHost(None, None)
+
+
+def _delivered(response):
+    return (ToolResult(tool_invocation_id=uuid4(), call_id="delivered",
+                       name="artifact_aggregate", status="SUCCEEDED", content=response),)
 
 
 def _stage_for(capability_name: str) -> WorkflowStage:
@@ -221,7 +254,8 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     assert "policy-bounded default" in descriptions["artifact_query"]
     assert "next_offset" in descriptions["artifact_query"]
     assert "copy the returned next_offset" in descriptions["file_read"]
-    assert "REPEATED_NO_PROGRESS_REQUEST" in descriptions["file_read"]
+    assert "repeats that page rather than advancing the cursor" in descriptions["file_read"]
+    assert "REPEATED_NO_PROGRESS_REQUEST" not in descriptions["file_read"]
     assert "LABBIO_INPUT_MANIFEST_PATH" in descriptions["execution_submit"]
     assert "manifest[str(artifact_uuid)]" in descriptions["execution_submit"]
     assert "LABBIO_OUTPUT_DIR" in descriptions["execution_submit"]
@@ -292,7 +326,7 @@ def test_zero_output_count_keeps_submit_outputs_optional():
 
 
 @pytest.mark.asyncio
-async def test_unchanged_successful_read_after_feedback_requests_stop(monkeypatch):
+async def test_unchanged_successful_read_after_feedback_remains_live(monkeypatch):
     tool_set = StableRuntimeToolSet()
     host = _runtime_host(monkeypatch, tool_set)
     arguments = ArtifactAggregateArguments(
@@ -301,12 +335,12 @@ async def test_unchanged_successful_read_after_feedback_requests_stop(monkeypatc
     )
 
     first = await host.invoke("artifact_aggregate", arguments)
-    host.mark_feedback_delivered()
+    host.mark_feedback_delivered(_delivered(first))
     second = await host.invoke("artifact_aggregate", arguments)
 
     assert first["data"] == second["data"] == {"count": 3}
     assert len(tool_set.calls) == 2
-    assert host.stop_reason == "REPEATED_NO_PROGRESS_REQUEST"
+    assert host.stop_reason is None
 
 
 @pytest.mark.asyncio
@@ -320,7 +354,7 @@ async def test_changed_read_result_after_feedback_remains_live(monkeypatch):
     )
 
     first = await host.invoke("artifact_aggregate", arguments)
-    host.mark_feedback_delivered()
+    host.mark_feedback_delivered(_delivered(first))
     second = await host.invoke("artifact_aggregate", arguments)
 
     assert first["data"] == {"count": 3}
@@ -338,12 +372,19 @@ async def test_repeated_side_effect_is_not_classified_as_stable_read(monkeypatch
         script_content="print('ok')",
     )
 
-    await host.invoke("execution_submit", arguments)
-    host.mark_feedback_delivered()
+    first = await host.invoke("execution_submit", arguments)
+    host.mark_feedback_delivered(_delivered(first))
     await host.invoke("execution_submit", arguments)
 
     assert len(tool_set.calls) == 2
     assert host.stop_reason is None
+
+
+def test_explicit_runtime_stop_reason_is_preserved(monkeypatch):
+    tool_set = StableRuntimeToolSet()
+    host = _runtime_host(monkeypatch, tool_set)
+    tool_set.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
+    assert host.stop_reason == "REPEATED_NON_RETRYABLE_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -382,6 +423,7 @@ async def test_every_capability_dispatches_without_model_supplied_authority():
         assert bundle.items == evidence
 
     assert [name for name, _arguments in host.calls] == sorted(ALL_CAPABILITIES)
+    assert {"EvidenceReadArguments", "PrepareHandoffArguments"} <= set(host.argument_types)
 
 
 @pytest.mark.asyncio

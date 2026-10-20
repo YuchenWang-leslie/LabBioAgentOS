@@ -68,6 +68,7 @@ async def test_execution_review_requires_real_feedback_and_remains_model_context
         review={'rationale': 'Use the verified base.', 'feedback_invocation_ids': [str(uuid4())]})
     assert invented['error']['error_code'] == 'INVALID_EXECUTION_REVIEW'
     assert len(executor.plans) == 1
+    tools.mark_feedback_delivered((failed,))
     completed = await tools.execution_revise(str(first.execution_id), first.script_hash,
         review={'rationale': 'Use the actual source hash returned for this base.',
                 'feedback_invocation_ids': [str(actual_feedback)]})
@@ -123,6 +124,7 @@ async def test_partial_failed_execution_checkpoint_is_the_only_revision_mount(bo
     original_ref = store.get_ref(UUID(checkpoint))
     original_bytes = Path(original_ref.storage_locator).read_bytes()
     runner.exit_code = 0
+    tools.mark_feedback_delivered((first,))
     revised = await tools.execution_revise(receipt['execution_id'], receipt['script_hash'],
         edits=[{'old': '# initial fixture', 'new': '# explicit reuse fixture'}],
         input_artifact_ids=[checkpoint], parameters={'mode': 'reuse'},

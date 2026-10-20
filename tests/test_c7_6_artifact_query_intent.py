@@ -201,7 +201,7 @@ async def test_followup_page_reuses_policy_default_when_limit_is_omitted(query_b
 async def test_followup_page_with_omitted_limit_progresses_after_prior_page(query_boundary):
     _, _, ref, toolset = query_boundary
     first = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
-    toolset.mark_feedback_delivered()
+    toolset.mark_feedback_delivered((first,))
 
     result = await toolset.artifact_query(
         str(ref.artifact_id), "TOP_N", limit=None, offset=10
@@ -221,7 +221,7 @@ async def test_repeated_top_n_page_requires_cursor_progress_before_runtime_stop(
 ):
     _, _, ref, toolset = query_boundary
     first = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
-    toolset.mark_feedback_delivered()
+    toolset.mark_feedback_delivered((first,))
 
     repeated = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
 

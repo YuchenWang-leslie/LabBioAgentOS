@@ -142,7 +142,8 @@ assert len({Path(path).name for path in manifest.values()}) == 3
 observed = {}
 for artifact_id, path in manifest.items():
     source = Path(path)
-    assert source.name == artifact_id and source.name != "content"
+    assert source.name == artifact_id + Path(expected[artifact_id]["original_filename"]).suffix
+    assert source.name != "content"
     assert identities[artifact_id] == {"original_filename": expected[artifact_id]["original_filename"]}
     observed[artifact_id] = {
         "original_filename": identities[artifact_id]["original_filename"],

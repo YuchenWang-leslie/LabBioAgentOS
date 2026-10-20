@@ -5,10 +5,15 @@ import json
 
 
 def finalization_evidence(evidence, *, include_safe_results: bool = True,
-                          compact: bool = False) -> dict:
+                          compact: bool = False,
+                          include_explicit_completion: bool = True) -> dict:
     # Optional nulls carry no evidence. Keeping them for every item can make the
     # metadata envelope larger than the bounded result bodies it replaced.
     value = evidence.model_dump(mode='json', exclude_none=True)
+    # Prepared observations are delivered in their own exact, bounded message.
+    value.pop('prepared_handoff', None)
+    if not include_explicit_completion:
+        value.pop('explicit_completion', None)
     if compact:
         value['projection'] = {
             'status': 'COMPACT_PROVENANCE',

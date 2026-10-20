@@ -94,6 +94,7 @@ from .literature import LiteratureSearchService
 from .run_state import (
     ClarificationCheckpoint,
     RejectedStageCheckpoint,
+    REJECTED_STAGE_FAILURE_CODES,
     ApplicationRunRecord,
     InMemoryRunStateStore,
     RunInflightOperation,
@@ -798,6 +799,7 @@ class LabBioApplication:
             self.access_service,
             trace_recorder=self.trace_recorder,
         )
+        from .runtime.observations import ObservationStore
         self.capability_services = RuntimeCapabilityServices(
             artifact_store=self.artifact_store,
             artifact_exposure=self.artifact_exposure,
@@ -808,6 +810,7 @@ class LabBioApplication:
             memory_service=configuration.memory_service,
             report_submission=self.report_submission,
             trace_recorder=self.trace_recorder,
+            observation_store=ObservationStore(self.artifact_store.root.parent / "observations"),
         )
 
         self.runtime_factory = NativeRuntimeFactory(
@@ -1417,9 +1420,9 @@ class LabBioApplication:
     def _fail_rejected_stage(self, session, error):
         """Close only a known invalid result after completed tool work, not a crash."""
         if isinstance(error, RuntimeIntegrationError):
-            if error.error_code != "MALFORMED_RUNTIME_RESULT":
+            if error.error_code not in REJECTED_STAGE_FAILURE_CODES:
                 raise error
-            code = "MALFORMED_RUNTIME_RESULT"
+            code = error.error_code
         else:
             code = "INVALID_RUNTIME_PROPOSAL"
         current = self.run_state_store.get(session.run.run_id)
@@ -1530,7 +1533,7 @@ class LabBioApplication:
             RunStatus.FAILED: (
                 (_EXECUTION_PREFLIGHT_FAILURE_CODE,)
                 if run.failure_reason == _EXECUTION_PREFLIGHT_FAILURE_CODE
-                else (run.failure_reason,) if run.failure_reason in {"INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT"}
+                else (run.failure_reason,) if run.failure_reason in REJECTED_STAGE_FAILURE_CODES
                 else ("RUN_FAILED",)
             ),
             RunStatus.WAITING_FOR_USER: ("USER_INPUT_REQUIRED",),

@@ -576,6 +576,34 @@ class RevisionValidationDetails(BaseModel):
     truncated: bool = False
 
 
+class ReportEvidenceReference(BaseModel):
+    """Model-selected source and observations; scope is never model-authored."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    artifact_id: UUID
+    observation_ids: list[UUID] = Field(min_length=1, max_length=64)
+
+
+class ArtifactReadReceipt(BaseModel):
+    """Host-derived identity and scope of one delivered, governed observation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    artifact_id: UUID
+    observation_id: UUID
+    source_invocation_id: UUID
+    delivered_invocation_id: UUID
+    source_sha256: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    source_identity: Literal["ARTIFACT_REPRESENTATION", "GENERATED_FILE", "REPORT_TEXT"]
+    observation_sha256: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    scope: dict[str, JsonValue]
+
+    @field_validator("scope")
+    @classmethod
+    def safe_scope(cls, value):
+        validate_model_visible_json(value)
+        return value
+
+
 class ReportEvidenceItem(BaseModel):
     """Citation identity and coverage, never Artifact contents or storage paths."""
 
@@ -585,7 +613,11 @@ class ReportEvidenceItem(BaseModel):
     status: Literal[
         "READY", "INVALID_IDENTIFIER", "DUPLICATE_REFERENCE", "ARTIFACT_NOT_FOUND",
         "INVALID_REFERENCE_KIND", "AUTHORIZATION_DENIED", "REPORT_EVIDENCE_INCOMPLETE",
+        "REPORT_OBSERVATION_NOT_DELIVERED", "REPORT_OBSERVATION_SOURCE_MISMATCH",
+        "REPORT_OBSERVATION_SOURCE_CHANGED",
     ]
+    citation_mode: Literal["LEGACY_COMPLETE_READ", "OBSERVED_SCOPE"] = "LEGACY_COMPLETE_READ"
+    read_receipts: tuple[ArtifactReadReceipt, ...] = Field(default=(), max_length=64)
     reference_kind: StrictStr | None = Field(default=None, max_length=64)
     record_count: int | None = Field(default=None, ge=0)
     next_offset: int | None = Field(default=None, ge=0)
@@ -603,6 +635,7 @@ class ReportEvidenceCheck(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     authority: Literal["CONTROL_STATE"] = "CONTROL_STATE"
     ready: bool
+    scientific_validation: Literal["NOT_PERFORMED"] = "NOT_PERFORMED"
     items: tuple[ReportEvidenceItem, ...] = Field(default=(), max_length=256)
 
 
@@ -672,6 +705,7 @@ class CapabilityEvidenceItem(BaseModel):
     artifact_query_request: ArtifactQueryRequestAudit | None = None
     skill_search_request: SkillSearchRequestAudit | None = None
     execution_submit_request: ExecutionSubmitRequestAudit | None = None
+    artifact_read_receipt: ArtifactReadReceipt | None = None
 
     @field_validator("safe_result")
     @classmethod
@@ -714,6 +748,44 @@ class CapabilityEvidenceItem(BaseModel):
         return self
 
 
+class HandoffObservation(BaseModel):
+    """One exact public tool response, distinct from source-free audit evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    observation_id: UUID
+    capability_name: SafeIdentifier
+    information_authority: InformationAuthority
+    public_response: dict[str, JsonValue]
+    artifact_read_receipt: ArtifactReadReceipt | None = None
+
+    @field_validator("public_response")
+    @classmethod
+    def bounded_public_response(cls, value):
+        # execution_inspect deliberately releases up to 32k source characters.
+        # This does not change CapabilityEvidenceItem.safe_result's 8k bound.
+        validate_model_visible_json(value, max_string_length=32_000, max_depth=12)
+        return value
+
+    @model_validator(mode="after")
+    def matching_identity(self):
+        if (self.public_response.get("capability_invocation_id") != str(self.observation_id)
+                or self.public_response.get("information_authority") != self.information_authority.value):
+            raise ValueError("Public observation identity or authority differs")
+        return self
+
+
+class PreparedHandoff(BaseModel):
+    """Agent-selected exact observations, not a host-authored scientific summary."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    summary: StrictStr = Field(min_length=1, max_length=8_000)
+    limitations: tuple[Annotated[StrictStr, Field(max_length=2_000)], ...] = Field(
+        default=(), max_length=16
+    )
+    summary_authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+    observations: tuple[HandoffObservation, ...] = Field(min_length=1, max_length=64)
+
+
 class CapabilityEvidenceBundle(BaseModel):
     """Bounded mixed-authority projection passed into finalization."""
 
@@ -742,6 +814,7 @@ class CapabilityEvidenceBundle(BaseModel):
     termination_reason: CapabilityTerminationReason = "RUNTIME_RETURNED"
     provider_turn_count: int = Field(default=0, ge=0)
     provider_turn_limit: int | None = Field(default=None, ge=1)
+    prepared_handoff: PreparedHandoff | None = None
 
 
 class RuntimeReferenceKind(StrEnum):

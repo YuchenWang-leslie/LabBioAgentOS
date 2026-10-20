@@ -92,12 +92,14 @@ from .contracts import (
     ArtifactQueryConstraints,
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
+    ArtifactReadReceipt,
     CapabilityErrorDetails,
     CapabilityEvidenceItem,
     CapabilityEvidenceStatus,
     RepeatedRequestDetails,
     ReportEvidenceCheck,
     ReportEvidenceItem,
+    ReportEvidenceReference,
     RevisionValidationDetails,
     RevisionValidationIssue,
     ExecutionAuditWireType,
@@ -109,9 +111,15 @@ from .contracts import (
     ScriptValidationDetails,
     RuntimeReference,
     RuntimeReferenceKind,
+    PreparedHandoff,
+    HandoffObservation,
 )
-from .reporting import ReportSubmissionService, read_report_page
+from .reporting import (
+    ReportSubmissionService, read_report_page, make_read_receipt,
+    artifact_representation_digest, observation_digest,
+)
 from .files import authorize_generated_file, read_generated_file
+from .observations import ObservationStore, canonical_bytes
 from .capability_catalog import (
     ALL_CAPABILITIES,
     CAPABILITY_CEILINGS,
@@ -266,6 +274,8 @@ class ToolResult(BaseModel):
     data: JsonValue | None = None
     error: ToolError | None = None
     capability_invocation_id: UUID | None = None
+    artifact_read_receipt: ArtifactReadReceipt | None = None
+    observation_archived: bool = False
 
 
 class ArtifactListItem(BaseModel):
@@ -485,6 +495,7 @@ class RuntimeCapabilityServices:
     trace_recorder: RunTraceRecorder | None = None
     environment_service: EnvironmentService | None = None
     literature_search: LiteratureSearchService | None = None
+    observation_store: ObservationStore | None = None
 
 
 class LabBioRuntimeToolSet:
@@ -499,9 +510,29 @@ class LabBioRuntimeToolSet:
         self.binding = binding
         self.services = services
         self._evidence_items: list[CapabilityEvidenceItem] = []
+        self._model_invocation_id = binding.invocation_id
+        self._current_observation_ids: set[UUID] = set()
         self.stop_reason: str | None = None
         self._feedback_boundary: int | None = None
         self._artifact_list_requests: list[tuple[int, int, UUID, int]] = []
+        self._observation_read_ranges: dict[UUID, list[tuple[int, int]]] = {}
+        self._pending_observation_pages: dict[UUID, tuple[Any, int, int]] = {}
+        self._public_responses: dict[UUID, dict] = {}
+        self._delivered_observations: dict[UUID, CapabilityEvidenceItem] = {}
+        self.prepared_handoff: PreparedHandoff | None = None
+
+    def begin_model_invocation(self, invocation_id: UUID) -> None:
+        """Start one fresh model conversation without losing durable stage audit."""
+        if invocation_id == self._model_invocation_id:
+            return
+        self._model_invocation_id = invocation_id
+        self._current_observation_ids.clear()
+        self._delivered_observations.clear()
+        self._observation_read_ranges.clear()
+        self._pending_observation_pages.clear()
+        self.prepared_handoff = None
+        self.stop_reason = None
+        self._feedback_boundary = None
 
     @property
     def tool_functions(self) -> dict[str, Callable[..., Any]]:
@@ -518,14 +549,157 @@ class LabBioRuntimeToolSet:
                 f"Capability {capability!r} is not available in this stage"
             )
 
-    def mark_feedback_delivered(self) -> None:
-        """Pin results available before the next model response's tool batch."""
-        self._feedback_boundary = len(self._evidence_items)
+    def mark_feedback_delivered(self, public_responses: tuple[dict, ...]) -> tuple[UUID, ...]:
+        """Confirm only exact public responses consumed by the current provider."""
+        confirmed = []
+        items = {item.capability_invocation_id: item for item in self._evidence_items}
+        for response in public_responses:
+            try:
+                identity = UUID(response["capability_invocation_id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (identity not in self._current_observation_ids
+                    or identity not in items or identity not in self._public_responses
+                    or canonical_bytes(response) != canonical_bytes(self._public_responses[identity])):
+                continue
+            item = items[identity]
+            receipt = item.artifact_read_receipt
+            if receipt is not None and (
+                response.get("artifact_read_receipt") != receipt.model_dump(mode="json")
+                or sha256(canonical_bytes(response.get("data"))).hexdigest() != receipt.observation_sha256
+            ):
+                continue
+            self.record_delivered_observation(item)
+            self._delivered_observations[identity] = item
+            confirmed.append(identity)
+            page = self._pending_observation_pages.pop(identity, None)
+            if page is not None:
+                saved, start, end = page
+                original_id = saved.item.capability_invocation_id
+                ranges = self._observation_read_ranges.setdefault(original_id, [])
+                ranges.append((start, end))
+                length = len(canonical_bytes(saved.public_response).decode("utf-8"))
+                if self._covered_observation_prefix(ranges) == length:
+                    self.record_delivered_observation(saved.item)
+                    self._delivered_observations[original_id] = saved.item
+                    self._public_responses[original_id] = saved.public_response
+        if confirmed:
+            self._feedback_boundary = len(self._evidence_items)
+        return tuple(confirmed)
+
+    @staticmethod
+    def _covered_observation_prefix(ranges):
+        covered = 0
+        for start, stop in sorted(ranges):
+            if start > covered:
+                break
+            covered = max(covered, stop)
+        return covered
+
+    def _record_observation(self, item: CapabilityEvidenceItem, public_response: dict) -> None:
+        # Do not retain an alias a caller could later mutate after publication.
+        public_response = json.loads(canonical_bytes(public_response))
+        HandoffObservation(
+            observation_id=item.capability_invocation_id, capability_name=item.capability_name,
+            information_authority=item.information_authority, public_response=public_response,
+            artifact_read_receipt=item.artifact_read_receipt,
+        )
+        if self.services.observation_store is not None:
+            self.services.observation_store.save(self.binding, item, public_response)
+        self._public_responses[item.capability_invocation_id] = public_response
+        self._evidence_items.append(item)
+        self._current_observation_ids.add(item.capability_invocation_id)
+
+    async def evidence_read(self, observation_id: UUID | str, offset: int = 0,
+                            limit: int = 8_000) -> dict:
+        """Read an immutable observation by ID, with explicit exact text pages.
+
+        Prior-stage artifact observations are reauthorized. Reading only part
+        never grants report coverage; finish the pages to receive read credit.
+        """
+        saved = None
+
+        def read():
+            nonlocal saved
+            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8_000:
+                raise ValueError("Observation page is outside the supported bounds")
+            store = self._required(self.services.observation_store, "observation")
+            saved = store.load(self.binding, UUID(str(observation_id)))
+            item = saved.item
+            if item.artifact_read_receipt is not None:
+                self._validate_report_observation(item)
+            elif (saved.invocation_id != self.binding.invocation_id
+                  or item.capability_name not in self.binding.capability_allowlist):
+                raise AuthorizationDenied("Observation requires its original capability scope")
+            text = canonical_bytes(saved.public_response).decode("utf-8")
+            if offset > len(text):
+                raise ValueError("Observation offset exceeds its length")
+            end = min(len(text), offset + limit)
+            ranges = self._observation_read_ranges.get(item.capability_invocation_id, [])
+            covered = self._covered_observation_prefix([*ranges, (offset, end)])
+            return {
+                "observation_id": str(item.capability_invocation_id),
+                "authority": item.information_authority.value,
+                "format": "EXACT_OBSERVATION_JSON", "offset": offset, "end": end,
+                "total_characters": len(text), "text": text[offset:end],
+                "next_offset": end if end < len(text) else None,
+                "sha256": sha256(text.encode("utf-8")).hexdigest(),
+                "complete_observation_delivered": covered == len(text),
+            }
+        response = await self._call("evidence_read", read)
+        if response["success"]:
+            page = response["data"]
+            self._pending_observation_pages[UUID(response["capability_invocation_id"])] = (
+                saved, page["offset"], page["end"])
+        return response
+
+    async def prepare_handoff(self, observation_ids: list[str], summary: str,
+                              limitations: list[str] | None = None) -> dict:
+        """Select already delivered observations for the tool-free finalizer.
+
+        The Agent authors its own summary and limitations. The host copies
+        exact selected observations, never ranks them or summarizes their data.
+        Oversize selections return their sizes for the Agent to revise.
+        An invoked replacement clears the prior selection even if it is invalid
+        or oversized; argument-schema rejection never invokes this operation.
+        """
+        def prepare():
+            self.prepared_handoff = None
+            ids = tuple(UUID(str(value)) for value in observation_ids)
+            if not ids or len(ids) > 64 or len(set(ids)) != len(ids):
+                raise ValueError("Select distinct bounded observation identities")
+            if any(value not in self._delivered_observations for value in ids):
+                raise ValueError("Handoff observations must have been delivered to this Agent")
+            items = tuple(self._delivered_observations[value] for value in ids)
+            for item in items:
+                if item.artifact_read_receipt is not None:
+                    self._validate_report_observation(item)
+            observations = tuple(HandoffObservation(
+                observation_id=item.capability_invocation_id,
+                capability_name=item.capability_name,
+                information_authority=item.information_authority,
+                public_response=self._public_responses[item.capability_invocation_id],
+                artifact_read_receipt=item.artifact_read_receipt,
+            ) for item in items)
+            handoff = PreparedHandoff(summary=summary, limitations=tuple(limitations or ()),
+                                      observations=observations)
+            encoded = canonical_bytes(handoff.model_dump(mode="json", exclude_none=True))
+            if len(encoded) > 60_000:
+                return {"status": "TOO_LARGE", "serialized_bytes": len(encoded),
+                        "max_bytes": 60_000, "item_bytes": {
+                            str(item.observation_id): len(canonical_bytes(
+                                item.model_dump(mode="json", exclude_none=True))) for item in observations},
+                        "reason": "Select narrower already-read observations or make a narrower governed query. No summary or observation was changed."}
+            self.prepared_handoff = handoff
+            return {"status": "READY", "serialized_bytes": len(encoded), "max_bytes": 60_000,
+                    "observation_ids": [str(value) for value in ids],
+                    "summary_authority": "MODEL_CONTEXT"}
+        return await self._call("prepare_handoff", prepare)
 
     def _review_execution(self, value: ExecutionReview | dict) -> ExecutionReview:
         try:
             review = ExecutionReview.model_validate(value)
-            available = {item.capability_invocation_id for item in self._evidence_items[:self._feedback_boundary]}
+            available = set(self._delivered_observations)
             if not set(review.feedback_invocation_ids).issubset(available):
                 raise _ExecutionReviewRejected()
             for identity in review.gold_authorization_ids:
@@ -563,6 +737,8 @@ class LabBioRuntimeToolSet:
         }:
             return error
         for prior in reversed(self._evidence_items[:self._feedback_boundary]):
+            if prior.capability_invocation_id not in self._delivered_observations:
+                continue
             previous, details = prior.artifact_query_request, prior.error_details
             if (prior.capability_name != 'artifact_query' or previous is None or details is None
                     or prior.error_code != error.error_code or details.retryable
@@ -608,6 +784,8 @@ class LabBioRuntimeToolSet:
         ):
             return error
         for prior in reversed(self._evidence_items[:self._feedback_boundary]):
+            if prior.capability_invocation_id not in self._delivered_observations:
+                continue
             if (
                 prior.capability_name == "execution_submit"
                 and prior.error_code == error.error_code
@@ -657,6 +835,7 @@ class LabBioRuntimeToolSet:
         skill_search_request: SkillSearchRequestAudit | None = None,
         execution_submit_request: ExecutionSubmitRequestAudit | None = None,
         execution_review: ExecutionReview | dict | None = None,
+        public_data: Callable[[Any], JsonValue] | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
         information_authority = CAPABILITY_INFORMATION_AUTHORITY[capability]
@@ -714,15 +893,22 @@ class LabBioRuntimeToolSet:
                 value = value.model_dump(mode="json", by_alias=True)
             elif isinstance(value, (tuple, list)) and all(isinstance(item, BaseModel) for item in value):
                 value = [item.model_dump(mode="json", by_alias=True) for item in value]
+            read_receipt = make_read_receipt(
+                self.services.artifact_store, capability, value,
+                observation_id=capability_invocation_id,
+                invocation_id=self._model_invocation_id,
+            )
             result = ToolResult(
                 success=True,
                 capability_invocation_id=capability_invocation_id,
                 information_authority=information_authority,
-                data=value,
+                data=public_data(value) if public_data is not None else value,
+                observation_archived=self.services.observation_store is not None,
+                artifact_read_receipt=read_receipt,
             )
             if capability == "execution_inspect":
-                # Explicit source-free projection, persisted before another model
-                # turn so an interruption cannot erase which page was delivered.
+                # Source-free audit of the released page. Actual model receipt
+                # is confirmed separately after a successful provider turn.
                 page = value["submitted_program"]
                 request_audit_payload["execution_inspection"] = {
                     key: page[key] for key in (
@@ -781,7 +967,15 @@ class LabBioRuntimeToolSet:
             )
             if event is not None:
                 trace_event_ids.append(event.event_id)
-            self._evidence_items.append(
+            response = ToolResult(
+                success=False,
+                capability_invocation_id=capability_invocation_id,
+                information_authority=information_authority,
+                data=failure_details,
+                error=error,
+                observation_archived=self.services.observation_store is not None,
+            ).model_dump(mode="json")
+            self._record_observation(
                 CapabilityEvidenceItem(
                     capability_invocation_id=capability_invocation_id,
                     actor_profile_key=self.binding.actor_profile_key,
@@ -798,15 +992,9 @@ class LabBioRuntimeToolSet:
                     skill_search_request=skill_search_request,
                     execution_submit_request=execution_submit_request,
                     execution_review=reviewed,
-                )
+                ), response,
             )
-            return ToolResult(
-                success=False,
-                capability_invocation_id=capability_invocation_id,
-                information_authority=information_authority,
-                data=failure_details,
-                error=error,
-            ).model_dump(mode="json")
+            return response
         event = self._emit(
             TraceEventType.CAPABILITY_COMPLETED,
             capability,
@@ -819,7 +1007,8 @@ class LabBioRuntimeToolSet:
         )
         if event is not None:
             trace_event_ids.append(event.event_id)
-        self._evidence_items.append(
+        response = result.model_dump(mode="json", by_alias=True)
+        self._record_observation(
             CapabilityEvidenceItem(
                 capability_invocation_id=capability_invocation_id,
                 actor_profile_key=self.binding.actor_profile_key,
@@ -834,9 +1023,10 @@ class LabBioRuntimeToolSet:
                 skill_search_request=skill_search_request,
                 execution_submit_request=execution_submit_request,
                 execution_review=reviewed,
-            )
+                artifact_read_receipt=read_receipt,
+            ), response,
         )
-        return result.model_dump(mode="json", by_alias=True)
+        return response
 
     def evidence_items(self) -> tuple[CapabilityEvidenceItem, ...]:
         """Return immutable bounded outcomes accumulated by model-selected calls."""
@@ -922,7 +1112,7 @@ class LabBioRuntimeToolSet:
         if self._feedback_boundary is not None:
             prior = next((item for item in reversed(self._artifact_list_requests)
                           if item[0] == offset and item[1] == limit
-                          and item[3] < self._feedback_boundary), None)
+                          and item[2] in self._delivered_observations), None)
 
         def list_current_state():
             current = [
@@ -1057,10 +1247,8 @@ class LabBioRuntimeToolSet:
         result = await self._call(
             "execution_inspect", inspect_submission,
             request_ids={"execution_id": execution_id},
+            public_data=lambda _audit: page,
         )
-        # Do not mutate the mapping already retained by the evidence bundle.
-        if result["success"]:
-            return {**result, "data": page}
         return result
 
     async def execution_revise(
@@ -1531,7 +1719,8 @@ class LabBioRuntimeToolSet:
         filtering (no inference of groups). SUM rejects missing, null, boolean or
         string numbers; no matches yields null, never an invented zero. Only
         complete tables already authorized for TOP_N are eligible; RAW data is
-        not opened. No program execution. Does not count as reading table pages.
+        not opened. No program execution. It is independently citable as an
+        aggregate observation, not as reading the underlying table pages.
         """
         def calculate():
             # Reuse exact workspace, identity and exposure checks, not a second
@@ -1546,41 +1735,173 @@ class LabBioRuntimeToolSet:
             request_ids={"artifact_id": artifact_id})
 
     async def report_check(
-        self, evidence_artifact_ids: Annotated[list[str], Field(max_length=256)]
+        self, evidence_artifact_ids: Annotated[list[str] | None, Field(max_length=256)] = None,
+        evidence_references: Annotated[list[ReportEvidenceReference] | None, Field(max_length=64)] = None,
     ) -> dict:
-        """Check all proposed report references without writing or reading content.
+        """Check citation identities and observed scopes without registering prose.
 
-        Returns each supplied index/UUID, registration/access status and first
-        unread table offset in this invocation. READY is mechanical coverage,
-        not scientific validation. Unknown or wrong-kind references remain errors;
-        nothing is substituted. No prose is needed and no report is registered.
-        report_submit rechecks these same conditions before registration.
+        Prefer evidence_references with actual source-bound observation IDs;
+        receipt scopes come from host records. Legacy evidence_artifact_ids
+        reports the first unread table offset. READY is mechanical readiness,
+        never scientific validation. Nothing is substituted. report_submit
+        rechecks these same conditions before registration.
         """
-        return await self._call("report_check", lambda: self._report_evidence_check(evidence_artifact_ids))
+        return await self._call("report_check", lambda: self._check_report_references(
+            evidence_artifact_ids, evidence_references))
 
     async def report_submit(
         self, title: str, report_text: str,
         evidence_artifact_ids: Annotated[list[str] | None, Field(max_length=256)] = None,
+        evidence_references: Annotated[list[ReportEvidenceReference] | None, Field(max_length=64)] = None,
     ) -> dict:
-        """Submit evidence-grounded prose. Cited record tables require complete
-        paginated reading in this reporting invocation; prior plans and summaries
-        are not performed methods. This checks coverage, not scientific truth.
-        report_check can check reference identities and coverage without prose.
+        """Submit Agent-authored prose with source-bound observed scopes.
+
+        Prefer evidence_references: each source UUID with actual observation IDs.
+        The host derives the cited page, aggregate or summary scope. Legacy
+        evidence_artifact_ids still require complete paginated table reads.
+        Never mix formats. Mechanical citation readiness is not scientific truth.
         """
         def submit():
-            check = self._report_evidence_check([] if evidence_artifact_ids is None else evidence_artifact_ids)
+            check = self._check_report_references(evidence_artifact_ids, evidence_references)
             if not check.ready:
                 raise _ReportEvidenceIncomplete(check)
             ids = tuple(item.artifact_id for item in check.items)
+            scoped = {}
+            if evidence_references is not None:
+                scoped["evidence_read_receipts"] = tuple(
+                    receipt for item in check.items for receipt in item.read_receipts)
+                scoped["receipt_delivery_invocation_id"] = self._model_invocation_id
             return self._required(self.services.report_submission, "report").submit(
                 title=title, report_text=report_text, evidence_artifact_ids=ids,
                 principal=self.binding.principal, workspace=self.binding.workspace,
                 run_id=self.binding.run_id, stage_id=self.binding.stage_id,
                 invocation_id=self.binding.invocation_id,
+                **scoped,
             )
         return await self._call(
             "report_submit", submit,
         )
+
+    def _check_report_references(self, artifact_ids, references):
+        if artifact_ids is not None and references is not None:
+            raise ValueError("Use exactly one report reference format")
+        if references is None:
+            return self._report_evidence_check([] if artifact_ids is None else artifact_ids)
+        if not isinstance(references, (list, tuple)) or len(references) > 64:
+            raise ValueError("Scoped references must be a bounded list")
+        parsed = tuple(
+            item if isinstance(item, ReportEvidenceReference) else
+            ReportEvidenceReference.model_validate_json(json.dumps(item))
+            for item in references)
+        if sum(len(item.observation_ids) for item in parsed) > 64:
+            raise ValueError("At most 64 report observations may be referenced")
+        observations = self._delivered_observations
+        seen_artifacts, seen_observations, items = set(), set(), []
+        for index, reference in enumerate(parsed):
+            fields = dict(index=index, artifact_id=reference.artifact_id,
+                          citation_mode="OBSERVED_SCOPE")
+            status, receipts = "READY", []
+            if reference.artifact_id in seen_artifacts:
+                status = "DUPLICATE_REFERENCE"
+            seen_artifacts.add(reference.artifact_id)
+            try:
+                self._authorized_report_source(reference.artifact_id)
+            except ArtifactNotFoundError:
+                status = "ARTIFACT_NOT_FOUND"
+            except AuthorizationDenied:
+                status = "AUTHORIZATION_DENIED"
+            if status == "READY":
+                for observation_id in reference.observation_ids:
+                    observation = observations.get(observation_id)
+                    if observation_id in seen_observations:
+                        status = "DUPLICATE_REFERENCE"
+                        break
+                    seen_observations.add(observation_id)
+                    if observation is None:
+                        status = "REPORT_OBSERVATION_NOT_DELIVERED"
+                        break
+                    receipt = observation.artifact_read_receipt
+                    if receipt is None or receipt.artifact_id != reference.artifact_id:
+                        status = "REPORT_OBSERVATION_SOURCE_MISMATCH"
+                        break
+                    try:
+                        self._validate_report_observation(observation)
+                    except (AuthorizationDenied, ArtifactExposureDenied):
+                        status = "AUTHORIZATION_DENIED"
+                        break
+                    except ValueError:
+                        status = "REPORT_OBSERVATION_SOURCE_CHANGED"
+                        break
+                    receipts.append(receipt.model_copy(update={
+                        "delivered_invocation_id": self._model_invocation_id}))
+            items.append(ReportEvidenceItem(**fields, status=status,
+                read_receipts=tuple(receipts) if status == "READY" else ()))
+        return ReportEvidenceCheck(ready=all(item.status == "READY" for item in items),
+                                   items=tuple(items))
+
+    def _authorized_report_source(self, artifact_id):
+        ref = self.services.artifact_exposure.artifact_ref(
+            artifact_id, principal=self.binding.principal)
+        if (ref.project_id, ref.lab_id) != (
+            self.binding.workspace.project_id, self.binding.workspace.lab_id
+        ):
+            raise AuthorizationDenied("Report source is outside the workspace")
+        return ref
+
+    def _validate_report_observation(self, item: CapabilityEvidenceItem):
+        """Recheck current access and original read identity without granting a read."""
+        receipt, data = item.artifact_read_receipt, item.safe_result
+        if (item.status is not CapabilityEvidenceStatus.COMPLETED
+                or receipt is None or not isinstance(data, dict)
+                or receipt.observation_id != item.capability_invocation_id
+                or str(receipt.artifact_id) != data.get("artifact_id")
+                or receipt.observation_sha256 != observation_digest(data)):
+            raise ValueError("Observation does not match its read receipt")
+        ref = self._authorized_report_source(receipt.artifact_id)
+        if receipt.source_identity == "ARTIFACT_REPRESENTATION":
+            view = data.get("view_type", "TOP_N")
+            query = ArtifactQuery(
+                view_type=ArtifactViewType(view),
+                limit=1 if view == "TOP_N" else None,
+            )
+            if not self.services.artifact_exposure.policy.decide(
+                ref, query, self.binding.consumer
+            ).allowed:
+                raise ArtifactExposureDenied("Read scope is no longer allowed")
+            digest = artifact_representation_digest(self.services.artifact_store, receipt.artifact_id)
+        elif receipt.source_identity == "REPORT_TEXT":
+            digest = read_report_page(
+                self.services.artifact_store, self.services.artifact_exposure,
+                receipt.artifact_id, principal=self.binding.principal,
+                workspace=self.binding.workspace, limit=1,
+                expected_sha256=receipt.source_sha256,
+            )["sha256"]
+        else:
+            digest = read_generated_file(
+                self.services.artifact_store, self.services.artifact_exposure,
+                receipt.artifact_id, **self._generated_read_context(), limit=1,
+                expected_sha256=receipt.source_sha256,
+            )["sha256"]
+        if digest != receipt.source_sha256:
+            raise ValueError("Observation source changed after reading")
+        expected = make_read_receipt(self.services.artifact_store, item.capability_name, data,
+            observation_id=item.capability_invocation_id,
+            invocation_id=receipt.source_invocation_id)
+        if expected != receipt.model_copy(update={
+            "delivered_invocation_id": receipt.source_invocation_id
+        }):
+            raise ValueError("Observation scope does not match its read result")
+
+    def record_delivered_observation(self, item: CapabilityEvidenceItem) -> None:
+        """Host hook after an authorized original observation was fully redelivered.
+
+        Merely loading persisted evidence must never call this hook. The evidence
+        reader owns proof of complete delivery; this layer rechecks the source.
+        """
+        if item.artifact_read_receipt is None:
+            return
+        self._validate_report_observation(item)
+        self._delivered_observations[item.capability_invocation_id] = item
 
     def _require_report_evidence_coverage(self, artifact_ids):
         check = self._report_evidence_check(artifact_ids)
@@ -1621,7 +1942,7 @@ class LabBioRuntimeToolSet:
             # No structural facts from inaccessible or foreign Artifacts enter feedback.
             count = self.services.artifact_store.load_for_view(artifact_id).representation.record_count
             ranges = []
-            for item in self._evidence_items:
+            for item in self._delivered_observations.values():
                 data = item.safe_result
                 if (item.capability_name == "artifact_query"
                         and item.status is CapabilityEvidenceStatus.COMPLETED
@@ -1743,6 +2064,8 @@ class LabBioRuntimeToolSet:
             raise _ArtifactQueryFailure("INVALID_ENUM_VALUE", constraints) from exc
         if self._feedback_boundary is not None and typed_view is ArtifactViewType.TOP_N:
             for prior in reversed(self._evidence_items[: self._feedback_boundary]):
+                if prior.capability_invocation_id not in self._delivered_observations:
+                    continue
                 previous = prior.artifact_query_request
                 result = prior.safe_result
                 if (
@@ -2132,8 +2455,9 @@ class LabBioRuntimeToolSet:
             first = next(item for item in exc.check.items if item.status != "READY")
             return ToolError(error_code=first.status, safe_message=(
                 "No report was registered. report_evidence lists every supplied citation's identity "
-                "and status, including unread table offsets. Coverage requires all TOP_N pages "
-                "in this reporting invocation; plans and prior summaries are not those pages. "
+                "and status. Legacy evidence_artifact_ids requires all TOP_N pages in this "
+                "reporting invocation. Scoped evidence_references requires authentic source-bound "
+                "observations fully delivered to this invocation; scope is not scientific validation. "
                 "report_check accepts references without resending report prose. No reference was changed."),
                 report_evidence=exc.check)
         if isinstance(exc, LiteratureSearchError):

@@ -99,7 +99,7 @@ def check_environment_builds(settings: LocalSettings, sif_path: Path, *, runner=
 
 def check_backend(
     settings: LocalSettings, *, probe=probe_capabilities, scheduler_check=check_scheduler_client,
-    environment_check=check_environment_builds,
+    environment_check=check_environment_builds, local_check=None,
 ) -> tuple[dict, bool]:
     """Probe the runtime and the scheduler client; any failure refuses execution."""
 
@@ -117,27 +117,45 @@ def check_backend(
     except (SifStoreError, ValueError, OSError) as exc:
         report.update(status="REFUSED", security_failures=["image_store"], detail=type(exc).__name__)
         return report, False
+    runner = SubprocessApptainerRunner(
+        max_output_file_bytes=settings.execution.max_output_file_bytes,
+        cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
+    )
+    local = settings.launcher is None or settings.launcher.kind == "local"
+    local_resources = None
+    if local:
+        from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
+
+        launcher = SystemdLocalLauncher(runner)
+        local_resources = (local_check or launcher.probe)()
+        runner = SystemdProbeRunner(launcher, settings.execution.resources)
     capabilities = probe(
         binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
-        runner=SubprocessApptainerRunner(
-            max_output_file_bytes=settings.execution.max_output_file_bytes,
-            cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
-        ),
+        runner=runner,
         scratch_root=apptainer.scratch_root,
     )
     failures = list(capabilities.security_failures())
     if apptainer.resource_enforcement == "apptainer-cgroups" and not capabilities.cgroup_limits:
         failures.append("cgroup_limits")
     configuration_failures = []
-    scheduler = scheduler_check(
-        settings.launcher.scheduler_template(), scheduler_policy(settings), apptainer.scratch_root,
-    )
-    if not all(scheduler["clients"].values()):
-        configuration_failures.append("scheduler_client")
-    if scheduler["test_submission"] == "REJECTED":
-        configuration_failures.append("scheduler_submission")
+    scheduler = None
+    if local:
+        report["local_resources"] = local_resources
+        configuration_failures.extend(local_resources["failures"])
+    else:
+        scheduler = scheduler_check(
+            settings.launcher.scheduler_template(), scheduler_policy(settings), apptainer.scratch_root,
+        )
+        if not all(scheduler["clients"].values()):
+            configuration_failures.append("scheduler_client")
+        if scheduler["test_submission"] == "REJECTED":
+            configuration_failures.append("scheduler_submission")
     if settings.environment is not None:
-        report["environment"] = environment_check(settings, sif_path)
+        report["environment"] = (
+            {"download_placement": "local-systemd", "build_capabilities": "CHECKED_BY_EACH_BUILD_JOB",
+             "download_check": "UNCHECKED_JOB_PLACEMENT", "failures": []}
+            if local else environment_check(settings, sif_path)
+        )
         configuration_failures.extend(report["environment"]["failures"])
     passed = not failures and not configuration_failures
     report.update(

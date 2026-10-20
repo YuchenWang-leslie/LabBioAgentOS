@@ -247,6 +247,7 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
     ),
 )
 def test_stage_capability_ceiling_is_exact(stage, expected):
+    expected = expected | {"evidence_read", "prepare_handoff"}
     if "artifact_query" in expected:
         expected = expected | {"report_read", "file_read"}
     assert set(CAPABILITY_CEILINGS[stage]) == expected

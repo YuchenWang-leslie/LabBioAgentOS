@@ -56,6 +56,8 @@ from labbioagentos.runtime.native_stage import NativeKernelStageInvoker, NativeR
 from labbioagentos.runtime.contracts import (
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
+    PreparedHandoff,
+    HandoffObservation,
 )
 from test_runtime_milestone_c2 import _catalog as _capability_catalog
 from test_runtime_milestone_c2 import _stage_input, _toolset
@@ -269,7 +271,25 @@ class CapabilityProvider:
 
 
 @pytest.mark.asyncio
-async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(tmp_path):
+async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
+    tmp_path, monkeypatch
+):
+    from labbioagentos.runtime import native_stage
+
+    capacity_settings = []
+    collaboration_type = native_stage.CollaborationRuntime
+    loop_type = native_stage.AgentLoop
+
+    def capture_collaboration(**kwargs):
+        capacity_settings.append(("capability", kwargs.get("max_request_bytes")))
+        return collaboration_type(**kwargs)
+
+    def capture_finalization(**kwargs):
+        capacity_settings.append(("finalization", kwargs.get("max_request_bytes")))
+        return loop_type(**kwargs)
+
+    monkeypatch.setattr(native_stage, "CollaborationRuntime", capture_collaboration)
+    monkeypatch.setattr(native_stage, "AgentLoop", capture_finalization)
     stage_input = _stage_input()
     legacy_fixture = _toolset(tmp_path, stage_input)
     providers = []
@@ -289,6 +309,7 @@ async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
         prompt_template_key="runtime-generic",
         capability_allowlist=("artifact_list",),
         preserve_capability_completion=True,
+        max_request_bytes=123_456,
     )
     invoker = NativeKernelStageInvoker(
         assembly=assembly,
@@ -312,6 +333,11 @@ async def test_native_capability_evidence_and_finalize_only_do_not_replay_tools(
     recovered = await invoker.finalize_recovered(stage_input, evidence)
     assert recovered.stage_id is WorkflowStage.INTAKE
     assert providers[0].calls == before
+    assert capacity_settings == [
+        ("capability", 123_456),
+        ("finalization", 123_456),
+        ("finalization", 123_456),
+    ]
 
 
 @pytest.mark.asyncio
@@ -389,7 +415,7 @@ async def test_rejected_native_tool_arguments_are_persisted_without_values(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_missing_required_capability_is_a_malformed_result_after_evidence_boundary(tmp_path):
+async def test_missing_required_capability_preserves_completion_reason_not_json_error(tmp_path):
     class NoToolProvider:
         binding = WorkflowProvider.binding
 
@@ -401,7 +427,8 @@ async def test_missing_required_capability_is_a_malformed_result_after_evidence_
             )
 
     stage_input = _stage_input()
-    fixture = _toolset(tmp_path, stage_input)
+    recorder = RunTraceRecorder(InMemoryTraceSink())
+    fixture = _toolset(tmp_path, stage_input, recorder)
     observed = []
     invoker = NativeKernelStageInvoker(
         assembly=RuntimeStageAssemblySpec(
@@ -415,15 +442,22 @@ async def test_missing_required_capability_is_a_malformed_result_after_evidence_
         principal=fixture.binding.principal,
         workspace=fixture.binding.workspace,
         services=fixture.services,
+        trace_recorder=recorder,
         boundary_observer=lambda kind, value: observed.append((kind, value)),
     )
 
     with pytest.raises(RuntimeIntegrationError) as captured:
         await invoker.invoke(stage_input)
 
-    assert captured.value.error_code == "MALFORMED_RUNTIME_RESULT"
+    assert captured.value.error_code == "REQUIRED_CAPABILITY_INCOMPLETE"
     assert [kind for kind, _value in observed] == ["stage_input", "capability_evidence"]
     assert observed[-1][1].items == ()
+    rejected = [event for event in recorder.events(stage_input.run_id)
+                if event.event_type is TraceEventType.CAPABILITY_COMPLETION_REJECTED][-1]
+    assert rejected.payload["missing_required_capabilities"] == ["artifact_list"]
+    assert rejected.payload["termination_reason"] == observed[-1][1].termination_reason
+    assert not any(event.event_type is TraceEventType.FINALIZATION_PHASE_STARTED
+                   for event in recorder.events(stage_input.run_id))
 
 
 @pytest.mark.asyncio
@@ -973,7 +1007,7 @@ async def test_later_incomplete_provider_turn_preserves_evidence_and_finalizes(t
 
 
 @pytest.mark.asyncio
-async def test_large_capability_evidence_is_bounded_before_finalization(tmp_path):
+async def test_large_capability_evidence_requires_exact_prepared_handoff(tmp_path):
     stage_input = _stage_input()
     fixture = _toolset(tmp_path, stage_input)
     evidence = CapabilityEvidenceBundle(
@@ -1009,12 +1043,33 @@ async def test_large_capability_evidence_is_bounded_before_finalization(tmp_path
         services=fixture.services,
     )
 
+    with pytest.raises(RuntimeIntegrationError, match="Agent-selected evidence"):
+        await invoker.finalize_recovered(stage_input, evidence)
+    assert calls == []
+    evidence = evidence.model_copy(update={"prepared_handoff": PreparedHandoff(
+        summary="Agent selected the first observed record; other records are not reviewed here.",
+        limitations=("One observed page only.",),
+        observations=(HandoffObservation(
+            observation_id=evidence.items[0].capability_invocation_id,
+            capability_name=evidence.items[0].capability_name,
+            information_authority=evidence.items[0].information_authority,
+            public_response={
+                "success": True, "data": evidence.items[0].safe_result,
+                "capability_invocation_id": str(evidence.items[0].capability_invocation_id),
+                "information_authority": evidence.items[0].information_authority.value,
+            },
+        ),),
+    )})
     result = await invoker.finalize_recovered(stage_input, evidence)
 
     assert result.stage_id is WorkflowStage.INTAKE
     finalization_content = calls[0].messages[-1].content
     assert len(finalization_content.encode("utf-8")) <= 60_000
     payload = json.loads(finalization_content)
+    selected = json.loads(calls[0].messages[-2].content)
+    assert selected["observations"][0]["public_response"]["data"] == evidence.items[0].safe_result
+    assert len(selected["observations"]) == 1
+    assert "prepared_handoff" not in payload["capability_evidence"]
     items = payload["capability_evidence"]["items"]
     assert all(item["safe_result"] is None for item in items)
     assert all(
@@ -1060,6 +1115,18 @@ async def test_many_rich_evidence_items_drop_absent_fields_before_finalization(t
         ),
     )
     calls = []
+    evidence = evidence.model_copy(update={"prepared_handoff": PreparedHandoff(
+        summary="Agent-selected record.", observations=(HandoffObservation(
+            observation_id=evidence.items[0].capability_invocation_id,
+            capability_name=evidence.items[0].capability_name,
+            information_authority=evidence.items[0].information_authority,
+            public_response={
+                "success": True, "data": evidence.items[0].safe_result,
+                "capability_invocation_id": str(evidence.items[0].capability_invocation_id),
+                "information_authority": evidence.items[0].information_authority.value,
+            },
+        ),),
+    )})
     invoker = NativeKernelStageInvoker(
         assembly=RuntimeStageAssemblySpec(
             stage_id=WorkflowStage.INTAKE,

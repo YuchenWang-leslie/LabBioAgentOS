@@ -6,7 +6,9 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
@@ -19,6 +21,7 @@ from .executor import ContainerExecutor
 from .job_ledger import JobLedger
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .launchers import JobLauncher
+from .launchers.base import JobLauncherError
 from .models import ExecutionPlan
 from .mounts import (
     ExecutionWorkspace,
@@ -40,34 +43,105 @@ __all__ = [
 ]
 
 
+@dataclass
+class _DockerLifecycle:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    create_finished: threading.Event = field(default_factory=threading.Event)
+    started: bool = False
+    created: bool = False
+    cancelled: bool = False
+    creation_uncertain: bool = False
+
+
 class SubprocessDockerRunner(DockerProcessRunner):
     """Production-shaped local runner with a host-enforced timeout."""
 
     _CONTAINER_NAME = re.compile(r"labbio-[0-9a-f]{32}")
     _CLEANUP_TIMEOUT_SECONDS = 30.0
+    _STATE_LOCK = threading.Lock()
+
+    def _lifecycle(self, name):
+        # Lazy initialization also supports existing diagnostic runner subclasses.
+        with self._STATE_LOCK:
+            if not hasattr(self, "_lifecycles"):
+                self._lifecycles = {}
+            return self._lifecycles.setdefault(name, _DockerLifecycle())
 
     def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
         started = time.monotonic()
+        name = self._container_name(argv)
+        lifecycle = self._lifecycle(name)
+        with lifecycle.lock:
+            if lifecycle.started:
+                raise JobLauncherError("A Docker invocation cannot be replayed")
+            lifecycle.started = True
+            if lifecycle.cancelled:
+                lifecycle.create_finished.set()
+                return ProcessOutcome(exit_code=137, stdout=b"", stderr=b"", duration_seconds=0)
         try:
-            completed = subprocess.run(
-                list(argv),
-                shell=False,
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=timeout_seconds,
+            # Creation is a separate, non-running state. Cancellation during
+            # daemon creation waits for this boundary instead of racing `rm`
+            # against a combined create-and-start request.
+            created = subprocess.run(
+                [argv[0], "create", *argv[2:]], shell=False, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_seconds,
             )
+            with lifecycle.lock:
+                lifecycle.created = created.returncode == 0
+                lifecycle.creation_uncertain = created.returncode != 0
         except subprocess.TimeoutExpired as exc:
-            self._remove_timed_out_container(argv)
-            return ProcessOutcome(
-                exit_code=None,
-                stdout=self._as_bytes(exc.stdout),
-                stderr=self._as_bytes(exc.stderr),
-                duration_seconds=time.monotonic() - started,
-                timed_out=True,
-            )
+            lifecycle.creation_uncertain = True
+            # The daemon may finish creating a stopped container later. Never
+            # start or replay it, and do not claim that a missing name proves
+            # the create request was not accepted.
+            raise JobLauncherError("Docker create outcome is unconfirmed; execution was not started") from exc
         except OSError as exc:
             raise ContainerStartError(f"Could not start Docker: {exc}") from exc
+        finally:
+            lifecycle.create_finished.set()
+        if created.returncode != 0:
+            try:
+                # A failed client acknowledgement may follow accepted creation.
+                # Only removal of that exact identity confirms this side effect
+                # ended; not-found cannot exclude delayed daemon creation.
+                self._remove_timed_out_container(argv)
+            except JobLauncherError as exc:
+                raise JobLauncherError("Docker create outcome is unconfirmed after client failure") from exc
+            with lifecycle.lock:
+                lifecycle.creation_uncertain = False
+            return ProcessOutcome(
+                exit_code=created.returncode, stdout=b"", stderr=created.stderr,
+                duration_seconds=time.monotonic() - started,
+            )
+        with lifecycle.lock:
+            cancelled = lifecycle.cancelled
+        remaining = timeout_seconds - (time.monotonic() - started)
+        if cancelled or remaining <= 0:
+            self._remove_timed_out_container(argv, allow_missing=True)
+            return ProcessOutcome(
+                exit_code=137 if cancelled else None, stdout=b"", stderr=b"",
+                duration_seconds=time.monotonic() - started, timed_out=not cancelled,
+            )
+        try:
+            # Never hold the cancellation lock while waiting for the process.
+            # The only remaining daemon operation is start, so removing this
+            # existing container cannot be followed by late re-creation.
+            completed = subprocess.run(
+                [argv[0], "start", "--attach", name], shell=False, check=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._remove_timed_out_container(argv, allow_missing=True)
+            return ProcessOutcome(
+                exit_code=None, stdout=self._as_bytes(exc.stdout), stderr=self._as_bytes(exc.stderr),
+                duration_seconds=time.monotonic() - started, timed_out=True,
+            )
+        except OSError as exc:
+            self._remove_timed_out_container(argv, allow_missing=True)
+            raise ContainerStartError(f"Could not attach to Docker: {exc}") from exc
+        # A client/transport failure can end attach while the container keeps
+        # running. Establish the terminal side-effect boundary before returning.
+        self._remove_timed_out_container(argv, allow_missing=True)
         return ProcessOutcome(
             exit_code=completed.returncode,
             stdout=completed.stdout,
@@ -78,10 +152,25 @@ class SubprocessDockerRunner(DockerProcessRunner):
     def cancel(self, argv: tuple[str, ...]) -> None:
         """Force-remove the exact governed container started by this argv."""
 
-        self._remove_timed_out_container(argv)
+        lifecycle = self._lifecycle(self._container_name(argv))
+        with lifecycle.lock:
+            lifecycle.cancelled = True
+            started = lifecycle.started
+        if not started:
+            # Future run() sees cancellation before sending any create request.
+            self._remove_timed_out_container(argv, allow_missing=True)
+            return
+        if not lifecycle.create_finished.wait(self._CLEANUP_TIMEOUT_SECONDS):
+            raise JobLauncherError("Docker creation has not settled; cancellation is unconfirmed")
+        if lifecycle.creation_uncertain:
+            raise JobLauncherError("Docker creation is unconfirmed; cancellation cannot be asserted")
+        with lifecycle.lock:
+            created = lifecycle.created
+        if created:
+            self._remove_timed_out_container(argv, allow_missing=True)
 
     @classmethod
-    def _remove_timed_out_container(cls, argv: tuple[str, ...]) -> None:
+    def _container_name(cls, argv: tuple[str, ...]) -> str:
         try:
             name_index = argv.index("--name")
             container_name = argv[name_index + 1]
@@ -95,6 +184,11 @@ class SubprocessDockerRunner(DockerProcessRunner):
             raise ContainerStartError(
                 "Timed-out Docker invocation has an invalid governed container name"
             )
+        return container_name
+
+    @classmethod
+    def _remove_timed_out_container(cls, argv: tuple[str, ...], *, allow_missing=False) -> None:
+        container_name = cls._container_name(argv)
         try:
             cleanup = subprocess.run(
                 [argv[0], "rm", "--force", container_name],
@@ -105,11 +199,17 @@ class SubprocessDockerRunner(DockerProcessRunner):
                 timeout=cls._CLEANUP_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ContainerStartError(
+            raise JobLauncherError(
                 "Timed-out Docker container could not be removed"
             ) from exc
         if cleanup.returncode != 0:
-            raise ContainerStartError(
+            absent = {
+                f"Error response from daemon: No such container: {container_name}",
+                f"Error: No such container: {container_name}",
+            }
+            if allow_missing and cls._as_bytes(cleanup.stderr).decode("utf-8", "replace").strip() in absent:
+                return
+            raise JobLauncherError(
                 "Timed-out Docker container could not be removed"
             )
 

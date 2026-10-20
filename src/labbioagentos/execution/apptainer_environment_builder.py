@@ -47,8 +47,7 @@ from .environments import (
 from .errors import ContainerStartError
 from .images import ApprovedImage
 from .job_ledger import JobLedger, JobPurpose
-from .launchers import SchedulerLauncher
-from .launchers.base import JobSpec
+from .launchers.base import JobLauncher, JobSpec
 from .models import RequestedResources
 
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
@@ -99,16 +98,15 @@ class ApptainerEnvironmentBuilder:
         *,
         sif_store: SifStore,
         policy: ApptainerBuildPolicy,
-        build_launcher: SchedulerLauncher,
+        build_launcher: JobLauncher,
+        workspace_root: Path,
         job_ledger: JobLedger,
         download_runner: DownloadRunner | None = None,
-        download_launcher: SchedulerLauncher | None = None,
+        download_launcher: JobLauncher | None = None,
     ):
         if (download_runner is None) == (download_launcher is None):
             raise ValueError("Configure exactly one download placement: the login node or a job")
-        if download_launcher is not None and download_launcher.workspace_root != build_launcher.workspace_root:
-            # One launcher root lets crash cleanup find every job of a build.
-            raise ValueError("Download and build jobs must share one workspace root")
+        self.workspace_root = Path(workspace_root)
         self.sif_store, self.policy, self.job_ledger = sif_store, policy, job_ledger
         self.build_launcher, self.download_launcher = build_launcher, download_launcher
         self.download_runner = download_runner
@@ -160,7 +158,7 @@ class ApptainerEnvironmentBuilder:
         lock_file = build_root / "lock.txt"
         _write_private(lock_file, render_lock(wheels))
 
-        with _job_workspace(self.build_launcher.workspace_root) as workspace:
+        with _job_workspace(self.workspace_root) as workspace:
             output_sif = workspace / "out" / "environment.sif"
             output_sif.parent.mkdir(mode=0o700)
             program = workspace / "build.sh"
@@ -213,10 +211,10 @@ class ApptainerEnvironmentBuilder:
                                            timeout_seconds=policy.download_timeout_seconds)
         resources = RequestedResources(cpus=1.0, memory_mb=policy.download_memory_mb,
                                        timeout_seconds=policy.download_timeout_seconds)
-        with _job_workspace(self.download_launcher.workspace_root) as workspace:
+        with _job_workspace(self.workspace_root) as workspace:
             return await self._job(self.download_launcher, workspace, program, resources, run_id)
 
-    async def _job(self, launcher: SchedulerLauncher, workspace: Path, program: Path,
+    async def _job(self, launcher: JobLauncher, workspace: Path, program: Path,
                    resources: RequestedResources, run_id: UUID) -> ProcessOutcome | None:
         """Submit, wait for and collect one ledger-recorded job; None if the scheduler refused it."""
 
@@ -233,7 +231,12 @@ class ApptainerEnvironmentBuilder:
             self.job_ledger.record_not_submitted(job_id)
             return None
         self.job_ledger.record_submitted(job_id, handle.job_id)
-        await launcher.wait(handle)
+        try:
+            await launcher.wait(handle)
+        except asyncio.CancelledError:
+            # Cancelling the coroutine does not stop a service or a scheduler job.
+            await asyncio.shield(launcher.cancel(handle))
+            raise
         try:
             outcome = await launcher.collect(handle)
         except ContainerStartError:  # The job ended without an exit status.

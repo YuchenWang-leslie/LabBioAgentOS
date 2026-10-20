@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -743,9 +744,101 @@ async def test_interrupt_token_is_shared_with_child_and_propagates_to_leader():
         )
 
     assert token.signal.reason_code == "TEST_INTERRUPT"
-    assert runtime.task_board.snapshot()[0].state is TaskState.FAILED
+    assert runtime.task_board.snapshot()[0].state is TaskState.CANCELLED
+    assert runtime._delegations[0].status == "CANCELLED"
+    assert runtime._delegations[0].termination == "KERNEL_INTERRUPTED"
+    assert runtime._delegations[0].cancellation_reason == "TEST_INTERRUPT"
     assert any(
         item.kind is KernelEventKind.INTERRUPT_OBSERVED
         and item.actor_id == "writer"
         for item in runtime.events
     )
+
+
+@pytest.mark.asyncio
+async def test_async_cancellation_records_child_terminal_state_and_propagates():
+    started = asyncio.Event()
+
+    class WaitingProvider:
+        binding = _binding()
+
+        async def generate(self, request):
+            started.set()
+            await asyncio.Event().wait()
+
+    runtime, _providers, _budget = _runtime(
+        leader_turns=(ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="delegate-cancel", name="delegate",
+                arguments_json='{"target_agent_id":"writer","instruction":"Wait."}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),),
+        child_turns={"writer": ()},
+        providers={"writer": WaitingProvider()},
+    )
+    task = asyncio.create_task(runtime.run_leader(
+        identity=_identity(), messages=(PublicMessage(role="USER", content="Wait."),),
+        deadline_monotonic=10_000_000_000.0,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert runtime.task_board.snapshot()[0].state is TaskState.CANCELLED
+    outcome, = runtime._delegations
+    assert outcome.status == "CANCELLED"
+    assert outcome.termination == outcome.cancellation_reason == "ASYNC_CANCELLED"
+    finished = [event for event in runtime.events
+                if event.kind is KernelEventKind.DELEGATION_FINISHED]
+    assert len(finished) == 1 and finished[0].status_code == "CANCELLED"
+
+
+@pytest.mark.asyncio
+async def test_child_control_stop_preserves_reason_and_evidence(monkeypatch):
+    from labbioagentos.kernel import AgentLoop, AgentLoopResult, ToolResult
+
+    runtime, _providers, budget = _runtime(
+        leader_turns=(
+            ModelTurn(
+                tool_calls=(ToolCall(
+                    call_id="delegate-stop", name="delegate",
+                    arguments_json='{"target_agent_id":"writer","instruction":"Try."}',
+                ),),
+                finish_reason=FinishReason.TOOL_CALLS,
+            ),
+            ModelTurn(content="Stopped child observed.", finish_reason=FinishReason.STOP),
+        ),
+        child_turns={"writer": ()},
+    )
+    original = AgentLoop.run
+
+    async def stopped_child(loop, **kwargs):
+        if loop.invocation.agent_id == "writer":
+            return AgentLoopResult(
+                output={"capability_stop_reason": "PROVIDER_TRANSPORT_STOP"},
+                termination="PROVIDER_TRANSPORT_STOP",
+                messages=tuple(kwargs["messages"]), observations=(),
+                argument_observations=(), events=(),
+                tool_results=(ToolResult(
+                    tool_invocation_id=uuid4(), call_id="evidence-read",
+                    name="read", status="SUCCEEDED", content={"read": True},
+                    evidence_references=("artifact:observed",),
+                ),),
+                budget_usage=budget.usage,
+            )
+        return await original(loop, **kwargs)
+
+    monkeypatch.setattr(AgentLoop, "run", stopped_child)
+    result = await runtime.run_leader(
+        identity=_identity(),
+        messages=(PublicMessage(role="USER", content="Run child."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    child = result.delegations[0]
+    assert child.status == "STOPPED"
+    assert child.termination == "PROVIDER_TRANSPORT_STOP"
+    assert child.error_code == "PROVIDER_TRANSPORT_STOP"
+    assert child.content == {"capability_stop_reason": "PROVIDER_TRANSPORT_STOP"}
+    assert child.evidence_references == ("artifact:observed",)
+    assert result.tasks[0].state is TaskState.BLOCKED

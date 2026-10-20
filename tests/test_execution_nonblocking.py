@@ -166,3 +166,72 @@ def test_docker_runner_cancel_removes_only_the_governed_container(monkeypatch):
     assert calls == [("docker", "rm", "--force", f"labbio-{execution_hex}")]
     with pytest.raises(ContainerStartError):
         SubprocessDockerRunner().cancel(("docker", "run", "--name", "someone-else"))
+
+
+def test_sync_execution_cannot_bypass_a_configured_launcher(tmp_path):
+    from labbioagentos.execution.launchers import LocalLauncher
+
+    runner = FakeDockerRunner()
+    _, executor, _ = _environment(tmp_path, runner)
+    executor.launcher = LocalLauncher(runner)
+    with pytest.raises(ContainerStartError, match="execute_async"):
+        executor.execute(_plan())
+    assert runner.calls == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_runner_outcome_keeps_execution_files(tmp_path):
+    from labbioagentos.execution.launchers.base import JobLauncherError
+
+    class UnknownOutcome(ProcessRunner):
+        def run(self, argv, *, timeout_seconds):
+            raise JobLauncherError("Container creation receipt is unknown")
+
+    _, executor, _ = _environment(tmp_path, UnknownOutcome())
+    cleaned = []
+    executor._remove_cleanup_paths = lambda plan: cleaned.append(plan.execution_id)
+    with pytest.raises(JobLauncherError, match="unknown"):
+        await executor.execute_async(_plan())
+    assert cleaned == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm", [True, False])
+async def test_execution_cancellation_preserves_files_until_stop_is_confirmed(tmp_path, confirm):
+    from labbioagentos.execution.launchers.base import (
+        JobHandle, JobLauncherError, JobState,
+    )
+
+    class HeldLauncher:
+        kind = "test-held"
+        submitted = asyncio.Event()
+        stopped = asyncio.Event()
+        cancel_called = False
+
+        async def submit(self, spec):
+            self.submitted.set()
+            return JobHandle(self.kind, "test-job", spec.execution_id)
+
+        async def wait(self, handle):
+            await self.stopped.wait()
+            return JobState.COMPLETED
+
+        async def cancel(self, handle):
+            self.cancel_called = True
+            if not confirm:
+                raise JobLauncherError("Stop could not be confirmed")
+            self.stopped.set()
+
+    _, executor, _ = _environment(tmp_path, FakeDockerRunner())
+    launcher = HeldLauncher()
+    executor.launcher = launcher
+    cleanup = []
+    executor._remove_cleanup_paths = lambda plan: cleanup.append(plan.execution_id)
+    plan = _plan()
+    task = asyncio.create_task(executor.execute_async(plan))
+    await launcher.submitted.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError if confirm else JobLauncherError):
+        await task
+    assert launcher.cancel_called
+    assert cleanup == ([plan.execution_id] if confirm else [])

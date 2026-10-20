@@ -37,10 +37,12 @@ from .models import (
 
 
 class _OutputContractValidationError(ValueError):
-    def __init__(self, code: OutputContractFailureCode, *, record_index: int | None = None):
+    def __init__(self, code: OutputContractFailureCode, *, record_index: int | None = None,
+                 observed_records: int | None = None, max_records: int | None = None):
         super().__init__(code.value)
         self.code = code
         self.record_index = record_index
+        self.observed_records, self.max_records = observed_records, max_records
 
 
 def _reject_json_constant(value: str) -> None:
@@ -60,6 +62,8 @@ class ArtifactRegistrationDecision:
     representation: ArtifactRepresentation
     failure_code: OutputContractFailureCode | None = None
     record_index: int | None = None
+    observed_records: int | None = None
+    max_records: int | None = None
     artifact_schema: ArtifactSchema | None = None
     schema_id: str | None = None
     release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
@@ -160,6 +164,7 @@ class ArtifactRegistrationPolicy:
                 contract_valid=False,
                 failure_code=exc.code,
                 record_index=exc.record_index,
+                observed_records=exc.observed_records, max_records=exc.max_records,
                 schema_id=contract.schema_id,
             )
         except OSError:
@@ -267,7 +272,8 @@ class ArtifactRegistrationPolicy:
             )
         if len(records) > contract.max_records:
             raise _OutputContractValidationError(
-                OutputContractFailureCode.RECORD_LIMIT_EXCEEDED
+                OutputContractFailureCode.RECORD_LIMIT_EXCEEDED,
+                observed_records=len(records), max_records=contract.max_records,
             )
         for record_index, record in enumerate(records):
             if not isinstance(record, dict):
@@ -306,6 +312,8 @@ class ArtifactRegistrationPolicy:
         contract_valid: bool = False,
         failure_code: OutputContractFailureCode | None = None,
         record_index: int | None = None,
+        observed_records: int | None = None,
+        max_records: int | None = None,
         schema_id: str | None = None,
     ) -> ArtifactRegistrationDecision:
         return ArtifactRegistrationDecision(
@@ -317,6 +325,7 @@ class ArtifactRegistrationPolicy:
             representation=ArtifactRepresentation(),
             failure_code=failure_code,
             record_index=record_index,
+            observed_records=observed_records, max_records=max_records,
             schema_id=schema_id,
         )
 
@@ -458,6 +467,7 @@ class OutputCollector:
                     output_path=spec.relative_path,
                     output_index=output_index,
                     record_index=decision.record_index,
+                    observed_records=decision.observed_records, max_records=decision.max_records,
                     message=decision.reason,
                 )
             self._emit(

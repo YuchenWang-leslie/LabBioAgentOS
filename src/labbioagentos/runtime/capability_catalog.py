@@ -83,6 +83,13 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
     ),
 }
 
+# These observation operations do not grant any scientific/execution capability.
+# Profiles must still opt in; this is a stage ceiling, not an automatic grant.
+CAPABILITY_CEILINGS = {
+    stage: (*names, "evidence_read", "prepare_handoff")
+    for stage, names in CAPABILITY_CEILINGS.items()
+}
+
 ALL_CAPABILITIES = frozenset(
     capability
     for values in CAPABILITY_CEILINGS.values()
@@ -90,6 +97,8 @@ ALL_CAPABILITIES = frozenset(
 )
 
 CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
+    "evidence_read": InformationAuthority.MODEL_CONTEXT,
+    "prepare_handoff": InformationAuthority.CONTROL_STATE,
     "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "artifact_aggregate": InformationAuthority.AUTHORITATIVE_EVIDENCE,

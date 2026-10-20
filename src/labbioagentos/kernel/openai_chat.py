@@ -244,6 +244,24 @@ class OpenAICompatibleChatProvider:
             if key[:2] == prefix:
                 del self._private_reasoning[key]
 
+    def discard_tool_batch(
+        self, kernel_run_id, invocation_id, calls, *, retained_messages=()
+    ) -> None:
+        key = self._reasoning_key(kernel_run_id, invocation_id, calls)
+        retained = any(
+            self._reasoning_key(kernel_run_id, invocation_id, message.tool_calls) == key
+            for message in retained_messages if message.tool_calls
+        )
+        if key is not None and not retained:
+            self._private_reasoning.pop(key, None)
+
+    def request_size_bytes(self, request: ModelRequest) -> int:
+        """Count the actual wire payload without exposing private continuity."""
+        return len(json.dumps(
+            self._payload(request), ensure_ascii=False, allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8"))
+
     def _url(self) -> str:
         endpoint = self.binding.endpoint.rstrip("/")
         if endpoint.endswith("/chat/completions"):

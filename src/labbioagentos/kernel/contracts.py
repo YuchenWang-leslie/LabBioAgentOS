@@ -93,6 +93,7 @@ class KernelEventKind(StrEnum):
     STATE_TRANSITION = "STATE_TRANSITION"
     TASK_UPDATED = "TASK_UPDATED"
     MODEL_TURN_OBSERVED = "MODEL_TURN_OBSERVED"
+    MODEL_REQUEST_PREPARED = "MODEL_REQUEST_PREPARED"
     TOOL_BATCH_VALIDATED = "TOOL_BATCH_VALIDATED"
     TOOL_CALL_STARTED = "TOOL_CALL_STARTED"
     TOOL_CALL_FINISHED = "TOOL_CALL_FINISHED"
@@ -568,11 +569,13 @@ class DelegationResult(KernelModel):
     child_invocation_id: UUID
     target_agent_id: Identifier
     expected_output_type: Identifier | None = None
-    status: Literal["SUCCEEDED", "FAILED"]
-    content: PublicContent | None = None
-    content_authority: Literal["AGENT_PROSE"] = "AGENT_PROSE"
+    status: Literal["SUCCEEDED", "FAILED", "STOPPED", "CANCELLED"]
+    content: JsonValue = None
+    content_authority: Literal["AGENT_PROSE", "CONTROL_STATE"] = "AGENT_PROSE"
     evidence_references: tuple[Identifier, ...] = Field(default=(), max_length=64)
     error_code: Identifier | None = None
+    termination: Identifier | None = None
+    cancellation_reason: Identifier | None = None
 
     @model_validator(mode="after")
     def result_matches_status(self) -> "DelegationResult":
@@ -582,6 +585,12 @@ class DelegationResult(KernelModel):
             self.error_code is None or self.content is not None
         ):
             raise ValueError("Failed delegation requires an error and no content")
+        if self.status in {"STOPPED", "CANCELLED"} and (
+            self.error_code is None or self.termination is None
+        ):
+            raise ValueError("Stopped or cancelled delegation requires a reason")
+        if (self.status == "CANCELLED") != (self.cancellation_reason is not None):
+            raise ValueError("Only cancelled delegation carries a cancellation reason")
         return self
 
 

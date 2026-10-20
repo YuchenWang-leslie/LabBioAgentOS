@@ -71,18 +71,24 @@ def _executor(tmp_path, scheduler, ledger, program="print('done')"):
 
 
 async def _crash_after_submission(executor, ledger, plan):
-    """Run until the ledger shows the job as submitted, then lose the process."""
+    """Leave the exact post-submit durable state, with no cooperative cleanup.
 
-    task = asyncio.create_task(executor.execute_async(plan))
-    for _ in range(500):
-        entry = ledger.get(plan.execution_id)
-        if entry is not None and entry.state is JobLedgerState.SUBMITTED:
-            break
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    return entry
+    Task.cancel() is an orderly cancellation, not process death: it now correctly
+    stops the job. This fixture represents a lost controller at the checkpoint.
+    """
+    prepared = executor._prepare(plan)
+    ledger.record_intent(
+        run_id=plan.run_id, execution_id=plan.execution_id,
+        launcher=executor.launcher.kind, workspace_root=prepared.workspace.root,
+    )
+    handle = await executor.launcher.submit(JobSpec(
+        execution_id=plan.execution_id, argv=prepared.argv,
+        timeout_seconds=plan.resources.timeout_seconds, resources=plan.resources,
+        workspace_root=prepared.workspace.root,
+        cleanup_paths=executor.command_builder.cleanup_paths(plan.execution_id),
+    ))
+    ledger.record_submitted(plan.execution_id, handle.job_id)
+    return ledger.get(plan.execution_id)
 
 
 def _orphan(tmp_path, scheduler, run_id, *, record_job_id=True, submit=True):

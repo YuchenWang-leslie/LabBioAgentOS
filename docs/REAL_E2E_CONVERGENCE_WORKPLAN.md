@@ -1,5 +1,29 @@
 # Real E2E Convergence Workplan
 
+## Native reliability candidate and controlled comparison — 2026-10-20
+
+An isolated `feat/native-runtime-reliability` worktree implements the approved
+stop/accounting/feedback, bounded context, exact observation handoff, scoped
+report citation and Local + Apptainer contracts. The original worktree,
+`sandbox-docker` and production `current` remain unchanged. Implementation and
+acceptance details are in [NATIVE_RUNTIME_RELIABILITY.md](NATIVE_RUNTIME_RELIABILITY.md)
+and [LOCAL_APPTAINER.md](LOCAL_APPTAINER.md).
+
+The comparison baseline is frozen at `d7b1000251ccc00656b30a96e37785dcec07e4a2`.
+Six baseline and eighteen candidate tasks use the same model, Docker images,
+input hashes and resource settings, with at most two active tasks. All failed
+attempts are retained. The first autonomous baseline produced an execution but
+failed before report submission; it is not a successful delivery. Runtime
+Agents alone choose methods, dependencies, analysis programs and report content.
+
+The candidate source suite passes `1901 passed, 26 skipped`; five opt-in real
+Docker input-isolation/file-limit checks also pass. Source regression and real
+Docker checks do not establish scientific validity or complete the 24-task comparison.
+Real Local Apptainer validation is blocked by missing Apptainer and CPU-controller
+delegation on this host; no host administration or resource-limit bypass was
+performed. Production activation and GitHub publication are not part of this
+candidate's current authorization.
+
 ## Source stress repair and fresh H5AD closure — 2026-10-19
 
 The reviewed Native source, including Scheduler + Apptainer integration, passed

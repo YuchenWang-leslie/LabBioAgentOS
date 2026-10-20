@@ -26,7 +26,7 @@ async def test_denied_view_switch_after_feedback_requests_stop_and_retains_failu
     assert first['error']['query_constraints']['allowed_view_types'] == []
     first_id = tools.evidence_items()[-1].capability_invocation_id
     assert tools.stop_reason is None
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((first,))
     second = await tools.artifact_query(str(ref.artifact_id), 'SCHEMA')
     assert second['error']['error_code'] == 'ARTIFACT_EXPOSURE_DENIED'
     repeat = second['error']['repeated_request']
@@ -43,7 +43,7 @@ async def test_denied_view_switch_after_feedback_requests_stop_and_retains_failu
 async def test_unchanged_artifact_list_after_feedback_requests_stop(boundary):
     tools = _toolset(boundary, WorkflowStage.INTAKE, ("artifact_list",))
     first = await tools.artifact_list()
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((first,))
     second = await tools.artifact_list()
 
     assert first["success"] and not second["success"]
@@ -56,7 +56,7 @@ async def test_unchanged_artifact_list_after_feedback_requests_stop(boundary):
 async def test_artifact_list_rechecks_current_state_before_repeat_stop(boundary):
     tools = _toolset(boundary, WorkflowStage.INTAKE, ("artifact_list",))
     first = await tools.artifact_list()
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((first,))
     tools.services.artifact_store.register(
         artifact_type="new-visible-result",
         exposure_class=ArtifactExposureClass.DERIVED,
@@ -106,7 +106,7 @@ def _execution_tools(boundary):
 async def test_unchanged_output_declaration_after_feedback_requests_stop(boundary):
     tools, validator = _execution_tools(boundary)
     first = await tools.execution_submit(image_key="approved", script_content="pass")
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((first,))
     second = await tools.execution_submit(image_key="approved", script_content="print(1)")
 
     assert not first["success"] and not second["success"]
@@ -133,8 +133,8 @@ async def test_same_batch_output_rejections_do_not_claim_feedback(boundary):
 @pytest.mark.asyncio
 async def test_corrected_output_declaration_is_revalidated_and_can_succeed(boundary):
     tools, validator = _execution_tools(boundary)
-    await tools.execution_submit(image_key="approved", script_content="pass")
-    tools.mark_feedback_delivered()
+    first = await tools.execution_submit(image_key="approved", script_content="pass")
+    tools.mark_feedback_delivered((first,))
     corrected = await tools.execution_submit(
         image_key="approved",
         script_content="pass",
@@ -155,15 +155,15 @@ async def test_corrected_output_declaration_is_revalidated_and_can_succeed(bound
 @pytest.mark.asyncio
 async def test_invalid_shape_repeat_stops_but_explicit_correction_and_other_id_do_not(artifact_query_boundary):
     _, _, ref, tools = artifact_query_boundary
-    await tools.artifact_query(str(ref.artifact_id), 'SUMMARY', 2)
-    tools.mark_feedback_delivered()
+    first = await tools.artifact_query(str(ref.artifact_id), 'SUMMARY', 2)
+    tools.mark_feedback_delivered((first,))
     corrected = await tools.artifact_query(str(ref.artifact_id), 'SUMMARY')
     assert corrected['success'] and tools.stop_reason is None
     second_ref = _register(artifact_query_boundary, ArtifactExposureClass.RAW,
                            ArtifactReleaseBasis.INTERNAL_ONLY)
-    await tools.artifact_query(str(second_ref.artifact_id), 'SUMMARY')
+    second = await tools.artifact_query(str(second_ref.artifact_id), 'SUMMARY')
     assert tools.stop_reason is None
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((corrected, second))
     await tools.artifact_query(str(ref.artifact_id), 'SUMMARY', '2')
     assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
     assert tools.evidence_items()[-1].error_details.repeated_request.reason == 'REQUEST_UNCHANGED'
@@ -187,11 +187,11 @@ async def test_same_batch_has_no_false_claim_of_received_feedback(artifact_query
     _, _, _, tools = artifact_query_boundary
     ref = _register(artifact_query_boundary, ArtifactExposureClass.RAW,
                     ArtifactReleaseBasis.INTERNAL_ONLY)
-    tools.mark_feedback_delivered()
-    await tools.artifact_query(str(ref.artifact_id), 'METADATA')
-    await tools.artifact_query(str(ref.artifact_id), 'SCHEMA')
+    tools.mark_feedback_delivered(())
+    first = await tools.artifact_query(str(ref.artifact_id), 'METADATA')
+    second = await tools.artifact_query(str(ref.artifact_id), 'SCHEMA')
     assert tools.stop_reason is None
-    tools.mark_feedback_delivered()
+    tools.mark_feedback_delivered((first, second))
     await tools.artifact_query(str(ref.artifact_id), 'TOP_N', 2)
     assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
 

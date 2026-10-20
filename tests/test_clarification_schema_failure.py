@@ -48,7 +48,7 @@ def test_followup_schema_only_exposes_an_answered_not_exhausted_identity():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["semantic_proposal", "schema_result"])
+@pytest.mark.parametrize("failure", ["semantic_proposal", "schema_result", "handoff_required"])
 async def test_invalid_final_result_fails_stably_without_replaying_completed_tools(
     tmp_path, governed_invokers, monkeypatch, failure,
 ):
@@ -57,6 +57,8 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
         if stage_input.stage_id is WorkflowStage.EXECUTE:
             if failure == "schema_result":
                 raise RuntimeIntegrationError("MALFORMED_RUNTIME_RESULT", "PRIVATE_ERROR_MESSAGE")
+            if failure == "handoff_required":
+                raise RuntimeIntegrationError("HANDOFF_REQUIRED", "PRIVATE_ERROR_MESSAGE")
             return result.model_copy(update={"next_action": _question(followup="This is a first question, not an ID.")})
         return result
 
@@ -81,6 +83,9 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
     assert "PRIVATE_ERROR_MESSAGE" not in saved.model_dump_json()
     assert "PRIVATE_PROGRAM_MARKER" not in saved.model_dump_json()
     assert len(executor.plans) == 1
+    if failure == "handoff_required":
+        assert result.issue_codes == ("HANDOFF_REQUIRED",)
+        assert rejected.failure_code == "HANDOFF_REQUIRED"
     store.close()
     store = SQLiteRunStateStore(path)
     app = LabBioApplication(_capability_configuration(tmp_path, store))
@@ -117,8 +122,9 @@ async def test_missing_required_capability_fails_stably_with_completed_empty_evi
     assert result.status is RunStatus.FAILED
     saved = store.get(handle.run_id)
     assert saved.recovery_state is RunRecoveryState.STABLE
-    assert saved.workflow_run.failure_reason == "MALFORMED_RUNTIME_RESULT"
-    assert saved.rejected_stage_checkpoint.failure_code == "MALFORMED_RUNTIME_RESULT"
+    assert saved.workflow_run.failure_reason == "REQUIRED_CAPABILITY_INCOMPLETE"
+    assert saved.rejected_stage_checkpoint.failure_code == "REQUIRED_CAPABILITY_INCOMPLETE"
+    assert result.issue_codes == ("REQUIRED_CAPABILITY_INCOMPLETE",)
     assert saved.rejected_stage_checkpoint.evidence.items == ()
     assert saved.inflight_evidence is None
     store.close()

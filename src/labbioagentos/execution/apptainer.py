@@ -6,10 +6,11 @@ import hashlib
 import math
 import os
 import re
-import resource
+import shutil
 import signal
 import stat
 import subprocess
+import sys
 import time
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -21,7 +22,7 @@ from .images import ApprovedImage
 from .models import ExecutionPlan
 from .mounts import ExecutionWorkspace, ResolvedMount
 
-ResourceEnforcement = Literal["scheduler", "apptainer-cgroups"]
+ResourceEnforcement = Literal["scheduler", "apptainer-cgroups", "systemd-cgroups"]
 
 _SIF_REFERENCE = re.compile(r"sha256:([0-9a-f]{64})")
 _RUNTIME_LOG_LINE = re.compile(rb"(?:FATAL|ERROR|WARNING|INFO|VERBOSE|DEBUG):\s")
@@ -163,8 +164,8 @@ class ApptainerCommandBuilder:
         if (not apptainer_binary or apptainer_binary.startswith("-")
                 or any(character.isspace() for character in apptainer_binary)):
             raise ValueError("apptainer_binary must be a configured executable name")
-        if resource_enforcement not in ("scheduler", "apptainer-cgroups"):
-            raise ValueError("resource_enforcement must be 'scheduler' or 'apptainer-cgroups'")
+        if resource_enforcement not in ("scheduler", "apptainer-cgroups", "systemd-cgroups"):
+            raise ValueError("An explicit resource enforcement owner is required")
         self.sif_store = sif_store
         self.scratch_root = _reject_aliases(Path(scratch_root))
         self.scratch_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -277,7 +278,9 @@ class ApptainerCommandBuilder:
 class SubprocessApptainerRunner(ProcessRunner):
     """Host runner: allowlisted environment, file-size limit, whole-group timeout."""
 
-    ENVIRONMENT_ALLOWLIST = ("PATH", "HOME", "USER", "LOGNAME", "LANG")
+    ENVIRONMENT_ALLOWLIST = (
+        "PATH", "HOME", "USER", "LOGNAME", "LANG", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS",
+    )
 
     def __init__(
         self,
@@ -308,24 +311,27 @@ class SubprocessApptainerRunner(ProcessRunner):
             environment["APPTAINER_TMPDIR"] = str(self.tmp_dir)
         return environment
 
-    def child_limits(self) -> None:
-        """Runs in the child before exec: limits the size of any file it writes."""
-
-        limit = self.max_output_file_bytes
-        resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    def entrypoint_options(self) -> tuple[str, ...]:
+        """Limits are set after exec, never in a threaded subprocess preexec_fn."""
+        return ("--file-bytes", str(self.max_output_file_bytes))
 
     def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
         started = time.monotonic()
+        if not argv or shutil.which(argv[0], path=self.environment().get("PATH")) is None:
+            raise ContainerStartError("The configured runtime executable is unavailable")
+        entrypoint = (
+            sys.executable, "-I", str(Path(__file__).with_name("_process_entry.py")),
+            *self.entrypoint_options(), "--", *argv,
+        )
         try:
             process = subprocess.Popen(
-                list(argv),
+                entrypoint,
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=self.environment(),
                 start_new_session=True,
-                preexec_fn=self.child_limits,
             )
         except OSError as exc:
             raise ContainerStartError(f"Could not start the container runtime: {exc}") from exc

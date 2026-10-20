@@ -334,7 +334,7 @@ def test_subprocess_timeout_forces_removal_of_the_exact_named_container(monkeypa
 
     def fake_run(argv, **kwargs):
         calls.append((tuple(argv), kwargs))
-        if argv[1] == "run":
+        if argv[1] == "start":
             raise subprocess.TimeoutExpired(
                 cmd=argv,
                 timeout=kwargs["timeout"],
@@ -353,8 +353,10 @@ def test_subprocess_timeout_forces_removal_of_the_exact_named_container(monkeypa
     assert outcome.timed_out is True
     assert outcome.stdout == b"bounded stdout"
     assert outcome.stderr == b"bounded stderr"
-    assert calls[1][0] == ("docker", "rm", "--force", container_name)
-    assert calls[1][1]["shell"] is False
+    assert calls[0][0] == ("docker", "create", "--rm", "--name", container_name, "image")
+    assert calls[1][0] == ("docker", "start", "--attach", container_name)
+    assert calls[2][0] == ("docker", "rm", "--force", container_name)
+    assert calls[2][1]["shell"] is False
 
 
 def test_subprocess_timeout_never_cleans_an_untrusted_container_name(monkeypatch):
@@ -372,7 +374,7 @@ def test_subprocess_timeout_never_cleans_an_untrusted_container_name(monkeypatch
             timeout_seconds=0.25,
         )
 
-    assert calls == [("docker", "run", "--name", "not-labbio", "image")]
+    assert calls == []  # Refuse the untrusted name before any daemon side effect.
 
 
 def test_script_and_streams_are_hashed_internal_refs_not_result_content(tmp_path):

@@ -45,6 +45,7 @@ from .collaboration import AgentRegistry, CollaborationRuntime, TaskBoard
 from .errors import (
     AgentHistoryLimitError,
     BudgetExceededError,
+    ContextCapacityError,
     FakeProviderExhaustedError,
     FinalizationProtocolError,
     FinalizationRejectedError,
@@ -92,6 +93,7 @@ __all__ = [
     "BudgetLedger",
     "BudgetLimits",
     "BudgetUsage",
+    "ContextCapacityError",
     "DelegationRequest",
     "DelegationResult",
     "FakeProvider",

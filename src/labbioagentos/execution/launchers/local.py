@@ -41,11 +41,13 @@ class LocalLauncher(JobLauncher):
             return JobState.UNKNOWN
         if not job.task.done():
             return JobState.RUNNING
+        if job.task.cancelled() or isinstance(job.task.exception(), JobLauncherError):
+            return JobState.UNKNOWN
         return JobState.FAILED if job.task.exception() is not None else JobState.COMPLETED
 
     async def cancel(self, handle: JobHandle) -> None:
         job = self._job(handle)
-        if job.task.done():
+        if job.task.done() and await self.status(handle) is not JobState.UNKNOWN:
             return
         cancel = getattr(self.runner, "cancel", None)
         if cancel is None:
@@ -57,8 +59,8 @@ class LocalLauncher(JobLauncher):
     async def attach(self, job_id: str, *, execution_id: UUID) -> JobHandle:
         handle = JobHandle(launcher=self.kind, job_id=job_id, execution_id=execution_id)
         if await self.status(handle) is JobState.UNKNOWN:
-            # Local executions are children of this process and never outlive it.
-            raise JobNotFoundError("Local executions do not outlive the control-plane process")
+            # Losing in-memory identity is not proof that daemon-owned work stopped.
+            raise JobNotFoundError("No local execution state exists in this control-plane process")
         return handle
 
     async def collect(self, handle: JobHandle) -> ProcessOutcome:

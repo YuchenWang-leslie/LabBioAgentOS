@@ -163,7 +163,7 @@ def cluster(tmp_path):
         placement = ({"download_runner": DownloadRunner(max_file_bytes=64 << 20, cpu_seconds=60)}
                      if download == "login" else {"download_launcher": launcher})
         builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
-                                              job_ledger=ledger, **placement)
+                                              workspace_root=state.jobs, job_ledger=ledger, **placement)
         state.scheduler, state.launcher = scheduler, launcher
         return EnvironmentService(root=tmp_path / "environments", image_registry=ApprovedImageRegistry((base,)),
                                   builder=builder, owner_user_id="user-one")
@@ -337,7 +337,7 @@ async def test_a_crashed_build_job_is_cleaned_up_by_its_run_and_its_wheels_on_re
     while not held.calls:
         assert time.monotonic() < deadline
         await asyncio.sleep(0.05)
-    task.cancel()  # The control plane is lost while the build job is queued.
+    task.cancel()  # Cooperative cancellation stops the queued job before returning.
     with pytest.raises(asyncio.CancelledError):
         await task
     [job] = _jobs(cluster, run_id)
@@ -349,7 +349,7 @@ async def test_a_crashed_build_job_is_cleaned_up_by_its_run_and_its_wheels_on_re
     results = await reconcile_orphan_jobs(ledger=cluster.ledger, launcher=cluster.launcher, run_id=run_id,
                                           environment_launcher=cluster.launcher)
 
-    assert [(item.job_id, item.action) for item in results] == [(job.job_id, OrphanAction.CANCELLED)]
+    assert [(item.job_id, item.action) for item in results] == [(job.job_id, OrphanAction.DISCARDED)]
     assert held.jobs[job.job_id].cancelled and not job.workspace_root.exists()
     assert len(held.calls) == 1  # Nothing was resubmitted.
     crashed = _attempt(cluster)
@@ -388,6 +388,22 @@ def test_both_builders_implement_the_environment_builder_protocol():
     assert inspect.signature(DockerEnvironmentBuilder.build) == expected
 
 
+@pytest.mark.asyncio
+async def test_builder_only_requires_job_launcher_contract_not_scheduler_attributes(cluster):
+    service = cluster.service(download="job")
+    inner = service.builder.build_launcher
+    opaque = SimpleNamespace(
+        kind=inner.kind, submit=inner.submit, wait=inner.wait,
+        collect=inner.collect, cancel=inner.cancel,
+    )
+    service.builder.build_launcher = opaque
+    service.builder.download_launcher = opaque
+    result = await service.build_environment(
+        "base", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4(),
+    )
+    assert result["status"] == "SUCCEEDED"
+
+
 @pytest.mark.parametrize("change", [
     {"machine": "x86_64; id"}, {"proxy_url": "http://user:secret@proxy.example"},
     {"build_dir": "relative"}, {"download_timeout_seconds": 0},
@@ -404,8 +420,10 @@ def test_exactly_one_download_placement_is_required(cluster):
     builder = cluster.service().builder
     with pytest.raises(ValueError):
         ApptainerEnvironmentBuilder(sif_store=cluster.sif_store, policy=builder.policy,
-                                    build_launcher=cluster.launcher, job_ledger=cluster.ledger)
+                                    build_launcher=cluster.launcher, workspace_root=cluster.jobs,
+                                    job_ledger=cluster.ledger)
     with pytest.raises(ValueError):
         ApptainerEnvironmentBuilder(sif_store=cluster.sif_store, policy=builder.policy,
-                                    build_launcher=cluster.launcher, job_ledger=cluster.ledger,
+                                    build_launcher=cluster.launcher, workspace_root=cluster.jobs,
+                                    job_ledger=cluster.ledger,
                                     download_runner=builder.download_runner, download_launcher=cluster.launcher)

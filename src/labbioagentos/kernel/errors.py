@@ -181,3 +181,13 @@ class AgentHistoryLimitError(KernelContractError):
             "AGENT_HISTORY_LIMIT_EXCEEDED",
             "The invocation public history exceeds the configured transport bound",
         )
+
+
+class ContextCapacityError(KernelContractError):
+    def __init__(self, *, request_bytes: int, max_request_bytes: int):
+        super().__init__(
+            "CONTEXT_CAPACITY_EXCEEDED",
+            "The complete model request exceeds its configured byte capacity",
+        )
+        self.request_bytes = request_bytes
+        self.max_request_bytes = max_request_bytes

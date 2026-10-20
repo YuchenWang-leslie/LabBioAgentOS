@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from uuid import uuid4
 
 import pytest
@@ -398,6 +399,56 @@ async def test_private_reasoning_replays_only_on_exact_bound_tool_history():
     assert replayed["reasoning_content"] == "PRIVATE_REASONING_SENTINEL"
     provider.clear_invocation(initial.kernel_run_id, initial.invocation_id)
     assert "PRIVATE_REASONING_SENTINEL" not in repr(provider)
+
+
+def test_discarded_batch_removes_only_its_exact_private_continuity():
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding, api_key="secret-token", transport=RecordingTransport(()),
+    )
+    initial = _request(binding, (PublicMessage(role="USER", content="Inspect."),))
+    messages = list(initial.messages)
+    batches = []
+    for number in (1, 2):
+        turn = provider._parse_response(initial, {
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "content": None,
+                    "reasoning_content": f"PRIVATE_{number}",
+                    "tool_calls": [{
+                        "id": f"call-{number}", "type": "function",
+                        "function": {"name": "inspect", "arguments": "{}"},
+                    }],
+                },
+            }],
+        })
+        batches.append(turn.tool_calls)
+        messages.extend((
+            PublicMessage(role="ASSISTANT", tool_calls=turn.tool_calls),
+            PublicMessage(
+                role="TOOL", content='{"ok":true}', tool_call_id=f"call-{number}"
+            ),
+        ))
+    request = initial.model_copy(update={"messages": tuple(messages)})
+    size_before = provider.request_size_bytes(request)
+    provider.discard_tool_batch(
+        initial.kernel_run_id, initial.invocation_id, batches[0]
+    )
+    payload = provider._payload(request)
+    assert "reasoning_content" not in payload["messages"][1]
+    assert payload["messages"][3]["reasoning_content"] == "PRIVATE_2"
+    size_after = provider.request_size_bytes(request)
+    assert size_after < size_before
+    assert size_after == len(json.dumps(
+        payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+    ).encode("utf-8"))
+    assert len(provider._private_reasoning) == 1
+    provider.discard_tool_batch(
+        initial.kernel_run_id, initial.invocation_id, batches[1],
+        retained_messages=request.messages,
+    )
+    assert len(provider._private_reasoning) == 1
 
 
 @pytest.mark.asyncio

@@ -136,7 +136,7 @@ def site(request):
         else:
             placement = {"download_runner": DownloadRunner(max_file_bytes=SIF_BYTES, cpu_seconds=1800)}
         builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
-                                              job_ledger=ledger, **placement)
+                                              workspace_root=jobs_root, job_ledger=ledger, **placement)
         service = EnvironmentService(root=base / "environments", image_registry=ApprovedImageRegistry((image,)),
                                      builder=builder, owner_user_id="real-test-user")
         yield service, ledger, launcher, sif_store, base

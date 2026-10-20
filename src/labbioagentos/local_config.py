@@ -43,6 +43,7 @@ class LocalProviderSettings(_SettingsModel):
     provider_tool_schema_strict: bool = False
     max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
     max_model_phase_seconds: int = Field(default=300, ge=30, le=1_800)
+    max_request_bytes: int = Field(default=256_000, ge=1, strict=True)
     finalization_json_object: bool = False
 
 
@@ -53,7 +54,7 @@ class LocalApptainerSettings(_SettingsModel):
     cache_dir: Path | None = None
     tmp_dir: Path | None = None
     # No default: a site must state who enforces CPU, memory and process limits.
-    resource_enforcement: Literal["scheduler", "apptainer-cgroups"]
+    resource_enforcement: Literal["scheduler", "apptainer-cgroups", "systemd-cgroups"]
     verify_sif_on_execute: bool = Field(default=True, strict=True)
 
 
@@ -107,12 +108,8 @@ def _plain_endpoint(url: str) -> bool:
             and not any(char.isspace() for char in url))
 
 
-class LocalClusterBuildSettings(_SettingsModel):
-    """Cluster environment builds (DECIDED-C13-8); required for [environment] with Apptainer.
-
-    Wheels are downloaded inside the base SIF on the login node or in a job on
-    a network-capable partition; the build itself runs in a network-disabled job.
-    """
+class LocalApptainerBuildSettings(_SettingsModel):
+    """Bounded Apptainer wheel download, installation and SIF packing."""
 
     # CPU architecture of the compute nodes and base SIFs, as in wheel tags; no default.
     machine: str = Field(pattern=r"^[a-z0-9_]{1,32}$")
@@ -124,26 +121,35 @@ class LocalClusterBuildSettings(_SettingsModel):
     build_timeout_seconds: float = Field(default=7200.0, gt=0, le=86_400)
     # Largest file a build or download job may write, such as the packed SIF.
     max_file_bytes: int = Field(default=34_359_738_368, ge=1, strict=True)
-    partition: str | None = None  # Build jobs; the launcher's partition when unset.
-    extra_directives: tuple[str, ...] = ()
-    download_placement: Literal["login", "job"] = "login"
-    download_partition: str | None = None  # Required for "job": a partition with network.
     download_work_root: Path = Path("/tmp")  # Taken literally, like build_dir.
     download_timeout_seconds: float = Field(default=1800.0, ge=1, le=86_400)
-    download_cpu_seconds: int = Field(default=1800, ge=1, le=86_400, strict=True)
     download_memory_mb: int = Field(default=4096, ge=256, le=1_048_576, strict=True)
     cache_dir: Path | None = None  # pip cache on the shared filesystem.
     index_url: str | None = None  # A package index without credentials.
     ca_bundle: Path | None = None  # For proxies that re-sign HTTPS.
 
     @model_validator(mode="after")
-    def validate_build(self) -> "LocalClusterBuildSettings":
+    def validate_build(self) -> "LocalApptainerBuildSettings":
         if not self.build_dir.is_absolute() or not self.download_work_root.is_absolute():
             raise ValueError("build_dir and download_work_root must be absolute paths")
-        if (self.download_placement == "job") != (self.download_partition is not None):
-            raise ValueError("download_partition is required for, and only for, download_placement = 'job'")
         if self.index_url is not None and not _plain_endpoint(self.index_url):
             raise ValueError("index_url must be an HTTP(S) endpoint without credentials")
+        return self
+
+
+class LocalClusterBuildSettings(LocalApptainerBuildSettings):
+    """Scheduler-specific placement; login-node download remains explicit."""
+
+    partition: str | None = None
+    extra_directives: tuple[str, ...] = ()
+    download_placement: Literal["login", "job"] = "login"
+    download_partition: str | None = None
+    download_cpu_seconds: int = Field(default=1800, ge=1, le=86_400, strict=True)
+
+    @model_validator(mode="after")
+    def validate_download(self) -> "LocalClusterBuildSettings":
+        if (self.download_placement == "job") != (self.download_partition is not None):
+            raise ValueError("download_partition is required for, and only for, download_placement = 'job'")
         return self
 
 
@@ -152,6 +158,14 @@ class LocalEnvironmentSettings(_SettingsModel):
     build_proxy: str | None = None
     build_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     cluster: LocalClusterBuildSettings | None = None
+    local_apptainer: LocalApptainerBuildSettings | None = None
+
+    @model_serializer(mode="wrap")
+    def omit_absent_local_apptainer(self, handler):
+        data = handler(self)
+        if data.get("local_apptainer") is None:
+            data.pop("local_apptainer", None)
+        return data
 
     @model_validator(mode="after")
     def validate_proxy(self) -> "LocalEnvironmentSettings":
@@ -215,20 +229,24 @@ class LocalSettings(_SettingsModel):
 
     @model_validator(mode="after")
     def validate_placement(self) -> "LocalSettings":
-        # Runtime and launcher are separate axes, but only two combinations exist.
+        # Placement and container runtime remain explicit independent axes.
         placement = (self.execution.backend, self.launcher.kind if self.launcher else "local")
-        if placement not in {("docker", "local"), ("apptainer", "template")}:
+        if placement not in {("docker", "local"), ("apptainer", "local"), ("apptainer", "template")}:
             raise ValueError(
-                "Only Local + Docker and Scheduler + Apptainer are supported; "
+                "Only Local + Docker, Local + Apptainer and Scheduler + Apptainer are supported; "
                 f"got backend {placement[0]!r} with launcher {placement[1]!r}"
             )
         if self.execution.backend == "apptainer":
             if not Path(self.execution.apptainer.binary).is_absolute():
-                raise ValueError("Scheduler mode requires an absolute Apptainer binary path")
+                raise ValueError("Apptainer requires an absolute executable path")
+            local = placement[1] == "local"
+            if local != (self.execution.apptainer.resource_enforcement == "systemd-cgroups"):
+                raise ValueError("Local Apptainer requires systemd-cgroups; scheduler placement does not")
         if self.environment is not None:
-            # Docker builds on the control-plane host; cluster builds need their own settings.
-            if (self.execution.backend == "apptainer") != (self.environment.cluster is not None):
-                raise ValueError("[environment.cluster] is required with, and only with, the Apptainer backend")
+            if (placement == ("apptainer", "template")) != (self.environment.cluster is not None):
+                raise ValueError("[environment.cluster] is required only for Scheduler + Apptainer")
+            if (placement == ("apptainer", "local")) != (self.environment.local_apptainer is not None):
+                raise ValueError("[environment.local_apptainer] is required only for Local + Apptainer")
         return self
 
     @property
@@ -282,6 +300,7 @@ def load_settings(path: Path) -> LocalSettings:
         "environment": settings.environment.model_copy(update={
             "root": absolute(settings.environment.root),
             "cluster": _absolute_cluster_build(settings.environment.cluster, absolute),
+            "local_apptainer": _absolute_cluster_build(settings.environment.local_apptainer, absolute),
         }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
         "execution": settings.execution.model_copy(update={
@@ -468,7 +487,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
     from .execution.environments import EnvironmentService
 
     environment = settings.environment
-    if environment.cluster is None:
+    if settings.execution.backend == "docker":
         from .execution.environment_builder import DockerEnvironmentBuilder
 
         def docker_service(registry):
@@ -487,21 +506,32 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
     from .execution.apptainer_environment_builder import ApptainerBuildPolicy, ApptainerEnvironmentBuilder
     from .execution.launchers import SchedulerLauncher
 
-    apptainer, cluster = settings.execution.apptainer, environment.cluster
-    template = settings.launcher.scheduler_template()
+    apptainer = settings.execution.apptainer
+    cluster = environment.cluster or environment.local_apptainer
     jobs_root = run_root / "environment-jobs"
     jobs_root.mkdir(mode=0o700, exist_ok=True)
-    build_launcher = SchedulerLauncher(template=template, policy=environment_scheduler_policy(settings),
-                                       workspace_root=jobs_root)
-    placement = (
-        {"download_runner": DownloadRunner(max_file_bytes=cluster.max_file_bytes,
-                                           cpu_seconds=cluster.download_cpu_seconds,
-                                           cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir)}
-        if cluster.download_placement == "login" else
-        {"download_launcher": SchedulerLauncher(
-            template=template, policy=environment_scheduler_policy(settings, download=True),
-            workspace_root=jobs_root)}
-    )
+    if environment.local_apptainer is not None:
+        from .execution.apptainer import SubprocessApptainerRunner
+        from .execution.launchers.systemd import SystemdLocalLauncher
+
+        build_launcher = SystemdLocalLauncher(SubprocessApptainerRunner(
+            max_output_file_bytes=cluster.max_file_bytes,
+            cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
+        ))
+        placement = {"download_launcher": build_launcher}
+    else:
+        template = settings.launcher.scheduler_template()
+        build_launcher = SchedulerLauncher(template=template, policy=environment_scheduler_policy(settings),
+                                           workspace_root=jobs_root)
+        placement = (
+            {"download_runner": DownloadRunner(max_file_bytes=cluster.max_file_bytes,
+                                               cpu_seconds=cluster.download_cpu_seconds,
+                                               cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir)}
+            if cluster.download_placement == "login" else
+            {"download_launcher": SchedulerLauncher(
+                template=template, policy=environment_scheduler_policy(settings, download=True),
+                workspace_root=jobs_root)}
+        )
     policy = ApptainerBuildPolicy(
         apptainer_binary=Path(apptainer.binary), machine=cluster.machine, build_dir=cluster.build_dir,
         download_work_root=cluster.download_work_root,
@@ -517,7 +547,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
             root=environment.root, image_registry=registry,
             builder=ApptainerEnvironmentBuilder(
                 sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
-                job_ledger=job_ledger, **placement,
+                workspace_root=jobs_root, job_ledger=job_ledger, **placement,
             ),
             owner_user_id=settings.principal.user_id,
         )
@@ -527,11 +557,12 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
 
 
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
-    """Scheduler + Apptainer wiring; the capability probe runs before the first execution."""
+    """Apptainer wiring; placement and capability checks are explicit."""
     from .execution.apptainer import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
     from .execution.apptainer_probe import probe_capabilities
     from .execution.job_ledger import JobLedger
     from .execution.launchers import SchedulerLauncher
+    from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
     image = settings.execution.approved_image()
@@ -540,21 +571,34 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
         max_output_file_bytes=settings.execution.max_output_file_bytes,
         cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
     )
+    local = launcher is None or launcher.kind == "local"
+    job_launcher = (
+        SystemdLocalLauncher(runner) if local else SchedulerLauncher(
+            template=launcher.scheduler_template(), policy=scheduler_policy(settings),
+            workspace_root=run_root / "executions",
+        )
+    )
+    probe_runner = SystemdProbeRunner(job_launcher, settings.execution.resources) if local else runner
 
     def backend_check() -> dict:
         sif_path = (store.verify(image.reference) if apptainer.verify_sif_on_execute
                     else store.path_for(image.reference))
         capabilities = probe_capabilities(
             binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
-            runner=runner, scratch_root=apptainer.scratch_root,
+            runner=probe_runner, scratch_root=apptainer.scratch_root,
         )
         capabilities.require(resource_enforcement=apptainer.resource_enforcement)
-        return capabilities.trace_record(resource_enforcement=apptainer.resource_enforcement)
+        record = capabilities.trace_record(resource_enforcement=apptainer.resource_enforcement)
+        if local:
+            from .execution.apptainer_probe import ApptainerUnsupportedError
+            record["local_resources"] = job_launcher.probe()
+            if record["local_resources"]["status"] != "OK":
+                raise ApptainerUnsupportedError(tuple(record["local_resources"]["failures"]))
+        return record
 
-    policy = scheduler_policy(settings)
     return {
         # The login node runs only the data-free import probe through this runner.
-        "process_runner": runner,
+        "process_runner": probe_runner,
         "command_builder": ApptainerCommandBuilder(
             store, scratch_root=apptainer.scratch_root,
             resource_enforcement=apptainer.resource_enforcement,
@@ -562,10 +606,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
             verify_sif_on_execute=apptainer.verify_sif_on_execute,
         ),
         "backend_check": backend_check,
-        "job_launcher": SchedulerLauncher(
-            template=launcher.scheduler_template(), policy=policy,
-            workspace_root=run_root / "executions",
-        ),
+        "job_launcher": job_launcher,
         "job_ledger": JobLedger(run_root / "jobs.sqlite"),
     }
 
@@ -632,7 +673,8 @@ def build_application(
         profile.deployment_context
         + "\nThis catalog describes configured ownership, does not grant tools in the current phase, "
         "and is not a required action sequence. Current typed control remains authoritative.\n"
-        + "CONFIGURED_CAPABILITY_OWNERS=" + json.dumps(owners, sort_keys=True)
+        + "CONFIGURED_CAPABILITY_OWNERS=" + json.dumps(
+            owners, sort_keys=True, separators=(",", ":"))
         + "\n"
     )
     assemblies = tuple(RuntimeStageAssemblySpec(
@@ -663,11 +705,11 @@ def build_application(
         preserve_capability_completion=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
         required_any_capabilities=stage.required_any_capabilities,
-        # REPORT must both establish complete citation coverage and submit the
-        # final prose. Its accumulated governed pages make the token ledger,
-        # rather than tool-turn count, the tighter bound in real runs.
+        # REPORT establishes observed-scope provenance and submits final prose.
+        # Partial reading never implies full-table review; budgets stay explicit.
         max_capability_turns=24 if stage.stage is WorkflowStage.REPORT else 16,
         max_no_progress_seconds=settings.provider.max_model_phase_seconds,
+        max_request_bytes=settings.provider.max_request_bytes,
         retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
         user_input_enabled=stage.user_input_enabled,
         clarification_enabled=stage.clarification_enabled,

@@ -51,7 +51,7 @@ from .python_diagnostics import (
     script_error_locations,
 )
 from .job_ledger import JobLedger
-from .launchers import JobLauncher, JobSpec, LocalLauncher
+from .launchers import JobLauncher, JobSpec, LocalLauncher, TERMINAL_STATES
 from .registration import OutputCollector
 
 
@@ -127,6 +127,8 @@ class ContainerExecutor:
     def execute(self, plan: ExecutionPlan) -> ExecutionResult:
         """Run one plan synchronously through the injected process runner."""
 
+        if self.launcher is not None:
+            raise ContainerStartError("Configured job placement requires execute_async")
         self._ensure_backend()
         prepared = self._prepare(plan)
         try:
@@ -152,6 +154,8 @@ class ContainerExecutor:
             if ledger is not None:
                 ledger.record_intent(run_id=plan.run_id, execution_id=plan.execution_id,
                                      launcher=launcher.kind, workspace_root=prepared.workspace.root)
+            handle = None
+            stopped = False
             try:
                 try:
                     handle = await launcher.submit(JobSpec(
@@ -163,19 +167,29 @@ class ContainerExecutor:
                         cleanup_paths=self.command_builder.cleanup_paths(plan.execution_id),
                     ))
                 except ContainerStartError:
+                    stopped = True  # The launcher's contract confirms nothing started.
                     if ledger is not None:
                         ledger.record_not_submitted(plan.execution_id)
                     raise
                 if ledger is not None:
                     ledger.record_submitted(plan.execution_id, handle.job_id)
-                await launcher.wait(handle)
+                state = await launcher.wait(handle)
+                stopped = state in TERMINAL_STATES
                 outcome = await launcher.collect(handle)
                 if ledger is not None:
                     ledger.record_collected(plan.execution_id)
             except ContainerStartError as exc:
                 return self._start_failure(plan, prepared, exc)
+            except asyncio.CancelledError:
+                if handle is not None:
+                    # Cancelling the wait is not cancelling the underlying job.
+                    await asyncio.shield(launcher.cancel(handle))
+                    state = await asyncio.wait_for(asyncio.shield(launcher.wait(handle)), timeout=15)
+                    stopped = state in TERMINAL_STATES
+                raise
             finally:
-                self._remove_cleanup_paths(plan)
+                if stopped:
+                    self._remove_cleanup_paths(plan)
             return self._finish(plan, prepared, outcome)
 
     def _ensure_backend(self) -> None:

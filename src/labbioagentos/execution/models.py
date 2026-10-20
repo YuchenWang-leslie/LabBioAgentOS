@@ -16,6 +16,7 @@ from pydantic import (
     JsonValue,
     StrictStr,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -266,6 +267,8 @@ class ExecutionIssue(BaseModel):
     output_path: StrictStr | None = Field(default=None, min_length=1)
     output_index: int | None = Field(default=None, ge=0)
     record_index: int | None = Field(default=None, ge=0, le=9999)
+    observed_records: int | None = Field(default=None, ge=0)
+    max_records: int | None = Field(default=None, ge=1, le=10_000)
 
 
 class ExecutionOutputIssue(BaseModel):
@@ -280,6 +283,20 @@ class ExecutionOutputIssue(BaseModel):
         default=None, ge=0, le=9999,
         description="Zero-based records index, only when identified by local validation.",
     )
+    observed_records: int | None = Field(
+        default=None, ge=0, description="Exact locally observed count on a record-limit rejection.",
+    )
+    max_records: int | None = Field(
+        default=None, ge=1, le=10_000, description="Trusted contract limit for this rejection.",
+    )
+
+    @model_serializer(mode="wrap")
+    def omit_unknown_record_counts(self, handler):
+        data = handler(self)
+        for name in ("observed_records", "max_records"):
+            if data.get(name) is None:
+                data.pop(name, None)
+        return data
 
 
 class ExecutionScriptLocation(BaseModel):
@@ -547,6 +564,8 @@ class ExecutionReceipt(BaseModel):
                     detail_code=issue.detail_code,
                     output_index=issue.output_index,
                     record_index=issue.record_index,
+                    observed_records=issue.observed_records,
+                    max_records=issue.max_records,
                 )
                 for issue in result.issues
                 if issue.output_index is not None
