@@ -29,6 +29,12 @@ def selection_error(response):
     return {key: value for key, value in response["error"].items() if key != "correlation_id"}
 
 
+def invalid_indices(response):
+    message = response["error"]["safe_message"]
+    assert "invalid_indices=" in message, "The rejection does not identify invalid entries."
+    return json.loads(message.split("invalid_indices=", 1)[1].split(".", 1)[0])
+
+
 def test_handoff_schema_explains_namespace_and_delivery(tmp_path, artifact_query_boundary):
     tools, _ = tools_with_store(tmp_path, artifact_query_boundary)
     host = NativeRuntimeCapabilityHost(tools.binding, tools.services)
@@ -137,6 +143,7 @@ async def test_unseen_and_foreign_selections_are_indistinguishable_and_clear_old
     response = await tools.artifact_query(str(ref.artifact_id), "SUMMARY")
     identity = response["capability_invocation_id"]
     unseen = await tools.prepare_handoff([identity], "Not delivered.")
+    assert invalid_indices(unseen) == [0]
     tools.mark_feedback_delivered((response,))
     assert (await tools.prepare_handoff([identity], "Previously valid."))["data"]["status"] == "READY"
     duplicate = await tools.prepare_handoff([identity, identity], "Invalid replacement.")
@@ -181,3 +188,108 @@ async def test_invalid_selection_does_not_leak_unvalidated_values_into_audit(
     audit = json.dumps([event.model_dump(mode="json") for event in events])
     for canary in ("PRIVATE_INVALID_ID", "SUMMARY_CANARY", "LIMITATION_CANARY"):
         assert canary not in public and canary not in audit
+
+
+@pytest.mark.asyncio
+async def test_nine_item_selection_locates_bad_item_before_agent_selects_new_scope(
+    tmp_path, artifact_query_boundary,
+):
+    tools, ref = tools_with_store(tmp_path, artifact_query_boundary)
+    host = NativeRuntimeCapabilityHost(tools.binding, tools.services)
+
+    class Provider:
+        binding = _binding()
+
+        async def generate(self, request):
+            if request.turn_index == 1:
+                return ModelTurn(tool_calls=tuple(ToolCall(
+                    call_id=f"read-{index}", name="artifact_query", arguments_json=json.dumps({
+                        "artifact_id": str(ref.artifact_id), "view_type": "SUMMARY"}))
+                    for index in range(8)), finish_reason=FinishReason.TOOL_CALLS)
+            responses = [json.loads(message.content)["content"] for message in request.messages
+                         if message.role == "TOOL"]
+            if request.turn_index == 2:
+                self.source_ids = [item["capability_invocation_id"] for item in responses]
+                self.selection = [*self.source_ids[:7], str(uuid4()), self.source_ids[7]]
+                args = {"observation_ids": self.selection, "summary": "First Agent scope."}
+            elif request.turn_index == 3:
+                self.rejection = responses[-1]
+                self.prepared_after_rejection = host.prepared_handoff
+                if "observation_ids[7]" not in self.rejection["error"]["safe_message"]:
+                    return ModelTurn(content="The rejected entry is unspecified.",
+                                     finish_reason=FinishReason.STOP)
+                # The simulated Agent chooses a new scope, not all remaining IDs.
+                self.new_selection = [self.source_ids[0], self.source_ids[-1]]
+                args = {"observation_ids": self.new_selection,
+                        "summary": "Agent's narrower scope.", "limitations": ["Agent's limit."]}
+            else:
+                self.accepted = responses[-1]
+                return ModelTurn(content="Done.", finish_reason=FinishReason.STOP)
+            return ModelTurn(tool_calls=(ToolCall(
+                call_id=f"handoff-{request.turn_index}", name="prepare_handoff",
+                arguments_json=json.dumps(args)),), finish_reason=FinishReason.TOOL_CALLS)
+
+    provider = Provider()
+    identity = _identity()
+    host.begin_model_invocation(identity)
+    budget = BudgetLedger(_limits(tool_calls=12).model_copy(update={"evidence_entries": 16}))
+    loop = AgentLoop(provider=provider,
+        invocation=AgentInvocation(identity=identity, agent_id="test", mode=AgentMode.CAPABILITY,
+                                   tool_names=("artifact_query", "prepare_handoff")),
+        budget_ledger=budget,
+        dispatcher=ToolDispatcher(build_labbio_tool_registry(host),
+            ModelResultProjector(max_bytes=60_000), budget_ledger=budget,
+            batch_observer=host.mark_feedback_delivered))
+    await loop.run(messages=(PublicMessage(role="USER", content="Synthetic nine-item selection."),),
+                   deadline_monotonic=monotonic() + 60)
+    assert invalid_indices(provider.rejection) == [7]
+    assert "observation_ids[7]" in provider.rejection["error"]["safe_message"]
+    assert provider.prepared_after_rejection is None
+    assert provider.accepted["data"]["status"] == "READY"
+    assert host.prepared_handoff.summary == "Agent's narrower scope."
+    assert [str(item.observation_id) for item in host.prepared_handoff.observations] == provider.new_selection
+    assert all(value not in json.dumps(provider.rejection["error"]) for value in provider.selection)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("count", "bad_positions"), [
+    (9, [7]), (64, [0, 63]), (64, [0, 31, 63]), (64, list(range(64))),
+])
+async def test_handoff_indices_are_complete_bounded_and_do_not_echo_values(
+    tmp_path, artifact_query_boundary, count, bad_positions,
+):
+    tools, ref = tools_with_store(tmp_path, artifact_query_boundary)
+    responses = [await tools.artifact_query(str(ref.artifact_id), "SUMMARY") for _ in range(count)]
+    tools.mark_feedback_delivered(tuple(responses))
+    valid = [item["capability_invocation_id"] for item in responses]
+    prior = valid if count == 9 else valid[:1]
+    assert (await tools.prepare_handoff(prior, "Legal original scope."))["data"]["status"] == "READY"
+    selection = [str(uuid4()) if index in bad_positions else value
+                 for index, value in enumerate(valid)]
+    result = await tools.prepare_handoff(selection, "SUMMARY_CANARY", ["LIMITATION_CANARY"])
+    assert result["error"]["error_code"] == "HANDOFF_OBSERVATION_NOT_DELIVERED"
+    assert invalid_indices(result) == bad_positions
+    assert f"observation_ids[{bad_positions[0]}]" in result["error"]["safe_message"]
+    assert len(result["error"]["safe_message"]) <= 1000
+    assert tools.prepared_handoff is None and tools.stop_reason is None
+    assert all(value not in json.dumps(result["error"]) for value in selection)
+    assert "SUMMARY_CANARY" not in json.dumps(result["error"])
+    assert "LIMITATION_CANARY" not in json.dumps(result["error"])
+    assert (await tools.prepare_handoff(prior, "Agent restored the legal scope."))["data"]["status"] == "READY"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duplicates", [[1], list(range(1, 64))])
+async def test_duplicate_indices_identify_later_occurrences_without_replacement(
+    tmp_path, artifact_query_boundary, duplicates,
+):
+    tools, ref = tools_with_store(tmp_path, artifact_query_boundary)
+    response = await tools.artifact_query(str(ref.artifact_id), "SUMMARY")
+    tools.mark_feedback_delivered((response,))
+    identity = response["capability_invocation_id"]
+    assert (await tools.prepare_handoff([identity], "Legal."))["data"]["status"] == "READY"
+    result = await tools.prepare_handoff([identity] * (len(duplicates) + 1), "Duplicate selection.")
+    assert result["error"]["error_code"] == "HANDOFF_DUPLICATE_OBSERVATION"
+    assert invalid_indices(result) == duplicates
+    assert len(result["error"]["safe_message"]) <= 1000
+    assert identity not in json.dumps(result["error"]) and tools.prepared_handoff is None

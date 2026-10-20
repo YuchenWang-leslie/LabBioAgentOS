@@ -724,6 +724,16 @@ async def test_native_capability_failure_records_safe_kernel_cause(tmp_path, pro
 
     error_code = "NATIVE_CAPABILITY_FAILED" if capability_phase else "NATIVE_INVOCATION_FAILED"
     assert captured.value.error_code == error_code
+    unreported = [
+        event for event in recorder.events(stage_input.run_id)
+        if event.event_type.value == "PROVIDER_USAGE_UNREPORTED"
+    ]
+    assert len(unreported) == 1
+    assert unreported[0].status == "UNKNOWN_USAGE"
+    assert unreported[0].payload["numeric_facts"]["turn_index"] == 1
+    assert unreported[0].payload["numeric_facts"]["total_tokens"] is None
+    assert unreported[0].payload["numeric_facts"]["elapsed_ms"] >= 0
+    assert unreported[0].payload["kernel_invocation_id"]
     failed = next(
         event for event in recorder.events(stage_input.run_id)
         if event.event_type is (TraceEventType.CAPABILITY_PHASE_FAILED if capability_phase

@@ -100,6 +100,185 @@ def event(state, name, payload):
             "event_type": name, "payload": payload, "status": "FIXTURE"}
 
 
+def provider_event(state, kind, invocation_id, turn_index, **facts):
+    row = event(state, kind, {
+        "kernel_invocation_id": invocation_id, "kernel_event_id": str(uuid4()),
+        "numeric_facts": {"turn_index": turn_index, **facts},
+    })
+    if kind == "PROVIDER_REQUEST_PREPARED":
+        row["status"] = "READY"
+    return row
+
+
+def provider_sample(tmp_path, events_for, status="FAILED"):
+    receipt, directory, state = attempt(tmp_path, "candidate-autonomous-1", status)
+    rows = events_for(state, str(uuid4()))
+    (directory / "run-trace.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows))
+    return metrics.summarize_attempt(tmp_path, receipt)
+
+
+def test_prepared_request_without_observation_does_not_make_subtotal_a_total(tmp_path):
+    def rows(state, invocation):
+        prepared = [provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, n,
+                                   request_bytes=100) for n in range(1, 27)]
+        observed = [provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, n,
+                                  total_tokens=610945 if n == 25 else 1)
+                    for n in range(1, 26)]
+        return prepared + observed
+
+    sample = provider_sample(tmp_path, rows)
+    usage = sample["provider_usage"]["total_tokens"]
+    assert usage["observed_subtotal"] == 610969
+    assert usage["total"] is None
+    assert usage["unknown_turns"] == 0
+    coverage = sample["provider_usage_coverage"]
+    assert coverage["prepared_without_outcome"] == 1
+    assert coverage["unreported_usage_requests"] == 0
+    assert coverage["scope"] == "RECORDED_PROVIDER_REQUESTS"
+    assert coverage["request_outcomes_complete"] is False
+
+
+def test_complete_request_accounting_retains_known_totals(tmp_path):
+    def rows(state, invocation):
+        return [row for n, tokens in ((1, 4), (2, 7)) for row in (
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, n),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, n,
+                           total_tokens=tokens, elapsed_ms=20),
+        )]
+
+    sample = provider_sample(tmp_path, rows, "COMPLETED")
+    assert sample["provider_usage"]["total_tokens"]["total"] == 11
+    assert sample["provider_usage_coverage"]["request_outcomes_complete"] is True
+    assert sample["provider_usage_coverage"]["snapshot_complete"] is True
+
+
+def test_unreported_request_keeps_tokens_unknown_and_known_elapsed(tmp_path):
+    def rows(state, invocation):
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1,
+                           total_tokens=4, elapsed_ms=20),
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2),
+            provider_event(state, "PROVIDER_USAGE_UNREPORTED", invocation, 2,
+                           total_tokens=None, elapsed_ms=35),
+        ]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["provider_turns_observed"] == 1
+    usage = sample["provider_usage"]
+    assert usage["total_tokens"]["total"] is None
+    assert usage["total_tokens"]["observed_subtotal"] == 4
+    assert usage["total_tokens"]["unknown_unreported_requests"] == 1
+    assert usage["elapsed_ms"]["total"] == 55
+    assert usage["elapsed_ms"]["observed_subtotal"] == 20
+    assert usage["elapsed_ms"]["unreported_request_subtotal"] == 35
+    assert sample["provider_usage_coverage"]["prepared_without_outcome"] == 0
+    assert sample["provider_usage_coverage"]["unreported_usage_requests"] == 1
+
+
+def test_active_snapshot_does_not_claim_final_total_or_failed_prepared_request(tmp_path):
+    def rows(state, invocation):
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=4),
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2),
+        ]
+
+    sample = provider_sample(tmp_path, rows, "RUNNING")
+    assert sample["provider_usage"]["total_tokens"]["total"] is None
+    coverage = sample["provider_usage_coverage"]
+    assert coverage["snapshot_complete"] is False
+    assert coverage["prepared_without_outcome"] == 1
+    assert coverage["unreported_usage_requests"] == 0
+    assert sample["status"] == "RUNNING" and sample["process_result"] is None
+
+
+def test_provider_events_are_counted_once_by_request_identity(tmp_path):
+    def rows(state, invocation):
+        prepared = provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1,
+                                  request_bytes=100)
+        observed = provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=4)
+        return [prepared, observed, prepared, observed, {**observed, "event_id": str(uuid4())},
+                {**prepared, "event_id": str(uuid4())}]
+
+    sample = provider_sample(tmp_path, rows, "COMPLETED")
+    assert sample["provider_turns_observed"] == 1
+    assert sample["provider_usage"]["total_tokens"]["total"] == 4
+    assert sample["provider_usage_coverage"]["prepared_requests"] == 1
+    assert sample["request_size"] == {"measured_requests": 1, "max_bytes": 100}
+
+
+def test_rejected_request_preparation_is_not_an_unreported_provider_call(tmp_path):
+    def rows(state, invocation):
+        rejected = provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2)
+        rejected["status"] = "REJECTED"
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=4),
+            rejected,
+        ]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["provider_usage"]["total_tokens"]["total"] == 4
+    assert sample["provider_usage_coverage"]["rejected_preparations"] == 1
+    assert sample["provider_usage_coverage"]["prepared_without_outcome"] == 0
+
+
+def test_legacy_observed_only_trace_does_not_claim_full_request_coverage(tmp_path):
+    sample = provider_sample(tmp_path, lambda state, invocation: [
+        event(state, "PROVIDER_TURN_OBSERVED", {"numeric_facts": {"total_tokens": 4}}),
+        event(state, "PROVIDER_TURN_OBSERVED", {"numeric_facts": {}}),
+    ])
+    usage = sample["provider_usage"]["total_tokens"]
+    assert usage["total"] is None and usage["observed_subtotal"] == 4
+    assert (usage["known_turns"], usage["unknown_turns"]) == (1, 1)
+    coverage = sample["provider_usage_coverage"]
+    assert coverage["scope"] == "OBSERVED_TURNS_ONLY"
+    assert coverage["request_outcomes_complete"] is None
+    assert coverage["prepared_without_outcome"] is None
+
+
+def test_turn_index_restarts_in_another_invocation_are_not_duplicates(tmp_path):
+    def rows(state, invocation):
+        return [row for identity, tokens in ((invocation, 4), (str(uuid4()), 7)) for row in (
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", identity, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", identity, 1, total_tokens=tokens),
+        )]
+
+    sample = provider_sample(tmp_path, rows, "COMPLETED")
+    assert sample["provider_turns_observed"] == 2
+    assert sample["provider_usage"]["total_tokens"]["total"] == 11
+
+
+def test_conflicting_duplicate_outcomes_do_not_fabricate_usage(tmp_path):
+    def rows(state, invocation):
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=4),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=7),
+        ]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["metrics_error"] == "ValueError"
+    assert "provider_usage" not in sample
+
+
+def test_partial_trace_retains_known_subtotal_but_not_total(tmp_path):
+    receipt, directory, state = attempt(tmp_path, "candidate-autonomous-1", "COMPLETED")
+    invocation = str(uuid4())
+    rows = [
+        provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+        provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1, total_tokens=4),
+    ]
+    (directory / "run-trace.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows) + '{"partial":')
+    sample = metrics.summarize_attempt(tmp_path, receipt)
+    assert sample["provider_usage"]["total_tokens"]["observed_subtotal"] == 4
+    assert sample["provider_usage"]["total_tokens"]["total"] is None
+    assert sample["provider_usage_coverage"]["snapshot_complete"] is False
+
+
 def selected_delivery(directory, state):
     execution_id, report_id, output_id = (str(uuid4()) for _ in range(3))
     state["runtime_results"] = [
@@ -184,8 +363,12 @@ def test_every_attempt_is_counted_and_unreported_usage_remains_unknown(tmp_path)
     assert result["by_arm"]["candidate"]["delivered_report_and_outputs"] == 0
     sample = result["attempts"][0]
     assert sample["provider_usage"]["total_tokens"] == {
-        "total": None, "observed_subtotal": 4, "known_turns": 1, "unknown_turns": 1}
-    assert sample["provider_usage"]["elapsed_ms"]["total"] == 55
+        "total": None, "observed_subtotal": 4, "known_turns": 1, "unknown_turns": 1,
+        "unreported_request_subtotal": None, "known_unreported_requests": 0,
+        "unknown_unreported_requests": 0}
+    assert sample["provider_usage"]["elapsed_ms"]["total"] is None
+    assert sample["provider_usage"]["elapsed_ms"]["observed_subtotal"] == 55
+    assert sample["provider_usage_coverage"]["scope"] == "OBSERVED_TURNS_ONLY"
     assert sample["request_size"]["max_bytes"] is None
     assert all(item["scientific_review"] == "NOT_PERFORMED" for item in result["attempts"])
 

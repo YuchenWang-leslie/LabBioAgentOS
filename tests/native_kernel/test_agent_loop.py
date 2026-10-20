@@ -250,6 +250,9 @@ async def test_capability_tool_feedback_exposes_remaining_shared_budget():
         "kernel_budget": {
             "tool_calls_remaining": 0,
             "evidence_entries_remaining": 7,
+            "provider_turns_remaining": 7,
+            "tokens_remaining": None,
+            "wall_time_ms_remaining": 60_000 - result.observations[0].elapsed_ms,
         },
     }
 
@@ -281,6 +284,9 @@ async def test_rejected_tool_batch_exposes_consumed_evidence_budget():
         "kernel_budget": {
             "tool_calls_remaining": 8,
             "evidence_entries_remaining": 7,
+            "provider_turns_remaining": 7,
+            "tokens_remaining": None,
+            "wall_time_ms_remaining": 60_000 - result.observations[0].elapsed_ms,
         },
     }
 

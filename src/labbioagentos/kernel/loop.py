@@ -160,12 +160,14 @@ class AgentLoop:
                 )
                 request = self._bound_request(request)
                 self.budget_ledger.reserve(delta)
+                provider_started = False
                 try:
                     remaining = (self.current_deadline_monotonic - started
                                  - (monotonic() - started_wall))
                     if remaining <= 0:
                         raise KernelDeadlineExceededError()
                     try:
+                        provider_started = True
                         turn = await asyncio.wait_for(
                             self.provider.generate(request), timeout=remaining
                         )
@@ -175,7 +177,8 @@ class AgentLoop:
                         raise ProviderTransportError() from None
                 except (ProviderTransportError, ProviderProtocolError,
                         KernelDeadlineExceededError) as exc:
-                    self._record_unreported_provider_usage(started)
+                    if provider_started:
+                        self._record_unreported_provider_usage(started, turn_index)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -198,10 +201,16 @@ class AgentLoop:
                         )
                     raise
                 except KernelContractError:
-                    self._record_unreported_provider_usage(started)
+                    if provider_started:
+                        self._record_unreported_provider_usage(started, turn_index)
+                    raise
+                except asyncio.CancelledError:
+                    if provider_started:
+                        self._record_unreported_provider_usage(started, turn_index)
                     raise
                 except Exception:
-                    self._record_unreported_provider_usage(started)
+                    if provider_started:
+                        self._record_unreported_provider_usage(started, turn_index)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -568,11 +577,20 @@ class AgentLoop:
                 )
         return request
 
-    def _record_unreported_provider_usage(self, started: float) -> None:
+    def _record_unreported_provider_usage(self, started: float, turn_index: int) -> None:
+        elapsed_ms = max(0, int(round((self.clock() - started) * 1000)))
+        self._emit(
+            KernelEventKind.MODEL_USAGE_UNREPORTED,
+            status_code="UNKNOWN_USAGE",
+            numeric_facts={
+                "turn_index": turn_index, "elapsed_ms": elapsed_ms,
+                "input_tokens": None, "output_tokens": None, "total_tokens": None,
+            },
+        )
         try:
             self.budget_ledger.record_observed_usage(
                 tokens=None,
-                wall_time_ms=max(0, int(round((self.clock() - started) * 1000))),
+                wall_time_ms=elapsed_ms,
             )
         except BudgetExceededError:
             # The actual usage is retained; the provider failure remains the stop cause.
@@ -584,14 +602,20 @@ class AgentLoop:
         if "control_state" in payload:
             control = payload.pop("control_state")
             budget_fields = {"tool_calls_remaining", "evidence_entries_remaining"}
+            current_fields = budget_fields | {
+                "provider_turns_remaining", "tokens_remaining", "wall_time_ms_remaining",
+            }
             if (
                 not isinstance(control, dict)
                 or set(control) != {"authority", "kernel_budget"}
                 or control["authority"] != "CONTROL_STATE"
                 or not isinstance(control["kernel_budget"], dict)
-                or set(control["kernel_budget"]) != budget_fields
-                or any(type(value) is not int or value < 0
-                       for value in control["kernel_budget"].values())
+                or set(control["kernel_budget"]) not in (budget_fields, current_fields)
+                or any(
+                    not (key == "tokens_remaining" and value is None)
+                    and (type(value) is not int or value < 0)
+                    for key, value in control["kernel_budget"].items()
+                )
             ):
                 raise ValueError("Invalid kernel feedback control state")
         # Only the known host-owned envelope is removed. Arbitrary result extras
@@ -740,6 +764,20 @@ class AgentLoop:
                 "evidence_entries_remaining": (
                     self.budget_ledger.limits.evidence_entries
                     - self.budget_ledger.usage.evidence_entries
+                ),
+                "provider_turns_remaining": max(
+                    0, self.budget_ledger.limits.provider_turns
+                    - self.budget_ledger.usage.provider_turns,
+                ),
+                "tokens_remaining": (
+                    None if self.budget_ledger.usage.tokens is None else max(
+                        0, self.budget_ledger.limits.tokens
+                        - self.budget_ledger.usage.tokens,
+                    )
+                ),
+                "wall_time_ms_remaining": max(
+                    0, self.budget_ledger.limits.wall_time_ms
+                    - self.budget_ledger.usage.wall_time_ms,
                 ),
             },
         }

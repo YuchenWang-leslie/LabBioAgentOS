@@ -29,9 +29,18 @@ The first two attempts on `1d2188f` subsequently failed with `HANDOFF_REQUIRED`
 despite successful executions. Further launches are held until the correction
 is verified and frozen. The latest user reply authorizes additional attempts
 until validation runs through, superseding their earlier twenty-attempt limit.
-The immediate schedule is twenty-two candidates in total: four retained earlier
+The following schedule was twenty-two candidates in total: four retained earlier
 attempts plus eighteen same-revision repetitions. This does not authorize blind
 repetition, larger per-task budgets or changes to scientific ownership.
+
+Its first two tasks on `a72c583` also failed without report delivery. Both had
+successful executions, invalid evidence selections and a subsequent provider
+usage stop. The bounded selection audit now supports exact diagnostic review;
+neither failure is evidence that the host should accept an unread observation.
+The remaining sixteen tasks were not launched. A separate feedback/accounting
+correction is being verified before another freeze. The next full schedule
+would retain all six earlier candidates and add eighteen on one corrected
+revision, for twenty-four candidates plus six baselines.
 
 `scripts/runtime_stress.py` submits ordinary tasks through the CLI. It contains no
 analysis programs or method presets. Each attempt records input hashes, task,
@@ -58,7 +67,14 @@ per-turn tokens in its trace.
   It still consumes the explicit call/time/token budgets. Existing authorization
   failures and business pagination rules remain; no automatic retry is added.
 - Actual provider usage is accounted separately from admission reservations.
-  An overrun cannot erase already consumed tokens or time.
+  An overrun cannot erase already consumed tokens or time. A started provider
+  call without reliable usage emits a separate `PROVIDER_USAGE_UNREPORTED`
+  record, including cancellation; it is not fabricated as an observed model
+  turn. A deadline before the call starts does not create unknown consumption.
+- Existing tool feedback exposes provider-turn, token and wall-time ledger
+  balances as well as tool/evidence balances. Unknown token balance is null.
+  These are actual ledger values, not estimates of the next request's cost,
+  extra budget, or instructions to choose particular evidence.
 - Deployment prompts bind shared context, phase instructions and stage protocol
   as separate components, preserving their exact concatenated text. Each
   component retains its 8,000-character limit and the rendered prompt its
@@ -81,7 +97,9 @@ per-turn tokens in its trace.
   not-delivered selections have separate safe errors. The trace records only
   bounded canonical UUID selections and counts, not summaries, limitations or
   rejected strings. Unknown and foreign observations have indistinguishable
-  not-delivered feedback; no substitute selection is supplied.
+  not-delivered feedback at the same list positions. Errors identify bounded
+  zero-based invalid positions without echoing identities or supplying a
+  substitute selection; the existing 1,000-character feedback limit remains.
 - `provider.max_request_bytes` bounds the complete request, including tool and
   output schemas. UTF-8 bytes and token usage are separate measurements.
 - Original public observations are archived outside the bounded model window.
@@ -134,6 +152,10 @@ It counts repeated read requests only where the actual request is reconstructabl
 within the same phase and actor; repetition does not itself mean invalid work.
 Unmeasured calls remain explicit. It does not assign a scientific quality score;
 independent scientific reviews are separate documents.
+Provider usage separates observed subtotals, explicitly unreported usage and
+prepared requests without an outcome. A prepared request does not prove it was
+sent or billed. Incomplete coverage, active snapshots and historical
+observed-turn-only traces cannot establish a complete total.
 
 The recovery case exits only after a durable EXECUTE capability checkpoint.
 Resume requires its exact interruption receipt, frozen source/configuration/input
@@ -151,16 +173,16 @@ task delivery are evaluated separately.
 
 ## Acceptance status and remaining limitations
 
-The selection-feedback source suite passes **2012 tests, 26 skipped**. Five opt-in
+The feedback/accounting source suite passes **2051 tests, 26 skipped**. Five opt-in
 real Docker input-isolation and file-limit checks also pass. The skipped tests
 are not counted as backend acceptance. No final benchmark acceptance is claimed
 by this document. Current raw records are retained under
 `result/native-runtime-reliability-20261020` in the parent workspace.
-The corresponding records are `verification/full-regression-8.xml` and
-`verification/docker-boundaries-6.xml`; earlier failing regression records remain.
-Eight further deterministic rounds each pass 282 checks, including the final
-handoff and restart changes (`verification/deterministic-stress-17.xml` through
-`verification/deterministic-stress-24.xml`). These 2,256 repeated checks are not
+The corresponding records are `verification/full-regression-9.xml` and
+`verification/docker-boundaries-7.xml`; earlier failing regression records remain.
+Eight further deterministic rounds each pass 351 checks, including the final
+handoff, usage and restart changes (`verification/deterministic-stress-25.xml` through
+`verification/deterministic-stress-32.xml`). These 2,808 repeated checks are not
 independent Agent successes. Checkpoint tests cover both live and restarted
 services: only the explicitly selected producer's source must remain available,
 while its identity, authorization and hash checks remain mandatory.
@@ -172,6 +194,16 @@ report-and-output delivery. The generic invalid-handoff feedback does not retain
 enough information to reconstruct those selections. Legal reconstruction using
 their archived public responses succeeds; this is not evidence of a universally
 broken read-credit path or proof of which mistake either Agent made.
+
+The subsequent `a72c583` autonomous and annotation attempts also failed at
+VALIDATE and EXECUTE, respectively. Their audited selections included unmatched
+observation identities. Annotation repeated the same nine-item selection three
+times; its error did not identify the invalid item. Both tasks then exceeded
+their 524,288-token capability budget without valid final handoffs. The
+autonomous task retained four hash-valid selected outputs but no report;
+annotation selected no final execution or report. Neither is a valid delivery.
+The corrected diagnostic and budget interfaces are engineering improvements,
+not proof that model decisions or scientific results will pass subsequent runs.
 
 The first candidate's configured EXECUTE prompt contained 8,007 characters,
 incorrectly packed into one variable with an 8,000-character limit. No analysis

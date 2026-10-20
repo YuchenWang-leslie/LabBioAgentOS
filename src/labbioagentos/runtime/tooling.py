@@ -204,8 +204,9 @@ class _RepeatedCapabilityRequest(ValueError):
 class _HandoffSelectionError(ValueError):
     def __init__(self, code: Literal[
         "HANDOFF_DUPLICATE_OBSERVATION", "HANDOFF_OBSERVATION_NOT_DELIVERED",
-    ]):
+    ], invalid_indices: tuple[int, ...]):
         self.code = code
+        self.invalid_indices = invalid_indices
         super().__init__(code)
 
 
@@ -689,10 +690,13 @@ class LabBioRuntimeToolSet:
             ids = tuple(UUID(str(value)) for value in observation_ids)
             if not ids or len(ids) > 64:
                 raise ValueError("Select distinct bounded observation identities")
-            if len(set(ids)) != len(ids):
-                raise _HandoffSelectionError("HANDOFF_DUPLICATE_OBSERVATION")
-            if any(value not in self._delivered_observations for value in ids):
-                raise _HandoffSelectionError("HANDOFF_OBSERVATION_NOT_DELIVERED")
+            duplicates = tuple(index for index, value in enumerate(ids) if value in ids[:index])
+            if duplicates:
+                raise _HandoffSelectionError("HANDOFF_DUPLICATE_OBSERVATION", duplicates)
+            undelivered = tuple(index for index, value in enumerate(ids)
+                                if value not in self._delivered_observations)
+            if undelivered:
+                raise _HandoffSelectionError("HANDOFF_OBSERVATION_NOT_DELIVERED", undelivered)
             items = tuple(self._delivered_observations[value] for value in ids)
             for item in items:
                 if item.artifact_read_receipt is not None:
@@ -2471,7 +2475,9 @@ class LabBioRuntimeToolSet:
                 ),
             }[exc.code]
             return ToolError(error_code=exc.code, safe_message=(
-                reason + " Select distinct capability_invocation_id values from inner "
+                reason + f" First invalid field: observation_ids[{exc.invalid_indices[0]}]; "
+                f"all zero-based invalid_indices={list(exc.invalid_indices)}."
+                " Select distinct capability_invocation_id values from inner "
                 "governed tool responses (content), not Artifact IDs, execution_id or "
                 "outer tool_invocation_id values. Observations from a previous invocation "
                 "require all authorized evidence_read pages to be delivered in this invocation. "

@@ -1,5 +1,45 @@
 # Real E2E Convergence Workplan
 
+## Feedback and usage closure after freeze4 — 2026-10-20
+
+Both real attempts on `a72c583` ended without report delivery:
+`candidate-autonomous-4` failed at VALIDATE and `candidate-annotation-2`
+failed at EXECUTE, each with `HANDOFF_REQUIRED` after successful analysis
+execution. The other sixteen scheduled attempts remain unstarted. Both
+controllers exited and neither exact run has matching Docker residue. All
+attempts, source freezes and failures are retained.
+
+Unlike the earlier failures, the new bounded audit records the actual selected
+identities. Annotation made three identical nine-item selections, including one
+identity absent from its observation archive and preceding capability trace.
+The host correctly rejected an unfulfilled selection; this is not evidence of
+an authorization defect. However, the error omitted the failing list position,
+and model-visible budget feedback omitted provider-turn, token and time limits.
+Both tasks then exhausted provider usage without a prepared handoff. These are
+interface facts, not proof that clearer feedback alone guarantees success.
+
+The isolated `feat/native-feedback-budgets` worktree addresses only these
+diagnostic boundaries, with failing-first and neighboring-state tests. It must
+not supply replacement identities, choose scientific evidence, alter Agent
+programs, raise budgets or add automatic retries. A further accounting defect
+is also closed: a failed provider request's unknown usage was retained
+in the in-memory ledger but absent from durable turn metrics, causing the stress
+report to present observed subtotals as complete totals.
+
+The candidate passes `2051 passed, 26 skipped`, five real Docker boundary checks
+and eight deterministic rounds of 351 checks each. These establish source and
+engineering boundaries only. The next real-task schedule remains a separate
+acceptance gate, including scientific review independent of delivered files.
+
+The latest user authorization permits additional root-cause-driven attempts
+until validation runs through. New launches remain held until the corrected
+source is verified and frozen. The next same-version eighteen-attempt schedule
+would retain six earlier candidates, for twenty-four candidates plus six
+baselines; failed attempts will not be replaced or hidden. This authority does
+not authorize host administration, scientific substitution, GitHub publication
+or production activation. Local Apptainer remains separately blocked by the
+host prerequisites described below.
+
 ## Native reliability candidate and controlled comparison — 2026-10-20
 
 Current hold: the first two real tasks on frozen `1d2188f` ended with

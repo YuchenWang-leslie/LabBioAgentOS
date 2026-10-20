@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from collections.abc import Callable, Mapping
@@ -458,6 +459,9 @@ class NativeKernelStageInvoker:
                 ),
                 completion_feedback=completion_feedback,
             )
+        except asyncio.CancelledError:
+            self._project_kernel_events(stage_input, runtime.events)
+            raise
         except Exception as exc:
             self._project_kernel_events(stage_input, runtime.events)
             cause_code = (
@@ -726,6 +730,9 @@ class NativeKernelStageInvoker:
             validate_skill_assessment(result, effective_input, evidence)
             if execution_control is not None:
                 validate_execution_result(result, execution_control)
+        except asyncio.CancelledError:
+            self._project_kernel_events(stage_input, loop.events)
+            raise
         except (ValidationError, ValueError, TypeError, PydanticCustomError,
                 FinalizationRejectedError,
                 ExecutionGroundingError, ReportGroundingError) as exc:
@@ -928,6 +935,8 @@ class NativeKernelStageInvoker:
         for event in events:
             if event.kind is KernelEventKind.MODEL_TURN_OBSERVED:
                 trace_type = TraceEventType.PROVIDER_TURN_OBSERVED
+            elif event.kind is KernelEventKind.MODEL_USAGE_UNREPORTED:
+                trace_type = TraceEventType.PROVIDER_USAGE_UNREPORTED
             elif event.kind is KernelEventKind.MODEL_REQUEST_PREPARED:
                 trace_type = TraceEventType.PROVIDER_REQUEST_PREPARED
             elif (
