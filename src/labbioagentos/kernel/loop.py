@@ -603,6 +603,10 @@ class AgentLoop:
             status_code=("REJECTED_RESPONSE_USAGE" if usage is not None else
                          "PARTIAL_RESPONSE_USAGE" if snapshot is not None else "UNKNOWN_USAGE"),
             reason_code="NONFINAL_USAGE_SNAPSHOT" if snapshot is not None else None,
+            validation_type=(error.validation_type
+                             if isinstance(error, ProviderProtocolError) else None),
+            validation_fields=(error.validation_fields
+                               if isinstance(error, ProviderProtocolError) else ()),
             numeric_facts={
                 "turn_index": turn_index, "elapsed_ms": elapsed_ms,
                 "input_tokens": usage.input_tokens if usage is not None else None,

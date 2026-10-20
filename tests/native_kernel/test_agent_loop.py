@@ -432,6 +432,58 @@ async def test_capability_loop_preserves_prior_evidence_on_later_provider_failur
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("usage_field,event_kind,expected_tokens", [
+    ("usage", "MODEL_USAGE_ON_FAILURE", 11),
+    ("usage_snapshot", "MODEL_USAGE_UNREPORTED", None),
+    (None, "MODEL_USAGE_UNREPORTED", None),
+])
+async def test_protocol_failure_after_tool_retains_safe_validation_in_usage_event(
+    usage_field, event_kind, expected_tokens,
+):
+    class ToolThenInvalidProvider:
+        binding = _binding()
+        calls = 0
+
+        async def generate(self, _request):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelTurn(
+                    tool_calls=(ToolCall(
+                        call_id="prior-evidence", name="record_value",
+                        arguments_json='{"value":"PRIVATE_CANARY"}',
+                    ),),
+                    finish_reason=FinishReason.TOOL_CALLS,
+                    usage=TokenUsage(total_tokens=4),
+                )
+            usage = {usage_field: TokenUsage(total_tokens=7)} if usage_field else {}
+            raise ProviderProtocolError(
+                validation_type="value_error",
+                validation_fields=("message.content",),
+                **usage,
+            )
+
+    loop, _provider, effects = _tool_loop(())
+    loop.provider = ToolThenInvalidProvider()
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Preserve completed evidence."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert result.termination == "PROVIDER_PROTOCOL_STOP"
+    assert [item.call_id for item in result.tool_results] == ["prior-evidence"]
+    assert effects == [{"value": "PRIVATE_CANARY", "nested": None}]
+    usage_events = [event for event in result.events if "USAGE" in event.kind.value]
+    assert len(usage_events) == 1
+    event = usage_events[0]
+    assert event.kind.value == event_kind
+    assert event.validation_type == "value_error"
+    assert event.validation_fields == ("message.content",)
+    assert event.numeric_facts["total_tokens"] == (7 if usage_field == "usage" else None)
+    assert result.budget_usage.tokens == expected_tokens
+    assert "PRIVATE_CANARY" not in event.model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_capability_loop_without_evidence_rejects_protocol_failure():
     class ImmediateProtocolFailure:
         binding = _binding()
