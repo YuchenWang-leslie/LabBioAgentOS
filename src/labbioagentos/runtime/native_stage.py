@@ -681,9 +681,16 @@ class NativeKernelStageInvoker:
             )
             raise error
         if len(finalization_content.encode("utf-8")) > 60_000:
-            raise RuntimeProfileConfigurationError(
-                "Finalization context exceeds its bounded public message envelope"
+            error = RuntimeIntegrationError(
+                "FINALIZATION_CONTEXT_TOO_LARGE",
+                "Finalization context remains over its bound after provenance compaction. "
+                "The archived evidence is intact; no finalizer request was sent.",
             )
+            self._emit_failure(
+                stage_input, TraceEventType.FINALIZATION_PHASE_FAILED, error,
+                cause_code="FINALIZATION_CONTEXT_TOO_LARGE",
+            )
+            raise error
         finalization_invocation_id = uuid4()
         identity = KernelIdentity(
             thread_id=stage_input.run_id,

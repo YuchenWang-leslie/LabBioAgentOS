@@ -18,11 +18,14 @@ def finalization_evidence(evidence, *, include_safe_results: bool = True,
         value['projection'] = {
             'status': 'COMPACT_PROVENANCE',
             'full_evidence_id': str(evidence.evidence_id),
+            'omitted_item_fields': ['trace_event_ids', 'reference_ids', 'artifact_read_receipt'],
         }
     seen = {}
     for item in value['items']:
         if compact:
             item.pop('trace_event_ids', None)
+            item.pop('reference_ids', None)
+            item.pop('artifact_read_receipt', None)
         result = item.get('safe_result')
         if result is None:
             continue

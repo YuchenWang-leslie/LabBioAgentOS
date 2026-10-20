@@ -127,7 +127,6 @@ class AgentLoop:
             self._emit(KernelEventKind.FINALIZATION_STARTED, status_code="RUNNING")
         last_progress = self.clock()
         turn_index = 0
-        completion_corrected = False
         try:
             while True:
                 self.interrupt_token.raise_if_requested()
@@ -395,15 +394,13 @@ class AgentLoop:
                         PublicMessage(role="ASSISTANT", content=turn.content),
                     )
                     if (
-                        not completion_corrected
-                        and self.completion_feedback is not None
+                        self.completion_feedback is not None
                         and self.budget_ledger.usage.provider_turns
                         < self.budget_ledger.limits.provider_turns
                     ):
                         feedback = self.completion_feedback(turn.content)
                         if feedback is not None:
                             self.messages = (*self.messages, PublicMessage(role="USER", content=feedback))
-                            completion_corrected = True
                             continue
                     self._emit(KernelEventKind.KERNEL_FINISHED, status_code="SUCCEEDED")
                     return self._result(

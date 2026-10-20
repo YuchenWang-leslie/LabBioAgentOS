@@ -8,16 +8,104 @@ import pytest
 from labbioagentos import (
     CapabilityEvidenceBundle, CapabilityEvidenceItem, RuntimeIntegrationError, WorkflowStage,
 )
-from labbioagentos.kernel import FinishReason, ModelTurn, TokenUsage, ToolCall
+from labbioagentos.kernel import FinishReason, ModelTurn, PublicMessage, TokenUsage, ToolCall
 from labbioagentos.runtime import native_stage
 from labbioagentos.runtime.assembly import RuntimeStageAssemblySpec
 from labbioagentos.runtime.contracts import (
-    CapabilityEvidenceStatus, RuntimeGateDecisionView, RuntimeWorkflowControlView,
+    ArtifactReadReceipt, CapabilityEvidenceStatus,
+    RuntimeGateDecisionView, RuntimeWorkflowControlView,
 )
 from labbioagentos.runtime.handoff import finalization_evidence
 from labbioagentos.runtime.tooling import LabBioRuntimeToolSet
 from test_native_stage_application import WorkflowProvider, _capability_catalog, _stage_input, _toolset
 from test_finalization_completion_delivery import finalization_case
+from native_kernel.test_agent_loop import _tool_loop
+
+
+@pytest.mark.asyncio
+async def test_completion_admission_can_request_more_than_one_bounded_revision():
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="too-large", finish_reason=FinishReason.STOP),
+        ModelTurn(content="still-too-large", finish_reason=FinishReason.STOP),
+        ModelTurn(content="fits", finish_reason=FinishReason.STOP),
+    ), provider_turns=3)
+    checked = []
+
+    def admit(content):
+        checked.append(content)
+        return "Narrow the handoff." if len(checked) <= 2 else None
+
+    loop.completion_feedback = admit
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Synthetic capacity check"),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+    assert result.output == "fits"
+    assert checked == ["too-large", "still-too-large"]
+    assert len(provider.requests) == 3
+
+
+@pytest.mark.asyncio
+async def test_prepared_handoff_compacts_archived_metadata_before_finalization(tmp_path):
+    stage, evidence, invoker, calls = await finalization_case(
+        tmp_path, "Synthetic completion.", prepared=True,
+    )
+    original = evidence.items[0]
+    evidence = evidence.model_copy(update={"items": tuple(
+        original.model_copy(update={
+            "capability_invocation_id": uuid4(),
+            "reference_ids": tuple(str(uuid4()) for _ in range(16)),
+        }) for _ in range(64)
+    )})
+    assert len(evidence.prepared_handoff.model_dump_json(exclude_none=True).encode()) < 60_000
+    original_json = evidence.model_dump_json()
+    result = await invoker.finalize_recovered(stage, evidence)
+    assert result.stage_id is WorkflowStage.INTAKE
+    assert len(calls) == 1
+    projected = json.loads(calls[0].messages[-1].content)["capability_evidence"]
+    assert projected["projection"]["full_evidence_id"] == str(evidence.evidence_id)
+    assert all("reference_ids" not in item for item in projected["items"])
+    assert len(calls[0].messages[-1].content.encode()) <= 60_000
+    assert evidence.model_dump_json() == original_json
+
+
+@pytest.mark.asyncio
+async def test_compact_projection_omits_archived_receipt_but_keeps_source(tmp_path):
+    _stage, evidence, _invoker, _calls = await finalization_case(
+        tmp_path, "Synthetic completion.", prepared=True,
+    )
+    item = evidence.items[0]
+    receipt = ArtifactReadReceipt(
+        artifact_id=uuid4(), observation_id=item.capability_invocation_id,
+        source_invocation_id=evidence.invocation_id,
+        delivered_invocation_id=evidence.invocation_id,
+        source_sha256="a" * 64, source_identity="ARTIFACT_REPRESENTATION",
+        observation_sha256="b" * 64, scope={"kind": "TABLE_PAGE", "offset": 0, "end": 1},
+    )
+    evidence = evidence.model_copy(update={"items": (
+        item.model_copy(update={"capability_name": "artifact_query", "artifact_read_receipt": receipt}),
+    )})
+    projected = finalization_evidence(evidence, include_safe_results=False, compact=True)
+    assert "artifact_read_receipt" not in projected["items"][0]
+    assert evidence.items[0].artifact_read_receipt == receipt
+
+
+@pytest.mark.asyncio
+async def test_unavoidable_prepared_envelope_overflow_is_a_typed_stop(tmp_path, monkeypatch):
+    stage, evidence, invoker, calls = await finalization_case(
+        tmp_path, "Synthetic completion.", prepared=True,
+    )
+    original_envelope = invoker._finalization_envelope
+
+    def oversized_envelope(*args, **kwargs):
+        effective, payload, messages, content = original_envelope(*args, **kwargs)
+        return effective, payload, messages, content + " " * 60_000
+
+    monkeypatch.setattr(invoker, "_finalization_envelope", oversized_envelope)
+    with pytest.raises(RuntimeIntegrationError) as caught:
+        await invoker.finalize_recovered(stage, evidence)
+    assert caught.value.error_code == "FINALIZATION_CONTEXT_TOO_LARGE"
+    assert not calls
 
 
 @pytest.mark.asyncio
