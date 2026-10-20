@@ -66,6 +66,23 @@ async def test_environment_schemas_explain_host_contract(artifact_query_boundary
 
 
 @pytest.mark.asyncio
+async def test_environment_list_schema_distinguishes_inventory_comparison_from_probe(
+    artifact_query_boundary, environment,
+):
+    toolset, _ = _tools(artifact_query_boundary, environment)
+    provider = LocalProvider(toolset)
+    schemas = {item.name: item.inputSchema for item in await provider.list_tools()}
+    listing = schemas["environment_list"]
+    requirements = listing["parameters"]["properties"]["requirements"]["description"]
+
+    assert "registered inventory" in listing["description"]
+    assert "does not probe" in listing["description"]
+    assert "Changing requirements" in listing["description"]
+    assert "registered package versions" in requirements
+    assert "does not inspect or install" in requirements
+
+
+@pytest.mark.asyncio
 async def test_environment_build_is_owned_by_the_calling_run(artifact_query_boundary, environment):
     toolset, _ = _tools(artifact_query_boundary, environment)
 

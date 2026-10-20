@@ -492,11 +492,15 @@ def test_pagination_and_inventory_views_are_bounded(environment):
 
 def test_unknown_package_inventory_is_not_reported_as_proven_absence(environment):
     environment.registry.register(_image(key="unknown", packages={}))
-    response = environment.service.list_environments(("examplepkg>=1.0",))
-    item = next(item for item in response["items"] if item["image_key"] == "unknown")
-    assert item["inventory_known"] is False
-    assert item["requirements_satisfied"] is None
-    assert item["matching_facts"][0]["version_satisfied"] is None
+    for requirement in ("examplepkg>=1.0", "otherpkg==2.0"):
+        response = environment.service.list_environments((requirement,))
+        item = next(item for item in response["items"] if item["image_key"] == "unknown")
+        assert item["inventory_known"] is False
+        assert item["installed_packages"] == {}
+        assert item["requirements_satisfied"] is None
+        assert item["matching_facts"][0]["version_satisfied"] is None
+    assert environment.registry.resolve("unknown").installed_packages == {}
+    assert environment.builder.calls == []
 
 
 def test_module_inventory_is_bounded_without_rewriting_registered_facts(environment):

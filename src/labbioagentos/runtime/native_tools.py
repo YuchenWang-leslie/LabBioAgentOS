@@ -101,7 +101,11 @@ class EnvironmentListArguments(NativeToolArguments):
     requirements: list[Annotated[StrictStr, Field(min_length=1, max_length=256)]] = Field(
         default_factory=list,
         max_length=64,
-        description=_ENVIRONMENT_REQUIREMENTS_DESCRIPTION,
+        description=(
+            _ENVIRONMENT_REQUIREMENTS_DESCRIPTION
+            + " Listing compares constraints with registered package versions; "
+            "changing requirements does not inspect or install anything inside an image."
+        ),
     )
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=10)
@@ -473,10 +477,11 @@ _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "limit continues to use the policy-bounded default page size."
 )
 _CAPABILITY_DESCRIPTIONS["environment_list"] = (
-    "Discover approved Python images and verified package/version facts. Listing "
-    "does not select or build an environment. Missing inventory is unknown, not "
-    "proof that a package is absent. Returned image_key values can be explicitly "
-    "selected for execution."
+    "Discover approved Python images and verified package/version facts from the "
+    "registered inventory. Changing requirements only compares recorded facts; "
+    "listing does not probe the image. Listing does not select or build an "
+    "environment. Missing inventory is unknown, not proof that a package is absent. "
+    "Returned image_key values can be explicitly selected for execution."
 )
 _CAPABILITY_DESCRIPTIONS["environment_build"] = (
     "Build and verify a reusable Python environment using wheels only, with no "
