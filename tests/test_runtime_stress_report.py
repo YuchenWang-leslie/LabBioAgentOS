@@ -140,10 +140,11 @@ def test_every_attempt_is_counted_and_unreported_usage_remains_unknown(tmp_path)
     assert all(item["scientific_review"] == "NOT_PERFORMED" for item in result["attempts"])
 
 
-def test_residue_checks_exact_execution_identity_not_unrelated_container(monkeypatch):
+@pytest.mark.parametrize("workflow_status", ["FAILED", "RUNNING"])
+def test_residue_checks_exact_execution_identity_not_unrelated_container(monkeypatch, workflow_status):
     identity = uuid4()
     sample = {"execution_ids": [str(identity)], "process_result": {"exit_code": 1},
-              "status": "FAILED"}
+              "status": workflow_status}
     runner = Mock(return_value=SimpleNamespace(stdout="unrelated\n"))
     monkeypatch.setattr(metrics.subprocess, "run", runner)
     metrics.check_process_residue([sample])
@@ -155,6 +156,15 @@ def test_residue_checks_exact_execution_identity_not_unrelated_container(monkeyp
     sample["process_result"] = None
     metrics.check_process_residue([sample])
     assert sample["process_residue_check"] == "ACTIVE_ATTEMPT"
+
+
+def test_process_exit_is_distinct_from_persisted_running_workflow(tmp_path):
+    receipt, _, _ = attempt(tmp_path, "candidate-autonomous-1", "RUNNING")
+    write(receipt / "PROCESS_RESULT.json", {"exit_code": 1, "elapsed_seconds": 2.0})
+    sample = metrics.summarize_attempt(tmp_path, receipt)
+    assert sample["status"] == "RUNNING"
+    assert sample["workflow_inflight_after_process_exit"] is True
+    assert not sample["engine_completed"]
 
 
 def test_residue_unavailable_is_unknown(monkeypatch):

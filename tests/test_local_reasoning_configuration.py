@@ -36,7 +36,11 @@ def test_reasoning_configuration_reaches_native_model_profile(
             provider_builder=lambda _model: sentinel_provider,
         )
         _profile, _prompt, model, _schema, provider = factory.resolve(
-            "execution", {"protocol": "Generic protocol fixture."}
+            "execution", next(
+                stage.capability_prompt_values
+                for stage in application.configuration.stage_assemblies
+                if stage.stage_id is WorkflowStage.EXECUTE
+            )
         )
         assert provider is sentinel_provider
         assert model.thinking_enabled is enabled
@@ -77,7 +81,11 @@ def test_provider_wire_compatibility_reaches_native_binding(
     try:
         factory = NativeRuntimeFactory(application.configuration.profile_catalog)
         _profile, _prompt, model, _schema, provider = factory.resolve(
-            "execution", {"protocol": "Generic protocol fixture."}
+            "execution", next(
+                stage.capability_prompt_values
+                for stage in application.configuration.stage_assemblies
+                if stage.stage_id is WorkflowStage.EXECUTE
+            )
         )
         assert model.provider_tool_schema_strict is False
         assert model.finalization_json_object is True

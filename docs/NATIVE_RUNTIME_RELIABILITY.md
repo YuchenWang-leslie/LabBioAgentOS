@@ -17,6 +17,10 @@ annotation uncertainty, a minimal environment requiring Agent-selected packages,
 multi-file GOLDDEMO analysis, complete result delivery with scoped reporting, and
 durable execution-checkpoint interruption/recovery. Each class has one baseline
 and three candidate attempts, with no more than two active tasks.
+The first candidate exposed a prompt-composition defect before analysis. It is
+retained as a failed attempt on `324c66e`; the user authorized one extra attempt,
+so the complete record contains six baselines and nineteen candidates, including
+eighteen attempts on the next frozen revision. Failed history is not replaced.
 
 `scripts/runtime_stress.py` submits ordinary tasks through the CLI. It contains no
 analysis programs or method presets. Each attempt records input hashes, task,
@@ -44,6 +48,12 @@ per-turn tokens in its trace.
   failures and business pagination rules remain; no automatic retry is added.
 - Actual provider usage is accounted separately from admission reservations.
   An overrun cannot erase already consumed tokens or time.
+- Deployment prompts bind shared context, phase instructions and stage protocol
+  as separate components, preserving their exact concatenated text. Each
+  component retains its 8,000-character limit and the rendered prompt its
+  16,000-character limit. Every configured phase is validated before credentials
+  are loaded or state is created; a late-stage template error cannot silently
+  leave an otherwise started workflow in flight.
 - Finalization returns safe validation categories and field paths without
   echoing rejected values. Specialist termination preserves its specific reason.
 - `provider.max_request_bytes` bounds the complete request, including tool and
@@ -105,13 +115,23 @@ task delivery are evaluated separately.
 
 ## Acceptance status and remaining limitations
 
-The frozen-candidate source suite passes **1901 tests, 26 skipped**. Five opt-in
+The corrected candidate source suite passes **1914 tests, 26 skipped**. Five opt-in
 real Docker input-isolation and file-limit checks also pass. The skipped tests
 are not counted as backend acceptance. No final benchmark acceptance is claimed
 by this document. Current raw records are retained under
 `result/native-runtime-reliability-20261020` in the parent workspace.
-The corresponding records are `verification/full-regression-4.xml` and
+The corresponding records are `verification/full-regression-5.xml` and
 `verification/docker-boundaries-3.xml`; earlier failing regression records remain.
+The Docker checks used the first frozen candidate; the later correction changes
+prompt assembly and diagnostic reporting, not the Docker execution boundary.
+
+The first candidate's configured EXECUTE prompt contained 8,007 characters,
+incorrectly packed into one variable with an 8,000-character limit. No analysis
+executed. The repair preserves the text and existing limits by representing its
+actual components separately and validating all phases at startup. The failed
+run is not resumed or rewritten. Metrics distinguish its exited controller from
+its persisted in-flight Workflow state and check residue without claiming a
+Workflow terminal state.
 
 Confirmed baseline observations include successful process exits rejected for
 output record-limit violations, and Agent-driven Python correction attempts.

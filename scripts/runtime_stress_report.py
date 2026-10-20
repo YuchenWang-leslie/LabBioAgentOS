@@ -227,6 +227,8 @@ def summarize_attempt(root: Path, receipt: Path):
                       current_stage=state["workflow_run"]["current_stage"],
                       failure_reason=state["workflow_run"].get("failure_reason"),
                       recovery_state=state["recovery_state"])
+        result["workflow_inflight_after_process_exit"] = (
+            result["process_result"] is not None and result["status"] == "RUNNING")
         events, result["trace_read"] = json_lines(directory / "run-trace.jsonl")
         boundaries, result["boundary_read"] = json_lines(directory / "model-boundaries.jsonl")
         result["trace_integrity_valid"] = trace_valid(events, result["trace_read"], state["run_id"])
@@ -311,7 +313,9 @@ def check_process_residue(attempts):
         if "resume_before" in item and "resume_result" not in item:
             item["process_residue_check"] = "UNKNOWN_RESUME_STATUS"
             continue
-        terminal = item.get("process_result") is not None and item.get("status") != "RUNNING"
+        # A controller can exit while its durable Workflow remains in-flight.
+        # Keep that state unchanged, but do not label dead control as active.
+        terminal = item.get("process_result") is not None
         item["process_residue_check"] = (
             "RESIDUE_FOUND" if remaining and terminal else
             "ACTIVE_ATTEMPT" if not terminal else "NO_MATCHING_CONTAINERS"

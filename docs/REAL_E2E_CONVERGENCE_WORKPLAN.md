@@ -10,15 +10,21 @@ acceptance details are in [NATIVE_RUNTIME_RELIABILITY.md](NATIVE_RUNTIME_RELIABI
 and [LOCAL_APPTAINER.md](LOCAL_APPTAINER.md).
 
 The comparison baseline is frozen at `d7b1000251ccc00656b30a96e37785dcec07e4a2`.
-Six baseline and eighteen candidate tasks use the same model, Docker images,
+Six baseline and nineteen candidate tasks use the same model, Docker images,
 input hashes and resource settings, with at most two active tasks. All failed
 attempts are retained. The first autonomous baseline produced an execution but
 failed before report submission; it is not a successful delivery. Runtime
 Agents alone choose methods, dependencies, analysis programs and report content.
+The first candidate failed before analysis because a complete 8,007-character
+EXECUTE prompt was bound to one 8,000-character variable. Shared context, phase
+instructions and stage protocol now have separate bindings with unchanged
+component and total limits; every stage is validated before runtime startup.
+The user explicitly authorized one additional candidate: retain that failed
+attempt and run eighteen attempts on the corrected frozen source.
 
-The candidate source suite passes `1901 passed, 26 skipped`; five opt-in real
+The corrected candidate source suite passes `1914 passed, 26 skipped`; five opt-in real
 Docker input-isolation/file-limit checks also pass. Source regression and real
-Docker checks do not establish scientific validity or complete the 24-task comparison.
+Docker checks do not establish scientific validity or complete the 25-attempt comparison.
 Real Local Apptainer validation is blocked by missing Apptainer and CPU-controller
 delegation on this host; no host administration or resource-limit bypass was
 performed. Production activation and GitHub publication are not part of this

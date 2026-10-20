@@ -619,10 +619,6 @@ def build_application(
 
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
-    if load_provider:
-        _load_provider(settings.provider)
-    run_root = run_root.expanduser().resolve()
-    run_root.mkdir(parents=True, exist_ok=True)
     defaults = default_agent_profiles()
     # A separate catalog binding keeps the shared Coordinator's other stages
     # unchanged, including both capability and finalization model parameters.
@@ -643,7 +639,8 @@ def build_application(
     catalog = RuntimeProfileCatalog(
         agents=profiles,
         prompts=(PromptProfile(template_id="runtime-generic", version=profile.version,
-                               template_text="{protocol}", max_value_length=8_000),),
+                               template_text="{shared_context}{phase_common}{protocol}",
+                               max_value_length=8_000),),
         models=tuple(ModelProfile(
             profile_key=key, version=profile.version,
             model_identifier=settings.provider.model_identifier,
@@ -680,9 +677,11 @@ def build_application(
     assemblies = tuple(RuntimeStageAssemblySpec(
         stage_id=stage.stage, root_profile_key=stage.root,
         prompt_template_key="runtime-generic", capability_allowlist=stage.capabilities,
-        capability_prompt_values={"protocol": (
-            shared_context + profile.capability_common.format(stage=stage.stage.value)
-            + " " + stage.capability_protocol
+        capability_prompt_values={
+            "shared_context": shared_context,
+            "phase_common": profile.capability_common.format(stage=stage.stage.value),
+            "protocol": (
+            " " + stage.capability_protocol
             + (
                 " CONTROL_STATE_REQUIRED_CAPABILITIES="
                 + json.dumps(stage.required_capabilities)
@@ -698,9 +697,11 @@ def build_application(
                 if stage.required_any_capabilities else ""
             )
         )} if stage.capabilities else {},
-        finalization_prompt_values={"protocol": (
-            shared_context + profile.finalization_protocol.format(stage=stage.stage.value)
-        )},
+        finalization_prompt_values={
+            "shared_context": shared_context,
+            "phase_common": profile.finalization_protocol.format(stage=stage.stage.value),
+            "protocol": "",
+        },
         capability_phase_enabled=bool(stage.capabilities),
         preserve_capability_completion=bool(stage.capabilities),
         required_capabilities=stage.required_capabilities,
@@ -714,6 +715,18 @@ def build_application(
         user_input_enabled=stage.user_input_enabled,
         clarification_enabled=stage.clarification_enabled,
     ) for stage in profile.stages)
+
+    # Validate every configured phase before credentials, state stores or runs.
+    # Segment limits and the complete rendered limit remain independent.
+    for assembly in assemblies:
+        prompt = catalog.prompts[assembly.prompt_template_key]
+        if assembly.capability_phase_enabled:
+            prompt.render(dict(assembly.capability_prompt_values))
+        prompt.render(dict(assembly.finalization_prompt_values))
+    if load_provider:
+        _load_provider(settings.provider)
+    run_root = run_root.expanduser().resolve()
+    run_root.mkdir(parents=True, exist_ok=True)
 
     def observe(kind: str, value: object) -> None:
         payload = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
