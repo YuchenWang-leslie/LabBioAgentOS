@@ -71,6 +71,13 @@ per-turn tokens in its trace.
   call without reliable usage emits a separate `PROVIDER_USAGE_UNREPORTED`
   record, including cancellation; it is not fabricated as an observed model
   turn. A deadline before the call starts does not create unknown consumption.
+  Independently valid usage in a complete but otherwise rejected response is
+  recorded as `PROVIDER_USAGE_ON_FAILURE`, preserving the protocol failure.
+  Incomplete streams retain their last validated usage snapshot only as
+  diagnostic evidence: final token values remain unknown. Snapshots are neither
+  summed across frames nor included in accounting subtotals; they are not claimed
+  as consumption lower bounds. Conflicting stream identities cannot establish
+  request attribution.
 - Existing tool feedback exposes provider-turn, token and wall-time ledger
   balances as well as tool/evidence balances. Unknown token balance is null.
   These are actual ledger values, not estimates of the next request's cost,
@@ -156,6 +163,10 @@ Provider usage separates observed subtotals, explicitly unreported usage and
 prepared requests without an outcome. A prepared request does not prove it was
 sent or billed. Incomplete coverage, active snapshots and historical
 observed-turn-only traces cannot establish a complete total.
+Complete failed-response usage is a distinct request outcome, not a normal
+model turn. Nonfinal validated snapshots are displayed separately with their
+request identity and explicit scope, never used to backfill a total or prior
+unknown history.
 
 The recovery case exits only after a durable EXECUTE capability checkpoint.
 Resume requires its exact interruption receipt, frozen source/configuration/input
@@ -172,6 +183,18 @@ An uncertain submission is not permission to execute again. Recovery and ordinar
 task delivery are evaluated separately.
 
 ## Acceptance status and remaining limitations
+
+Latest source verification (failure-accounting correction): **2109 passed,
+26 skipped**, eight deterministic rounds of 352 checks and five opt-in real
+Docker boundary checks. Records are
+`verification/full-regression-provider-failure-usage-3.xml`,
+`verification/provider-failure-stress-9.xml` through `-16.xml`, and
+`verification/docker-boundaries-provider-failure-usage.xml`.
+Earlier results below describe retained revisions; they are not substituted for
+same-version real-task acceptance. The authorized human-assisted autonomous
+continuation and the old-source cold task both failed without report delivery.
+Historical unknown usage remains unknown; nonfinal stream snapshots do not
+constitute a complete accounting total.
 
 The feedback/accounting source suite passes **2051 tests, 26 skipped**. Five opt-in
 real Docker input-isolation and file-limit checks also pass. The skipped tests

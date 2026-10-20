@@ -1,5 +1,55 @@
 # Real E2E Convergence Workplan
 
+## Provider failure accounting and distinct-scenario review — 2026-10-20
+
+A deterministic counterexample on frozen `effd251` returned valid 21-token usage
+with an invalid response body. The provider correctly rejected the body but
+discarded the independently valid usage, so the ledger recorded unknown instead.
+The isolated `feat/native-provider-failure-usage` correction preserves validated
+usage from a complete response on the typed error and records it without
+accepting the response or creating a successful model turn. Stream protocol
+errors also retain their original category through the provider wrapper.
+
+Incomplete streams require a separate interpretation. A valid usage frame
+received before truncation, cancellation, deadline or later malformed metadata
+does not establish the final bill. Preserve only the last validated numeric
+snapshot, separately from final usage; do not sum snapshots, label them a lower
+bound, or replace unknown totals. A conflicting stream identity clears request
+attribution. The reporter keeps these snapshots distinct from normal turns,
+complete failed-response usage and all accounting subtotals. Historical unknown
+usage is not reconstructed.
+
+Autonomous5's explicitly authorized human continuation has now ended
+`FAILED / VALIDATE / HANDOFF_REQUIRED`. The Agent corrected its unavailable
+observation selection, received accurate `74386 > 60000` handoff-size feedback,
+and made narrower queries before its next provider request exhausted the
+remaining phase deadline. No host false rejection is established. Two selected
+outputs have valid hashes, but there is no report; the assisted attempt is not
+an unassisted success or a new independent candidate.
+
+Cold1 also ended `FAILED / VALIDATE / HANDOFF_REQUIRED`: six actual execution
+starts, two technical successes containing only dependency diagnostics, zero
+environment builds and no scientific analysis/report delivery. The old generic
+environment declarations were visible; its Agent chose in-analysis dependency
+installation instead of the governed builder. The declaration omission is
+confirmed, but it is not proof of the sole cause of every model decision.
+
+The distinct GOLDDEMO multifile attempt on unchanged frozen `effd251` has now
+exited zero at `COMPLETED / LEARN`. It autonomously corrected an execution
+failure, an unavailable handoff selection and missing report observation credit.
+A report and selected output were exported; independent source/copy integrity
+and scientific review remain separate checks. The remaining new launches require
+source verification and terminal review. No dynamic evidence enum, evidence substitution, higher budget,
+new scientific program, host administration, GitHub push or production activation
+is part of this correction.
+
+The final failure-accounting source passes `2109 passed, 26 skipped`,
+eight deterministic rounds of 352 checks each, and five real Docker boundary
+checks. Failed-first tests and intermediate semantic revisions remain in
+`verification/provider-failure-usage-diagnosis.md`; independent review and the
+reporter's historical no-backfill checks are separate records. These establish
+the narrow source contracts, not three real successes per task class.
+
 ## Environment declaration audit and human-assisted continuation — 2026-10-20
 
 Frozen `3e23135` annotation3 ended at EXECUTE with `HANDOFF_REQUIRED` after two

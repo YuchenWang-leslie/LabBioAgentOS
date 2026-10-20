@@ -22,6 +22,7 @@ from .contracts import (
     ModelRequest,
     ProviderTurnObservation,
     PublicMessage,
+    TokenUsage,
     ToolArgumentObservation,
     ToolCall,
     ToolError,
@@ -171,14 +172,16 @@ class AgentLoop:
                         turn = await asyncio.wait_for(
                             self.provider.generate(request), timeout=remaining
                         )
-                    except asyncio.TimeoutError:
+                    except asyncio.TimeoutError as exc:
+                        usage = getattr(exc.__cause__, "usage", None)
+                        snapshot = getattr(exc.__cause__, "usage_snapshot", None)
                         if self.clock() >= self.current_deadline_monotonic:
-                            raise KernelDeadlineExceededError() from None
-                        raise ProviderTransportError() from None
+                            raise KernelDeadlineExceededError(usage=usage, usage_snapshot=snapshot) from None
+                        raise ProviderTransportError(usage=usage, usage_snapshot=snapshot) from None
                 except (ProviderTransportError, ProviderProtocolError,
                         KernelDeadlineExceededError) as exc:
                     if provider_started:
-                        self._record_unreported_provider_usage(started, turn_index)
+                        self._record_failed_provider_usage(started, turn_index, exc)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -200,17 +203,17 @@ class AgentLoop:
                             termination=stop_reason,
                         )
                     raise
-                except KernelContractError:
+                except KernelContractError as exc:
                     if provider_started:
-                        self._record_unreported_provider_usage(started, turn_index)
+                        self._record_failed_provider_usage(started, turn_index, exc)
                     raise
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as exc:
                     if provider_started:
-                        self._record_unreported_provider_usage(started, turn_index)
+                        self._record_failed_provider_usage(started, turn_index, exc)
                     raise
-                except Exception:
+                except Exception as exc:
                     if provider_started:
-                        self._record_unreported_provider_usage(started, turn_index)
+                        self._record_failed_provider_usage(started, turn_index, exc)
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -577,19 +580,35 @@ class AgentLoop:
                 )
         return request
 
-    def _record_unreported_provider_usage(self, started: float, turn_index: int) -> None:
+    def _record_failed_provider_usage(self, started: float, turn_index: int, error: BaseException) -> None:
         elapsed_ms = max(0, int(round((self.clock() - started) * 1000)))
+        usage = getattr(error, "usage", None)
+        if not isinstance(usage, TokenUsage):
+            usage = None
+        snapshot = getattr(error, "usage_snapshot", None)
+        if not isinstance(snapshot, TokenUsage) or usage is not None:
+            snapshot = None
         self._emit(
-            KernelEventKind.MODEL_USAGE_UNREPORTED,
-            status_code="UNKNOWN_USAGE",
+            KernelEventKind.MODEL_USAGE_ON_FAILURE if usage is not None
+            else KernelEventKind.MODEL_USAGE_UNREPORTED,
+            status_code=("REJECTED_RESPONSE_USAGE" if usage is not None else
+                         "PARTIAL_RESPONSE_USAGE" if snapshot is not None else "UNKNOWN_USAGE"),
+            reason_code="NONFINAL_USAGE_SNAPSHOT" if snapshot is not None else None,
             numeric_facts={
                 "turn_index": turn_index, "elapsed_ms": elapsed_ms,
-                "input_tokens": None, "output_tokens": None, "total_tokens": None,
+                "input_tokens": usage.input_tokens if usage is not None else None,
+                "output_tokens": usage.output_tokens if usage is not None else None,
+                "total_tokens": usage.total_tokens if usage is not None else None,
+                **({
+                    "last_validated_input_tokens": snapshot.input_tokens,
+                    "last_validated_output_tokens": snapshot.output_tokens,
+                    "last_validated_total_tokens": snapshot.total_tokens,
+                } if snapshot is not None else {}),
             },
         )
         try:
             self.budget_ledger.record_observed_usage(
-                tokens=None,
+                tokens=usage.total_tokens if usage is not None else None,
                 wall_time_ms=elapsed_ms,
             )
         except BudgetExceededError:

@@ -104,25 +104,34 @@ def selected_ids(state):
     return execution, report
 
 
-def usage_totals(turns, field, *, unreported=(), complete=False):
+def usage_totals(turns, field, *, unreported=(), failure_responses=(), complete=False):
     values = [(item.get("payload", {}).get("numeric_facts") or {}).get(field) for item in turns]
     known = [value for value in values if type(value) in (int, float)]
     failed = [(item.get("payload", {}).get("numeric_facts") or {}).get(field)
               for item in unreported]
     failed_known = [value for value in failed if type(value) in (int, float)]
-    return {"total": (sum(known) + sum(failed_known) if complete and (values or failed)
-                     and len(known) == len(values) and len(failed_known) == len(failed) else None),
+    reported_failures = [(item.get("payload", {}).get("numeric_facts") or {}).get(field)
+                         for item in failure_responses]
+    known_failures = [value for value in reported_failures if type(value) in (int, float)]
+    return {"total": (sum(known) + sum(failed_known) + sum(known_failures)
+                     if complete and (values or failed or reported_failures)
+                     and len(known) == len(values) and len(failed_known) == len(failed)
+                     and len(known_failures) == len(reported_failures) else None),
             "observed_subtotal": sum(known) if known else None,
             "known_turns": len(known), "unknown_turns": len(values) - len(known),
             "unreported_request_subtotal": sum(failed_known) if failed_known else None,
             "known_unreported_requests": len(failed_known),
-            "unknown_unreported_requests": len(failed) - len(failed_known)}
+            "unknown_unreported_requests": len(failed) - len(failed_known),
+            "failure_response_subtotal": sum(known_failures) if known_failures else None,
+            "known_failure_responses": len(known_failures),
+            "unknown_failure_responses": len(reported_failures) - len(known_failures)}
 
 
 def provider_usage_records(events, *, snapshot_complete):
     """Prepared is not sent or billed; only an outcome supplies measured usage."""
     groups = {name: {} for name in (
-        "PROVIDER_REQUEST_PREPARED", "PROVIDER_TURN_OBSERVED", "PROVIDER_USAGE_UNREPORTED")}
+        "PROVIDER_REQUEST_PREPARED", "PROVIDER_TURN_OBSERVED",
+        "PROVIDER_USAGE_UNREPORTED", "PROVIDER_USAGE_ON_FAILURE")}
     uncorrelated = set()
     for event in events:
         kind = event["event_type"]
@@ -146,12 +155,14 @@ def provider_usage_records(events, *, snapshot_complete):
     prepared = groups["PROVIDER_REQUEST_PREPARED"]
     observed = groups["PROVIDER_TURN_OBSERVED"]
     unreported = groups["PROVIDER_USAGE_UNREPORTED"]
-    if observed.keys() & unreported.keys():
+    failure_responses = groups["PROVIDER_USAGE_ON_FAILURE"]
+    if (observed.keys() & unreported.keys()
+            or failure_responses.keys() & (observed.keys() | unreported.keys())):
         raise ValueError("Conflicting provider request outcomes")
     ready = {identity for identity, event in prepared.items() if event["status"] == "READY"}
     rejected = {identity for identity, event in prepared.items() if event["status"] == "REJECTED"}
-    outcomes = observed.keys() | unreported.keys()
-    has_request_trace = bool(prepared or unreported)
+    outcomes = observed.keys() | unreported.keys() | failure_responses.keys()
+    has_request_trace = bool(prepared or unreported or failure_responses)
     complete = (not uncorrelated and len(ready) + len(rejected) == len(prepared)
                 and ready == outcomes) if has_request_trace else None
     coverage = {
@@ -160,11 +171,14 @@ def provider_usage_records(events, *, snapshot_complete):
         "prepared_requests": len(ready),
         "rejected_preparations": len(rejected),
         "unreported_usage_requests": len(unreported),
+        "failure_usage_requests": len(failure_responses),
+        "failure_usage_scope": "RECORDED_VALIDATED_FAILURE_RESPONSE_USAGE",
         "prepared_without_outcome": len(ready - outcomes) if prepared else None,
         "uncorrelated_events": len(uncorrelated),
         "request_outcomes_complete": complete,
     }
-    return list(observed.values()), list(unreported.values()), list(prepared.values()), coverage
+    return (list(observed.values()), list(unreported.values()), list(failure_responses.values()),
+            list(prepared.values()), coverage)
 
 
 def repeated_read_requests(boundaries):
@@ -377,15 +391,39 @@ def summarize_attempt(root: Path, receipt: Path):
                                       state["run_id"]):
             raise ValueError("Run trace identity conflict")
         events = list({item["event_id"]: item for item in events}.values())
-        turns, unreported, preparations, coverage = provider_usage_records(
+        turns, unreported, failure_responses, preparations, coverage = provider_usage_records(
             events, snapshot_complete=(
                 result["trace_integrity_valid"]
                 and result["status"] in {"COMPLETED", "FAILED", "CANCELLED"}),
         )
+        snapshots = []
+        for event in unreported:
+            if event.get("status") != "PARTIAL_RESPONSE_USAGE":
+                continue
+            payload = event["payload"]
+            facts = payload["numeric_facts"]
+            invocation, index = payload.get("kernel_invocation_id"), facts.get("turn_index")
+            if not isinstance(invocation, str) or type(index) is not int or index < 1:
+                raise ValueError("Invalid nonfinal usage identity")
+            snapshot = {"kernel_invocation_id": str(UUID(invocation)), "turn_index": index}
+            for field in ("input_tokens", "output_tokens", "total_tokens"):
+                key = "last_validated_" + field
+                value = facts.get(key)
+                if (facts.get(field) is not None
+                        or (value is not None and (type(value) is not int or value < 0))):
+                    raise ValueError("Invalid nonfinal usage snapshot")
+                snapshot[key] = value
+            snapshots.append(snapshot)
+        coverage["nonfinal_usage_snapshot_requests"] = len(snapshots)
+        result["provider_usage_snapshots"] = {
+            "scope": "NONFINAL_REPORTED_SNAPSHOTS_NOT_TOTALS_OR_LOWER_BOUNDS",
+            "records": snapshots,
+        }
         result["provider_turns_observed"] = len(turns)
         result["provider_usage_coverage"] = coverage
         result["provider_usage"] = {
             field: usage_totals(turns, field, unreported=unreported,
+                               failure_responses=failure_responses,
                                complete=(coverage["snapshot_complete"]
                                          and coverage["request_outcomes_complete"] is True))
             for field in ("input_tokens", "output_tokens", "total_tokens", "elapsed_ms")}

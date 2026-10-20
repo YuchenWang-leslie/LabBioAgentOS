@@ -937,6 +937,8 @@ class NativeKernelStageInvoker:
                 trace_type = TraceEventType.PROVIDER_TURN_OBSERVED
             elif event.kind is KernelEventKind.MODEL_USAGE_UNREPORTED:
                 trace_type = TraceEventType.PROVIDER_USAGE_UNREPORTED
+            elif event.kind is KernelEventKind.MODEL_USAGE_ON_FAILURE:
+                trace_type = TraceEventType.PROVIDER_USAGE_ON_FAILURE
             elif event.kind is KernelEventKind.MODEL_REQUEST_PREPARED:
                 trace_type = TraceEventType.PROVIDER_REQUEST_PREPARED
             elif (

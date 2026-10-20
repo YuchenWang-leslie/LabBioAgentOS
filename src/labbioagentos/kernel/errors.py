@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .contracts import InterruptSignal
+    from .contracts import InterruptSignal, TokenUsage
 
 
 class KernelContractError(RuntimeError):
@@ -117,11 +117,14 @@ class NoObservableProgressError(KernelContractError):
 
 
 class KernelDeadlineExceededError(KernelContractError):
-    def __init__(self):
+    def __init__(self, *, usage: TokenUsage | None = None,
+                 usage_snapshot: TokenUsage | None = None):
         super().__init__(
             "KERNEL_DEADLINE_EXCEEDED",
             "The kernel invocation deadline was reached",
         )
+        self.usage = usage
+        self.usage_snapshot = usage_snapshot
 
 
 class IncompleteProviderResponseError(KernelContractError):
@@ -157,22 +160,28 @@ class FinalizationRejectedError(KernelContractError):
 
 
 class ProviderProtocolError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None, validation_fields: tuple[str, ...] = ()):
+    def __init__(self, *, validation_type: str | None = None, validation_fields: tuple[str, ...] = (),
+                 usage: TokenUsage | None = None, usage_snapshot: TokenUsage | None = None):
         super().__init__(
             "PROVIDER_PROTOCOL_ERROR",
             "The provider returned an unsupported response shape",
         )
         self.validation_type = validation_type
         self.validation_fields = validation_fields
+        self.usage = usage
+        self.usage_snapshot = usage_snapshot
 
 
 class ProviderTransportError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None):
+    def __init__(self, *, validation_type: str | None = None, usage: TokenUsage | None = None,
+                 usage_snapshot: TokenUsage | None = None):
         super().__init__(
             "PROVIDER_TRANSPORT_ERROR",
             "The provider request could not complete",
         )
         self.validation_type = validation_type
+        self.usage = usage
+        self.usage_snapshot = usage_snapshot
 
 
 class AgentHistoryLimitError(KernelContractError):

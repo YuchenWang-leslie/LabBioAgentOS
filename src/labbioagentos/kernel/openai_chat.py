@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from time import monotonic
@@ -40,6 +41,17 @@ def _reject_json_constant(_value):
     raise ValueError("Non-finite JSON constant")
 
 
+def _failure_usage(raw) -> TokenUsage | None:
+    """Keep validated numeric accounting, never rejected response content."""
+    try:
+        usage = OpenAICompatibleChatProvider._usage(raw)
+    except (ValueError, TypeError, ValidationError):
+        return None
+    return usage if any(value is not None for value in (
+        usage.input_tokens, usage.output_tokens, usage.total_tokens,
+    )) else None
+
+
 class ChatCompletionTransport(Protocol):
     async def post_json(
         self,
@@ -58,6 +70,7 @@ class HttpxChatCompletionTransport:
         self.trust_env = trust_env
 
     async def post_json(self, *, url, headers, payload, timeout_seconds):
+        accounting = {}
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout_seconds),
@@ -69,7 +82,7 @@ class HttpxChatCompletionTransport:
                 ) as response:
                     response.raise_for_status()
                     if payload.get("stream") is True:
-                        return await self._stream_response(response)
+                        return await self._stream_response(response, accounting)
                     body = await response.aread()
             value = json.loads(
                 body.decode("utf-8"),
@@ -81,25 +94,36 @@ class HttpxChatCompletionTransport:
             return value
         except httpx.HTTPStatusError as exc:
             raise ProviderTransportError(
-                validation_type=f"HTTP_{exc.response.status_code}"
+                validation_type=f"HTTP_{exc.response.status_code}",
+                usage_snapshot=accounting.get("last_validated_usage"),
             ) from None
         except httpx.TimeoutException:
-            raise ProviderTransportError(validation_type="TIMEOUT") from None
+            raise ProviderTransportError(
+                validation_type="TIMEOUT", usage_snapshot=accounting.get("last_validated_usage")) from None
         except httpx.RemoteProtocolError:
-            raise ProviderTransportError(validation_type="NETWORK_REMOTE_PROTOCOL") from None
+            raise ProviderTransportError(
+                validation_type="NETWORK_REMOTE_PROTOCOL",
+                usage_snapshot=accounting.get("last_validated_usage")) from None
         except httpx.ReadError:
-            raise ProviderTransportError(validation_type="NETWORK_READ") from None
+            raise ProviderTransportError(
+                validation_type="NETWORK_READ",
+                usage_snapshot=accounting.get("last_validated_usage")) from None
         except httpx.TransportError:
-            raise ProviderTransportError(validation_type="NETWORK") from None
+            raise ProviderTransportError(
+                validation_type="NETWORK", usage_snapshot=accounting.get("last_validated_usage")) from None
         except (UnicodeDecodeError, ValueError):
-            raise ProviderTransportError(validation_type="INVALID_JSON") from None
-        except ProviderProtocolError:
+            raise ProviderTransportError(
+                validation_type="INVALID_JSON", usage_snapshot=accounting.get("last_validated_usage")) from None
+        except (ProviderProtocolError, asyncio.CancelledError) as exc:
+            if getattr(exc, "usage", None) is None:
+                exc.usage_snapshot = accounting.get("last_validated_usage")
             raise
         except Exception:
-            raise ProviderTransportError(validation_type="OTHER") from None
+            raise ProviderTransportError(
+                validation_type="OTHER", usage_snapshot=accounting.get("last_validated_usage")) from None
 
     @staticmethod
-    async def _stream_response(response: httpx.Response) -> Mapping[str, Any]:
+    async def _stream_response(response: httpx.Response, accounting: dict) -> Mapping[str, Any]:
         request_id = None
         role = "assistant"
         content = []
@@ -129,10 +153,15 @@ class HttpxChatCompletionTransport:
             chunk_id = chunk.get("id")
             if chunk_id is not None:
                 if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
+                    # Conflicting identities cannot establish this request's usage.
+                    accounting.clear()
                     raise ProviderProtocolError(validation_fields=("stream.id",))
                 request_id = chunk_id
             if chunk.get("usage") is not None:
                 usage = chunk["usage"]
+                validated = _failure_usage(usage)
+                if validated is not None:
+                    accounting["last_validated_usage"] = validated
             choices = chunk.get("choices")
             if choices == []:
                 continue
@@ -177,8 +206,18 @@ class HttpxChatCompletionTransport:
                 finish_reason = choice["finish_reason"]
         if not done or finish_reason is None or data_lines:
             raise ProviderProtocolError(validation_fields=("stream.incomplete",))
+        try:
+            OpenAICompatibleChatProvider._usage(usage)
+        except (TypeError, ValueError, ValidationError) as exc:
+            issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
+            raise ProviderProtocolError(
+                validation_type=issues[0]["type"] if issues else type(exc).__name__,
+                validation_fields=("usage",),
+            ) from None
         if sorted(tool_calls) != list(range(len(tool_calls))):
-            raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            raise ProviderProtocolError(
+                validation_fields=("stream.delta.tool_calls",), usage=_failure_usage(usage),
+            )
         return {
             "id": request_id,
             "choices": [{"finish_reason": finish_reason, "message": {
@@ -232,7 +271,7 @@ class OpenAICompatibleChatProvider:
                 payload=payload,
                 timeout_seconds=timeout,
             )
-        except ProviderTransportError:
+        except (ProviderTransportError, ProviderProtocolError):
             raise
         except Exception:
             raise ProviderTransportError(validation_type="ADAPTER") from None
@@ -416,6 +455,7 @@ class OpenAICompatibleChatProvider:
                 validation_type=issues[0]["type"] if issues else type(exc).__name__,
                 validation_fields=(component, *(str(item) for item in issues[0]["loc"]))
                 if issues and component == "model_turn" else (component,),
+                usage=_failure_usage(response.get("usage")),
             ) from None
 
     @staticmethod

@@ -177,6 +177,190 @@ def test_unreported_request_keeps_tokens_unknown_and_known_elapsed(tmp_path):
     assert sample["provider_usage_coverage"]["unreported_usage_requests"] == 1
 
 
+@pytest.mark.parametrize("input_tokens,output_tokens,tokens", [(9, 12, 21), (0, 0, 0), (9, None, None)])
+def test_failure_response_usage_is_counted_without_inventing_a_model_turn(
+    tmp_path, input_tokens, output_tokens, tokens,
+):
+    def rows(state, invocation):
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1,
+                           input_tokens=1, output_tokens=3, total_tokens=4, elapsed_ms=20),
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2),
+            provider_event(state, "PROVIDER_USAGE_ON_FAILURE", invocation, 2,
+                           input_tokens=input_tokens, output_tokens=output_tokens,
+                           total_tokens=tokens, elapsed_ms=35),
+        ]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["provider_turns_observed"] == 1
+    coverage = sample["provider_usage_coverage"]
+    assert coverage["failure_usage_requests"] == 1
+    assert coverage["failure_usage_scope"] == "RECORDED_VALIDATED_FAILURE_RESPONSE_USAGE"
+    assert coverage["unreported_usage_requests"] == 0
+    assert coverage["prepared_without_outcome"] == 0
+    assert coverage["request_outcomes_complete"] is True
+    usage = sample["provider_usage"]
+    assert usage["total_tokens"]["total"] == (4 + tokens if tokens is not None else None)
+    assert usage["total_tokens"]["observed_subtotal"] == 4
+    assert usage["total_tokens"]["failure_response_subtotal"] == tokens
+    assert usage["total_tokens"]["known_failure_responses"] == (tokens is not None)
+    assert usage["total_tokens"]["unknown_failure_responses"] == (tokens is None)
+    assert usage["total_tokens"]["unreported_request_subtotal"] is None
+    assert usage["input_tokens"]["total"] == 1 + input_tokens
+    assert usage["input_tokens"]["failure_response_subtotal"] == input_tokens
+    assert usage["elapsed_ms"]["total"] == 55
+    assert usage["elapsed_ms"]["observed_subtotal"] == 20
+    assert usage["elapsed_ms"]["failure_response_subtotal"] == 35
+
+
+def test_failure_response_outcome_is_deduplicated_by_invocation_and_turn(tmp_path):
+    def rows(state, invocation):
+        prepared = provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1)
+        failure = provider_event(state, "PROVIDER_USAGE_ON_FAILURE", invocation, 1,
+                                 total_tokens=21)
+        other = str(uuid4())
+        return [prepared, failure, failure, {**failure, "event_id": str(uuid4())},
+                provider_event(state, "PROVIDER_REQUEST_PREPARED", other, 1),
+                provider_event(state, "PROVIDER_USAGE_ON_FAILURE", other, 1, total_tokens=7)]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["provider_turns_observed"] == 0
+    assert sample["provider_usage_coverage"]["failure_usage_requests"] == 2
+    usage = sample["provider_usage"]["total_tokens"]
+    assert usage["total"] == usage["failure_response_subtotal"] == 28
+    assert usage["observed_subtotal"] is None and usage["known_turns"] == 0
+
+
+@pytest.mark.parametrize("conflict", [
+    "PROVIDER_TURN_OBSERVED", "PROVIDER_USAGE_UNREPORTED", "PROVIDER_USAGE_ON_FAILURE",
+])
+def test_failure_usage_conflicting_outcomes_do_not_invent_totals(tmp_path, conflict):
+    sample = provider_sample(tmp_path, lambda state, invocation: [
+        provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+        provider_event(state, "PROVIDER_USAGE_ON_FAILURE", invocation, 1, total_tokens=21),
+        provider_event(state, conflict, invocation, 1, total_tokens=None),
+    ])
+    assert sample["metrics_error"] == "ValueError"
+    assert "provider_usage" not in sample
+
+
+@pytest.mark.parametrize("status,prepared", [("RUNNING", True), ("FAILED", False)])
+def test_failure_response_subtotal_does_not_imply_complete_accounting(tmp_path, status, prepared):
+    def rows(state, invocation):
+        return ([provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1)]
+                if prepared else []) + [
+            provider_event(state, "PROVIDER_USAGE_ON_FAILURE", invocation, 1, total_tokens=21)]
+
+    sample = provider_sample(tmp_path, rows, status)
+    assert sample["provider_usage"]["total_tokens"]["total"] is None
+    assert sample["provider_usage"]["total_tokens"]["failure_response_subtotal"] == 21
+    assert sample["provider_turns_observed"] == 0
+    assert sample["provider_usage_coverage"]["failure_usage_requests"] == 1
+
+
+def test_new_failure_usage_does_not_fill_older_unreported_request(tmp_path):
+    sample = provider_sample(tmp_path, lambda state, invocation: [
+        provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+        provider_event(state, "PROVIDER_USAGE_UNREPORTED", invocation, 1,
+                       total_tokens=None, elapsed_ms=10),
+        provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2),
+        provider_event(state, "PROVIDER_USAGE_ON_FAILURE", invocation, 2,
+                       total_tokens=21, elapsed_ms=20),
+    ])
+    usage = sample["provider_usage"]
+    assert usage["total_tokens"]["total"] is None
+    assert usage["total_tokens"]["failure_response_subtotal"] == 21
+    assert usage["total_tokens"]["unknown_unreported_requests"] == 1
+    assert usage["elapsed_ms"]["total"] == 30
+    assert sample["provider_usage_coverage"]["unreported_usage_requests"] == 1
+    assert sample["provider_usage_coverage"]["failure_usage_requests"] == 1
+
+
+def nonfinal_usage_event(state, invocation, *, total=21):
+    row = provider_event(
+        state, "PROVIDER_USAGE_UNREPORTED", invocation, 2,
+        input_tokens=None, output_tokens=None, total_tokens=None, elapsed_ms=35,
+        last_validated_input_tokens=0 if total == 0 else 9,
+        last_validated_output_tokens=0 if total == 0 else None if total is None else 12,
+        last_validated_total_tokens=total)
+    row["status"] = "PARTIAL_RESPONSE_USAGE"
+    row["payload"]["reason_code"] = "NONFINAL_USAGE_SNAPSHOT"
+    return row
+
+
+@pytest.mark.parametrize("total", [21, 0, None])
+def test_nonfinal_usage_snapshot_is_auditable_but_never_an_exact_subtotal(tmp_path, total):
+    invocation = str(uuid4())
+    def rows(state, _):
+        snapshot = nonfinal_usage_event(state, invocation, total=total)
+        return [
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+            provider_event(state, "PROVIDER_TURN_OBSERVED", invocation, 1,
+                           total_tokens=4, elapsed_ms=20),
+            provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2),
+            snapshot, snapshot, {**snapshot, "event_id": str(uuid4())},
+        ]
+
+    sample = provider_sample(tmp_path, rows)
+    coverage = sample["provider_usage_coverage"]
+    assert coverage["request_outcomes_complete"] is True
+    assert coverage["prepared_without_outcome"] == 0
+    assert coverage["nonfinal_usage_snapshot_requests"] == coverage["unreported_usage_requests"] == 1
+    assert coverage["failure_usage_requests"] == 0
+    assert sample["provider_turns_observed"] == 1
+    usage = sample["provider_usage"]
+    assert usage["total_tokens"]["total"] is None
+    assert usage["total_tokens"]["observed_subtotal"] == 4
+    assert usage["total_tokens"]["failure_response_subtotal"] is None
+    assert usage["total_tokens"]["unreported_request_subtotal"] is None
+    assert usage["total_tokens"]["unknown_unreported_requests"] == 1
+    assert usage["elapsed_ms"]["total"] == 55
+    assert sample["provider_usage_snapshots"] == {
+        "scope": "NONFINAL_REPORTED_SNAPSHOTS_NOT_TOTALS_OR_LOWER_BOUNDS",
+        "records": [{
+            "kernel_invocation_id": invocation, "turn_index": 2,
+            "last_validated_input_tokens": 0 if total == 0 else 9,
+            "last_validated_output_tokens": 0 if total == 0 else None if total is None else 12,
+            "last_validated_total_tokens": total,
+        }],
+    }
+
+
+@pytest.mark.parametrize("kind,total", [
+    ("PROVIDER_USAGE_UNREPORTED", None), ("PROVIDER_USAGE_ON_FAILURE", 24),
+])
+def test_no_partial_snapshot_is_inferred_from_old_unknown_or_complete_usage(tmp_path, kind, total):
+    sample = provider_sample(tmp_path, lambda state, invocation: [
+        provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 1),
+        provider_event(state, kind, invocation, 1, total_tokens=total),
+    ])
+    assert sample["provider_usage_snapshots"]["records"] == []
+    assert sample["provider_usage_coverage"]["nonfinal_usage_snapshot_requests"] == 0
+    assert sample["provider_usage"]["total_tokens"]["total"] == total
+
+
+@pytest.mark.parametrize("field,value", [
+    ("last_validated_total_tokens", "PRIVATE_CANARY"),
+    ("kernel_invocation_id", "PRIVATE_CANARY"),
+    ("turn_index", "PRIVATE_CANARY"),
+    ("total_tokens", 21),
+])
+def test_malformed_nonfinal_snapshot_cannot_leak_text_or_become_exact_usage(tmp_path, field, value):
+    def rows(state, invocation):
+        row = nonfinal_usage_event(state, invocation)
+        if field == "kernel_invocation_id":
+            row["payload"][field] = value
+        else:
+            row["payload"]["numeric_facts"][field] = value
+        return [provider_event(state, "PROVIDER_REQUEST_PREPARED", invocation, 2), row]
+
+    sample = provider_sample(tmp_path, rows)
+    assert sample["metrics_error"] == "ValueError"
+    assert "provider_usage" not in sample
+    assert "PRIVATE_CANARY" not in json.dumps(sample)
+
+
 def test_active_snapshot_does_not_claim_final_total_or_failed_prepared_request(tmp_path):
     def rows(state, invocation):
         return [
@@ -451,7 +635,8 @@ def test_every_attempt_is_counted_and_unreported_usage_remains_unknown(tmp_path)
     assert sample["provider_usage"]["total_tokens"] == {
         "total": None, "observed_subtotal": 4, "known_turns": 1, "unknown_turns": 1,
         "unreported_request_subtotal": None, "known_unreported_requests": 0,
-        "unknown_unreported_requests": 0}
+        "unknown_unreported_requests": 0, "failure_response_subtotal": None,
+        "known_failure_responses": 0, "unknown_failure_responses": 0}
     assert sample["provider_usage"]["elapsed_ms"]["total"] is None
     assert sample["provider_usage"]["elapsed_ms"]["observed_subtotal"] == 55
     assert sample["provider_usage_coverage"]["scope"] == "OBSERVED_TURNS_ONLY"
