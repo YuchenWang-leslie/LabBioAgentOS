@@ -7,10 +7,10 @@ governed lifecycle closed; it does not establish that a scientific method,
 result, interpretation, or report is correct. Independent review remains
 required.
 
-Current real-task evidence covers a bounded PBMC3k descriptive task and fresh
-annotated-H5AD source runs, including two failed stress runs and one completed
-Agent-authored report. It is not a repeatability study or validation across
-data types, methods, providers, and failure modes.
+Current real-task evidence includes annotated-H5AD and GOLDDEMO stress runs,
+with both failed attempts and Agent-authored deliveries retained. Engineering
+delivery is not scientific approval; same-version repeatability and independent
+scientific acceptance are still outstanding.
 
 ## Provider behavior
 
@@ -43,6 +43,15 @@ independent filesystem quota. An untrusted program can create many undeclared
 bounded files until cleanup. Full storage isolation requires filesystem- or
 daemon-level quotas.
 
+Each captured stdout/stderr stream is limited to 16 MiB in control-plane memory.
+An overflow stops execution and retains explicitly incomplete prefixes; it
+does not truncate declared scientific output files. Scheduler log files remain
+on disk and are only read in bounded portions by the control plane. Docker
+environment-build logs use a 16 MiB polling threshold, not a hard disk quota.
+An interrupted Docker build/probe may continue in the daemon after its client
+is killed; such attempts are marked `UNCONFIRMED` and require operator
+reconciliation rather than automatic replay.
+
 The platform trusts the local Docker engine, host kernel, configured images,
 and local administrator. It does not defend against their compromise.
 
@@ -52,13 +61,18 @@ between scheduler acceptance and persistence of the returned job ID, orphan
 reconciliation records `UNCONFIRMED` and requires operator inspection; it
 cannot guarantee automatic cancellation. See
 [C13 integration review](C13_APPTAINER_EXECUTION_ACCEPTANCE.md).
+Local Apptainer remains unvalidated on this host because its executable and
+CPU-controller delegation are unavailable; resource limits were not bypassed.
 
 ## Persistence and concurrency
 
 SQLite state, JSONL trace, Artifact storage, Docker operations, and provider
 calls are not one distributed transaction. Uncertain external side effects
 block recovery instead of being silently replayed. There is no high-availability
-writer coordination or automatic multi-host reconciliation.
+writer coordination or automatic multi-host reconciliation. Environment builds
+serialize the same request across local processes and retain intent/terminal
+receipts, but these files do not provide power-loss fsync guarantees or prove
+that an interrupted Docker daemon operation has ended.
 
 ## Gold and Memory
 

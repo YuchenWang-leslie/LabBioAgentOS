@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from pathlib import Path
 import re
 import subprocess
+import threading
 import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from .environments import EnvironmentBuildResult, EnvironmentRequestError, normalize_modules, normalize_requirements
+from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError,
+                           EnvironmentRequestError, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
 
 
@@ -64,8 +67,12 @@ def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
 
 
 class DockerEnvironmentBuilder:
-    def __init__(self, proxy_url: str | None = None, timeout_seconds: float = 600):
+    def __init__(self, proxy_url: str | None = None, timeout_seconds: float = 600,
+                 cpus: float = 4.0):
         if not 1 <= timeout_seconds <= 3600:
+            raise EnvironmentRequestError()
+        if (isinstance(cpus, bool) or not isinstance(cpus, (int, float))
+                or not math.isfinite(cpus) or not 0.01 <= cpus <= 1024):
             raise EnvironmentRequestError()
         if proxy_url is not None:
             parsed = urlsplit(proxy_url)
@@ -73,14 +80,49 @@ class DockerEnvironmentBuilder:
                     or parsed.username is not None or parsed.password is not None
                     or any(ord(char) < 32 for char in proxy_url)):
                 raise EnvironmentRequestError()
-        self.proxy_url, self.timeout_seconds = proxy_url, timeout_seconds
+        self.proxy_url, self.timeout_seconds, self.cpus = proxy_url, timeout_seconds, cpus
+        self._attempt_state = threading.local()
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
                     run_id: UUID | None = None) -> EnvironmentBuildResult:
         # Docker builds run on the control-plane host and submit no job, so run_id is unused.
         requirements, import_modules = normalize_requirements(requirements), normalize_modules(import_modules, max_count=256)
-        return await asyncio.to_thread(self._build, base_image, requirements, import_modules, build_root, request_hash)
+        stop = threading.Event()
+
+        def work():
+            self._attempt_state.stop = stop
+            try:
+                return self._build(base_image, requirements, import_modules, build_root, request_hash)
+            finally:
+                del self._attempt_state.stop
+
+        worker = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            stop.set()
+            settle_by = time.monotonic() + 45
+            while not worker.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(worker), max(0.001, settle_by - time.monotonic()))
+                except asyncio.CancelledError:
+                    continue
+                except asyncio.TimeoutError as exc:
+                    raise EnvironmentBuildUnconfirmedError("CANCELLATION_SETTLE_TIMEOUT") from exc
+            try:
+                result = worker.result()
+            except EnvironmentBuildUnconfirmedError:
+                raise
+            except Exception as exc:
+                raise EnvironmentBuildUnconfirmedError("CANCELLED_WORKER_FAILED") from exc
+            if result.image_id is not None:
+                raise EnvironmentBuildUnconfirmedError("CANCELLED_IMAGE_UNREGISTERED", result.image_id)
+            raise
+
+    def _stop_requested(self) -> bool:
+        stop = getattr(self._attempt_state, "stop", None)
+        return stop is not None and stop.is_set()
 
     @staticmethod
     def _environment() -> dict[str, str]:
@@ -92,21 +134,45 @@ class DockerEnvironmentBuilder:
     def _run(self, argv: list[str], path: Path, deadline: float) -> tuple[int | None, str | None]:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as log:
+            if self._stop_requested():
+                return None, "BUILD_CANCELLED"
             try:
                 process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
                                            shell=False, env=self._environment())
             except OSError:
                 return None, "BUILDER_UNAVAILABLE"
             while True:
+                if self._stop_requested():
+                    error = "BUILD_CANCELLED"
+                else:
+                    error = None
                 try:
-                    return process.wait(timeout=0.2), None
+                    if error is None:
+                        code = process.wait(timeout=0.2)
+                        return (code, "BUILD_LOG_LIMIT") if os.fstat(log.fileno()).st_size > 16_777_216 else (code, None)
                 except subprocess.TimeoutExpired:
                     error = ("BUILD_TIMEOUT" if time.monotonic() >= deadline else
                              "BUILD_LOG_LIMIT" if os.fstat(log.fileno()).st_size > 16_777_216 else None)
-                    if error is not None:
+                if error is not None:
+                    try:
                         process.kill()
+                    except ProcessLookupError:
+                        pass
+                    except OSError as exc:
+                        raise EnvironmentBuildUnconfirmedError("LOCAL_PROCESS_NOT_REAPED") from exc
+                    try:
                         process.wait(timeout=10)
-                        return None, error
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        raise EnvironmentBuildUnconfirmedError("LOCAL_PROCESS_NOT_REAPED") from exc
+                    return None, error
+
+    def _run_cleanup(self, argv: list[str], path: Path) -> tuple[int | None, str | None]:
+        stop = getattr(self._attempt_state, "stop", None)
+        self._attempt_state.stop = None
+        try:
+            return self._run(argv, path, time.monotonic() + 15)
+        finally:
+            self._attempt_state.stop = stop
 
     @staticmethod
     def _tail(path: Path) -> str:
@@ -118,20 +184,36 @@ class DockerEnvironmentBuilder:
     _diagnostics = staticmethod(pip_log_diagnostics)
 
     def _cleanup(self, build_root: Path, *, probe_name: str | None = None) -> None:
-        if probe_name is not None:
-            argv = ["docker", "rm", "--force", probe_name]
-        else:
-            # Only containers bearing this attempt's generated label are owned here.
-            listing = build_root / "cleanup-list.log"
-            code, _ = self._run(["docker", "ps", "-aq", "--filter",
-                "label=labbio.environment.build=" + build_root.name], listing, time.monotonic() + 15)
-            if code != 0:
-                return
-            identifiers = listing.read_text().split()
-            if not identifiers or any(re.fullmatch(r"[0-9a-f]{12,64}", value) is None for value in identifiers):
-                return
-            argv = ["docker", "rm", "--force", *identifiers]
-        self._run(argv, build_root / ("probe-cleanup.log" if probe_name else "build-cleanup.log"), time.monotonic() + 15)
+        # Query only this attempt's generated label or exact probe name.
+        selector = ("name=^/" + probe_name + "$" if probe_name is not None else
+                    "label=labbio.environment.build=" + build_root.name)
+        argv = ["docker", "ps", "-aq", "--filter", selector]
+
+        def list_owned(path: Path) -> tuple[str, ...]:
+            code, error = self._run_cleanup(argv, path)
+            if error is not None or code != 0:
+                raise EnvironmentBuildUnconfirmedError("CLEANUP_LIST_FAILED")
+            try:
+                if path.stat().st_size > 65_536:
+                    raise ValueError()
+                identifiers = tuple(path.read_text().split())
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise EnvironmentBuildUnconfirmedError("CLEANUP_LIST_INVALID") from exc
+            if (len(set(identifiers)) != len(identifiers)
+                    or any(re.fullmatch(r"[0-9a-f]{12,64}", value) is None for value in identifiers)):
+                raise EnvironmentBuildUnconfirmedError("CLEANUP_IDENTITY_INVALID")
+            return identifiers
+
+        identifiers = list_owned(build_root / "cleanup-list.log")
+        if identifiers:
+            code, error = self._run_cleanup(
+                ["docker", "rm", "--force", *identifiers],
+                build_root / ("probe-cleanup.log" if probe_name else "build-cleanup.log"),
+            )
+            if error is not None or code != 0:
+                raise EnvironmentBuildUnconfirmedError("CLEANUP_REMOVE_FAILED")
+        if list_owned(build_root / "cleanup-confirm.log"):
+            raise EnvironmentBuildUnconfirmedError("CLEANUP_CONFIRM_FAILED")
 
     def _build(self, base_image, requirements, modules, build_root, request_hash):
         build_root = Path(build_root)
@@ -144,6 +226,21 @@ class DockerEnvironmentBuilder:
         def failed(code, diagnostics=()):
             return EnvironmentBuildResult(failure_code=code, diagnostics=diagnostics, log_id=build_root.name)
 
+        def interrupted_daemon(code: str, *, probe_name: str | None = None,
+                               image_id: str | None = None):
+            try:
+                self._cleanup(build_root, probe_name=probe_name)
+            except EnvironmentBuildUnconfirmedError as exc:
+                raise EnvironmentBuildUnconfirmedError(
+                    exc.reason_code, image_id=image_id, failure_code=code,
+                ) from exc
+            raise EnvironmentBuildUnconfirmedError(
+                "DAEMON_TERMINATION_UNCONFIRMED", image_id=image_id, failure_code=code,
+            )
+
+        if self._stop_requested():
+            return failed("BUILD_CANCELLED")
+
         inspect_log = build_root / "base-inspect.log"
         code, error = self._run(["docker", "image", "inspect", "--format", "{{.Id}}",
                                  base_image.resolved_reference], inspect_log, deadline)
@@ -152,6 +249,8 @@ class DockerEnvironmentBuilder:
         base_id = self._tail(inspect_log).strip()
         if re.fullmatch(r"sha256:[0-9a-f]{64}", base_id) is None:
             return failed("VERIFICATION_FAILED")
+        if self._stop_requested():
+            return failed("BUILD_CANCELLED")
         context = build_root / "context"
         context.mkdir(mode=0o700)
         with (context / "requirements.txt").open("x", encoding="utf-8") as stream:
@@ -170,6 +269,7 @@ class DockerEnvironmentBuilder:
             stream.write(recipe)
         image_file = build_root / "image-id.txt"
         argv = ["docker", "build", "--pull=false", "--force-rm", "--memory", "4g",
+                "--cpu-period", "100000", "--cpu-quota", str(math.floor(self.cpus * 100000)),
                 "--memory-swap", "4g", "--iidfile", str(image_file),
                 "--network", "host" if self.proxy_url else "default"]
         if self.proxy_url:
@@ -178,7 +278,11 @@ class DockerEnvironmentBuilder:
                      "--build-arg", "HTTPS_PROXY=" + self.proxy_url]
         build_log = build_root / "build.log"
         code, error = self._run([*argv, str(context)], build_log, deadline)
+        if self._stop_requested() and error is None:
+            error = "BUILD_CANCELLED"
         if error or code != 0:
+            if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
+                interrupted_daemon(error)
             self._cleanup(build_root)
             text = self._tail(build_log)
             failure_code = error or self._diagnose(text)
@@ -188,14 +292,21 @@ class DockerEnvironmentBuilder:
         image_id = image_file.read_text().strip()
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
             return failed("VERIFICATION_FAILED")
+        if self._stop_requested():
+            interrupted_daemon("BUILD_CANCELLED", image_id=image_id)
         probe_name = "labbio-env-check-" + build_root.name
         probe_log = build_root / "verification.log"
         code, error = self._run(["docker", "run", "--rm", "--pull", "never", "--name", probe_name,
             "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-            "--memory", "4g", "--memory-swap", "4g", "--pids-limit", "128",
+            "--memory", "4g", "--memory-swap", "4g", "--cpus", format(self.cpus, "g"),
+            "--pids-limit", "128",
             "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", "--entrypoint", "python",
             image_id, "-I", "-c", _PROBE, json.dumps(modules)], probe_log, deadline)
+        if self._stop_requested() and error is None:
+            error = "BUILD_CANCELLED"
         if error or code != 0:
+            if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
+                interrupted_daemon(error, probe_name=probe_name, image_id=image_id)
             self._cleanup(build_root, probe_name=probe_name)
             return failed(error or "VERIFICATION_FAILED")
         try:
@@ -208,6 +319,8 @@ class DockerEnvironmentBuilder:
             if failed_modules:
                 return failed("IMPORT_CHECK_FAILED", tuple({"code": "IMPORT_CHECK_FAILED", "module": module}
                                                            for module in failed_modules[:8]))
+            if self._stop_requested():
+                interrupted_daemon("BUILD_CANCELLED", probe_name=probe_name, image_id=image_id)
             return EnvironmentBuildResult(image_id=image_id, installed_packages=inventory["installed_packages"],
                                           available_python_modules=modules, log_id=build_root.name)
         except (ValueError, KeyError, TypeError):

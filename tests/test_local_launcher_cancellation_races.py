@@ -1,18 +1,19 @@
 """Regression witnesses: cancellation during launch and a stalled service manager.
 
-No Docker or systemd processes are created. These tests intentionally specify the
-missing lifecycle behavior and fail until the corresponding launcher fix exists.
+No Docker or systemd processes are created. The synchronous probe uses a local
+data-free Python process to exercise real pipe collection.
 """
 
 import asyncio
 import subprocess
+import sys
 import threading
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
-from labbioagentos import RequestedResources
+from labbioagentos import ProcessOutcome, RequestedResources
 from labbioagentos.execution.apptainer import SubprocessApptainerRunner
 from labbioagentos.execution.docker import SubprocessDockerRunner
 from labbioagentos.execution.launchers.base import JobSpec
@@ -137,17 +138,24 @@ def test_docker_failed_client_spawn_is_confirmed_not_created(monkeypatch):
 
 def test_docker_create_preserves_all_resource_and_isolation_arguments(monkeypatch):
     calls = []
+    capture_timeout = []
 
     def docker(argv, **kwargs):
         calls.append((argv, kwargs))
-        if argv[1] == "rm":
-            return subprocess.CompletedProcess(argv, 0, b"", b"")
-        return subprocess.CompletedProcess(
-            argv, 0 if argv[1] == "create" else 7,
-            b"container-id" if argv[1] == "create" else b"analysis-output", b"",
-        )
+        return subprocess.CompletedProcess(argv, 0,
+                                           b"container-id" if argv[1] == "create" else b"", b"")
+
+    def start(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return object()
+
+    def capture(process, *, timeout_seconds, stop):
+        capture_timeout.append(timeout_seconds)
+        return ProcessOutcome(7, b"analysis-output", b"", 0.01)
 
     monkeypatch.setattr("labbioagentos.execution.docker.subprocess.run", docker)
+    monkeypatch.setattr("labbioagentos.execution.docker.subprocess.Popen", start)
+    monkeypatch.setattr("labbioagentos.execution.docker.capture_process", capture)
     name = f"labbio-{uuid4().hex}"
     argv = ("docker", "run", "--rm", "--name", name, "--cpus", "4", "--memory", "4096m",
             "--pids-limit", "128", "--network", "none", "--read-only",
@@ -155,7 +163,7 @@ def test_docker_create_preserves_all_resource_and_isolation_arguments(monkeypatc
     result = SubprocessDockerRunner().run(argv, timeout_seconds=30)
     assert calls[0][0] == ["docker", "create", *argv[2:]]
     assert calls[1][0] == ["docker", "start", "--attach", name]
-    assert 0 < calls[1][1]["timeout"] <= calls[0][1]["timeout"] == 30
+    assert 0 < capture_timeout[0] <= calls[0][1]["timeout"] == 30
     assert result.exit_code == 7 and result.stdout == b"analysis-output"
 
 
@@ -166,13 +174,20 @@ def test_docker_attach_client_failure_cannot_leave_running_container(monkeypatch
         if argv[1] == "create":
             state["exists"] = True
             return subprocess.CompletedProcess(argv, 0, b"id", b"")
-        if argv[1] == "start":
-            return subprocess.CompletedProcess(argv, 1, b"", b"attachment transport lost")
         assert argv[1:3] == ["rm", "--force"]
         state["exists"] = False
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+    def start(argv, **kwargs):
+        assert argv[1] == "start"
+        return object()
+
+    def capture(process, *, timeout_seconds, stop):
+        return ProcessOutcome(1, b"", b"attachment transport lost", 0.01)
+
     monkeypatch.setattr("labbioagentos.execution.docker.subprocess.run", docker)
+    monkeypatch.setattr("labbioagentos.execution.docker.subprocess.Popen", start)
+    monkeypatch.setattr("labbioagentos.execution.docker.capture_process", capture)
     outcome = SubprocessDockerRunner().run(
         ("docker", "run", "--rm", "--name", f"labbio-{uuid4().hex}", "fixture"),
         timeout_seconds=10,
@@ -206,15 +221,22 @@ async def test_docker_cancel_does_not_wait_on_an_attach_lock(tmp_path, monkeypat
     def docker(argv, **kwargs):
         if argv[1] == "create":
             return subprocess.CompletedProcess(argv, 0, b"id", b"")
-        if argv[1] == "start":
-            attached.set()
-            assert removed.wait(2)
-            return subprocess.CompletedProcess(argv, 137, b"", b"")
         assert argv[1:3] == ["rm", "--force"]
         removed.set()
         return subprocess.CompletedProcess(argv, 0, b"", b"")
 
+    def start(argv, **kwargs):
+        assert argv[1] == "start"
+        attached.set()
+        return object()
+
+    def capture(process, *, timeout_seconds, stop):
+        assert removed.wait(2)
+        return ProcessOutcome(137, b"", b"", 0.01)
+
     monkeypatch.setattr("labbioagentos.execution.docker.subprocess.run", docker)
+    monkeypatch.setattr("labbioagentos.execution.docker.subprocess.Popen", start)
+    monkeypatch.setattr("labbioagentos.execution.docker.capture_process", capture)
     execution_id = uuid4()
     launcher = LocalLauncher(SubprocessDockerRunner())
     handle = await launcher.submit(JobSpec(
@@ -297,12 +319,13 @@ async def test_systemd_client_exit_requires_service_terminal_confirmation(
 def test_sync_systemd_probe_uses_the_same_terminal_confirmation(tmp_path, monkeypatch, manager_available):
     from labbioagentos.execution.errors import ContainerStartError
 
-    class Client:
-        returncode = 1
-        stdin = SimpleNamespace(close=lambda: None)
+    real_popen = subprocess.Popen
 
-        def communicate(self, timeout):
-            return b"", b"client ended"
+    def client(argv, **kwargs):
+        return real_popen(
+            (sys.executable, "-I", "-c", "import sys; sys.stderr.write('client ended'); sys.exit(1)"),
+            **kwargs,
+        )
 
     launcher = SystemdLocalLauncher(SubprocessApptainerRunner(max_output_file_bytes=8192))
     manager = {"active": True, "calls": []}
@@ -317,7 +340,7 @@ def test_sync_systemd_probe_uses_the_same_terminal_confirmation(tmp_path, monkey
         state = "active" if manager["active"] else "inactive"
         return f"LoadState=loaded\nActiveState={state}".encode(), 0
 
-    monkeypatch.setattr("labbioagentos.execution.launchers.systemd.subprocess.Popen", lambda *a, **k: Client())
+    monkeypatch.setattr("labbioagentos.execution.launchers.systemd.subprocess.Popen", client)
     monkeypatch.setattr(launcher, "_control_sync", control)
     spec = JobSpec(uuid4(), ("--probe",), 1, RequestedResources(), tmp_path)
     if manager_available:

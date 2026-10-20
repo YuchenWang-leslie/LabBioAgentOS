@@ -11,7 +11,7 @@ import pytest
 from labbioagentos import ApprovedImage, ExecutionRuntime
 from labbioagentos.execution import environment_builder
 from labbioagentos.execution.environment_builder import DockerEnvironmentBuilder
-from labbioagentos.execution.environments import EnvironmentBuilder
+from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError, EnvironmentBuilder
 
 
 BASE_ID = "sha256:" + "b" * 64
@@ -146,26 +146,43 @@ def test_failure_diagnostics_are_bounded_without_copying_log_text():
 async def test_build_timeout_cleanup_only_uses_this_attempt_label_and_valid_container_ids(backend, identifiers):
     backend.responses["build.log"] = (None, "BUILD_TIMEOUT", "")
     backend.responses["cleanup-list.log"] = (0, None, identifiers)
-    result = await build(backend)
-    assert result.failure_code == "BUILD_TIMEOUT" and result.image_id is None
+    with pytest.raises(EnvironmentBuildUnconfirmedError, match="could not be confirmed") as failed:
+        await build(backend)
+    assert failed.value.reason_code == (
+        "CLEANUP_IDENTITY_INVALID" if "/unowned/path" in identifiers
+        else "DAEMON_TERMINATION_UNCONFIRMED"
+    )
+    assert failed.value.failure_code == "BUILD_TIMEOUT"
     assert backend.calls[2] == [
         "docker", "ps", "-aq", "--filter", "label=labbio.environment.build=" + backend.root.name,
     ]
     if identifiers.startswith("0123456789ab\n"):
-        assert backend.calls[3:] == [["docker", "rm", "--force", "0123456789ab", "abcdef012345"]]
-    else:
+        assert backend.calls[3:] == [
+            ["docker", "rm", "--force", "0123456789ab", "abcdef012345"],
+            backend.calls[2],
+        ]
+    elif "/unowned/path" in identifiers:
         assert len(backend.calls) == 3
+    else:
+        assert backend.calls[3:] == [backend.calls[2]]
 
 
 @pytest.mark.asyncio
 async def test_probe_timeout_removes_only_the_generated_probe_name(backend):
     backend.responses["verification.log"] = (None, "BUILD_TIMEOUT", "")
-    result = await build(backend)
-    assert result.failure_code == "BUILD_TIMEOUT" and result.image_id is None
+    backend.responses["cleanup-list.log"] = (0, None, "0123456789ab\n")
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
+        await build(backend)
+    assert failed.value.reason_code == "DAEMON_TERMINATION_UNCONFIRMED"
+    assert failed.value.failure_code == "BUILD_TIMEOUT"
     probe = backend.calls[2]
     name = "labbio-env-check-" + backend.root.name
     assert probe[probe.index("--name") + 1] == name
-    assert backend.calls[3:] == [["docker", "rm", "--force", name]]
+    assert backend.calls[3:] == [
+        ["docker", "ps", "-aq", "--filter", "name=^/" + name + "$"],
+        ["docker", "rm", "--force", "0123456789ab"],
+        ["docker", "ps", "-aq", "--filter", "name=^/" + name + "$"],
+    ]
 
 
 def test_subprocess_timeout_kills_its_process_and_filters_host_secrets(tmp_path, monkeypatch):

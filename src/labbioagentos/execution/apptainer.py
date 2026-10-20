@@ -11,7 +11,6 @@ import signal
 import stat
 import subprocess
 import sys
-import time
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import UUID, uuid4
@@ -21,6 +20,7 @@ from .errors import ContainerStartError, ExecutionPlanRejected, ImageNotApproved
 from .images import ApprovedImage
 from .models import ExecutionPlan
 from .mounts import ExecutionWorkspace, ResolvedMount
+from .process_streams import capture_process
 
 ResourceEnforcement = Literal["scheduler", "apptainer-cgroups", "systemd-cgroups"]
 
@@ -316,7 +316,6 @@ class SubprocessApptainerRunner(ProcessRunner):
         return ("--file-bytes", str(self.max_output_file_bytes))
 
     def run(self, argv: tuple[str, ...], *, timeout_seconds: float) -> ProcessOutcome:
-        started = time.monotonic()
         if not argv or shutil.which(argv[0], path=self.environment().get("PATH")) is None:
             raise ContainerStartError("The configured runtime executable is unavailable")
         entrypoint = (
@@ -335,32 +334,21 @@ class SubprocessApptainerRunner(ProcessRunner):
             )
         except OSError as exc:
             raise ContainerStartError(f"Could not start the container runtime: {exc}") from exc
-        try:
-            stdout, stderr = process.communicate(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            stdout, stderr = self._terminate_group(process)
-            return ProcessOutcome(
-                exit_code=None,
-                stdout=stdout or b"",
-                stderr=stderr or b"",
-                duration_seconds=time.monotonic() - started,
-                timed_out=True,
-            )
-        return ProcessOutcome(
-            exit_code=process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            duration_seconds=time.monotonic() - started,
+        return capture_process(
+            process, timeout_seconds=timeout_seconds,
+            stop=lambda: self._terminate_group(process),
         )
 
-    def _terminate_group(self, process: subprocess.Popen) -> tuple[bytes, bytes]:
+    def _terminate_group(self, process: subprocess.Popen) -> None:
         # The runner started a new session, so the process ID is the group ID.
         self._signal_group(process.pid, signal.SIGTERM)
         try:
-            return process.communicate(timeout=self.terminate_grace_seconds)
+            process.wait(timeout=self.terminate_grace_seconds)
         except subprocess.TimeoutExpired:
-            self._signal_group(process.pid, signal.SIGKILL)
-            return process.communicate()
+            pass
+        # A leader can exit before its descendants; always close the whole group.
+        self._signal_group(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
 
     @staticmethod
     def _signal_group(group_id: int, signal_number: int) -> None:

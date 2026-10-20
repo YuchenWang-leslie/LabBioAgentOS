@@ -16,6 +16,7 @@ from ..apptainer import SubprocessApptainerRunner
 from ..backend import ProcessOutcome, ProcessRunner
 from ..errors import ContainerStartError
 from ..models import RequestedResources
+from ..process_streams import capture_process, read_bounded_stream
 from .base import JobHandle, JobLauncher, JobLauncherError, JobNotFoundError, JobSpec, JobState
 from ._local_supervisor import enforced
 
@@ -84,35 +85,54 @@ class SystemdLocalLauncher(JobLauncher):
         started = time.monotonic()
         timed_out = False
         # Do not use communicate(): it closes stdin, the parent-lifetime pipe.
-        stdout = asyncio.create_task(process.stdout.read())
-        stderr = asyncio.create_task(process.stderr.read())
+        overflow = asyncio.Event()
+        stdout = asyncio.create_task(read_bounded_stream(process.stdout, overflow))
+        stderr = asyncio.create_task(read_bounded_stream(process.stderr, overflow))
+        waiter = asyncio.create_task(process.wait())
+        limit_reached = asyncio.create_task(overflow.wait())
         try:
-            try:
-                await asyncio.wait_for(process.wait(), timeout=timeout)
-            except asyncio.TimeoutError:
+            done, _ = await asyncio.wait(
+                (waiter, limit_reached), timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+            if waiter not in done:
                 # RuntimeMaxSec starts only when the manager starts the service.
                 # The host deadline must also cover a stalled launch request.
-                timed_out = True
+                timed_out = not overflow.is_set()
                 process.stdin.close()
+                await asyncio.to_thread(self._confirm_terminal, name, None)
                 try:
-                    await asyncio.wait_for(process.wait(), timeout=10)
+                    await asyncio.wait_for(asyncio.shield(waiter), timeout=10)
                 except asyncio.TimeoutError:
                     process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=5)
+                    await asyncio.wait_for(asyncio.shield(waiter), timeout=5)
             process.stdin.close()
             await asyncio.to_thread(self._confirm_terminal, name, process.returncode)
             output, error = await asyncio.wait_for(asyncio.gather(stdout, stderr), timeout=10)
             result = ProcessOutcome(
-                exit_code=process.returncode, stdout=output, stderr=error,
+                exit_code=None if overflow.is_set() else process.returncode,
+                stdout=output, stderr=error,
                 duration_seconds=time.monotonic() - started,
-                timed_out=timed_out or (process.returncode != 0 and time.monotonic() - started >= timeout),
+                timed_out=timed_out or (
+                    waiter in done and process.returncode != 0
+                    and time.monotonic() - started >= timeout),
+                output_limit_exceeded=overflow.is_set(),
             )
             return result
         finally:
             process.stdin.close()
-            for reader in (stdout, stderr):
+            if process.returncode is None:
+                try:
+                    await asyncio.to_thread(self._confirm_terminal, name, None)
+                finally:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    await asyncio.wait_for(process.wait(), timeout=5)
+            for reader in (stdout, stderr, waiter, limit_reached):
                 if not reader.done():
                     reader.cancel()
+            await asyncio.gather(stdout, stderr, waiter, limit_reached, return_exceptions=True)
 
     async def status(self, handle):
         if handle.launcher != self.kind or handle.job_id != self._name(handle.execution_id):
@@ -268,30 +288,27 @@ class SystemdLocalLauncher(JobLauncher):
             )
         except OSError as exc:
             raise ContainerStartError("Could not start local systemd service") from exc
-        lifetime = process.stdin
-        process.stdin = None  # communicate must not close the parent-lifetime pipe.
-        timed_out = False
+        def stop():
+            process.stdin.close()
+            self._confirm_terminal(self._name(spec.execution_id), None)
+
         try:
-            try:
-                stdout, stderr = process.communicate(timeout=spec.timeout_seconds + 10)
-            except subprocess.TimeoutExpired:
-                timed_out = True
-                lifetime.close()
-                try:
-                    stdout, stderr = process.communicate(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    stdout, stderr = process.communicate(timeout=5)
+            outcome = capture_process(process, timeout_seconds=spec.timeout_seconds + 10, stop=stop)
+        except JobLauncherError as exc:
+            raise ContainerStartError("Local service stop is unconfirmed") from exc
         finally:
-            lifetime.close()
+            process.stdin.close()
         try:
             self._confirm_terminal(self._name(spec.execution_id), process.returncode)
         except JobLauncherError as exc:
             raise ContainerStartError("Local service stop is unconfirmed") from exc
         return ProcessOutcome(
-            exit_code=None if timed_out else process.returncode, stdout=stdout, stderr=stderr,
+            exit_code=outcome.exit_code, stdout=outcome.stdout, stderr=outcome.stderr,
             duration_seconds=time.monotonic() - started,
-            timed_out=timed_out or (process.returncode != 0 and time.monotonic() - started >= spec.timeout_seconds),
+            timed_out=outcome.timed_out or (
+                not outcome.output_limit_exceeded and process.returncode != 0
+                and time.monotonic() - started >= spec.timeout_seconds),
+            output_limit_exceeded=outcome.output_limit_exceeded,
         )
 
 

@@ -7,7 +7,7 @@ from native_test_provider import LocalProvider
 import pytest
 
 from labbioagentos import LabBioRuntimeToolSet, WorkflowStage
-from labbioagentos.execution.environments import EnvironmentService
+from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError, EnvironmentService
 from labbioagentos.runtime.tooling import CAPABILITY_CEILINGS
 from test_c7_4_artifact_query_audit import artifact_query_boundary  # noqa: F401
 from test_c12_execution_capability_contract import RecordingSubmission
@@ -109,6 +109,26 @@ async def test_malformed_request_is_visible_failure_without_raw_echo(artifact_qu
     assert evidence.status.value == "FAILED"
     assert "secret" not in json.dumps(result) + evidence.model_dump_json()
     assert not environment.builder.calls
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_environment_build_stops_capabilities_without_private_details(
+    artifact_query_boundary, environment,
+):
+    toolset, _ = _tools(artifact_query_boundary, environment)
+    environment.builder.error = EnvironmentBuildUnconfirmedError(
+        "CLEANUP_REMOVE_FAILED", "sha256:" + "c" * 64,
+    )
+
+    response = await toolset.environment_build("base", ["examplepkg>=2"], ["examplepkg"])
+
+    assert response["success"] is False
+    assert response["error"]["error_code"] == "ENVIRONMENT_BUILD_UNCONFIRMED"
+    assert response["error"]["retryable"] is False
+    assert toolset.stop_reason == "ENVIRONMENT_BUILD_UNCONFIRMED"
+    assert "CLEANUP_REMOVE_FAILED" not in json.dumps(response)
+    assert "sha256:" not in json.dumps(response)
+    assert toolset.evidence_items()[-1].error_code == "ENVIRONMENT_BUILD_UNCONFIRMED"
 
 
 @pytest.mark.asyncio

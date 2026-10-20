@@ -50,6 +50,7 @@ from labbioagentos.execution.models import (
     RequestedResources,
 )
 from labbioagentos.execution.registration import ArtifactRegistrationPolicy
+from labbioagentos.execution.process_streams import MAX_CAPTURED_STREAM_BYTES
 from labbioagentos.model_safety import validate_model_visible_json
 
 
@@ -308,6 +309,14 @@ class RuntimeExecutionCapabilityView(BaseModel):
     resource_limits: RequestedResources | None = Field(default=None,
         description="Host-enforced maximum per resource, not automatically allocated. Null is an older snapshot.")
     network_required: bool
+    max_captured_stream_bytes: int | None = Field(
+        default=None, ge=1,
+        description=(
+            "Host capture limit for each stdout/stderr stream. Exceeding it fails "
+            "execution with LOG_LIMIT; retained stream prefixes are incomplete. "
+            "Not an analysis output-file limit. Null means an older snapshot."
+        ),
+    )
     max_output_file_bytes: int | None = Field(
         default=None, ge=1,
         description=(
@@ -397,6 +406,7 @@ class RuntimeExecutionCapabilityView(BaseModel):
             resource_limits=execution_policy.resource_limits,
             network_required=network_required,
             max_output_file_bytes=execution_policy.max_output_file_bytes,
+            max_captured_stream_bytes=MAX_CAPTURED_STREAM_BYTES,
             max_collected_output_bytes=execution_policy.max_collected_output_bytes,
             tmpfs_size_mb=execution_policy.tmpfs_size_mb,
             available_python_modules=image.available_python_modules,

@@ -25,6 +25,7 @@ class ProcessOutcome:
     stderr: bytes
     duration_seconds: float
     timed_out: bool = False
+    output_limit_exceeded: bool = False
 
 
 class ProcessRunner(ABC):

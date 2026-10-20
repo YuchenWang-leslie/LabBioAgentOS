@@ -1,5 +1,6 @@
 """Environment discovery and building remain explicit, bounded, and user-owned."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -62,6 +63,47 @@ async def test_builder_is_told_which_run_requested_the_build(environment):
     assert [call["run_id"] for call in environment.builder.calls] == [run_id, None]
 
 
+@pytest.mark.asyncio
+async def test_unconfirmed_build_keeps_private_attempt_receipt_and_cannot_register_image(environment):
+    from uuid import uuid4
+
+    from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError
+
+    run_id = uuid4()
+    environment.builder.error = EnvironmentBuildUnconfirmedError("CLEANUP_REMOVE_FAILED")
+    with pytest.raises(EnvironmentBuildUnconfirmedError):
+        await environment.service.build_environment(
+            "base", ("examplepkg==2.0",), ("examplepkg",), run_id=run_id,
+        )
+    attempts = list((environment.root / "attempts").iterdir())
+    assert len(attempts) == 1
+    receipt = json.loads((attempts[0] / "receipt.json").read_text())
+    assert receipt["status"] == "UNCONFIRMED"
+    assert receipt["reason_code"] == "CLEANUP_REMOVE_FAILED"
+    assert receipt["run_id"] == str(run_id)
+    assert not list((environment.root / "records").iterdir())
+    assert [image.key for image in environment.registry.list()] == ["base"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_request_rejection_has_no_effect_and_can_be_retried(environment):
+    from labbioagentos.execution.environments import EnvironmentRequestError
+
+    environment.builder.error = EnvironmentRequestError()
+    first = await environment.service.build_environment(
+        "base", ("examplepkg==2.0",), ("examplepkg",),
+    )
+
+    assert first["status"] == "FAILED" and first["failure_code"] == "BUILD_FAILED"
+    assert json.loads(next(environment.root.glob("attempts/*/receipt.json")).read_text())["status"] == "FAILED"
+    assert [image.key for image in environment.registry.list()] == ["base"]
+    environment.builder.error = None
+    second = await environment.service.build_environment(
+        "base", ("examplepkg==2.0",), ("examplepkg",),
+    )
+    assert second["status"] == "SUCCEEDED"
+
+
 def test_registry_registration_is_idempotent_and_never_overwrites_identity():
     base = _image()
     registry = ApprovedImageRegistry((base,))
@@ -113,6 +155,130 @@ async def test_verified_build_registers_exact_image_and_normalized_cache_without
     assert boundary.base.model_dump(mode="json") == before
     assert boundary.registry.resolve("base").model_dump(mode="json") == before
     assert str(boundary.root) not in json.dumps(response)
+    attempts = list((boundary.root / "attempts").iterdir())
+    assert len(attempts) == 1
+    receipt = json.loads((attempts[0] / "receipt.json").read_text())
+    assert receipt["status"] == "SUCCEEDED"
+    assert receipt["image_id"] == DIGEST
+
+
+@pytest.mark.asyncio
+async def test_cache_record_write_failure_preserves_unknown_attempt(environment, monkeypatch):
+    from labbioagentos.execution import environments
+    from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError
+
+    original_write = environments._write_private
+
+    def write(path, value):
+        if path.parent == environment.root / "records":
+            raise OSError("synthetic cache write failure")
+        return original_write(path, value)
+
+    monkeypatch.setattr(environments, "_write_private", write)
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
+        await environment.service.build_environment("base", ("examplepkg==2.0",))
+    assert failed.value.reason_code == "CACHE_RECORD_PERSISTENCE_FAILED"
+    attempts = list((environment.root / "attempts").iterdir())
+    receipt = json.loads((attempts[0] / "receipt.json").read_text())
+    assert receipt["status"] == "UNCONFIRMED"
+    assert receipt["image_id"] == DIGEST
+
+
+@pytest.mark.asyncio
+async def test_success_receipt_failure_does_not_rebuild_persisted_image(environment, monkeypatch):
+    from labbioagentos.execution import environments
+    from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError, EnvironmentService
+
+    original_write = environments._write_private
+
+    def write(path, value):
+        if path.name == "receipt.json" and value["status"] == "SUCCEEDED":
+            raise OSError("synthetic receipt write failure")
+        return original_write(path, value)
+
+    monkeypatch.setattr(environments, "_write_private", write)
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
+        await environment.service.build_environment("base", ("examplepkg==2.0",))
+    assert failed.value.reason_code == "RECEIPT_PERSISTENCE_FAILED"
+    reopened_builder = RecordingBuilder(error=AssertionError("No rebuild"))
+    reopened = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+                                  reopened_builder, "user-one")
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as repeated:
+        await reopened.build_environment("base", ("examplepkg==2.0",))
+    assert repeated.value.reason_code == "PRIOR_ATTEMPT_UNCONFIRMED"
+    assert reopened_builder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_two_services_wait_for_the_same_build_and_share_its_finished_record(environment):
+    from labbioagentos.execution.environments import EnvironmentService
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class WaitingBuilder(RecordingBuilder):
+        async def build(self, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().build(**kwargs)
+
+    builder = WaitingBuilder()
+    first_service = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+                                       builder, "user-one")
+    second_service = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+                                        builder, "user-one")
+    first = asyncio.create_task(first_service.build_environment("base", ("examplepkg==2.0",)))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = asyncio.create_task(second_service.build_environment("base", ("examplepkg==2.0",)))
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        release.set()
+        built, reused = await asyncio.wait_for(asyncio.gather(first, second), 2)
+        assert built["cache_hit"] is False
+        assert reused["cache_hit"] is True
+        assert len(builder.calls) == 1
+    finally:
+        release.set()
+        for task in (first, locals().get("second")):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_lock_waiter_does_not_create_a_second_attempt(environment):
+    from labbioagentos.execution.environments import EnvironmentService
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class WaitingBuilder(RecordingBuilder):
+        async def build(self, **kwargs):
+            entered.set()
+            await release.wait()
+            return await super().build(**kwargs)
+
+    builder = WaitingBuilder()
+    first_service = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+                                       builder, "user-one")
+    second_service = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),
+                                        builder, "user-one")
+    first = asyncio.create_task(first_service.build_environment("base", ("examplepkg==2.0",)))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = asyncio.create_task(second_service.build_environment("base", ("examplepkg==2.0",)))
+        await asyncio.sleep(0.05)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(second, 2)
+        release.set()
+        await asyncio.wait_for(first, 2)
+        assert len(builder.calls) == 1
+        assert len(list((environment.root / "attempts").iterdir())) == 1
+    finally:
+        release.set()
+        if not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -214,14 +380,12 @@ async def test_requirement_inventory_is_bounded_before_build(environment, requir
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ("reported", "exception", "unknown_code", "bad_digest", "wrong_version", "missing_import"))
+@pytest.mark.parametrize("failure", ("reported", "unknown_code", "bad_digest", "wrong_version", "missing_import"))
 async def test_failed_or_unverified_builds_never_register_and_return_safe_feedback(environment, failure):
     from labbioagentos.execution.environments import EnvironmentBuildResult
 
     unsafe = f"https://example.invalid/?token={PRIVATE} /PRIVATE_PATH raw_build_log"
-    if failure == "exception":
-        environment.builder.error = RuntimeError(unsafe)
-    elif failure in {"reported", "unknown_code"}:
+    if failure in {"reported", "unknown_code"}:
         environment.builder.result = EnvironmentBuildResult(
             failure_code="PIP_RESOLUTION_CONFLICT" if failure == "reported" else unsafe,
             diagnostics=({"code": "PIP_RESOLUTION_CONFLICT", "message": unsafe, "raw_log": unsafe},),
@@ -244,6 +408,46 @@ async def test_failed_or_unverified_builds_never_register_and_return_safe_feedba
         assert value not in encoded
     receipt = environment.service.attempts_root / response["log_id"] / "receipt.json"
     assert json.loads(receipt.read_text(encoding="utf-8")) == response
+
+
+@pytest.mark.asyncio
+async def test_unknown_builder_exception_blocks_same_request_after_restart(environment):
+    from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedError, EnvironmentService
+
+    environment.builder.error = RuntimeError(PRIVATE)
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
+        await environment.service.build_environment("base", ("examplepkg>=1.0",), ("examplepkg",))
+    assert failed.value.reason_code == "BUILDER_EXCEPTION"
+    attempts = list((environment.root / "attempts").iterdir())
+    assert len(attempts) == 1
+    receipt = json.loads((attempts[0] / "receipt.json").read_text())
+    assert receipt["status"] == "UNCONFIRMED"
+    assert PRIVATE not in json.dumps(receipt)
+    builder = RecordingBuilder()
+    reopened = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)), builder, "user-one")
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as repeated:
+        await reopened.build_environment("base", ("examplepkg>=1.0",), ("examplepkg",))
+    assert repeated.value.reason_code == "PRIOR_ATTEMPT_UNCONFIRMED"
+    assert builder.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_terminal_receipt_blocks_replay_after_crash_window(environment):
+    from labbioagentos.execution.environments import (
+        EnvironmentBuildResult, EnvironmentBuildUnconfirmedError, EnvironmentService,
+    )
+
+    environment.builder.result = EnvironmentBuildResult(failure_code="BUILD_FAILED")
+    first = await environment.service.build_environment("base", ("examplepkg==2.0",))
+    assert first["status"] == "FAILED"
+    receipt = environment.root / "attempts" / first["log_id"] / "receipt.json"
+    receipt.unlink()  # Simulate a crash before the terminal receipt was durable.
+    builder = RecordingBuilder()
+    reopened = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)), builder, "user-one")
+    with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
+        await reopened.build_environment("base", ("examplepkg==2.0",))
+    assert failed.value.reason_code == "PRIOR_ATTEMPT_UNCONFIRMED"
+    assert builder.calls == []
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 from ..backend import ProcessOutcome
 from ..errors import ContainerStartError
 from ..models import RequestedResources
+from ..process_streams import MAX_CAPTURED_STREAM_BYTES
 from .base import (
     TERMINAL_STATES,
     JobHandle,
@@ -232,12 +233,16 @@ class SchedulerLauncher(JobLauncher):
         if record is None:
             raise ContainerStartError("The scheduler job wrote an unreadable exit status")
         status, elapsed, timed_out = int(record.group(1)), int(record.group(2)), record.group(3) == "1"
+        stdout = self._read(job_dir / "stdout.log")
+        stderr = self._read(job_dir / "stderr.log")
+        limited = max(len(stdout), len(stderr)) > MAX_CAPTURED_STREAM_BYTES
         return ProcessOutcome(
-            exit_code=None if timed_out else status,
-            stdout=self._read(job_dir / "stdout.log"),
-            stderr=self._read(job_dir / "stderr.log"),
+            exit_code=None if timed_out or limited else status,
+            stdout=stdout[:MAX_CAPTURED_STREAM_BYTES],
+            stderr=stderr[:MAX_CAPTURED_STREAM_BYTES],
             duration_seconds=float(elapsed),
             timed_out=timed_out,
+            output_limit_exceeded=limited,
         )
 
     async def _query(self, job_id: str) -> str | None:
@@ -295,4 +300,5 @@ class SchedulerLauncher(JobLauncher):
     def _read(path: Path) -> bytes:
         if path.is_symlink() or not path.is_file():
             return b""
-        return path.read_bytes()
+        with path.open("rb") as stream:
+            return stream.read(MAX_CAPTURED_STREAM_BYTES + 1)

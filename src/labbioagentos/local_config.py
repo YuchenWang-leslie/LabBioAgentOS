@@ -495,6 +495,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
                 root=environment.root, image_registry=registry,
                 builder=DockerEnvironmentBuilder(
                     proxy_url=environment.build_proxy, timeout_seconds=environment.build_timeout_seconds,
+                    cpus=settings.execution.resources.cpus,
                 ),
                 owner_user_id=settings.principal.user_id,
             )

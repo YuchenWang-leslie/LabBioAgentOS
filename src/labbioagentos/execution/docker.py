@@ -8,7 +8,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from uuid import UUID, uuid4
 
@@ -30,6 +30,7 @@ from .mounts import (
     ResolvedMount,
 )
 from .registration import OutputCollector
+from .process_streams import capture_process
 
 # Compatibility names from before the runtime-neutral backend split.
 DockerProcessRunner = ProcessRunner
@@ -126,15 +127,13 @@ class SubprocessDockerRunner(DockerProcessRunner):
             # Never hold the cancellation lock while waiting for the process.
             # The only remaining daemon operation is start, so removing this
             # existing container cannot be followed by late re-creation.
-            completed = subprocess.run(
-                [argv[0], "start", "--attach", name], shell=False, check=False,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=remaining,
+            process = subprocess.Popen(
+                [argv[0], "start", "--attach", name], shell=False,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
-        except subprocess.TimeoutExpired as exc:
-            self._remove_timed_out_container(argv, allow_missing=True)
-            return ProcessOutcome(
-                exit_code=None, stdout=self._as_bytes(exc.stdout), stderr=self._as_bytes(exc.stderr),
-                duration_seconds=time.monotonic() - started, timed_out=True,
+            completed = capture_process(
+                process, timeout_seconds=remaining,
+                stop=lambda: self._remove_timed_out_container(argv, allow_missing=True),
             )
         except OSError as exc:
             self._remove_timed_out_container(argv, allow_missing=True)
@@ -142,12 +141,7 @@ class SubprocessDockerRunner(DockerProcessRunner):
         # A client/transport failure can end attach while the container keeps
         # running. Establish the terminal side-effect boundary before returning.
         self._remove_timed_out_container(argv, allow_missing=True)
-        return ProcessOutcome(
-            exit_code=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            duration_seconds=time.monotonic() - started,
-        )
+        return replace(completed, duration_seconds=time.monotonic() - started)
 
     def cancel(self, argv: tuple[str, ...]) -> None:
         """Force-remove the exact governed container started by this argv."""
@@ -207,8 +201,29 @@ class SubprocessDockerRunner(DockerProcessRunner):
                 f"Error response from daemon: No such container: {container_name}",
                 f"Error: No such container: {container_name}",
             }
-            if allow_missing and cls._as_bytes(cleanup.stderr).decode("utf-8", "replace").strip() in absent:
+            reason = cls._as_bytes(cleanup.stderr).decode("utf-8", "replace").strip()
+            if allow_missing and reason in absent:
                 return
+            if allow_missing and reason == (
+                f"Error response from daemon: removal of container {container_name} is already in progress"
+            ):
+                deadline = time.monotonic() + cls._CLEANUP_TIMEOUT_SECONDS
+                while time.monotonic() < deadline:
+                    try:
+                        inspection = subprocess.run(
+                            [argv[0], "container", "inspect", "--format", "{{.Id}}", container_name],
+                            shell=False, check=False, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=min(5.0, max(0.001, deadline - time.monotonic())),
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        raise JobLauncherError("Timed-out Docker container could not be removed") from exc
+                    if (inspection.returncode != 0 and
+                            cls._as_bytes(inspection.stderr).decode("utf-8", "replace").strip() in absent):
+                        return
+                    if inspection.returncode != 0:
+                        break
+                    time.sleep(0.05)
             raise JobLauncherError(
                 "Timed-out Docker container could not be removed"
             )

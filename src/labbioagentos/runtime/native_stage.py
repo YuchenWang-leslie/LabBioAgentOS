@@ -494,6 +494,18 @@ class NativeKernelStageInvoker:
                 cause_code=error.error_code,
             )
             raise error
+        if any(host.stop_reason == "ENVIRONMENT_BUILD_UNCONFIRMED" for host in hosts):
+            self._project_kernel_events(stage_input, result.events)
+            error = RuntimeIntegrationError(
+                "ENVIRONMENT_BUILD_UNCONFIRMED",
+                "Environment build termination or cleanup could not be confirmed. "
+                "Further effects are blocked pending operator reconciliation.",
+            )
+            self._emit_failure(
+                stage_input, TraceEventType.CAPABILITY_PHASE_FAILED, error,
+                cause_code=error.error_code,
+            )
+            raise error
         items = tuple(item for host in hosts for item in host.evidence_items())
         if len(items) > MAX_CAPABILITY_EVIDENCE_ITEMS:
             raise RuntimeProfileConfigurationError(

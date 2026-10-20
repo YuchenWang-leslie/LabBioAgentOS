@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import fcntl
 import hashlib
 import json
 import os
@@ -44,6 +46,8 @@ _FAILURES = {
 
 
 class EnvironmentRequestError(ValueError):
+    """Invalid request or builder preflight; no external build effect has started."""
+
     def __init__(self, code: str = "INVALID_ENVIRONMENT_REQUEST"):
         self.code = code
         self.safe_message = {
@@ -53,6 +57,19 @@ class EnvironmentRequestError(ValueError):
             "ENVIRONMENT_CACHE_INVALID": "A persisted environment cache record is missing, corrupt or has an inconsistent identity.",
             "ENVIRONMENT_SCOPE_INVALID": "The environment cache does not match the current user scope.",
         }.get(code, "The environment request exceeds its supported bounds or syntax.")
+        super().__init__(self.safe_message)
+
+
+class EnvironmentBuildUnconfirmedError(RuntimeError):
+    code = "ENVIRONMENT_BUILD_UNCONFIRMED"
+    safe_message = (
+        "Environment build termination or cleanup could not be confirmed. "
+        "Further effects are blocked pending operator reconciliation."
+    )
+
+    def __init__(self, reason_code: str, image_id: str | None = None,
+                 failure_code: str | None = None):
+        self.reason_code, self.image_id, self.failure_code = reason_code, image_id, failure_code
         super().__init__(self.safe_message)
 
 
@@ -169,7 +186,8 @@ class EnvironmentService:
             raise EnvironmentRequestError("ENVIRONMENT_SCOPE_INVALID")
         self.records_root = self.root / "records"
         self.attempts_root = self.root / "attempts"
-        for directory in (self.records_root, self.attempts_root):
+        self.locks_root = self.root / "locks"
+        for directory in (self.records_root, self.attempts_root, self.locks_root):
             if directory.is_symlink():
                 raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
             directory.mkdir(exist_ok=True, mode=0o700)
@@ -211,6 +229,41 @@ class EnvironmentService:
             return record, image
         except (KeyError, TypeError, ValueError):
             raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+
+    def _check_unconfirmed_attempt(self, request_hash: str) -> None:
+        for attempt in self.attempts_root.iterdir():
+            if attempt.is_symlink():
+                raise EnvironmentBuildUnconfirmedError("ATTEMPT_STATE_INVALID")
+            intent_path = attempt / "intent.json"
+            if not intent_path.exists():  # Attempts before this lifecycle contract have no intent.
+                continue
+            try:
+                intent = self._read_json(intent_path)
+                if not isinstance(intent.get("request_hash"), str) or _SHA256.fullmatch(intent["request_hash"]) is None:
+                    raise ValueError()
+                if intent["request_hash"] != request_hash:
+                    continue
+                receipt_path = attempt / "receipt.json"
+                status = self._read_json(receipt_path)["status"] if receipt_path.exists() else None
+            except (EnvironmentRequestError, AttributeError, KeyError, TypeError, ValueError) as exc:
+                raise EnvironmentBuildUnconfirmedError("ATTEMPT_STATE_INVALID") from exc
+            if not isinstance(status, str) or status not in {"FAILED", "CANCELLED", "SUCCEEDED"}:
+                raise EnvironmentBuildUnconfirmedError("PRIOR_ATTEMPT_UNCONFIRMED")
+
+    @asynccontextmanager
+    async def _request_lock(self, request_hash: str):
+        descriptor = os.open(self.locks_root / (request_hash + ".lock"),
+                             os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.1)
+            yield
+        finally:
+            os.close(descriptor)
 
     def _view(self, image: ApprovedImage, requirements: tuple[str, ...]) -> dict:
         record = next((value for value in self._records.values() if value["image"]["key"] == image.key), {})
@@ -271,8 +324,9 @@ class EnvironmentService:
             raise EnvironmentRequestError("UNKNOWN_IMAGE") from None
         verified_modules = normalize_modules(tuple(sorted(set(base.available_python_modules) | set(modules))), max_count=256)
         request_hash = _request_hash(base.resolved_reference, requirements, modules)
-        async with self._locks.setdefault(request_hash, asyncio.Lock()):
+        async with self._locks.setdefault(request_hash, asyncio.Lock()), self._request_lock(request_hash):
             path = self.records_root / (request_hash + ".json")
+            self._check_unconfirmed_attempt(request_hash)
             if request_hash in self._records and not path.exists():
                 raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
             if path.exists():
@@ -283,12 +337,45 @@ class EnvironmentService:
                         **self._view(image, requirements)}
             attempt = self.attempts_root / uuid4().hex
             attempt.mkdir(mode=0o700)
+            _write_private(attempt / "intent.json", {
+                "request_hash": request_hash, "run_id": str(run_id) if run_id is not None else None,
+            })
+
+            def record_unconfirmed(error: EnvironmentBuildUnconfirmedError) -> None:
+                try:
+                    _write_private(attempt / "receipt.json", {
+                        "status": "UNCONFIRMED", "request_hash": request_hash,
+                        "run_id": str(run_id) if run_id is not None else None,
+                        "reason_code": error.reason_code, "image_id": error.image_id,
+                        "failure_code": error.failure_code,
+                        "log_id": attempt.name,
+                    })
+                except OSError as save_error:
+                    raise EnvironmentBuildUnconfirmedError("RECEIPT_PERSISTENCE_FAILED", error.image_id) from save_error
+
             try:
                 result = await self.builder.build(base_image=base, requirements=requirements,
                     import_modules=verified_modules, build_root=attempt, request_hash=request_hash,
                     run_id=run_id)
-            except Exception:
+            except EnvironmentRequestError:
                 result = EnvironmentBuildResult(failure_code="BUILD_FAILED", log_id=attempt.name)
+            except EnvironmentBuildUnconfirmedError as exc:
+                record_unconfirmed(exc)
+                raise
+            except asyncio.CancelledError:
+                try:
+                    _write_private(attempt / "receipt.json", {
+                        "status": "CANCELLED", "request_hash": request_hash,
+                        "run_id": str(run_id) if run_id is not None else None,
+                        "log_id": attempt.name,
+                    })
+                except OSError as save_error:
+                    raise EnvironmentBuildUnconfirmedError("RECEIPT_PERSISTENCE_FAILED") from save_error
+                raise
+            except Exception as exc:
+                unknown = EnvironmentBuildUnconfirmedError("BUILDER_EXCEPTION")
+                record_unconfirmed(unknown)
+                raise unknown from exc
             if not isinstance(result, EnvironmentBuildResult):
                 result = EnvironmentBuildResult(failure_code="VERIFICATION_FAILED", log_id=attempt.name)
             if result.failure_code is None:
@@ -340,7 +427,10 @@ class EnvironmentService:
                 receipt = {"status": "FAILED", "cache_hit": False, "request_hash": request_hash,
                     "requested_requirements": list(requirements), "failure_code": code,
                     "diagnostics": diagnostics or [{"code": code, "message": _FAILURES[code]}], "log_id": attempt.name}
-                _write_private(attempt / "receipt.json", receipt)
+                try:
+                    _write_private(attempt / "receipt.json", receipt)
+                except OSError as exc:
+                    raise EnvironmentBuildUnconfirmedError("RECEIPT_PERSISTENCE_FAILED") from exc
                 return receipt
             record = {"owner_user_id": self.owner_user_id, "recipe_version": RECIPE_VERSION,
                 "request_hash": request_hash, "base_image_reference": base.resolved_reference,
@@ -350,7 +440,24 @@ class EnvironmentService:
                 _write_private(path, record)
             except FileExistsError:
                 record, image = self._load_record(path)
-            self.image_registry.register(image)
-            self._records[request_hash] = record
+            except OSError as exc:
+                unknown = EnvironmentBuildUnconfirmedError("CACHE_RECORD_PERSISTENCE_FAILED", image.reference)
+                record_unconfirmed(unknown)
+                raise unknown from exc
+            try:
+                self.image_registry.register(image)
+                self._records[request_hash] = record
+            except Exception as exc:
+                unknown = EnvironmentBuildUnconfirmedError("IMAGE_REGISTRATION_FAILED", image.reference)
+                record_unconfirmed(unknown)
+                raise unknown from exc
+            try:
+                _write_private(attempt / "receipt.json", {
+                    "status": "SUCCEEDED", "request_hash": request_hash,
+                    "run_id": str(run_id) if run_id is not None else None,
+                    "image_id": image.reference, "log_id": attempt.name,
+                })
+            except OSError as save_error:
+                raise EnvironmentBuildUnconfirmedError("RECEIPT_PERSISTENCE_FAILED", image.reference) from save_error
             return {"status": "SUCCEEDED", "cache_hit": False, "request_hash": request_hash,
                     **self._view(image, requirements)}

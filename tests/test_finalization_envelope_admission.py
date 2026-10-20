@@ -5,7 +5,9 @@ from uuid import uuid4
 
 import pytest
 
-from labbioagentos import CapabilityEvidenceBundle, CapabilityEvidenceItem, WorkflowStage
+from labbioagentos import (
+    CapabilityEvidenceBundle, CapabilityEvidenceItem, RuntimeIntegrationError, WorkflowStage,
+)
 from labbioagentos.kernel import FinishReason, ModelTurn, TokenUsage, ToolCall
 from labbioagentos.runtime import native_stage
 from labbioagentos.runtime.assembly import RuntimeStageAssemblySpec
@@ -16,6 +18,47 @@ from labbioagentos.runtime.handoff import finalization_evidence
 from labbioagentos.runtime.tooling import LabBioRuntimeToolSet
 from test_native_stage_application import WorkflowProvider, _capability_catalog, _stage_input, _toolset
 from test_finalization_completion_delivery import finalization_case
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("prepared", [False, True])
+async def test_repeated_failure_stop_preserves_conditional_finalization(
+    tmp_path, large, prepared,
+):
+    stage, evidence, invoker, calls = await finalization_case(
+        tmp_path, "The capability phase stopped.", prepared=prepared,
+    )
+    if large:
+        evidence = evidence.model_copy(update={"items": (
+            *evidence.items,
+            *(evidence.items[0].model_copy(update={
+                "capability_invocation_id": uuid4(),
+                "safe_result": {"engineering_record": chr(65 + index) * 7000},
+            }) for index in range(9)),
+        )})
+    evidence = evidence.model_copy(update={
+        "termination_reason": "REPEATED_NON_RETRYABLE_REQUEST",
+        "provider_turn_count": 7, "provider_turn_limit": 16,
+    })
+    original = evidence.model_dump_json()
+    envelope = invoker._finalization_envelope(stage, evidence)[-1]
+    blocked = large and not prepared
+    assert (len(envelope.encode()) > 60_000) is blocked
+
+    if blocked:
+        with pytest.raises(RuntimeIntegrationError) as caught:
+            await invoker.finalize_recovered(stage, evidence)
+        assert caught.value.error_code == "HANDOFF_REQUIRED"
+        assert not calls
+    else:
+        result = await invoker.finalize_recovered(stage, evidence)
+        assert result.stage_id is WorkflowStage.INTAKE
+        assert len(calls) == 1
+        assert calls[0].tools == ()
+    # No silent evidence deletion, automatic selection, or extra recovery turn.
+    assert evidence.model_dump_json() == original
+    assert (evidence.prepared_handoff is not None) is prepared
 
 
 @pytest.mark.asyncio

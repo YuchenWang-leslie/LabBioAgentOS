@@ -334,16 +334,23 @@ def test_subprocess_timeout_forces_removal_of_the_exact_named_container(monkeypa
 
     def fake_run(argv, **kwargs):
         calls.append((tuple(argv), kwargs))
-        if argv[1] == "start":
-            raise subprocess.TimeoutExpired(
-                cmd=argv,
-                timeout=kwargs["timeout"],
-                output=b"bounded stdout",
-                stderr=b"bounded stderr",
-            )
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
+    def fake_popen(argv, **kwargs):
+        calls.append((tuple(argv), kwargs))
+        return object()
+
+    def fake_capture(process, *, timeout_seconds, stop):
+        assert timeout_seconds <= 0.25
+        stop()
+        return ProcessOutcome(
+            exit_code=None, stdout=b"bounded stdout", stderr=b"bounded stderr",
+            duration_seconds=timeout_seconds, timed_out=True,
+        )
+
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("labbioagentos.execution.docker.capture_process", fake_capture)
 
     outcome = SubprocessDockerRunner().run(
         ("docker", "run", "--rm", "--name", container_name, "image"),

@@ -33,6 +33,8 @@ async def test_denied_view_switch_after_feedback_requests_stop_and_retains_failu
     assert repeat['previous_capability_invocation_id'] == str(first_id)
     assert repeat['reason'] == 'DENIED_VIEWS_UNCHANGED'
     assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
+    assert "Finalization requires evidence within the handoff capacity." in second["error"]["safe_message"]
+    assert "without a prepared handoff remains insufficient (HANDOFF_REQUIRED)" in second["error"]["safe_message"]
     assert [i.status.value for i in tools.evidence_items()] == ['FAILED', 'FAILED']
     failed = [e for e in sink.read(binding.run_id) if e.event_type.value == 'CAPABILITY_FAILED']
     assert failed[-1].payload['error_details']['repeated_request'] == repeat
@@ -50,6 +52,8 @@ async def test_unchanged_artifact_list_after_feedback_requests_stop(boundary):
     assert second["error"]["error_code"] == "REPEATED_NON_RETRYABLE_REQUEST"
     assert second["error"]["repeated_request"]["previous_capability_invocation_id"] == first["capability_invocation_id"]
     assert tools.stop_reason == "REPEATED_NON_RETRYABLE_REQUEST"
+    assert "Finalization requires evidence within the handoff capacity." in second["error"]["safe_message"]
+    assert "without a prepared handoff remains insufficient (HANDOFF_REQUIRED)" in second["error"]["safe_message"]
 
 
 @pytest.mark.asyncio
@@ -116,6 +120,8 @@ async def test_unchanged_output_declaration_after_feedback_requests_stop(boundar
     )
     assert len(validator.calls) == 2
     assert tools.stop_reason == "REPEATED_NON_RETRYABLE_REQUEST"
+    assert "Finalization requires evidence within the handoff capacity." in second["error"]["safe_message"]
+    assert "without a prepared handoff remains insufficient (HANDOFF_REQUIRED)" in second["error"]["safe_message"]
 
 
 @pytest.mark.asyncio

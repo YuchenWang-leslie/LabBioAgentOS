@@ -12,15 +12,18 @@ from test_native_stage_application import WorkflowProvider, _capability_catalog,
 
 
 @pytest.mark.asyncio
-async def test_submission_persistence_failure_blocks_finalization(tmp_path, monkeypatch):
+@pytest.mark.parametrize("fatal, capability", [
+    ("EXECUTION_SUBMISSION_PERSISTENCE_FAILED", "execution_submit"),
+    ("ENVIRONMENT_BUILD_UNCONFIRMED", "environment_build"),
+])
+async def test_unconfirmed_effect_blocks_finalization(tmp_path, monkeypatch, fatal, capability):
     fixture = _toolset(tmp_path, _stage_input())
     stage = _stage_input(WorkflowStage.EXECUTE).model_copy(update={
-        "allowed_capabilities": ("execution_submit",),
+        "allowed_capabilities": (capability,),
     })
-    fatal = "EXECUTION_SUBMISSION_PERSISTENCE_FAILED"
 
     async def persistence_failed(host, capability, arguments):
-        assert capability == "execution_submit"
+        assert capability == stage.allowed_capabilities[0]
         host._host.stop_reason = fatal
         return {"success": False, "error": {"error_code": fatal, "replay_blocked": True}}
 
@@ -34,8 +37,12 @@ async def test_submission_persistence_failure_blocks_finalization(tmp_path, monk
             self.calls += 1
             assert self.calls == 1
             return ModelTurn(tool_calls=(ToolCall(
-                call_id="submission", name="execution_submit",
-                arguments_json='{"image_key":"synthetic","script_content":"pass"}',
+                call_id="submission", name=capability,
+                arguments_json=(
+                    '{"base_image_key":"synthetic","requirements":[]}'
+                    if capability == "environment_build" else
+                    '{"image_key":"synthetic","script_content":"pass"}'
+                ),
             ),), finish_reason=FinishReason.TOOL_CALLS, usage=TokenUsage(total_tokens=1))
 
     provider = Provider()

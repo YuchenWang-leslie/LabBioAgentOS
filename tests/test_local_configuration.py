@@ -149,6 +149,7 @@ build_proxy = "http://127.0.0.1:12199"
         assert dict(os.environ) == before
         service = app.capability_services.environment_service
         assert service.owner_user_id == settings.principal.user_id
+        assert service.builder.cpus == settings.execution.resources.cpus
         assert service.image_registry is app.image_registry
         assert app.image_registry.resolve("python-local").reference == "sha256:" + "a" * 64
         stages = {spec.stage_id: spec for spec in app.configuration.stage_assemblies}

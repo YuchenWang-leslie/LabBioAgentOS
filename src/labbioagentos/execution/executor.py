@@ -53,6 +53,7 @@ from .python_diagnostics import (
 from .job_ledger import JobLedger
 from .launchers import JobLauncher, JobSpec, LocalLauncher, TERMINAL_STATES
 from .registration import OutputCollector
+from .process_streams import MAX_CAPTURED_STREAM_BYTES
 
 
 @dataclass(frozen=True)
@@ -320,12 +321,14 @@ class ContainerExecutor:
                 workspace.log_root / "stdout.log",
                 outcome.stdout,
                 "stdout",
+                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
             )
             stderr_ref = self._store_stream(
                 plan,
                 workspace.log_root / "stderr.log",
                 outcome.stderr,
                 "stderr",
+                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
             )
         except (ArtifactStoreError, OSError) as exc:
             completed_at = datetime.now(timezone.utc)
@@ -353,6 +356,30 @@ class ContainerExecutor:
         # The stored stderr Artifact stays complete; model-facing projections drop
         # lines the container runtime wrote about itself.
         model_stderr = self.command_builder.model_stderr(outcome.stderr)
+        if outcome.output_limit_exceeded:
+            limit_message = (
+                f"Process output exceeded the {MAX_CAPTURED_STREAM_BYTES}-byte capture limit per stdout/stderr. "
+                "Retained logs are incomplete prefixes, not complete evidence."
+            )
+            error_class = (
+                ExecutionFailureClass.TIMEOUT if outcome.timed_out
+                else ExecutionFailureClass.LOG_LIMIT
+            )
+            message = (
+                f"Container execution exceeded the host-enforced timeout. {limit_message}"
+                if outcome.timed_out else f"Execution failed; {limit_message}"
+            )
+            self._emit_failure(plan, error_class, message)
+            return self._result(
+                plan, image, workspace, script_ref,
+                status=(ExecutionStatus.TIMED_OUT if outcome.timed_out else ExecutionStatus.FAILED),
+                started_at=started_at, completed_at=completed_at,
+                duration_seconds=outcome.duration_seconds,
+                stdout_ref=stdout_ref, stderr_ref=stderr_ref,
+                error_class=error_class, error_message=message,
+                issues=(ExecutionIssue(error_class=ExecutionFailureClass.LOG_LIMIT,
+                                       message=limit_message),) if outcome.timed_out else (),
+            )
         if outcome.timed_out:
             message = "Container execution exceeded the host-enforced timeout."
             self._emit_failure(plan, ExecutionFailureClass.TIMEOUT, message)
@@ -501,6 +528,8 @@ class ContainerExecutor:
         path: Path,
         content: bytes,
         stream_name: str,
+        *,
+        complete: bool = True,
     ) -> ArtifactRef:
         path.write_bytes(content)
         return self._register_internal_file(
@@ -512,6 +541,7 @@ class ContainerExecutor:
                 "stream": stream_name,
                 "size_bytes": len(content),
                 "sha256": hashlib.sha256(content).hexdigest(),
+                "capture_complete": complete,
             },
         )
 

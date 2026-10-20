@@ -59,7 +59,9 @@ from labbioagentos.execution.models import (
 from labbioagentos.execution.submission import (
     ExecutionInspectionError, ExecutionRevisionError, ExecutionSubmissionPersistenceError,
 )
-from labbioagentos.execution.environments import EnvironmentService, EnvironmentRequestError
+from labbioagentos.execution.environments import (
+    EnvironmentBuildUnconfirmedError, EnvironmentRequestError, EnvironmentService,
+)
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.literature import (
     LiteratureLimit, LiteratureQuery, LiteratureSearchError, LiteratureSearchService,
@@ -545,7 +547,9 @@ class LabBioRuntimeToolSet:
         self._observation_read_ranges.clear()
         self._pending_observation_pages.clear()
         self.prepared_handoff = None
-        if self.stop_reason != "EXECUTION_SUBMISSION_PERSISTENCE_FAILED":
+        if self.stop_reason not in {
+            "EXECUTION_SUBMISSION_PERSISTENCE_FAILED", "ENVIRONMENT_BUILD_UNCONFIRMED",
+        }:
             self.stop_reason = None
         self._feedback_boundary = None
 
@@ -793,9 +797,10 @@ class LabBioRuntimeToolSet:
                     safe_message=(
                         'Repeated non-retryable query after feedback with unchanged '
                         'request/constraints. No data was read. The capability phase is '
-                        'stopping; finalize from recorded evidence and unresolved '
-                        'limitations, without claiming the failed query succeeded or '
-                        'repeating it.'
+                        'stopping. Finalization requires evidence within the handoff capacity. '
+                        'Oversized evidence without a prepared handoff remains insufficient '
+                        '(HANDOFF_REQUIRED). Preserve unresolved limitations; do not claim '
+                        'the failed query succeeded or repeat it.'
                     ),
                 )
         return error
@@ -829,10 +834,11 @@ class LabBioRuntimeToolSet:
                     safe_message=(
                         "The current execution validator again rejected the unchanged "
                         "queryable-output declaration after that constraint was delivered. "
-                        "No execution started. The capability phase is stopping; finalize "
-                        "from recorded evidence and unresolved limitations without claiming "
-                        "execution succeeded or selecting an output declaration on the "
-                        "Agent's behalf."
+                        "No execution started. The capability phase is stopping. "
+                        "Finalization requires evidence within the handoff capacity. "
+                        "Oversized evidence without a prepared handoff remains insufficient "
+                        "(HANDOFF_REQUIRED). Preserve unresolved limitations; do not claim "
+                        "execution succeeded or select an output declaration on the Agent's behalf."
                     ),
                 )
         return error
@@ -991,6 +997,8 @@ class LabBioRuntimeToolSet:
                 self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
             if isinstance(exc, ExecutionSubmissionPersistenceError):
                 self.stop_reason = "EXECUTION_SUBMISSION_PERSISTENCE_FAILED"
+            if isinstance(exc, EnvironmentBuildUnconfirmedError):
+                self.stop_reason = "ENVIRONMENT_BUILD_UNCONFIRMED"
             error = self._safe_error(exc)
             failure_details = (
                 {"execution_id": str(exc.execution_id), "replay_blocked": True}
@@ -2489,9 +2497,10 @@ class LabBioRuntimeToolSet:
                 error_code="REPEATED_NON_RETRYABLE_REQUEST",
                 safe_message=(
                     "The identical artifact list was already delivered after the preceding "
-                    "tool feedback. No new state was read. The capability phase is stopping; "
-                    "finalize from recorded evidence and unresolved limitations without "
-                    "repeating the request."
+                    "tool feedback. No new state was read. The capability phase is stopping. "
+                    "Finalization requires evidence within the handoff capacity. "
+                    "Oversized evidence without a prepared handoff remains insufficient "
+                    "(HANDOFF_REQUIRED). Preserve unresolved limitations; do not repeat the request."
                 ),
                 repeated_request=RepeatedRequestDetails(
                     previous_capability_invocation_id=exc.previous_capability_invocation_id,
@@ -2681,6 +2690,11 @@ class LabBioRuntimeToolSet:
                     "cannot be confirmed. Further execution is blocked. Do not resubmit or revise it; "
                     "operator reconciliation is required for the recorded execution identity."
                 ),
+            )
+        if isinstance(exc, EnvironmentBuildUnconfirmedError):
+            return ToolError(
+                error_code=exc.code,
+                safe_message=exc.safe_message,
             )
         if isinstance(exc, ExecutionInspectionError):
             return ToolError(
