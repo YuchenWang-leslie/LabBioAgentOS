@@ -59,6 +59,65 @@ def _valid_call(call_id: str = "call-1", name: str = "example") -> ToolCall:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("observer_raises", [False, True])
+async def test_post_effect_projection_rejection_notifies_host_before_another_effect(observer_raises):
+    effects, rejected = [], []
+    stopped = None
+    original = {"receipt": "x" * 100}
+
+    def reject(value):
+        nonlocal stopped
+        rejected.append(value)
+        if observer_raises:
+            raise RuntimeError("observer unavailable")
+        stopped = "HANDOFF_UNCONFIRMED"
+
+    def handler(_arguments):
+        effects.append("started")
+        return original
+
+    registry = ToolRegistry()
+    registry.register(
+        name="example", description="One effect.", arguments_model=ExampleArguments,
+        handler=handler,
+        on_result_rejected=reject,
+    )
+    dispatcher = ToolDispatcher(registry, ModelResultProjector(max_bytes=10),
+                                stop_requested=lambda: stopped)
+    calls = (_valid_call("first"), _valid_call("second"))
+    if observer_raises:
+        with pytest.raises(RuntimeError, match="observer unavailable"):
+            await dispatcher.dispatch_batch(calls, finish_reason=FinishReason.TOOL_CALLS)
+    else:
+        outcomes = await dispatcher.dispatch_batch(calls, finish_reason=FinishReason.TOOL_CALLS)
+        assert outcomes[0].result.error.code == "MODEL_RESULT_TOO_LARGE"
+        assert outcomes[1].result.error.code == "TOOL_NOT_STARTED_RUNTIME_STOP"
+    assert effects == ["started"]
+    assert rejected == [original]
+
+
+@pytest.mark.asyncio
+async def test_correctable_handler_failure_does_not_claim_unconfirmed_effect():
+    rejected = []
+
+    def reject_before_effect(_arguments):
+        raise ToolExecutionFailure(code="INVALID_DRAFT", safe_message="No effect started")
+
+    registry = ToolRegistry()
+    registry.register(
+        name="example", description="Known rejected input.", arguments_model=ExampleArguments,
+        handler=reject_before_effect,
+        on_result_rejected=rejected.append,
+    )
+    dispatcher = ToolDispatcher(registry, ModelResultProjector(max_bytes=1_000))
+    outcomes = await dispatcher.dispatch_batch(
+        (_valid_call(),), finish_reason=FinishReason.TOOL_CALLS,
+    )
+    assert outcomes[0].result.error.code == "INVALID_DRAFT"
+    assert rejected == []
+
+
 def test_registry_generates_closed_inline_schema_with_supported_constraints():
     async def handler(arguments: ExampleArguments):
         return arguments

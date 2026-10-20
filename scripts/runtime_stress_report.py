@@ -112,6 +112,55 @@ def usage_totals(turns, field):
             "known_turns": len(known), "unknown_turns": len(values) - len(known)}
 
 
+def repeated_read_requests(boundaries):
+    """Count only reconstructable requests, not equal answers or wasted work.
+
+    Read credit must be re-established in each phase. Repeated requests can be
+    intentional; this metric is descriptive and never changes runtime behavior.
+    """
+    reads = {"artifact_query", "artifact_aggregate", "artifact_list", "file_read",
+             "report_read", "execution_inspect", "evidence_read", "skill_view",
+             "environment_list"}
+    aggregate_fields = ("artifact_id", "operation", "field", "match_field", "match_value")
+    seen_ids, seen_requests, repeats = set(), set(), Counter()
+    measured = unknown = 0
+    for boundary in boundaries:
+        if boundary.get("kind") != "capability_evidence":
+            continue
+        bundle = boundary["payload"]
+        for item in bundle.get("items", []):
+            identity = item["capability_invocation_id"]
+            capability = item["capability_name"]
+            if identity in seen_ids or capability not in reads:
+                continue
+            seen_ids.add(identity)
+            request = None
+            if capability == "artifact_query":
+                recorded = item.get("artifact_query_request")
+                if isinstance(recorded, dict) and all(
+                    field in recorded for field in ("artifact_id", "view_type", "limit", "offset")
+                ):
+                    request = recorded
+            elif capability == "artifact_aggregate" and item["status"] == "COMPLETED":
+                result = item.get("safe_result") or {}
+                if isinstance(result, dict) and all(field in result for field in aggregate_fields):
+                    request = {field: result[field] for field in aggregate_fields}
+            if (not isinstance(request, dict) or not bundle.get("invocation_id")
+                    or not item.get("actor_profile_key")):
+                unknown += 1
+                continue
+            measured += 1
+            key = (bundle["invocation_id"], item.get("actor_profile_key"), capability,
+                   json.dumps(request, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+            if key in seen_requests:
+                repeats[capability] += 1
+            seen_requests.add(key)
+    return {"scope": "RECORDED_REQUEST_WITHIN_PHASE_AND_ACTOR",
+            "measured_calls": measured, "unmeasured_read_calls": unknown,
+            "repeated_calls": sum(repeats.values()) if measured else None,
+            "by_capability": dict(repeats)}
+
+
 def delivery_metrics(directory, state):
     execution_id, report_id = selected_ids(state)
     exact = directory / "deliveries" / str(state["record_version"]) / "RESULT.json"
@@ -257,6 +306,7 @@ def summarize_attempt(root: Path, receipt: Path):
         result["capability_failures"] = dict(Counter(
             item["error_code"] for item in calls if item.get("error_code")))
         result["tool_batch_rejections"] = sum(item["event_type"] == "TOOL_BATCH_REJECTED" for item in events)
+        result["repeated_read_requests"] = repeated_read_requests(boundaries)
         result["capability_terminations"] = dict(Counter(
             item["payload"].get("termination_reason", "UNKNOWN") for item in events
             if item["event_type"] == "CAPABILITY_PHASE_COMPLETED"))

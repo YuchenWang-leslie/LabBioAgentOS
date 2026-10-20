@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, create_model, model_validator
 
+from labbioagentos.artifacts.arithmetic import ArtifactAggregateMatchValue
 from labbioagentos.artifacts.models import ArtifactQueryLimit
 from labbioagentos.contracts import WorkflowStage
 from labbioagentos.execution.models import (
@@ -86,7 +87,7 @@ class ArtifactAggregateArguments(NativeToolArguments):
     operation: Literal["SUM", "COUNT"]
     field: StrictStr | None = Field(default=None, min_length=1, max_length=128)
     match_field: StrictStr | None = Field(default=None, min_length=1, max_length=128)
-    match_value: str | int | float | bool | None = None
+    match_value: ArtifactAggregateMatchValue = None
 
 
 class EnvironmentListArguments(NativeToolArguments):
@@ -316,8 +317,13 @@ class SkillProposeUseArguments(NativeToolArguments):
 
 
 class EvidenceReadArguments(NativeToolArguments):
-    observation_id: UUID
-    offset: int = Field(default=0, ge=0)
+    observation_id: UUID = Field(description=(
+        "Copy capability_invocation_id from an actual tool response; this is an "
+        "observation identity, not an Artifact ID."
+    ))
+    offset: int = Field(default=0, ge=0, description=(
+        "Zero-based Unicode character offset; continue with the returned next_offset."
+    ))
     limit: int = Field(default=8_000, ge=1, le=8_000)
 
 
@@ -395,6 +401,12 @@ class NativeRuntimeCapabilityHost:
             if result.status == "SUCCEEDED" and isinstance(result.content, dict)
         ))
 
+    def on_result_rejected(self, capability_name: str, value: object) -> None:
+        """A receipt whose final kernel projection failed cannot be replayed."""
+        if (capability_name in {"execution_submit", "execution_revise"}
+                and isinstance(value, dict) and value.get("success") is True):
+            self._host.mark_execution_handoff_unconfirmed(UUID(value["data"]["execution_id"]))
+
     @property
     def stop_reason(self) -> str | None:
         return self._host.stop_reason
@@ -436,6 +448,11 @@ _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "Request a governed Artifact view. For TOP_N pagination, follow next_offset; "
     "the returned suggested_next_limit is a policy-safe page size. An omitted "
     "limit continues to use the policy-bounded default page size."
+)
+_CAPABILITY_DESCRIPTIONS["evidence_read"] = (
+    "Read an exact archived public tool response using its capability_invocation_id "
+    "as observation_id, not an Artifact ID. Follow next_offset to finish its Unicode "
+    "text pages. Partial pages do not grant full observation read credit."
 )
 for _report_capability in ("report_check", "report_submit"):
     _CAPABILITY_DESCRIPTIONS[_report_capability] = (
@@ -479,6 +496,8 @@ _CAPABILITY_DESCRIPTIONS["execution_revise"] = (
 def build_labbio_tool_registry(
     host: LabBioCapabilityHost,
     execution_capability: RuntimeExecutionCapabilityView | None = None,
+    *,
+    on_result_rejected: Callable[[str, object], None] | None = None,
 ) -> ToolRegistry:
     """Register the complete capability catalog without a legacy runtime import."""
 
@@ -535,6 +554,12 @@ def build_labbio_tool_registry(
             description=_CAPABILITY_DESCRIPTIONS[capability_name],
             arguments_model=arguments_model,
             handler=invoke,
+            on_result_rejected=(
+                (lambda value, name=capability_name: on_result_rejected(name, value))
+                if on_result_rejected is not None
+                and capability_name in {"execution_submit", "execution_revise"}
+                else None
+            ),
         )
     return registry
 

@@ -173,14 +173,16 @@ async def test_scheduler_apptainer_wiring_defers_the_probe_to_the_first_executio
         cli._close(application)
 
 
-def test_docker_wiring_is_unchanged(tmp_path):
+def test_docker_placement_retains_its_boundary_with_durable_submission_ledger(tmp_path):
     settings = load_settings(_write(tmp_path, backend="", apptainer=False))
     application = build_application(settings, tmp_path / "run", load_provider=False)
     try:
         executor = application.container_executor
-        assert executor.launcher is None and executor.job_ledger is None
+        assert executor.launcher is None
+        assert isinstance(executor.job_ledger, JobLedger)
+        assert application.execution_submission.job_ledger is executor.job_ledger
         assert executor.backend_check is None and executor.isolation_record is None
-        assert not (tmp_path / "run" / "jobs.sqlite").exists()
+        assert (tmp_path / "run" / "jobs.sqlite").is_file()
     finally:
         cli._close(application)
 

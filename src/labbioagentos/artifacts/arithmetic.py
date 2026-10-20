@@ -1,7 +1,7 @@
 """Mechanical arithmetic over an already-authorized complete record table."""
 
 import math
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from labbioagentos.model_safety import validate_model_visible_json
@@ -25,13 +25,16 @@ class ArtifactArithmeticError(ValueError):
         super().__init__(self.safe_message)
 
 
+ArtifactAggregateMatchValue = Annotated[str, Field(max_length=256)] | int | float | bool | None
+
+
 class ArtifactAggregateQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     operation: Literal["SUM", "COUNT"]
     field: str | None = Field(default=None, min_length=1, max_length=128)
     match_field: str | None = Field(default=None, min_length=1, max_length=128)
-    match_value: str | int | float | bool | None = None
+    match_value: ArtifactAggregateMatchValue = None
 
 
 def aggregate_records(representation: ArtifactRepresentation, query: ArtifactAggregateQuery):
@@ -43,8 +46,6 @@ def aggregate_records(representation: ArtifactRepresentation, query: ArtifactAgg
         raise ArtifactArithmeticError("INVALID_AGGREGATE_SELECTION")
     if query.match_field is None and query.match_value is not None:
         raise ArtifactArithmeticError("INVALID_AGGREGATE_SELECTION")
-    if isinstance(query.match_value, str) and len(query.match_value) > 256:
-        raise ValueError("Match value is outside the scalar bound")
     if isinstance(query.match_value, float) and not math.isfinite(query.match_value):
         raise ValueError("Match value must be finite")
     for field in (query.field, query.match_field):

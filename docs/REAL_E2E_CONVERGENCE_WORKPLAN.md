@@ -10,7 +10,7 @@ acceptance details are in [NATIVE_RUNTIME_RELIABILITY.md](NATIVE_RUNTIME_RELIABI
 and [LOCAL_APPTAINER.md](LOCAL_APPTAINER.md).
 
 The comparison baseline is frozen at `d7b1000251ccc00656b30a96e37785dcec07e4a2`.
-Six baseline and nineteen candidate tasks use the same model, Docker images,
+Six baseline and twenty candidate tasks use the same model, Docker images,
 input hashes and resource settings, with at most two active tasks. All failed
 attempts are retained. The first autonomous baseline produced an execution but
 failed before report submission; it is not a successful delivery. Runtime
@@ -19,12 +19,22 @@ The first candidate failed before analysis because a complete 8,007-character
 EXECUTE prompt was bound to one 8,000-character variable. Shared context, phase
 instructions and stage protocol now have separate bindings with unchanged
 component and total limits; every stage is validated before runtime startup.
-The user explicitly authorized one additional candidate: retain that failed
-attempt and run eighteen attempts on the corrected frozen source.
+The user explicitly authorized two additional candidates in total. Preserve
+the first failure and the `9598e86` intermediate success, then run eighteen
+attempts on the final corrected frozen source. Independent boundary checks also
+exposed omitted finalization control bytes, non-durable execution-submission
+bindings after restart, and unconfirmed receipt-publication windows; these are
+closed before final-source repetitions, without repairing Agent programs.
 
-The corrected candidate source suite passes `1914 passed, 26 skipped`; five opt-in real
-Docker input-isolation/file-limit checks also pass. Source regression and real
-Docker checks do not establish scientific validity or complete the 25-attempt comparison.
+The corrected candidate source suite passes `2002 passed, 26 skipped`; five opt-in real
+Docker input-isolation/file-limit checks also pass on the same source. Eight
+further deterministic rounds each pass 272 checks, covering the final handoff
+and restart boundaries. Source regression and real
+Docker checks do not establish scientific validity or complete the 26-attempt comparison.
+The intermediate successful task's scientific review found specific reporting
+issues, so its verified delivery is not a scientific pass. All six baselines
+have ended (three deliveries); the recovery delivery separately failed its
+predeclared unchanged-execution-ID criterion after explicit Agent-requested retries.
 Real Local Apptainer validation is blocked by missing Apptainer and CPU-controller
 delegation on this host; no host administration or resource-limit bypass was
 performed. Production activation and GitHub publication are not part of this

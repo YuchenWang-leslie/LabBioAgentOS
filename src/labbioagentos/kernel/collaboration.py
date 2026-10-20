@@ -313,7 +313,7 @@ class CollaborationRuntime:
         messages: Iterable[PublicMessage],
         deadline_monotonic: float,
         max_output_tokens: int = 8_192,
-        completion_feedback: Callable[[], str | None] | None = None,
+        completion_feedback: Callable[[str], str | None] | None = None,
     ) -> TeamRunResult:
         if self._started:
             raise RuntimeError("CollaborationRuntime instances are single-use")
@@ -356,7 +356,7 @@ class CollaborationRuntime:
         identity: KernelIdentity,
         agent_chain: tuple[str, ...],
         deadline_monotonic: float,
-        completion_feedback: Callable[[], str | None] | None = None,
+        completion_feedback: Callable[[str], str | None] | None = None,
     ) -> AgentLoop:
         profile = self.registry.profile(agent_id)
         begin_invocation = self.tool_invocation_starts.get(agent_id)
@@ -371,6 +371,7 @@ class CollaborationRuntime:
                 description=definition.spec.description,
                 arguments_model=definition.arguments_model,
                 handler=definition.handler,
+                on_result_rejected=definition.on_result_rejected,
             )
         can_delegate = bool(
             identity.depth < self.budget_ledger.limits.delegation_depth

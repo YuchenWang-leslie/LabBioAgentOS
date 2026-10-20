@@ -785,6 +785,7 @@ class LabBioApplication:
             executor=self.docker_executor,
             trace_recorder=self.trace_recorder,
             allow_generated_file_read=configuration.exposure_policy.allow_generated_file_read,
+            job_ledger=configuration.job_ledger,
         )
         self.execution_preflight = ExecutionPreflightService(
             artifact_store=self.artifact_store,

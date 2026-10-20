@@ -18,9 +18,12 @@ multi-file GOLDDEMO analysis, complete result delivery with scoped reporting, an
 durable execution-checkpoint interruption/recovery. Each class has one baseline
 and three candidate attempts, with no more than two active tasks.
 The first candidate exposed a prompt-composition defect before analysis. It is
-retained as a failed attempt on `324c66e`; the user authorized one extra attempt,
-so the complete record contains six baselines and nineteen candidates, including
-eighteen attempts on the next frozen revision. Failed history is not replaced.
+retained as a failed attempt on `324c66e`. An intermediate candidate on `9598e86`
+completed delivery, while independent boundary tests exposed further handoff and
+restart-contract gaps. The user authorized two extra attempts in total: six
+baselines and twenty candidates, including eighteen on the final frozen revision.
+Neither failed history nor the intermediate success replaces a final-version
+repetition.
 
 `scripts/runtime_stress.py` submits ordinary tasks through the CLI. It contains no
 analysis programs or method presets. Each attempt records input hashes, task,
@@ -56,6 +59,15 @@ per-turn tokens in its trace.
   leave an otherwise started workflow in flight.
 - Finalization returns safe validation categories and field paths without
   echoing rejected values. Specialist termination preserves its specific reason.
+- Completion admission and finalization use the same envelope construction,
+  including grounding controls, explicit-completion metadata and delegation
+  reference bytes. A near-limit envelope is rejected while the Agent still has
+  an opportunity to prepare its own narrower evidence handoff.
+- Aggregate match-value bounds have one shared declaration for Native tools and
+  host validation. Evidence-read errors distinguish invalid pagination from an
+  unavailable observation, without exposing whether a foreign observation exists.
+  Validated requested UUIDs and page coordinates are audited; rejected content is
+  not echoed and the host does not choose a replacement observation.
 - `provider.max_request_bytes` bounds the complete request, including tool and
   output schemas. UTF-8 bytes and token usage are separate measurements.
 - Original public observations are archived outside the bounded model window.
@@ -76,6 +88,13 @@ per-turn tokens in its trace.
   `evidence_artifact_ids` retains its complete-reading requirement in the legacy
   API; new Native tool declarations expose only the scoped contract. Neither mode
   certifies scientific validity.
+- Completed execution submissions retain exact receipt/source/contract bindings
+  in the existing job ledger, including the Local Docker path. Restarted
+  inspection, explicit revision and checkpoint input selection validate that
+  binding, the source identity/hash and current authorization. They never
+  reconstruct authority by scanning RAW artifacts. Unknown job outcomes or
+  unconfirmed receipt publication stop further side effects; they are not
+  permission to submit again.
 - Local Apptainer uses an explicit systemd/cgroup v2 boundary, without fallback
   to Docker or unbounded local execution. See [deployment and acceptance](LOCAL_APPTAINER.md).
 
@@ -97,7 +116,10 @@ python scripts/runtime_stress_report.py report --root /absolute/evaluation/root
 
 The reporter reads all attempt directories, including failed and incomplete
 attempts, validates selected delivery hashes and preserves unknown measurements.
-It does not assign a scientific quality score.
+It counts repeated read requests only where the actual request is reconstructable,
+within the same phase and actor; repetition does not itself mean invalid work.
+Unmeasured calls remain explicit. It does not assign a scientific quality score;
+independent scientific reviews are separate documents.
 
 The recovery case exits only after a durable EXECUTE capability checkpoint.
 Resume requires its exact interruption receipt, frozen source/configuration/input
@@ -115,15 +137,19 @@ task delivery are evaluated separately.
 
 ## Acceptance status and remaining limitations
 
-The corrected candidate source suite passes **1914 tests, 26 skipped**. Five opt-in
+The corrected candidate source suite passes **2002 tests, 26 skipped**. Five opt-in
 real Docker input-isolation and file-limit checks also pass. The skipped tests
 are not counted as backend acceptance. No final benchmark acceptance is claimed
 by this document. Current raw records are retained under
 `result/native-runtime-reliability-20261020` in the parent workspace.
-The corresponding records are `verification/full-regression-5.xml` and
-`verification/docker-boundaries-3.xml`; earlier failing regression records remain.
-The Docker checks used the first frozen candidate; the later correction changes
-prompt assembly and diagnostic reporting, not the Docker execution boundary.
+The corresponding records are `verification/full-regression-7.xml` and
+`verification/docker-boundaries-5.xml`; earlier failing regression records remain.
+Eight further deterministic rounds each pass 272 checks, including the final
+handoff and restart changes (`verification/deterministic-stress-9.xml` through
+`verification/deterministic-stress-16.xml`). These 2,176 repeated checks are not
+independent Agent successes. Checkpoint tests cover both live and restarted
+services: only the explicitly selected producer's source must remain available,
+while its identity, authorization and hash checks remain mandatory.
 
 The first candidate's configured EXECUTE prompt contained 8,007 characters,
 incorrectly packed into one variable with an 8,000-character limit. No analysis
@@ -132,6 +158,22 @@ actual components separately and validating all phases at startup. The failed
 run is not resumed or rewritten. Metrics distinguish its exited controller from
 its persisted in-flight Workflow state and check residue without claiming a
 Workflow terminal state.
+
+The retained `9598e86` autonomous candidate completed a real execution and
+registered a report and its selected output. Both hashes and the complete
+inventory were verified. Its 57 observed turns consumed 1,514,743 reported tokens;
+the largest request was 196,307 bytes. This is not a cost-efficiency claim.
+Five generic evidence-read failures remain in its history with unknown original
+arguments. Independent review did not pass its scientific report: finite sampled
+permutation results were described as exact and as a probability bound. The
+report/program were not repaired by Codex, and those answers were not injected
+into later benchmark tasks.
+
+All six baselines have ended. Three delivered reports and outputs; three failed
+in REPORT. The recovery baseline delivered after an explicit Workflow retry,
+but failed the predeclared unchanged-execution-ID check. Its original calls were
+not observed to replay; new Agent-requested executions and duplicate replay are
+recorded separately without rewriting the original acceptance result.
 
 Confirmed baseline observations include successful process exits rejected for
 output record-limit violations, and Agent-driven Python correction attempts.

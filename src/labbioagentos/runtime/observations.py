@@ -15,6 +15,24 @@ from labbioagentos.contracts import WorkflowStage
 from .contracts import CapabilityEvidenceItem, HandoffObservation
 
 
+class ObservationNotAvailableError(PermissionError):
+    code = "OBSERVATION_NOT_AVAILABLE"
+    safe_message = (
+        "The observation is not available in the current authorized scope. Use the "
+        "capability_invocation_id of an actual tool response, not an Artifact ID. "
+        "No observation content was released or credited."
+    )
+
+
+class ObservationPageError(ValueError):
+    code = "INVALID_OBSERVATION_PAGE"
+    safe_message = (
+        "Use an integer offset within the observation's Unicode character length "
+        "(starting at 0), and an integer limit from 1 through 8000. Continue from "
+        "the previous next_offset. No observation content was released or credited."
+    )
+
+
 def canonical_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False).encode("utf-8")
@@ -98,7 +116,10 @@ class ObservationStore:
     def load(self, binding, observation_id: UUID) -> StoredObservation:
         identity = UUID(str(observation_id))
         path = self.root / f"{identity}.json"
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except (FileNotFoundError, PermissionError):
+            raise ObservationNotAvailableError() from None
         with os.fdopen(descriptor, "rb") as stream:
             info = os.fstat(stream.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
@@ -116,5 +137,5 @@ class ObservationStore:
                 binding.principal.user_id, binding.workspace.project_id,
                 binding.workspace.lab_id, binding.run_id,
         ):
-            raise PermissionError("Observation is outside the current run scope")
+            raise ObservationNotAvailableError()
         return observation

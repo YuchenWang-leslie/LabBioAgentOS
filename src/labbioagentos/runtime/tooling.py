@@ -50,12 +50,15 @@ from labbioagentos.execution.errors import (
 from labbioagentos.execution.models import (
     ExecutionImageKey,
     ExecutionInputArtifactIds,
+    ExecutionReceipt,
     ExecutionRequestedOutputs,
     ExecutionRevisionDraft,
     ExecutionSourceEdit,
     ExecutionScriptContent,
 )
-from labbioagentos.execution.submission import ExecutionInspectionError, ExecutionRevisionError
+from labbioagentos.execution.submission import (
+    ExecutionInspectionError, ExecutionRevisionError, ExecutionSubmissionPersistenceError,
+)
 from labbioagentos.execution.environments import EnvironmentService, EnvironmentRequestError
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.literature import (
@@ -119,7 +122,9 @@ from .reporting import (
     artifact_representation_digest, observation_digest,
 )
 from .files import authorize_generated_file, read_generated_file
-from .observations import ObservationStore, canonical_bytes
+from .observations import (
+    ObservationNotAvailableError, ObservationPageError, ObservationStore, canonical_bytes,
+)
 from .capability_catalog import (
     ALL_CAPABILITIES,
     CAPABILITY_CEILINGS,
@@ -531,7 +536,8 @@ class LabBioRuntimeToolSet:
         self._observation_read_ranges.clear()
         self._pending_observation_pages.clear()
         self.prepared_handoff = None
-        self.stop_reason = None
+        if self.stop_reason != "EXECUTION_SUBMISSION_PERSISTENCE_FAILED":
+            self.stop_reason = None
         self._feedback_boundary = None
 
     @property
@@ -622,18 +628,21 @@ class LabBioRuntimeToolSet:
         def read():
             nonlocal saved
             if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8_000:
-                raise ValueError("Observation page is outside the supported bounds")
+                raise ObservationPageError()
             store = self._required(self.services.observation_store, "observation")
             saved = store.load(self.binding, UUID(str(observation_id)))
             item = saved.item
             if item.artifact_read_receipt is not None:
-                self._validate_report_observation(item)
+                try:
+                    self._validate_report_observation(item)
+                except (AuthorizationDenied, ArtifactExposureDenied, ArtifactNotFoundError):
+                    raise ObservationNotAvailableError() from None
             elif (saved.invocation_id != self.binding.invocation_id
                   or item.capability_name not in self.binding.capability_allowlist):
-                raise AuthorizationDenied("Observation requires its original capability scope")
+                raise ObservationNotAvailableError()
             text = canonical_bytes(saved.public_response).decode("utf-8")
             if offset > len(text):
-                raise ValueError("Observation offset exceeds its length")
+                raise ObservationPageError()
             end = min(len(text), offset + limit)
             ranges = self._observation_read_ranges.get(item.capability_invocation_id, [])
             covered = self._covered_observation_prefix([*ranges, (offset, end)])
@@ -646,7 +655,11 @@ class LabBioRuntimeToolSet:
                 "sha256": sha256(text.encode("utf-8")).hexdigest(),
                 "complete_observation_delivered": covered == len(text),
             }
-        response = await self._call("evidence_read", read)
+        response = await self._call("evidence_read", read, request_ids={
+            "observation_id": str(observation_id),
+            "observation_offset": offset,
+            "observation_limit": limit,
+        })
         if response["success"]:
             page = response["data"]
             self._pending_observation_pages[UUID(response["capability_invocation_id"])] = (
@@ -843,6 +856,7 @@ class LabBioRuntimeToolSet:
         bounded_ids = self._bounded_identifiers(request_ids or {})
         request_audit_payload: dict[str, JsonValue] = {}
         reviewed = None
+        execution_receipt = None
         if artifact_query_request is not None:
             request_audit_payload["artifact_query_request"] = (
                 artifact_query_request.model_dump(mode="json")
@@ -875,6 +889,8 @@ class LabBioRuntimeToolSet:
             value = operation()
             if hasattr(value, "__await__"):
                 value = await value
+            if isinstance(value, ExecutionReceipt):
+                execution_receipt = value
             if skill_search_request is not None and isinstance(
                 value, SkillCandidatePage
             ):
@@ -917,11 +933,53 @@ class LabBioRuntimeToolSet:
                         "diagnostic_source_lines", "diagnostic_source_lines_truncated",
                     )
                 }
+            event = self._emit(
+                TraceEventType.CAPABILITY_COMPLETED,
+                capability,
+                "COMPLETED",
+                {
+                    "capability_invocation_id": str(capability_invocation_id),
+                    **bounded_ids,
+                    **request_audit_payload,
+                },
+            )
+            if event is not None:
+                trace_event_ids.append(event.event_id)
+            response = result.model_dump(mode="json", by_alias=True)
+            self._record_observation(
+                CapabilityEvidenceItem(
+                    capability_invocation_id=capability_invocation_id,
+                    actor_profile_key=self.binding.actor_profile_key,
+                    actor_agent_name=self.binding.actor_agent_name,
+                    capability_name=capability,
+                    information_authority=information_authority,
+                    status=CapabilityEvidenceStatus.COMPLETED,
+                    trace_event_ids=tuple(trace_event_ids),
+                    reference_ids=self._reference_ids(value),
+                    safe_result=value,
+                    artifact_query_request=artifact_query_request,
+                    skill_search_request=skill_search_request,
+                    execution_submit_request=execution_submit_request,
+                    execution_review=reviewed,
+                    artifact_read_receipt=read_receipt,
+                ), response,
+            )
+            return response
         except Exception as exc:
+            if execution_receipt is not None:
+                # The effect already has a receipt. Any subsequent publication
+                # failure is an uncertain handoff, not a safe request to replay.
+                self.mark_execution_handoff_unconfirmed(execution_receipt.execution_id)
+                exc = ExecutionSubmissionPersistenceError(execution_receipt.execution_id)
             if isinstance(exc, _RepeatedCapabilityRequest):
                 self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
+            if isinstance(exc, ExecutionSubmissionPersistenceError):
+                self.stop_reason = "EXECUTION_SUBMISSION_PERSISTENCE_FAILED"
             error = self._safe_error(exc)
-            failure_details = None
+            failure_details = (
+                {"execution_id": str(exc.execution_id), "replay_blocked": True}
+                if isinstance(exc, ExecutionSubmissionPersistenceError) else None
+            )
             if capability == "execution_submit" and isinstance(
                 exc, ExecutionOutputDeclarationError
             ):
@@ -995,38 +1053,13 @@ class LabBioRuntimeToolSet:
                 ), response,
             )
             return response
-        event = self._emit(
-            TraceEventType.CAPABILITY_COMPLETED,
-            capability,
-            "COMPLETED",
-            {
-                "capability_invocation_id": str(capability_invocation_id),
-                **bounded_ids,
-                **request_audit_payload,
-            },
+
+    def mark_execution_handoff_unconfirmed(self, execution_id: UUID) -> None:
+        """Stop this phase and further same-run effects without discarding receipts."""
+        self.stop_reason = "EXECUTION_SUBMISSION_PERSISTENCE_FAILED"
+        self._required(self.services.execution_submission, "execution").mark_unconfirmed_handoff(
+            self.binding.run_id, execution_id,
         )
-        if event is not None:
-            trace_event_ids.append(event.event_id)
-        response = result.model_dump(mode="json", by_alias=True)
-        self._record_observation(
-            CapabilityEvidenceItem(
-                capability_invocation_id=capability_invocation_id,
-                actor_profile_key=self.binding.actor_profile_key,
-                actor_agent_name=self.binding.actor_agent_name,
-                capability_name=capability,
-                information_authority=information_authority,
-                status=CapabilityEvidenceStatus.COMPLETED,
-                trace_event_ids=tuple(trace_event_ids),
-                reference_ids=self._reference_ids(value),
-                safe_result=value,
-                artifact_query_request=artifact_query_request,
-                skill_search_request=skill_search_request,
-                execution_submit_request=execution_submit_request,
-                execution_review=reviewed,
-                artifact_read_receipt=read_receipt,
-            ), response,
-        )
-        return response
 
     def evidence_items(self) -> tuple[CapabilityEvidenceItem, ...]:
         """Return immutable bounded outcomes accumulated by model-selected calls."""
@@ -1194,7 +1227,7 @@ class LabBioRuntimeToolSet:
     ) -> dict:
         """Inspect a prior execution receipt and its original Agent-submitted program.
 
-        Accepts an EXECUTION UUID from this same run and live application session,
+        Accepts an EXECUTION UUID with a verified submission binding in this same run,
         including an earlier stage invocation. It never reads input data, process
         streams or arbitrary RAW Artifacts, and never executes or revises code.
         The receipt retains its original technical outcome; submitted_program is
@@ -1211,7 +1244,7 @@ class LabBioRuntimeToolSet:
         Pages that would be altered by transport are rejected, not rewritten.
         A page exceeding the serialized transport bound requires a smaller limit.
         Explicitly imported original programs from a prior run may also be read;
-        those return producer identity and hash, with receipt null when the live
+        those return producer identity and hash, with receipt null when the original
         receipt is unavailable. Source shows submitted methods, not scientific
         success or proof that every line executed. Never infer methods from plans.
         submitted_contract contains the exact original output declarations and
@@ -2415,6 +2448,8 @@ class LabBioRuntimeToolSet:
 
     @staticmethod
     def _safe_error(exc: Exception) -> ToolError:
+        if isinstance(exc, (ObservationNotAvailableError, ObservationPageError)):
+            return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, _RepeatedCapabilityRequest):
             return ToolError(
                 error_code="REPEATED_NON_RETRYABLE_REQUEST",
@@ -2604,12 +2639,21 @@ class LabBioRuntimeToolSet:
                 "each edit.old must match once in sequential order. Null overrides retain the original "
                 "submitted_contract. Explicit input_artifact_ids and parameters replace those original "
                 "fields, while empty values clear them; selected inputs must remain authorized."))
+        if isinstance(exc, ExecutionSubmissionPersistenceError):
+            return ToolError(
+                error_code="EXECUTION_SUBMISSION_PERSISTENCE_FAILED",
+                safe_message=(
+                    "An execution was attempted, but its outcome or durable receipt handoff "
+                    "cannot be confirmed. Further execution is blocked. Do not resubmit or revise it; "
+                    "operator reconciliation is required for the recorded execution identity."
+                ),
+            )
         if isinstance(exc, ExecutionInspectionError):
             return ToolError(
                 error_code="EXECUTION_SUBMISSION_UNAVAILABLE",
                 safe_message=(
-                    "The original submission could not be verified in this run and live "
-                    "application session. No source was released and this inspection "
+                    "The original submission binding could not be verified in this run. "
+                    "No source was released and this inspection "
                     "did not start an execution."
                 ),
             )
@@ -2848,7 +2892,7 @@ class LabBioRuntimeToolSet:
 
     @staticmethod
     def _bounded_identifiers(values: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        """Trace canonical IDs/versions only, never arbitrary model strings."""
+        """Trace canonical IDs, versions and bounded page numbers, never content."""
 
         bounded: dict[str, JsonValue] = {}
         for key, value in values.items():
@@ -2858,6 +2902,10 @@ class LabBioRuntimeToolSet:
                 except ValueError:
                     continue
             elif key.endswith("_version") and isinstance(value, int):
+                bounded[key] = value
+            elif key == "observation_offset" and type(value) is int and value >= 0:
+                bounded[key] = value
+            elif key == "observation_limit" and type(value) is int and 1 <= value <= 8_000:
                 bounded[key] = value
         return bounded
 

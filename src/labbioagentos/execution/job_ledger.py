@@ -7,6 +7,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
 
@@ -71,6 +72,51 @@ class JobLedger:
             self._connection.execute(
                 "ALTER TABLE jobs ADD COLUMN purpose TEXT NOT NULL DEFAULT 'EXECUTION'"
             )
+        self._connection.execute(
+            "CREATE TABLE IF NOT EXISTS execution_submissions ("
+            " execution_id TEXT PRIMARY KEY, run_id TEXT NOT NULL,"
+            " payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL)"
+        )
+
+    def record_execution_submission(
+        self, *, run_id: UUID, execution_id: UUID, payload: str,
+    ) -> None:
+        """Append a verified return binding, never infer one from launcher state."""
+        self._connection.execute(
+            "INSERT INTO execution_submissions VALUES (?, ?, ?, ?)",
+            (str(execution_id), str(run_id), payload, sha256(payload.encode("utf-8")).hexdigest()),
+        )
+
+    def execution_submission(self, run_id: UUID, execution_id: UUID) -> str | None:
+        row = self._connection.execute(
+            "SELECT payload, payload_sha256 FROM execution_submissions"
+            " WHERE run_id = ? AND execution_id = ?",
+            (str(run_id), str(execution_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        payload, digest = row
+        if sha256(payload.encode("utf-8")).hexdigest() != digest:
+            raise ValueError("Execution submission integrity differs")
+        return payload
+
+    def execution_submission_ids(self, run_id: UUID) -> tuple[UUID, ...]:
+        rows = self._connection.execute(
+            "SELECT execution_id FROM execution_submissions WHERE run_id = ?",
+            (str(run_id),),
+        ).fetchall()
+        return tuple(UUID(row[0]) for row in rows)
+
+    def unreceipted_executions(self, run_id: UUID) -> tuple[UUID, ...]:
+        rows = self._connection.execute(
+            "SELECT execution_id FROM jobs WHERE run_id = ? AND purpose = ?"
+            " AND state IN (?, ?, ?, ?, ?)"
+            " AND execution_id NOT IN (SELECT execution_id FROM execution_submissions)",
+            (str(run_id), JobPurpose.EXECUTION.value, JobLedgerState.SUBMITTING.value,
+             JobLedgerState.SUBMITTED.value, JobLedgerState.COLLECTED.value,
+             JobLedgerState.UNCONFIRMED.value, JobLedgerState.LOST.value),
+        ).fetchall()
+        return tuple(UUID(row[0]) for row in rows)
 
     def record_intent(self, *, run_id: UUID, execution_id: UUID, launcher: str,
                       workspace_root: Path, purpose: JobPurpose = JobPurpose.EXECUTION) -> None:

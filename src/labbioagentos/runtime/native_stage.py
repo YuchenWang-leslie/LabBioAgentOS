@@ -345,7 +345,8 @@ class NativeKernelStageInvoker:
             ))
             providers[profile.profile_key] = provider
             registries[profile.profile_key] = build_labbio_tool_registry(
-                host, stage_input.execution_capability
+                host, stage_input.execution_capability,
+                on_result_rejected=host.on_result_rejected,
             )
             batch_observers[profile.profile_key] = host.mark_feedback_delivered
             hosts.append(host)
@@ -373,7 +374,7 @@ class NativeKernelStageInvoker:
         )
         self._emit(stage_input, TraceEventType.CAPABILITY_PHASE_STARTED, "STARTED", {})
 
-        def completion_feedback():
+        def completion_feedback(completion: str):
             completed = {
                 item.capability_name for host in hosts for item in host.evidence_items()
                 if item.status is CapabilityEvidenceStatus.COMPLETED
@@ -388,14 +389,38 @@ class NativeKernelStageInvoker:
                 provisional = CapabilityEvidenceBundle(
                     run_id=stage_input.run_id, stage_id=stage_input.stage_id,
                     invocation_id=stage_input.invocation_id, items=items,
+                    explicit_completion=(
+                        completion.strip()
+                        if self.assembly.preserve_capability_completion and completion.strip()
+                        else None
+                    ),
+                    prepared_handoff=hosts[0].prepared_handoff,
+                    termination_reason="MODEL_RETURNED",
+                    provider_turn_count=ledger.usage.provider_turns,
+                    provider_turn_limit=self.assembly.max_capability_turns,
                 )
-                size = len(json.dumps({
-                    "stage_input": stage_input.model_dump(mode="json"),
-                    "capability_evidence": finalization_evidence(provisional),
-                }, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-                if size > 60_000 and hosts[0].prepared_handoff is None:
+                # Projection creates real trace UUIDs only after the loop. Count
+                # their exact JSON-list width without emitting audit events or
+                # constructing/sending placeholder evidence: 38 bytes per quoted
+                # UUID and one comma between adjacent UUIDs, versus empty [].
+                reference_count = sum(
+                    event.kind in {
+                        KernelEventKind.DELEGATION_STARTED,
+                        KernelEventKind.DELEGATION_FINISHED,
+                    } for event in runtime.events
+                ) if self.trace_recorder is not None else 0
+                reference_bytes = 39 * reference_count - 1 if reference_count else 0
+                _effective, _payload, _messages, content = self._finalization_envelope(
+                    stage_input, provisional, additional_provenance_bytes=reference_bytes,
+                )
+                size = len(content.encode("utf-8")) + reference_bytes
+                if size > 60_000:
                     return json.dumps({
-                        "authority": "CONTROL_STATE", "reason": "HANDOFF_REQUIRED",
+                        "authority": "CONTROL_STATE",
+                        "reason": (
+                            "HANDOFF_REQUIRED" if hosts[0].prepared_handoff is None
+                            else "FINALIZATION_CONTEXT_TOO_LARGE"
+                        ),
                         "serialized_bytes": size, "max_message_bytes": 60_000,
                         "instruction": "Select actually delivered observations with prepare_handoff "
                         "and write your own bounded assessment and limitations. The tool-free "
@@ -453,6 +478,18 @@ class NativeKernelStageInvoker:
                 validation_fields=getattr(exc, "validation_fields", ()),
             )
             raise error from exc
+        if any(host.stop_reason == "EXECUTION_SUBMISSION_PERSISTENCE_FAILED" for host in hosts):
+            self._project_kernel_events(stage_input, result.events)
+            error = RuntimeIntegrationError(
+                "EXECUTION_SUBMISSION_PERSISTENCE_FAILED",
+                "An execution was attempted, but its outcome or durable receipt handoff "
+                "cannot be confirmed. Replay is blocked pending operator reconciliation.",
+            )
+            self._emit_failure(
+                stage_input, TraceEventType.CAPABILITY_PHASE_FAILED, error,
+                cause_code=error.error_code,
+            )
+            raise error
         items = tuple(item for host in hosts for item in host.evidence_items())
         if len(items) > MAX_CAPABILITY_EVIDENCE_ITEMS:
             raise RuntimeProfileConfigurationError(
@@ -505,58 +542,23 @@ class NativeKernelStageInvoker:
         })
         return bundle
 
-    async def _finalize(
-        self,
-        stage_input: RuntimeStageInput,
-        *,
-        capability_evidence: CapabilityEvidenceBundle | None,
-    ) -> RuntimeStageResult:
-        evidence = capability_evidence
+    def _finalization_envelope(
+        self, stage_input, evidence, *, additional_provenance_bytes: int = 0,
+    ):
+        """Build the exact public envelope for both admission and finalization.
+
+        During admission only, additional_provenance_bytes is the exact encoded
+        width of already-observed delegation references not yet trace-projected.
+        It affects capacity checks only; no fabricated identities enter messages.
+        """
         effective_input = self._finalization_stage_input(stage_input, evidence)
-        profile, prompt, model, schema, provider = self.factory.resolve(
-            self.assembly.root_profile_key,
-            self.assembly.finalization_prompt_values,
-        )
-        response_format = schema.response_format(
-            effective_input.stage_id, effective_input.workflow_control
-        )
-        retrieval_control = None
-        if effective_input.stage_id is WorkflowStage.PLAN:
-            retrieval_control = skill_retrieval_control(effective_input, evidence)
-            response_format = skill_assessment_response_format(
-                response_format,
-                tuple(retrieval_control["completed_search_capability_invocation_ids"]),
-                tuple(item["proposal_id"] for item in retrieval_control["use_proposals"]),
-                required=requires_skill_assessment(effective_input),
-                resolve_proposal=bool(retrieval_control["use_proposals"]),
-                pending_proposals=tuple(
-                    (item["proposal_id"], item["domain_reference_id"])
-                    for item in retrieval_control["use_proposals"]
-                    if item["status"] == "PENDING"
-                    and item["domain_reference_id"]
-                    and (
-                        effective_input.workflow_control is None
-                        or effective_input.workflow_control.request_user_input_available
-                    )
-                ),
-            )
-        execution_control = None
-        if requires_execution_grounding(effective_input):
-            execution_control = execution_result_control(effective_input, evidence)
-            response_format = execution_result_response_format(
-                response_format, execution_control
-            )
-        report_control = None
-        if requires_report_grounding(effective_input):
-            report_control = report_result_control(effective_input, evidence)
-            response_format = report_result_response_format(response_format, report_control)
         payload = {"stage_input": effective_input.model_dump(mode="json")}
-        if retrieval_control is not None:
-            payload["skill_retrieval_control"] = retrieval_control
-        if execution_control is not None:
-            payload["execution_result_control"] = execution_control
-        if report_control is not None:
-            payload["report_result_control"] = report_control
+        if effective_input.stage_id is WorkflowStage.PLAN:
+            payload["skill_retrieval_control"] = skill_retrieval_control(effective_input, evidence)
+        if requires_execution_grounding(effective_input):
+            payload["execution_result_control"] = execution_result_control(effective_input, evidence)
+        if requires_report_grounding(effective_input):
+            payload["report_result_control"] = report_result_control(effective_input, evidence)
         completion_messages = ()
         if evidence is not None and evidence.explicit_completion is not None:
             completion = evidence.explicit_completion
@@ -594,8 +596,65 @@ class NativeKernelStageInvoker:
         finalization_content = json.dumps(
             payload, separators=(",", ":"), ensure_ascii=False
         )
+        if (len(finalization_content.encode("utf-8")) + additional_provenance_bytes > 60_000
+                and evidence is not None and prepared is not None):
+            payload["capability_evidence"] = finalization_evidence(
+                evidence, include_safe_results=False, compact=True,
+                include_explicit_completion=False,
+            )
+            finalization_content = json.dumps(
+                payload, separators=(",", ":"), ensure_ascii=False
+            )
+        return effective_input, payload, (
+            *completion_messages, *handoff_messages,
+        ), finalization_content
+
+    async def _finalize(
+        self,
+        stage_input: RuntimeStageInput,
+        *,
+        capability_evidence: CapabilityEvidenceBundle | None,
+    ) -> RuntimeStageResult:
+        evidence = capability_evidence
+        effective_input, payload, messages, finalization_content = self._finalization_envelope(
+            stage_input, evidence,
+        )
+        profile, prompt, model, schema, provider = self.factory.resolve(
+            self.assembly.root_profile_key,
+            self.assembly.finalization_prompt_values,
+        )
+        response_format = schema.response_format(
+            effective_input.stage_id, effective_input.workflow_control
+        )
+        retrieval_control = payload.get("skill_retrieval_control")
+        if retrieval_control is not None:
+            response_format = skill_assessment_response_format(
+                response_format,
+                tuple(retrieval_control["completed_search_capability_invocation_ids"]),
+                tuple(item["proposal_id"] for item in retrieval_control["use_proposals"]),
+                required=requires_skill_assessment(effective_input),
+                resolve_proposal=bool(retrieval_control["use_proposals"]),
+                pending_proposals=tuple(
+                    (item["proposal_id"], item["domain_reference_id"])
+                    for item in retrieval_control["use_proposals"]
+                    if item["status"] == "PENDING"
+                    and item["domain_reference_id"]
+                    and (
+                        effective_input.workflow_control is None
+                        or effective_input.workflow_control.request_user_input_available
+                    )
+                ),
+            )
+        execution_control = payload.get("execution_result_control")
+        if execution_control is not None:
+            response_format = execution_result_response_format(
+                response_format, execution_control
+            )
+        report_control = payload.get("report_result_control")
+        if report_control is not None:
+            response_format = report_result_response_format(response_format, report_control)
         if (len(finalization_content.encode("utf-8")) > 60_000
-                and evidence is not None and prepared is None):
+                and evidence is not None and evidence.prepared_handoff is None):
             error = RuntimeIntegrationError(
                 "HANDOFF_REQUIRED",
                 "Finalization requires Agent-selected evidence; no bounded prepared handoff exists.",
@@ -605,15 +664,6 @@ class NativeKernelStageInvoker:
                 cause_code="INSUFFICIENT_EVIDENCE_HANDOFF",
             )
             raise error
-        if (len(finalization_content.encode("utf-8")) > 60_000
-                and evidence is not None and prepared is not None):
-            payload["capability_evidence"] = finalization_evidence(
-                evidence, include_safe_results=False, compact=True,
-                include_explicit_completion=False,
-            )
-            finalization_content = json.dumps(
-                payload, separators=(",", ":"), ensure_ascii=False
-            )
         if len(finalization_content.encode("utf-8")) > 60_000:
             raise RuntimeProfileConfigurationError(
                 "Finalization context exceeds its bounded public message envelope"
@@ -653,12 +703,8 @@ class NativeKernelStageInvoker:
             output = await loop.run(
                 messages=(
                     PublicMessage(role="SYSTEM", content=prompt.sanitized_text),
-                    *completion_messages,
-                    *handoff_messages,
-                    PublicMessage(
-                        role="USER",
-                        content=finalization_content,
-                    ),
+                    *messages,
+                    PublicMessage(role="USER", content=finalization_content),
                 ),
                 deadline_monotonic=(
                     monotonic() + self.assembly.max_no_progress_seconds

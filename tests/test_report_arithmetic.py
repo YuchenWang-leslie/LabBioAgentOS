@@ -82,3 +82,28 @@ async def test_provider_schema_and_unknown_field_feedback(artifact_query_boundar
     assert "PRIVATE_SENTINEL" not in str(failed)
     total = await tools.artifact_aggregate(identifier, "SUM", "n")
     assert total["data"]["value"] == pytest.approx(0.3)
+
+
+def test_aggregate_string_selection_has_the_same_native_and_host_boundary():
+    import json
+    from uuid import uuid4
+    from pydantic import ValidationError
+    from labbioagentos.artifacts.arithmetic import ArtifactAggregateQuery
+    from labbioagentos.runtime.native_tools import ArtifactAggregateArguments
+
+    schema = ArtifactAggregateArguments.model_json_schema()
+    string_variant = next(item for item in schema["properties"]["match_value"]["anyOf"]
+                          if item.get("type") == "string")
+    assert string_variant["maxLength"] == 256
+    for model in (ArtifactAggregateArguments, ArtifactAggregateQuery):
+        fields = {"operation": "COUNT", "match_field": "label"}
+        if model is ArtifactAggregateArguments:
+            fields["artifact_id"] = str(uuid4())
+        for value in ("x" * 256, "", None, 0, 1.5, False):
+            result = model.model_validate_json(json.dumps({**fields, "match_value": value}))
+            assert type(result.match_value) is type(value)
+            assert result.match_value == value
+        with pytest.raises(ValidationError) as caught:
+            model.model_validate_json(json.dumps({**fields, "match_value": "x" * 257}))
+        assert any(issue["type"] == "string_too_long" and issue["loc"][0] == "match_value"
+                   for issue in caught.value.errors())

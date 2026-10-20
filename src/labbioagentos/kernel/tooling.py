@@ -46,6 +46,7 @@ class ToolDefinition:
     spec: ToolSpec
     arguments_model: type[BaseModel]
     handler: ToolHandler
+    on_result_rejected: Callable[[Any], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -208,6 +209,7 @@ class ToolRegistry:
         description: str,
         arguments_model: type[BaseModel],
         handler: ToolHandler,
+        on_result_rejected: Callable[[Any], None] | None = None,
     ) -> ToolDefinition:
         if name in self._definitions:
             raise ValueError(f"Tool {name!r} is already registered")
@@ -217,6 +219,8 @@ class ToolRegistry:
             raise TypeError("arguments_model must be a Pydantic model class")
         if not callable(handler):
             raise TypeError("handler must be callable")
+        if on_result_rejected is not None and not callable(on_result_rejected):
+            raise TypeError("on_result_rejected must be callable")
         parameters = model_json_schema(arguments_model)
         definition = ToolDefinition(
             spec=ToolSpec(
@@ -226,6 +230,7 @@ class ToolRegistry:
             ),
             arguments_model=arguments_model,
             handler=handler,
+            on_result_rejected=on_result_rejected,
         )
         self._definitions[name] = definition
         return definition
@@ -447,10 +452,12 @@ class ToolDispatcher:
                     tool_name=item.request.name,
                 )
             )
+            handler_returned = False
             try:
                 value = item.definition.handler(item.arguments)
                 if inspect.isawaitable(value):
                     value = await value
+                handler_returned = True
                 projected = self.projector.project(value)
                 result = ToolResult(
                     tool_invocation_id=tool_invocation_id,
@@ -487,6 +494,11 @@ class ToolDispatcher:
                 )
             finally:
                 _TOOL_EXECUTION_CONTEXT.reset(context_token)
+            if (handler_returned and result.status == "FAILED"
+                    and item.definition.on_result_rejected is not None):
+                # The handler may already have caused effects. Host policy owns
+                # their disposition; observer failure aborts the remaining batch.
+                item.definition.on_result_rejected(value)
             outcomes.append(
                 DispatchOutcome(
                     result=result,

@@ -17,6 +17,56 @@ metrics = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(metrics)
 
 
+def test_repeated_reads_use_recorded_requests_not_equal_answers():
+    def call(identity, capability, **fields):
+        return {"capability_invocation_id": identity, "capability_name": capability,
+                "actor_profile_key": "reviewer", "status": "COMPLETED", **fields}
+    query = {"artifact_id": "source", "view_type": "TABLE", "limit": 10, "offset": 0}
+    aggregate = {"artifact_id": "source", "operation": "COUNT", "field": None,
+                 "match_field": None, "match_value": None, "value": 10}
+    items = [
+        call("q1", "artifact_query", artifact_query_request=query),
+        call("q2", "artifact_query", artifact_query_request=query),
+        call("q3", "artifact_query", artifact_query_request={**query, "offset": 10}),
+        call("a1", "artifact_aggregate", safe_result=aggregate),
+        call("a2", "artifact_aggregate", safe_result=aggregate),
+        call("a3", "artifact_aggregate", safe_result={**aggregate, "match_value": "different"}),
+        call("u1", "file_read", safe_result={"source": "same text"}),
+    ]
+    boundary = {"kind": "capability_evidence",
+                "payload": {"invocation_id": "phase-1", "items": items}}
+    result = metrics.repeated_read_requests([boundary, boundary])
+    assert result["measured_calls"] == 6
+    assert result["repeated_calls"] == 2
+    assert result["by_capability"] == {"artifact_query": 1, "artifact_aggregate": 1}
+    assert result["unmeasured_read_calls"] == 1
+    assert "same text" not in json.dumps(result)
+
+
+def test_repeated_reads_do_not_cross_phase_or_actor_boundaries():
+    boundaries = []
+    for phase, actor, identity in (("one", "a", "1"), ("two", "a", "2"), ("two", "b", "3")):
+        boundaries.append({"kind": "capability_evidence", "payload": {
+            "invocation_id": phase, "items": [{
+                "capability_invocation_id": identity, "capability_name": "artifact_query",
+                "actor_profile_key": actor, "status": "COMPLETED",
+                "artifact_query_request": {"artifact_id": "source", "view_type": "METADATA",
+                                           "limit": None, "offset": 0}}]}})
+    result = metrics.repeated_read_requests(boundaries)
+    assert result["measured_calls"] == 3
+    assert result["repeated_calls"] == 0
+
+
+def test_repeated_read_unknown_arguments_are_not_fabricated():
+    result = metrics.repeated_read_requests([{"kind": "capability_evidence", "payload": {
+        "invocation_id": "phase", "items": [{
+            "capability_invocation_id": "one", "capability_name": "artifact_aggregate",
+            "actor_profile_key": "a", "status": "ERROR", "safe_result": None}]} }])
+    assert result["measured_calls"] == 0
+    assert result["repeated_calls"] is None
+    assert result["unmeasured_read_calls"] == 1
+
+
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value))

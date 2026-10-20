@@ -60,7 +60,7 @@ class AgentLoop:
         no_progress_ms: int = 30_000,
         clock: Callable[[], float] | None = None,
         event_sink: Callable[[KernelEvent], None] | None = None,
-        completion_feedback: Callable[[], str | None] | None = None,
+        completion_feedback: Callable[[str], str | None] | None = None,
         max_request_bytes: int = 256_000,
     ):
         if no_progress_ms < 1:
@@ -388,7 +388,7 @@ class AgentLoop:
                         and self.budget_ledger.usage.provider_turns
                         < self.budget_ledger.limits.provider_turns
                     ):
-                        feedback = self.completion_feedback()
+                        feedback = self.completion_feedback(turn.content)
                         if feedback is not None:
                             self.messages = (*self.messages, PublicMessage(role="USER", content=feedback))
                             completion_corrected = True

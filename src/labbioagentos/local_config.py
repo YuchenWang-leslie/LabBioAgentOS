@@ -749,7 +749,10 @@ def build_application(
         execution_wiring = {}
         if settings.execution.backend == "apptainer":
             execution_wiring = _cluster_execution(settings, run_root)
-            cleanup.callback(execution_wiring["job_ledger"].close)
+        else:
+            from .execution.job_ledger import JobLedger
+            execution_wiring = {"job_ledger": JobLedger(run_root / "jobs.sqlite")}
+        cleanup.callback(execution_wiring["job_ledger"].close)
         environment_wiring = {}
         if settings.environment is not None:
             # Build jobs share the execution ledger, so the run's crash cleanup covers them.
