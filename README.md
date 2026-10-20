@@ -73,35 +73,6 @@ These are framework capabilities, not a catalogue of validated biological
 pipelines. Results depend on the configured model, data, tools, Agent decisions,
 and independent human review.
 
-## Current status
-
-As of 2026-10-19:
-
-- active source and tests use only the LabBio Native Kernel, and package
-  metadata declares its transport dependency directly;
-- the deterministic test snapshot is **1757 passed, 23 skipped**;
-- a bounded PBMC3k ordinary-user task completed real-provider interaction,
-  Docker execution, governed Agent validation and interpretation, and Chinese
-  report export;
-- a fresh annotated-H5AD task completed the Native + Docker workflow through
-  LEARN, with an Agent-authored Chinese report and hash-verified delivery;
-- source includes a Scheduler + Apptainer backend, but that integration has not
-  been validated with the Native Kernel on a real cluster or activated in
-  production. Neither task establishes independent scientific peer review or
-  correctness for arbitrary tasks.
-
-The H5AD task exercised Agent-owned program correction after failed executions.
-Two preceding stress runs failed in REPORT and remain diagnostic evidence; the
-source fixes project the shared tool budget and align one audited query-limit
-wire contract. See the [real E2E convergence workplan](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md)
-for exact run identities and limits.
-
-Immutable release `native-p8-20261016T085718Z` is active in production. Its
-6310-entry manifest, isolated install, rollback rehearsal, provider-free status/export, and a
-fresh active-current data task through selected report delivery passed. No
-profile or Skill was automatically promoted. The newer source and H5AD result
-are not deployed to that release; fresh bioinformatics validation on the
-production release and independent scientific review remain outstanding.
 
 ## Install and verify
 
@@ -156,14 +127,6 @@ the [local workspace guide](docs/LOCAL_WORKSPACES.md) and
 [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md).
 
 ## Documentation
-
-- [Architecture](docs/ARCHITECTURE.md)
-- [Stage runtime contracts](docs/STAGE_RUNTIME_CONTRACTS.md)
-- [Local task entrypoint](docs/LOCAL_TASK_ENTRYPOINT.md)
-- [Local workspaces](docs/LOCAL_WORKSPACES.md)
-- [Known limitations](docs/KNOWN_LIMITATIONS.md)
-- [Current convergence handoff](docs/REAL_E2E_CONVERGENCE_WORKPLAN.md)
-- [Engineering guardrails](AGENTS.md)
 
 ## Citation and attribution
 
