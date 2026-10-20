@@ -300,10 +300,43 @@ def delivery_verified(delivery):
                 and delivery["complete_selected_inventory"])
 
 
+def clarification_assistance(workflow_run):
+    """Measure only persisted answers, not every possible human intervention."""
+    result = {"scope": "PERSISTED_CLARIFICATION_ANSWERS",
+              "status": "UNKNOWN", "answered_count": None}
+    records = workflow_run.get("clarifications")
+    if not isinstance(records, list):
+        return result
+    answered = 0
+    for record in records:
+        if not isinstance(record, dict):
+            return result
+        status = record.get("status")
+        answer, author = record.get("answer_text"), record.get("answered_by")
+        if status == "WAITING":
+            if answer is not None or author is not None:
+                return result
+        elif status in ("ANSWERED", "RESOLVED"):
+            if (not isinstance(answer, str) or not answer.strip()
+                    or len(answer) > 4000 or not isinstance(author, str)
+                    or not 1 <= len(author) <= 256):
+                return result
+            answered += 1
+        else:
+            return result
+    result.update(status="ASSISTED" if answered else "NO_RECORDED_ANSWERS",
+                  answered_count=answered)
+    return result
+
+
 def summarize_attempt(root: Path, receipt: Path):
     """Never emit task text, model prose, credentials or arbitrary exception text."""
     result = {"attempt": receipt.name, "scientific_review": "NOT_PERFORMED",
-              "process_residue_check": "NOT_PERFORMED"}
+              "process_residue_check": "NOT_PERFORMED",
+              "process_result_scope": "INITIAL_RUNNER_ONLY",
+              "delivery_scope": "CURRENT_PERSISTED_STATE",
+              "human_assistance": clarification_assistance({}),
+              "unassisted_delivered_report_and_outputs": None}
     try:
         manifest = read_json(receipt / "MANIFEST.json")
         result.update({key: manifest.get(key) for key in ("arm", "case", "replicate", "source_commit")})
@@ -331,6 +364,9 @@ def summarize_attempt(root: Path, receipt: Path):
                       current_stage=state["workflow_run"]["current_stage"],
                       failure_reason=state["workflow_run"].get("failure_reason"),
                       recovery_state=state["recovery_state"])
+        result["human_assistance"] = clarification_assistance(state["workflow_run"])
+        # This compares the initial runner receipt with the current Workflow;
+        # it does not establish whether a continuation controller is alive.
         result["workflow_inflight_after_process_exit"] = (
             result["process_result"] is not None and result["status"] == "RUNNING")
         events, result["trace_read"] = json_lines(directory / "run-trace.jsonl")
@@ -386,6 +422,10 @@ def summarize_attempt(root: Path, receipt: Path):
         result["delivery"] = delivery_metrics(directory, state)
         result["engine_completed"] = result["status"] == "COMPLETED"
         result["delivered_report_and_outputs"] = delivery_verified(result["delivery"])
+        assistance = result["human_assistance"]["status"]
+        if assistance != "UNKNOWN":
+            result["unassisted_delivered_report_and_outputs"] = (
+                assistance == "NO_RECORDED_ANSWERS" and result["delivered_report_and_outputs"])
         for name in ("INJECTED_STOP", "RESUME_BEFORE", "RESUME_RESULT"):
             if (receipt / f"{name}.json").exists():
                 result[name.lower()] = read_json(receipt / f"{name}.json")
@@ -427,10 +467,12 @@ def check_process_residue(attempts):
         if "resume_before" in item and "resume_result" not in item:
             item["process_residue_check"] = "UNKNOWN_RESUME_STATUS"
             continue
-        # A controller can exit while its durable Workflow remains in-flight.
-        # Keep that state unchanged, but do not label dead control as active.
+        # The original runner can exit before another controller continues.
+        # A RUNNING snapshot and the old receipt cannot prove current residue.
         terminal = item.get("process_result") is not None
         item["process_residue_check"] = (
+            "UNKNOWN_CURRENT_CONTROLLER_STATUS" if (
+                remaining and terminal and item.get("status") == "RUNNING") else
             "RESIDUE_FOUND" if remaining and terminal else
             "ACTIVE_ATTEMPT" if not terminal else "NO_MATCHING_CONTAINERS"
         )
@@ -442,11 +484,26 @@ def report(root: Path, *, check_processes=False):
     if check_processes:
         check_process_residue(attempts)
     return {"generated_at": datetime.now(timezone.utc).isoformat(),
-            "claim_limit": "Descriptive engineering evidence only; no scientific validation.",
+            "claim_limit": (
+                "Descriptive engineering evidence only; no scientific validation. "
+                "Assistance classification covers persisted clarification answers only and "
+                "does not establish absence of other human intervention."),
             "attempt_count": len(attempts),
             "by_arm": {arm: {"attempts": len(group),
+                "delivery_scope": "CURRENT_PERSISTED_STATE",
+                "assistance_scope": "PERSISTED_CLARIFICATION_ANSWERS_ONLY",
                 "engine_completed": sum(item.get("engine_completed", False) for item in group),
                 "delivered_report_and_outputs": sum(item.get("delivered_report_and_outputs", False) for item in group),
+                "unassisted_delivered_report_and_outputs": sum(
+                    item["unassisted_delivered_report_and_outputs"] is True for item in group),
+                "assisted_delivered_report_and_outputs": sum(
+                    item.get("delivered_report_and_outputs", False)
+                    and item["human_assistance"]["status"] == "ASSISTED" for item in group),
+                "unknown_assistance_delivered_report_and_outputs": sum(
+                    item.get("delivered_report_and_outputs", False)
+                    and item["human_assistance"]["status"] == "UNKNOWN" for item in group),
+                "unknown_assistance_attempts": sum(
+                    item["human_assistance"]["status"] == "UNKNOWN" for item in group),
                 "unknown_status": sum(item.get("status") == "UNKNOWN" for item in group)}
                 for arm in ("baseline", "candidate")
                 for group in [[item for item in attempts if item.get("arm") == arm]]},

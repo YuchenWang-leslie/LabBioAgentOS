@@ -1,5 +1,54 @@
 # Real E2E Convergence Workplan
 
+## Environment declaration audit and human-assisted continuation — 2026-10-20
+
+Frozen `3e23135` annotation3 ended at EXECUTE with `HANDOFF_REQUIRED` after two
+successful analysis executions. Independent review confirmed indexed feedback
+for two unavailable observation identities, intact public observations and no
+context compaction. No host false rejection is established. The final provider
+turn exceeded the unchanged token budget; its undispatched tool arguments were
+not persisted, so whether that final request corrected the selection is unknown.
+Do not repeat this same scenario blindly or replace its invalid selections.
+
+Autonomous5 initially exited `WAITING_FOR_USER` despite receiving the user's
+autonomy instruction. The user explicitly authorized restating only
+“科学问题、方法、参数、库和程序由 Agent 自主选择，直接完成分析”.
+The answer was saved through the formal application interface and continuation
+is separately classified `HUMAN_ASSISTED`; it cannot become an unassisted
+benchmark success. Original attempt receipts remain unchanged. At this review,
+that continuation and cold1 are the only two live tasks, both still using the
+unchanged frozen source and settings. The original process receipt does not
+identify the separate continuation controller. The candidate reporter now
+separates initial-runner status from current delivery, counts answered persisted
+clarifications without exposing their contents or authors, and lists assisted,
+unassisted and unknown-class deliveries separately. Missing legacy fields stay
+unknown. These counts cover recorded clarification answers only, not every
+possible human intervention. Use the dedicated continuation record and writer
+identity for this controller; an old exit receipt alone cannot prove that a
+currently running task has orphaned containers.
+
+The cold-environment audit separately found a provider-facing declaration
+omission. The actual Native registry exposed only generic descriptions for
+`environment_list` and `environment_build`. Their host method documentation
+describes distribution requirements versus import checks, wheel-only isolated
+builds, and explicit selection of a returned immutable image key, but these
+facts were absent from the generated tool declarations, frozen profile and
+initial stage input. One invalid listing received a correct syntax diagnostic
+and a later listing succeeded; its original arguments are unknown. The omission
+does not establish the cause of every subsequent model decision.
+
+The isolated `feat/native-environment-declarations` candidate adds only those
+existing host facts to the two tool declarations and their parameter
+descriptions. It changes no validator, permissions, dependencies, budgets,
+analysis program, evidence selection or automatic behavior. An actual-registry
+test fails on the old generic declaration; the repaired declaration and adjacent
+environment/execution contracts pass 134 checks. Assistance-accounting regression
+passes 57 checks. Combined full regression passes `2069 passed, 26 skipped`;
+eight deterministic rounds each pass 374 checks (2,992 total). Later real-task
+verification remains a separate gate.
+No active source, host installation,
+GitHub branch or production release was changed by this candidate.
+
 ## Feedback and usage closure after freeze4 — 2026-10-20
 
 Both real attempts on `a72c583` ended without report delivery:

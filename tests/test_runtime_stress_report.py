@@ -318,6 +318,92 @@ def selected_delivery(directory, state):
     return destination, manifest
 
 
+def persist_state(directory, state):
+    with sqlite3.connect(directory / "state.sqlite") as connection:
+        connection.execute("UPDATE application_run_state SET payload=?", (json.dumps(state),))
+
+
+@pytest.mark.parametrize("clarifications,classification,count", [
+    ([], "NO_RECORDED_ANSWERS", 0),
+    ([{"status": "WAITING"}], "NO_RECORDED_ANSWERS", 0),
+    ([{"status": "ANSWERED", "answer_text": "PRIVATE_ANSWER",
+       "answered_by": "PRIVATE_AUTHOR"}], "ASSISTED", 1),
+    ([{"status": "RESOLVED", "answer_text": "PRIVATE_ANSWER",
+       "answered_by": "PRIVATE_AUTHOR"}], "ASSISTED", 1),
+    ([{"status": "ANSWERED", "answer_text": "PRIVATE_ANSWER",
+       "answered_by": "PRIVATE_AUTHOR"}, {"status": "RESOLVED",
+       "answer_text": "PRIVATE_ANSWER", "answered_by": "PRIVATE_AUTHOR"}], "ASSISTED", 2),
+    ([{"status": "ANSWERED", "answer_text": "a" * 4000,
+       "answered_by": "b" * 256}], "ASSISTED", 1),
+    ([{"status": "ANSWERED", "answer_text": "a" * 4001,
+       "answered_by": "PRIVATE_AUTHOR"}], "UNKNOWN", None),
+    ([{"status": "RESOLVED", "answer_text": "PRIVATE_ANSWER",
+       "answered_by": "b" * 257}], "UNKNOWN", None),
+    ([{"status": "ANSWERED", "answer_text": " ", "answered_by": "PRIVATE_AUTHOR"}],
+     "UNKNOWN", None),
+    ([{"status": "ANSWERED", "answer_text": "PRIVATE_ANSWER"}], "UNKNOWN", None),
+    ([{"status": "WAITING", "answer_text": "PRIVATE_ANSWER"}], "UNKNOWN", None),
+    ([{"status": "UNRECOGNIZED"}], "UNKNOWN", None),
+    (["PRIVATE_MALFORMED"], "UNKNOWN", None),
+    (None, "UNKNOWN", None),
+    ({}, "UNKNOWN", None),
+])
+def test_assistance_uses_persisted_clarification_status_without_exposing_answers(
+    tmp_path, clarifications, classification, count,
+):
+    receipt, directory, state = attempt(tmp_path, "candidate-autonomous-1")
+    state["workflow_run"]["clarifications"] = clarifications
+    persist_state(directory, state)
+    sample = metrics.summarize_attempt(tmp_path, receipt)
+    assert sample["human_assistance"] == {
+        "scope": "PERSISTED_CLARIFICATION_ANSWERS",
+        "status": classification, "answered_count": count}
+    assert "PRIVATE_" not in json.dumps(sample)
+    assert sample["unassisted_delivered_report_and_outputs"] is (
+        None if classification == "UNKNOWN" else False)
+
+
+def test_missing_legacy_clarifications_are_unknown_not_zero(tmp_path):
+    receipt, _, _ = attempt(tmp_path, "baseline-autonomous-1")
+    sample = metrics.summarize_attempt(tmp_path, receipt)
+    assert sample["human_assistance"]["status"] == "UNKNOWN"
+    assert sample["human_assistance"]["answered_count"] is None
+    assert sample["unassisted_delivered_report_and_outputs"] is None
+
+
+def test_answered_continuation_delivery_is_not_counted_as_unassisted(tmp_path):
+    initial_receipts = {}
+    for index, clarification_status in enumerate((None, "RESOLVED", "LEGACY"), start=1):
+        receipt, directory, state = attempt(
+            tmp_path, f"candidate-autonomous-{index}", "COMPLETED")
+        if clarification_status != "LEGACY":
+            state["workflow_run"]["clarifications"] = (
+                [{"status": "RESOLVED", "answer_text": "PRIVATE_ANSWER",
+                  "answered_by": "PRIVATE_AUTHOR"}] if clarification_status else [])
+        selected_delivery(directory, state)
+        persist_state(directory, state)
+        write(receipt / "PROCESS_RESULT.json", {"exit_code": 2, "elapsed_seconds": 1.0})
+        initial_receipts[receipt] = (receipt / "PROCESS_RESULT.json").read_bytes()
+    result = metrics.report(tmp_path)
+    group = result["by_arm"]["candidate"]
+    assert group["delivered_report_and_outputs"] == 3
+    assert group["delivery_scope"] == "CURRENT_PERSISTED_STATE"
+    assert group["unassisted_delivered_report_and_outputs"] == 1
+    assert group["assisted_delivered_report_and_outputs"] == 1
+    assert group["unknown_assistance_delivered_report_and_outputs"] == 1
+    assert group["unknown_assistance_attempts"] == 1
+    assert "does not establish absence of other human intervention" in result["claim_limit"]
+    assisted = result["attempts"][1]
+    assert assisted["engine_completed"] and assisted["delivered_report_and_outputs"]
+    assert assisted["unassisted_delivered_report_and_outputs"] is False
+    assert assisted["process_result"] == {"exit_code": 2, "elapsed_seconds": 1.0}
+    assert assisted["process_result_scope"] == "INITIAL_RUNNER_ONLY"
+    assert assisted["delivery_scope"] == "CURRENT_PERSISTED_STATE"
+    assert "PRIVATE_" not in json.dumps(result)
+    for receipt, original in initial_receipts.items():
+        assert (receipt / "PROCESS_RESULT.json").read_bytes() == original
+
+
 @pytest.mark.parametrize("corruption", [
     "duplicate_report", "unselected_output", "missing_registered_output", "rewritten_manifest_hash",
 ])
@@ -384,7 +470,8 @@ def test_residue_checks_exact_execution_identity_not_unrelated_container(monkeyp
     assert sample["process_residue_check"] == "NO_MATCHING_CONTAINERS"
     runner.return_value.stdout = f"labbio-{identity.hex}\nunrelated\n"
     metrics.check_process_residue([sample])
-    assert sample["process_residue_check"] == "RESIDUE_FOUND"
+    assert sample["process_residue_check"] == (
+        "UNKNOWN_CURRENT_CONTROLLER_STATUS" if workflow_status == "RUNNING" else "RESIDUE_FOUND")
     assert sample["remaining_container_names"] == [f"labbio-{identity.hex}"]
     sample["process_result"] = None
     metrics.check_process_residue([sample])
@@ -397,6 +484,7 @@ def test_process_exit_is_distinct_from_persisted_running_workflow(tmp_path):
     sample = metrics.summarize_attempt(tmp_path, receipt)
     assert sample["status"] == "RUNNING"
     assert sample["workflow_inflight_after_process_exit"] is True
+    assert sample["process_result_scope"] == "INITIAL_RUNNER_ONLY"
     assert not sample["engine_completed"]
 
 

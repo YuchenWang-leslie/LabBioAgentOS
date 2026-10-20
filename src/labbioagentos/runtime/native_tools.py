@@ -90,26 +90,40 @@ class ArtifactAggregateArguments(NativeToolArguments):
     match_value: ArtifactAggregateMatchValue = None
 
 
+_ENVIRONMENT_REQUIREMENTS_DESCRIPTION = (
+    "PyPI distribution requirements with optional extras/version constraints, "
+    "not import names. URLs, local paths, environment markers and installer options "
+    "are not supported. An empty list requests no additional package constraints."
+)
+
+
 class EnvironmentListArguments(NativeToolArguments):
     requirements: list[Annotated[StrictStr, Field(min_length=1, max_length=256)]] = Field(
         default_factory=list,
         max_length=64,
+        description=_ENVIRONMENT_REQUIREMENTS_DESCRIPTION,
     )
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=10)
 
 
 class EnvironmentBuildArguments(NativeToolArguments):
-    base_image_key: ExecutionImageKey
+    base_image_key: ExecutionImageKey = Field(
+        description="Select an approved base image_key from the execution capability or environment_list."
+    )
     requirements: list[Annotated[StrictStr, Field(min_length=1, max_length=256)]] = Field(
         max_length=64,
+        description=_ENVIRONMENT_REQUIREMENTS_DESCRIPTION,
     )
     import_modules: list[
         Annotated[
             StrictStr,
             Field(max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$"),
         ]
-    ] = Field(default_factory=list, max_length=64)
+    ] = Field(default_factory=list, max_length=64, description=(
+        "Optional dotted Python import names to verify in the built environment. "
+        "This check does not install packages; declare distributions in requirements."
+    ))
 
 
 class ExecutionInspectArguments(NativeToolArguments):
@@ -457,6 +471,20 @@ _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "Request a governed Artifact view. For TOP_N pagination, follow next_offset; "
     "the returned suggested_next_limit is a policy-safe page size. An omitted "
     "limit continues to use the policy-bounded default page size."
+)
+_CAPABILITY_DESCRIPTIONS["environment_list"] = (
+    "Discover approved Python images and verified package/version facts. Listing "
+    "does not select or build an environment. Missing inventory is unknown, not "
+    "proof that a package is absent. Returned image_key values can be explicitly "
+    "selected for execution."
+)
+_CAPABILITY_DESCRIPTIONS["environment_build"] = (
+    "Build and verify a reusable Python environment using wheels only, with no "
+    "analysis data mounted. Choose the base and dependencies yourself. A SUCCEEDED "
+    "receipt returns an immutable verified image_key; explicitly select that key "
+    "in execution_submit or execution_revise to use the environment. The base "
+    "image remains unchanged. A FAILED receipt contains bounded build diagnostics; "
+    "no automatic dependency repair or analysis submission occurs."
 )
 _CAPABILITY_DESCRIPTIONS["evidence_read"] = (
     "Read an exact archived public tool response using its capability_invocation_id "

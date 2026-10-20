@@ -44,6 +44,28 @@ async def test_environment_tools_are_real_provider_schemas(artifact_query_bounda
 
 
 @pytest.mark.asyncio
+async def test_environment_schemas_explain_host_contract(artifact_query_boundary, environment):
+    toolset, _ = _tools(artifact_query_boundary, environment)
+    provider = LocalProvider(toolset)
+    schemas = {item.name: item.inputSchema for item in await provider.list_tools()}
+    listing = schemas["environment_list"]
+    build = schemas["environment_build"]
+    assert "does not select or build" in listing["description"]
+    assert "unknown" in listing["description"]
+    for schema in (listing, build):
+        description = schema["parameters"]["properties"]["requirements"]["description"]
+        for fact in ("PyPI distribution", "not import names", "URLs", "paths",
+                     "markers", "installer options"):
+            assert fact in description
+    for fact in ("wheels", "no analysis data", "immutable", "image_key", "unchanged"):
+        assert fact in build["description"]
+    fields = build["parameters"]["properties"]
+    assert "approved" in fields["base_image_key"]["description"]
+    assert "Python import names" in fields["import_modules"]["description"]
+    assert "does not install" in fields["import_modules"]["description"]
+
+
+@pytest.mark.asyncio
 async def test_environment_build_is_owned_by_the_calling_run(artifact_query_boundary, environment):
     toolset, _ = _tools(artifact_query_boundary, environment)
 
