@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from labbioagentos import ArtifactExposureClass, ArtifactRepresentation, LabBioRuntimeToolSet
+from labbioagentos import ArtifactExposureClass, ArtifactRepresentation, LabBioRuntimeToolSet, TraceEventType
 from test_c7_4_artifact_query_audit import artifact_query_boundary  # noqa: F401
 
 
@@ -40,6 +40,33 @@ async def test_sum_all_records_with_exact_filter_and_no_implicit_read_credit(art
 
 
 @pytest.mark.asyncio
+async def test_aggregate_after_delivered_page_does_not_advance_pagination(artifact_query_boundary):
+    sink, binding, ref, original = artifact_query_boundary
+    tools = LabBioRuntimeToolSet(
+        replace(binding, capability_allowlist=("artifact_query", "artifact_aggregate")),
+        original.services,
+    )
+    identifier = str(ref.artifact_id)
+    page = await tools.artifact_query(identifier, "TOP_N", 1)
+    assert page["success"]
+    tools.mark_feedback_delivered((page,))
+
+    aggregate = await tools.artifact_aggregate(identifier, "COUNT")
+    assert aggregate["success"]
+    assert aggregate["data"]["value"] == 15
+    assert [
+        item.artifact_read_receipt.scope["kind"] for item in tools.evidence_items()
+    ] == ["TABLE_PAGE", "TABLE_AGGREGATE"]
+    assert len([
+        event for event in sink.read(binding.run_id)
+        if event.event_type is TraceEventType.ARTIFACT_EXPOSED
+    ]) == 1
+
+    repeated_page = await tools.artifact_query(identifier, "TOP_N", 1)
+    assert repeated_page["error"]["error_code"] == "PAGINATION_PROGRESS_REQUIRED"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [None, "3", True])
 async def test_no_missing_or_string_or_boolean_as_zero(artifact_query_boundary, value):
     tools, identifier = setup_table(artifact_query_boundary, [{"n": 2}, {"n": value}])
@@ -59,11 +86,15 @@ async def test_empty_and_incomplete_are_not_a_successful_partial_sum(artifact_qu
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kwargs", [{"exposure_class": ArtifactExposureClass.RAW}, {"project_id": "outside"}])
-async def test_aggregation_does_not_bypass_exposure_or_workspace(artifact_query_boundary, kwargs):
+@pytest.mark.parametrize("kwargs, code", [
+    ({"exposure_class": ArtifactExposureClass.RAW}, "ARTIFACT_EXPOSURE_DENIED"),
+    ({"project_id": "outside"}, "AUTHORIZATION_DENIED"),
+])
+async def test_aggregation_does_not_bypass_exposure_or_workspace(artifact_query_boundary, kwargs, code):
     tools, identifier = setup_table(artifact_query_boundary, [{"n": 2, "private": "PRIVATE_SENTINEL"}], **kwargs)
     result = await tools.artifact_aggregate(identifier, "SUM", "n")
     assert not result["success"]
+    assert result["error"]["error_code"] == code
     assert "PRIVATE_SENTINEL" not in str(result)
 
 

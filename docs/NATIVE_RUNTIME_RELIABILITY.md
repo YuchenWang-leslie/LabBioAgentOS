@@ -7,40 +7,30 @@ Agent-authored programs, or activate a production release.
 ## Source and comparison boundary
 
 The frozen baseline is `d7b1000251ccc00656b30a96e37785dcec07e4a2`.
-Implementation uses a separate `feat/native-runtime-reliability` worktree.
-Existing configuration changes and `sandbox-docker` remain outside this work.
+Implementation now uses only the original repository and Git history; generated
+Native worktrees were removed. The pre-existing local configuration edit is
+preserved and excluded from commits and benchmark settings; `sandbox-docker`
+remains a branch.
 Source acceptance, Docker task delivery, Local Apptainer acceptance, real cluster
 acceptance and production activation are separate outcomes.
 
 The benchmark uses six task classes: autonomous annotated-H5AD analysis,
 annotation uncertainty, a minimal environment requiring Agent-selected packages,
 multi-file GOLDDEMO analysis, complete result delivery with scoped reporting, and
-durable execution-checkpoint interruption/recovery. Each class has one baseline
-and three candidate attempts, with no more than two active tasks.
-The first candidate exposed a prompt-composition defect before analysis. It is
-retained as a failed attempt on `324c66e`. An intermediate candidate on `9598e86`
-completed delivery, while independent boundary tests exposed further handoff and
-restart-contract gaps. The user authorized two extra attempts in total: six
-baselines and twenty candidates, including eighteen on the final frozen revision.
-Neither failed history nor the intermediate success replaces a final-version
-repetition.
-
-The first two attempts on `1d2188f` subsequently failed with `HANDOFF_REQUIRED`
-despite successful executions. Further launches are held until the correction
-is verified and frozen. The latest user reply authorizes additional attempts
-until validation runs through, superseding their earlier twenty-attempt limit.
-The following schedule was twenty-two candidates in total: four retained earlier
-attempts plus eighteen same-revision repetitions. This does not authorize blind
-repetition, larger per-task budgets or changes to scientific ownership.
-
-Its first two tasks on `a72c583` also failed without report delivery. Both had
-successful executions, invalid evidence selections and a subsequent provider
-usage stop. The bounded selection audit now supports exact diagnostic review;
-neither failure is evidence that the host should accept an unread observation.
-The remaining sixteen tasks were not launched. A separate feedback/accounting
-correction is being verified before another freeze. The next full schedule
-would retain all six earlier candidates and add eighteen on one corrected
-revision, for twenty-four candidates plus six baselines.
+durable execution-checkpoint interruption/recovery. Each class has one baseline;
+three independent candidate completions on one final source remain the target,
+with no more than two active tasks. Earlier failed and intermediate attempts are
+retained, not overwritten. The user subsequently authorized additional attempts
+until validation runs through; this does not authorize blind repetition, larger
+per-task budgets, weakened exposure rules or replacement of Agent scientific
+choices. As of the Freeze 8 terminal review, six baselines and fifteen candidates
+have been recorded across different source revisions. The last two candidates
+both corrected an actual execution failure and produced intact files, but ended
+`FAILED / VALIDATE / HANDOFF_REQUIRED` with no formal report. One exposed a false
+pagination response from an internal aggregate authorization read; the other
+repeated denied RAW queries despite specific feedback. Neither counts as full
+delivery or proves same-version repeatability. Exact histories and further
+freezes are tracked in the external stress-result directory, not rewritten here.
 
 `scripts/runtime_stress.py` submits ordinary tasks through the CLI. It contains no
 analysis programs or method presets. Each attempt records input hashes, task,
@@ -52,8 +42,9 @@ replay as a fresh Agent success.
 
 The configured comparison model is `mimo-v2.6-pro`, with output and phase limits
 held fixed. Analysis execution uses 4 CPU / 4 GiB for H5AD and 4 CPU / 16 GiB for
-GOLDDEMO. The historical Docker environment builder does not enforce a CPU quota:
-these analysis limits must not be represented as a limit on all task processes.
+GOLDDEMO. The original baseline Docker environment builder did not enforce a CPU
+quota; the current candidate applies a CPU quota to build and probe containers.
+These analysis limits must not be represented as a limit on every host process.
 Unknown provider token usage remains unknown; the old baseline did not expose
 per-turn tokens in its trace.
 

@@ -1,5 +1,39 @@
 # Real E2E Convergence Workplan
 
+## Original-repository Freeze 8 terminal review and narrow source corrections — 2026-10-20
+
+The generated sibling worktrees were removed after useful source changes were
+integrated into the original repository. Its pre-existing local configuration
+edit and `sandbox-docker` branch remain untouched. Freeze 8 source `63b00ac`
+passed 2163 source tests and eight real-Docker engineering checks before two
+fresh Agent attempts. Both attempts corrected a real execution failure and
+registered hash-verified outputs, but both ended `FAILED / VALIDATE /
+HANDOFF_REQUIRED` without a formal report. No scientific acceptance, Local
+Apptainer acceptance, GitHub publication or production activation follows.
+
+The cold-environment run exposed an actual contract error: `artifact_aggregate`
+performed an internal `TOP_N(1)` authorization query, which incorrectly hit
+model-facing pagination progress protection and recorded a page exposure the
+model never received. A fail-first test reproduced it. The minimal source fix
+preserves identity, workspace and exposure-policy decisions while keeping
+aggregate evidence separate from page-reading credit. A second fail-first test
+showed that the old context binder waited for the 256 KB byte cap even after
+observed token usage made the next growing request high-risk. The candidate now
+replaces only archived, rereadable old batches when remaining known tokens fall
+below the previous observed input-token count; this is best-effort context
+management, not a tokenizer or guaranteed token admission. Neither fix chooses
+evidence, methods, programs or conclusions for the Agent. The complete source
+regression after these changes is 2166 passed, 29 skipped. Real-task revalidation
+is pending and the prior failures remain unchanged.
+
+The multifile run failed for a distinct reason: after successfully reading
+generated RAW files, the Agent repeated `artifact_query` views explicitly denied
+by policy. The next request received the specific denied-view feedback. There
+is no evidence of a host permission contradiction sufficient to justify
+weakening RAW exposure; do not blindly repeat that semantic failure. See the
+external `verification/freeze8-terminal.md` and immutable attempt receipts for
+exact IDs, use, lineage and cleanup.
+
 ## Provider failure accounting and distinct-scenario review — 2026-10-20
 
 A deterministic counterexample on frozen `effd251` returned valid 21-token usage

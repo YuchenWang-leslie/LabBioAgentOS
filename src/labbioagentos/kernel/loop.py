@@ -487,9 +487,18 @@ class AgentLoop:
         ] if any(tool.name == "evidence_read" for tool in request.tools) else []
         removed_batches = []
         public_bytes, request_bytes = self._request_size(request)
+        last_input_tokens = (
+            self.observations[-1].usage.input_tokens if self.observations else None
+        )
+        consumed_tokens = self.budget_ledger.usage.tokens
+        # Observed usage is a risk signal, not an exact tokenizer for this request.
+        budget_risk = (
+            last_input_tokens is not None and consumed_tokens is not None
+            and self.budget_ledger.limits.tokens - consumed_tokens < last_input_tokens
+        )
         shift = 0
         for original_start in batch_starts[:-1]:
-            if request_bytes <= self.max_request_bytes:
+            if request_bytes <= self.max_request_bytes and not budget_risk:
                 break
             start = original_start - shift
             assistant = messages[start]

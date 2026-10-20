@@ -23,6 +23,13 @@ Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair
 JSON locally or replay tools. Missing token usage remains unknown.
 
+Archived, rereadable old tool batches can leave the active model context when
+the observed remaining token budget is below the previous request's input
+tokens, even before the request-byte cap is reached. This is a risk signal,
+not an exact next-request token estimate or guaranteed budget admission;
+unarchived evidence and the newest batch remain visible. A model can still
+exhaust its phase budget before preparing a sufficient evidence handoff.
+
 Schema-valid output can still be scientifically or semantically poor. Host
 validation enforces authority, structure, lineage, and release policy—not
 scientific usefulness.

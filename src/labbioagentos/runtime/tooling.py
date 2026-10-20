@@ -1780,13 +1780,16 @@ class LabBioRuntimeToolSet:
         aggregate observation, not as reading the underlying table pages.
         """
         def calculate():
-            # Reuse exact workspace, identity and exposure checks, not a second
-            # permissive reader. The one-row view grants no report read credit.
-            view = self._artifact_query(artifact_id, "TOP_N", 1)
+            identifier, ref, constraints = self._authorized_artifact_ref(artifact_id)
+            exposure_query = ArtifactQuery(view_type=ArtifactViewType.TOP_N, limit=1)
+            if not self.services.artifact_exposure.policy.decide(
+                ref, exposure_query, self.binding.consumer
+            ).allowed:
+                raise _ArtifactQueryFailure("ARTIFACT_EXPOSURE_DENIED", constraints)
             query = ArtifactAggregateQuery(operation=operation, field=field,
                 match_field=match_field, match_value=match_value)
-            stored = self.services.artifact_store.load_for_view(view.artifact_id)
-            return {"artifact_id": str(view.artifact_id),
+            stored = self.services.artifact_store.load_for_view(identifier)
+            return {"artifact_id": str(identifier),
                 **aggregate_records(stored.representation, query)}
         return await self._call("artifact_aggregate", calculate,
             request_ids={"artifact_id": artifact_id})
@@ -2095,7 +2098,7 @@ class LabBioRuntimeToolSet:
             return ()
         return readers
 
-    def _artifact_query(self, artifact_id: str, view_type: str, limit: int | None, offset: int = 0):
+    def _authorized_artifact_ref(self, artifact_id: str):
         identifier = coerce_artifact_id(artifact_id)
         try:
             ref = self.services.artifact_exposure.artifact_ref(
@@ -2115,6 +2118,10 @@ class LabBioRuntimeToolSet:
         constraints = ArtifactQueryConstraints.from_authorized_artifact(
             ref, exposure_policy=self.services.artifact_exposure.policy
         ).model_copy(update={"available_file_readers": self._available_generated_file_readers(identifier)})
+        return identifier, ref, constraints
+
+    def _artifact_query(self, artifact_id: str, view_type: str, limit: int | None, offset: int = 0):
+        identifier, _ref, constraints = self._authorized_artifact_ref(artifact_id)
         try:
             typed_view = ArtifactViewType(view_type)
         except ValueError as exc:

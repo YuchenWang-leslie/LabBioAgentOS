@@ -1226,6 +1226,42 @@ async def test_context_replaces_only_old_completed_batches_with_reread_reference
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("remaining_tokens,compacted", [(19, True), (899, False)])
+async def test_observed_token_budget_risk_compacts_rereadable_context_below_byte_limit(
+    remaining_tokens, compacted,
+):
+    first_id, first = _observed_batch(1)
+    _last_id, latest = _observed_batch(2)
+    loop, provider, _effects = _tool_loop((
+        ModelTurn(content="Done.", finish_reason=FinishReason.STOP,
+                  usage=TokenUsage(total_tokens=1)),
+    ), tokens=101 + remaining_tokens)
+    _enable_evidence_reader(loop)
+    observed = ModelTurn(content="Prior response.", finish_reason=FinishReason.STOP,
+                         usage=TokenUsage(input_tokens=100, output_tokens=1, total_tokens=101))
+    loop.observations.append(loop._observe(observed, 1, 0))
+    loop.budget_ledger.record_observed_usage(tokens=101, wall_time_ms=0)
+
+    await loop.run(
+        messages=(PublicMessage(role="USER", content="Keep the archived evidence available."),
+                  *first, *latest),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    request = provider.requests[0]
+    assert len(request.model_dump_json().encode("utf-8")) < 256_000
+    event = next(item for item in loop.events if item.kind == "MODEL_REQUEST_PREPARED")
+    assert event.numeric_facts["compacted_batches"] == int(compacted)
+    assert request.messages[-2:] == latest
+    if compacted:
+        marker = json.loads(request.messages[1].content)
+        assert marker["observations"][0]["observation_id"] == first_id
+        assert marker["reread_tool"] == "evidence_read"
+    else:
+        assert request.messages[1:3] == first
+
+
+@pytest.mark.asyncio
 async def test_context_compaction_handles_dispatcher_generated_feedback_end_to_end():
     effects = []
     registry = ToolRegistry()
