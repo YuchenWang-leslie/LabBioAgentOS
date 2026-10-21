@@ -1,5 +1,33 @@
 # Real E2E Convergence Workplan
 
+## C14 provider API format compatibility opened — 2026-10-21
+
+MOHAN CUI opened C14 on branch `feat/api-compat` from `d7b1000`. Behind the
+existing Native `ModelProvider` port, C14 adds four wire formats:
+
+- OpenAI Chat Completions, with an official dialect alongside the existing
+  vendor dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API.
+
+A runtime uses exactly one format, chosen only in trusted configuration.
+
+C14 also changes four things around the provider:
+
+- provider credentials move out of the process environment;
+- remote endpoints require https, and the provider env file must be mode 0600;
+- the runtime identity records the endpoint scheme and host;
+- transient provider failures get a bounded, recorded retry.
+
+The [gap memo](C14_API_COMPAT_GAP_MEMO.md) and
+[decisions](C14_API_COMPAT_DECISIONS.md) are the only C14 changes so far. No
+source has changed, and no acceptance level is claimed. The source baseline is
+`1756 passed, 24 skipped`.
+
+Once C14 source lands, the runtime revision changes, so runs started earlier
+cannot continue. Production remains release `native-p8-20261016T085718Z`.
+
 ## Source stress repair and fresh H5AD closure — 2026-10-19
 
 The reviewed Native source, including Scheduler + Apptainer integration, passed
