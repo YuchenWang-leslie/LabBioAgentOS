@@ -285,7 +285,7 @@ class _SseFramer:
                 self._partial.append(tail)
         events = [event for line in lines if (event := self._line(line)) is not None]
         if final and self._data:
-            raise ProviderProtocolError(validation_fields=("stream.incomplete",))
+            raise ProviderTransportError(validation_type="STREAM_INCOMPLETE")
         return events
 
     def _line(self, line: str) -> SseEvent | None:

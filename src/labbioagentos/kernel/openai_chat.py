@@ -143,8 +143,10 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
                     call["function"][key] += fragment
         if choice.get("finish_reason") is not None:
             finish_reason = choice["finish_reason"]
-    if not done or finish_reason is None:
-        raise ProviderProtocolError(validation_fields=("stream.incomplete",))
+    if not done:
+        raise ProviderTransportError(validation_type="STREAM_INCOMPLETE")
+    if finish_reason is None:
+        raise ProviderProtocolError(validation_fields=("stream.finish_reason",))
     if sorted(tool_calls) != list(range(len(tool_calls))):
         raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
     return {
@@ -203,16 +205,10 @@ class OpenAICompatibleChatProvider:
                 timeout_seconds=timeout,
                 max_response_bytes=response_byte_cap(request.max_output_tokens),
             )
-        except ProviderTransportError:
+        except (ProviderTransportError, ProviderProtocolError):
             raise
-        except Exception as exc:
-            raise ProviderTransportError(
-                validation_type="ADAPTER",
-                transport_retries=(
-                    exc.transport_retries
-                    if isinstance(exc, ProviderProtocolError) else ()
-                ),
-            ) from None
+        except Exception:
+            raise ProviderTransportError(validation_type="ADAPTER") from None
         try:
             return self._parse_response(request, result.body, result.retries)
         except ProviderProtocolError as exc:

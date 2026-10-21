@@ -512,7 +512,70 @@ async def test_chat_adapter_keeps_retries_on_every_final_error(monkeypatch):
     provider, binding = _chat_provider(
         monkeypatch, httpx.Response(503), _stream({"id": "request-1"}),
     )
-    with pytest.raises(ProviderTransportError) as malformed:
+    with pytest.raises(ProviderProtocolError) as malformed:
         await provider.generate(_request(binding))
-    assert malformed.value.validation_type == "ADAPTER"
+    assert malformed.value.validation_fields == ("stream.choices",)
     assert malformed.value.transport_retries == (ProviderRetry(category="HTTP_503", wait_ms=500),)
+
+
+def _raw_stream(body):
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+
+
+@pytest.mark.parametrize("body,fields", [
+    ('data: {"id":"r"}\n\ndata: [DONE]\n\n', ("stream.choices",)),
+    ('data: {"choices":[{"index":1,"delta":{}}]}\n\ndata: [DONE]\n\n', ("stream.choices",)),
+    ('data: {"choices":[{"index":0,"delta":{"content":7}}]}\n\ndata: [DONE]\n\n',
+     ("stream.delta.content",)),
+    ('data: {"choices":[{"index":0,"delta":{"content":"x"}}]}\n\ndata: [DONE]\n\n',
+     ("stream.finish_reason",)),
+], ids=["no-choices", "wrong-index", "content-type", "no-finish-reason"])
+@pytest.mark.asyncio
+async def test_stream_format_errors_are_protocol_errors(monkeypatch, body, fields):
+    provider, binding = _chat_provider(monkeypatch, _raw_stream(body))
+
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding))
+
+    assert caught.value.validation_fields == fields
+
+
+@pytest.mark.parametrize("body", [
+    'data: {"choices":[{"index":0,"delta":{"content":"x"},"finish_reason":"stop"}]}\n\n',
+    'data: {"choices":[{"index":0,"delta":{"content":"x"}',
+], ids=["no-done", "mid-event"])
+@pytest.mark.asyncio
+async def test_truncated_stream_is_a_transport_error_and_not_retried(monkeypatch, body):
+    provider, binding = _chat_provider(
+        monkeypatch, _raw_stream(body), _stream(_content_chunk("unreachable")),
+    )
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await provider.generate(_request(binding))
+
+    assert caught.value.validation_type == "STREAM_INCOMPLETE"
+    assert caught.value.transport_retries == ()
+
+
+@pytest.mark.asyncio
+async def test_capability_stops_on_a_stream_format_error_as_a_protocol_stop(monkeypatch):
+    from test_agent_loop import _tool_loop
+
+    loop, _provider, effects = _tool_loop(())
+    loop.provider, _binding_value = _chat_provider(
+        monkeypatch,
+        _stream({"id": "request-1", "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call-1", "type": "function",
+            "function": {"name": "record_value", "arguments": '{"value":"kept"}'},
+        }]}, "finish_reason": "tool_calls"}]}),
+        _raw_stream('data: {"id":"request-2"}\n\ndata: [DONE]\n\n'),
+    )
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    assert effects == [{"value": "kept", "nested": None}]
+    assert result.termination == "PROVIDER_PROTOCOL_STOP"
+    assert result.events[-1].reason_code == "PROVIDER_PROTOCOL_ERROR"

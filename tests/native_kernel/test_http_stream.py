@@ -553,13 +553,16 @@ async def test_sse_framing_accepts_every_line_ending_and_split_point(monkeypatch
 
 @pytest.mark.parametrize("body", [b"data: partial\n", b"data: partial", b"event: x\ndata: partial\r"])
 async def test_sse_stream_ending_inside_an_event_is_incomplete(monkeypatch, body):
-    _route(monkeypatch, Provider(lambda: httpx.Response(200, content=body)))
-    transport, _sleeps = _transport(max_retries=2)
+    provider = Provider(lambda: httpx.Response(200, content=body))
+    _route(monkeypatch, provider)
+    transport, sleeps = _transport(max_retries=2)
 
-    with pytest.raises(ProviderProtocolError) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         await _post(transport, decode=_collect)
 
-    assert caught.value.validation_fields == ("stream.incomplete",)
+    assert caught.value.validation_type == "STREAM_INCOMPLETE"
+    assert len(provider.requests) == 1
+    assert sleeps.waits == []
 
 
 @pytest.mark.parametrize("body", [b"data: \xff\n\n", b"data: \xe4\xb8"])

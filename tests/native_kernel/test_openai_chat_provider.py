@@ -144,11 +144,12 @@ async def test_http_transport_rejects_truncated_stream(monkeypatch):
         )), **kwargs),
     )
 
-    with pytest.raises(ProviderProtocolError):
+    with pytest.raises(ProviderTransportError) as caught:
         await HttpxChatCompletionTransport().post_json(
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
         )
+    assert caught.value.validation_type == "STREAM_INCOMPLETE"
 
 
 @pytest.mark.asyncio
