@@ -141,6 +141,16 @@ measures the bytes per output token of each format against real endpoints and
 records them in the acceptance document. A setting is reconsidered only if
 those measurements approach the allowance.
 
+The cap also bounds decompression. Requests always send
+`Accept-Encoding: gzip`, whatever compression packages are installed. The
+transport inflates gzip itself and never lets one inflation step produce more
+than the remaining cap, so a small compressed body cannot expand in memory
+first. An uncompressed body is read as is. Any other content encoding fails
+with `UNSUPPORTED_ENCODING`, and a corrupt or truncated gzip body fails with
+`INVALID_ENCODING`. Neither is retried. MOHAN CUI chose this on 2026-10-21.
+Before that, httpx inflated each received chunk in one step, and it also
+accepted brotli whenever the `brotli` package happened to be installed.
+
 ## Recorded trade-offs
 
 - Strict parsing: unknown blocks, events or finish reasons fail rather than

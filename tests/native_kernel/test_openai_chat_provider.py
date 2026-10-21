@@ -43,6 +43,18 @@ class RecordingTransport:
         return HttpStreamResult(body=deepcopy(response))
 
 
+def _on_the_wire(response):
+    """An unread copy of a pre-read test response, as the network delivers it."""
+
+    if not response.is_stream_consumed:
+        return response
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        stream=httpx.ByteStream(response.content),
+    )
+
+
 @pytest.mark.asyncio
 async def test_http_transport_provider_only_proxy_policy(monkeypatch):
     real_client = httpx.AsyncClient
@@ -51,7 +63,7 @@ async def test_http_transport_provider_only_proxy_policy(monkeypatch):
     def client(**kwargs):
         options.append(kwargs["trust_env"])
         return real_client(transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json={"ok": True})
+            lambda _request: _on_the_wire(httpx.Response(200, json={"ok": True}))
         ), **kwargs)
 
     monkeypatch.setattr("labbioagentos.kernel.openai_chat.httpx.AsyncClient", client)
@@ -79,7 +91,7 @@ async def test_http_transport_reports_only_safe_failure_class(
     async def handler(_request):
         if isinstance(response_or_error, Exception):
             raise response_or_error
-        return response_or_error
+        return _on_the_wire(response_or_error)
 
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
@@ -109,7 +121,9 @@ async def test_http_transport_reassembles_streamed_tool_call_and_usage(monkeypat
 
     def handler(request):
         assert request.read() == b'{"model":"fixture","stream":true}'
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+        return _on_the_wire(httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=body,
+        ))
 
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
@@ -138,9 +152,11 @@ async def test_http_transport_rejects_truncated_stream(monkeypatch):
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(
-            200, headers={"content-type": "text/event-stream"},
-            text='data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+        lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _request: _on_the_wire(
+            httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                text='data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            )
         )), **kwargs),
     )
 

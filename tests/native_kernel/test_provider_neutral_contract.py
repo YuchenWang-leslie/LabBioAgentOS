@@ -446,12 +446,25 @@ async def test_loop_records_retries_before_a_capability_stop():
     assert result.events[-1].status_code == "STOPPED"
 
 
+def _on_the_wire(response):
+    """An unread copy of a pre-read test response, as the network delivers it."""
+
+    if not response.is_stream_consumed:
+        return response
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        stream=httpx.ByteStream(response.content),
+    )
+
+
 def _chat_provider(monkeypatch, *responses, real_time=False):
     outcomes = list(responses)
     monkeypatch.setattr(
         "labbioagentos.kernel.http_stream.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(
-            transport=httpx.MockTransport(lambda _request: outcomes.pop(0)), **kwargs,
+            transport=httpx.MockTransport(lambda _request: _on_the_wire(outcomes.pop(0))),
+            **kwargs,
         ),
     )
     clock = [1_000.0]

@@ -258,6 +258,9 @@ Step 1 - shared transport
 2. A per-response byte cap of `8 MiB + 1 KiB x max_output_tokens`
    (DECIDED-C14-8) applies to the decoded bytes of streamed and non-streamed
    bodies. Exceeding it is a transport error, and no partial turn is returned.
+   Requests accept only gzip, which the transport inflates in steps bounded by
+   the remaining cap; a test shows that a 64 MiB gzip bomb never raises memory
+   use far above a 1 MiB cap.
 3. Any 3xx response is a transport error. Tests prove that no request reaches
    the redirect target for each credential header form.
 4. Retry follows DECIDED-C14-3. It applies only to HTTP 429, 529 and 5xx,

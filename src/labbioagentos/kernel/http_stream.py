@@ -8,7 +8,9 @@ import json
 import math
 import random
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+import zlib
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
+from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -38,6 +40,10 @@ STREAM_RETRY_CATEGORIES = frozenset({"STREAM_OVERLOADED", "STREAM_RATE_LIMITED"}
 DEADLINE_MARGIN_SECONDS = 0.5
 
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# DECIDED-C14-8: only gzip is requested, and the transport inflates it itself so
+# the byte cap also bounds decompression. "x-gzip" is gzip's registered alias.
+_GZIP_ENCODINGS = frozenset({"gzip", "x-gzip"})
+_GZIP_WBITS = zlib.MAX_WBITS | 16
 
 
 def response_byte_cap(max_output_tokens: int) -> int:
@@ -173,6 +179,7 @@ class HttpStreamTransport:
             ).encode("utf-8")
             request_headers = httpx.Headers(headers)
             request_headers.setdefault("Content-Type", "application/json")
+            request_headers["Accept-Encoding"] = "gzip"
             async with httpx.AsyncClient(
                 follow_redirects=False, trust_env=self.trust_env
             ) as client:
@@ -240,13 +247,13 @@ class HttpStreamTransport:
                     timeout=httpx.Timeout(remaining),
                 ) as response:
                     response.raise_for_status()
-                    budget = _ByteBudget(max_response_bytes)
+                    chunks = _decoded_chunks(response, _ByteBudget(max_response_bytes))
                     if decode_stream is None:
-                        return _json_object(b"".join([
-                            budget.spend(chunk)
-                            async for chunk in response.aiter_bytes()
-                        ]))
-                    events = _sse_events(response, budget)
+                        async with aclosing(chunks):
+                            return _json_object(b"".join([
+                                chunk async for chunk in chunks
+                            ]))
+                    events = _sse_events(chunks)
                     try:
                         return await decode_stream(events)
                     finally:
@@ -273,6 +280,55 @@ class _ByteBudget:
         if self.remaining < 0:
             raise ProviderTransportError(validation_type="RESPONSE_TOO_LARGE")
         return chunk
+
+
+class _BoundedGzip:
+    """gzip inflation whose output never exceeds the response byte budget."""
+
+    def __init__(self, budget: _ByteBudget):
+        self._budget = budget
+        self._inflater = zlib.decompressobj(wbits=_GZIP_WBITS)
+        self._started = False
+
+    def feed(self, data: bytes) -> Iterator[bytes]:
+        try:
+            while data:
+                self._started = True
+                if self._inflater.eof:
+                    # RFC 1952 allows several members in one body.
+                    self._inflater = zlib.decompressobj(wbits=_GZIP_WBITS)
+                piece = self._inflater.decompress(data, self._budget.remaining + 1)
+                if piece:
+                    yield self._budget.spend(piece)
+                data = (
+                    self._inflater.unused_data if self._inflater.eof
+                    else self._inflater.unconsumed_tail
+                )
+        except zlib.error:
+            raise ProviderTransportError(validation_type="INVALID_ENCODING") from None
+
+    def finish(self) -> None:
+        if self._started and not self._inflater.eof:
+            raise ProviderTransportError(validation_type="INVALID_ENCODING")
+
+
+async def _decoded_chunks(
+    response: httpx.Response, budget: _ByteBudget
+) -> AsyncIterator[bytes]:
+    """Yield the decoded body, spending every decoded byte from ``budget``."""
+
+    encoding = response.headers.get("content-encoding", "").strip().lower()
+    if encoding in {"", "identity"}:
+        async for chunk in response.aiter_raw():
+            yield budget.spend(chunk)
+        return
+    if encoding not in _GZIP_ENCODINGS:
+        raise ProviderTransportError(validation_type="UNSUPPORTED_ENCODING")
+    inflater = _BoundedGzip(budget)
+    async for chunk in response.aiter_raw():
+        for piece in inflater.feed(chunk):
+            yield piece
+    inflater.finish()
 
 
 def _json_object(body: bytes) -> dict[str, Any]:
@@ -330,13 +386,12 @@ class _SseFramer:
         return None
 
 
-async def _sse_events(
-    response: httpx.Response, budget: _ByteBudget
-) -> AsyncIterator[SseEvent]:
+async def _sse_events(chunks: AsyncIterator[bytes]) -> AsyncIterator[SseEvent]:
     framer = _SseFramer()
-    async for chunk in response.aiter_bytes():
-        for event in framer.feed(budget.spend(chunk)):
-            yield event
+    async with aclosing(chunks):
+        async for chunk in chunks:
+            for event in framer.feed(chunk):
+                yield event
     for event in framer.feed(b"", final=True):
         yield event
 

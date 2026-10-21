@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import gzip
 import socket
+import tracemalloc
+import zlib
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from uuid import uuid4
@@ -75,6 +77,18 @@ class Chunks(httpx.AsyncByteStream):
             yield part
 
 
+def _on_the_wire(response):
+    """An unread copy of a pre-read test response, as the network delivers it."""
+
+    if not response.is_stream_consumed:
+        return response
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        stream=httpx.ByteStream(response.content),
+    )
+
+
 class Provider:
     """Scripted MockTransport handler that records every request it receives."""
 
@@ -87,7 +101,7 @@ class Provider:
         outcome = self.outcomes.pop(0) if len(self.outcomes) > 1 else self.outcomes[0]
         if isinstance(outcome, Exception):
             raise outcome
-        return outcome() if callable(outcome) else outcome
+        return _on_the_wire(outcome() if callable(outcome) else outcome)
 
 
 def _route(monkeypatch, provider):
@@ -180,7 +194,7 @@ def test_byte_cap_scales_with_requested_output_tokens():
     (None, lambda: httpx.Response(200, json={"text": "x" * 2_000})),
     (None, lambda: httpx.Response(
         200, headers={"content-encoding": "gzip"},
-        content=gzip.compress(b'{"text":"' + b"x" * 100_000 + b'"}'),
+        stream=Chunks(gzip.compress(b'{"text":"' + b"x" * 100_000 + b'"}')),
     )),
 ], ids=["many-events", "one-unterminated-line", "json-body", "gzip-decoded"])
 async def test_byte_cap_rejects_oversized_response(monkeypatch, decode, response):
@@ -516,8 +530,9 @@ async def test_deadline_ends_a_stalled_attempt_with_its_retry_records(monkeypatc
     transport, _sleeps = _transport(max_retries=2, clock=clock)
 
     with pytest.raises(KernelDeadlineExceededError) as caught:
-        # 0.2 s of real time remain once the margin is taken off.
-        await _post(transport, deadline=1_000.7, decode=_collect)
+        # 0.2 s of real time remain once the margin is taken off; the outer
+        # limit only turns a missing deadline into a failure instead of a hang.
+        await asyncio.wait_for(_post(transport, deadline=1_000.7, decode=_collect), 5)
 
     assert caught.value.transport_retries == (ProviderRetry(category="HTTP_503", wait_ms=0),)
     assert len(provider.requests) == 2
@@ -565,6 +580,114 @@ async def test_retry_resends_the_identical_request_with_remaining_time(monkeypat
     assert first.headers["content-type"] == "application/json"
     assert first.extensions["timeout"]["read"] == 100.0
     assert second.extensions["timeout"]["read"] == 96.0
+
+
+# Content encoding (DECIDED-C14-8)
+
+
+def _gzip_bomb(size):
+    deflate = zlib.compressobj(9, zlib.DEFLATED, zlib.MAX_WBITS | 16)
+    block = bytes(1024 * 1024)
+    parts = [deflate.compress(block) for _ in range(size // len(block))]
+    return b"".join([*parts, deflate.flush()])
+
+
+async def test_request_asks_only_for_gzip(monkeypatch):
+    provider = Provider(_ok)
+    _route(monkeypatch, provider)
+    transport, _sleeps = _transport()
+
+    await _post(transport, headers={"Authorization": "Bearer key", "Accept-Encoding": "br"})
+
+    assert provider.requests[0].headers.get_list("accept-encoding") == ["gzip"]
+
+
+@pytest.mark.parametrize("encoding", [None, "identity", "gzip", "x-gzip", "GZIP"])
+@pytest.mark.parametrize("split", ["whole", "bytes"])
+async def test_identity_and_gzip_bodies_decode(monkeypatch, encoding, split):
+    text = "data: first\n\ndata: caf\u00e9\n\n".encode("utf-8")
+    raw = gzip.compress(text) if encoding not in {None, "identity"} else text
+    parts = (raw,) if split == "whole" else tuple(raw[i:i + 1] for i in range(len(raw)))
+    headers = {} if encoding is None else {"content-encoding": encoding}
+    _route(monkeypatch, Provider(lambda: httpx.Response(200, headers=headers, stream=Chunks(*parts))))
+    transport, _sleeps = _transport()
+
+    result = await _post(transport, decode=_collect)
+
+    assert result.body == {"events": [(None, "first"), (None, "caf\u00e9")]}
+
+
+async def test_gzip_body_may_hold_several_members(monkeypatch):
+    raw = gzip.compress(b'{"ok":') + gzip.compress(b"true}")
+    _route(monkeypatch, Provider(lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=Chunks(raw),
+    )))
+    transport, _sleeps = _transport()
+
+    result = await _post(transport)
+
+    assert result.body == {"ok": True}
+
+
+@pytest.mark.parametrize("encoding", ["br", "zstd", "deflate", "compress", "gzip, br", "gzip, gzip"])
+async def test_other_encodings_are_rejected_without_retry(monkeypatch, encoding):
+    provider = Provider(lambda: httpx.Response(
+        200, headers={"content-encoding": encoding}, stream=Chunks(b"opaque"),
+    ))
+    _route(monkeypatch, provider)
+    transport, sleeps = _transport(max_retries=2)
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await _post(transport, decode=_collect)
+
+    assert caught.value.validation_type == "UNSUPPORTED_ENCODING"
+    assert len(provider.requests) == 1
+    assert sleeps.waits == []
+
+
+VALID_GZIP = gzip.compress(b'{"ok":true}')
+
+
+@pytest.mark.parametrize("raw", [
+    VALID_GZIP[:-8],
+    VALID_GZIP[:10] + b"not deflate data",
+    VALID_GZIP + b"trailing",
+    b"plain text",
+], ids=["truncated", "corrupt", "trailing-bytes", "not-gzip"])
+async def test_corrupt_gzip_is_rejected_without_retry(monkeypatch, raw):
+    provider = Provider(lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=Chunks(raw),
+    ))
+    _route(monkeypatch, provider)
+    transport, _sleeps = _transport(max_retries=2)
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await _post(transport)
+
+    assert caught.value.validation_type == "INVALID_ENCODING"
+    assert len(provider.requests) == 1
+
+
+@pytest.mark.parametrize("decode", [None, _collect])
+async def test_gzip_bomb_never_inflates_past_the_cap(monkeypatch, decode):
+    bomb = _gzip_bomb(64 * MIB)
+    assert len(bomb) < MIB // 8
+    _route(monkeypatch, Provider(lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, stream=Chunks(bomb),
+    )))
+    transport, _sleeps = _transport()
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(ProviderTransportError) as caught:
+            await _post(transport, limit=MIB, decode=decode)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert caught.value.validation_type == "RESPONSE_TOO_LARGE"
+    # The 64 MiB body is never inflated; memory stays near the 1 MiB cap.
+    assert peak < 8 * MIB
 
 
 # SSE framing and strict decoding
