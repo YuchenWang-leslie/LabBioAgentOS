@@ -18,7 +18,11 @@ from typing import Any
 import httpx
 
 from .contracts import ProviderRetry
-from .errors import ProviderProtocolError, ProviderTransportError
+from .errors import (
+    KernelDeadlineExceededError,
+    ProviderProtocolError,
+    ProviderTransportError,
+)
 
 # DECIDED-C14-8: a stream may frame every generated token as its own event, so
 # the cap is a fixed allowance plus a per-output-token allowance.
@@ -28,6 +32,10 @@ RESPONSE_BYTES_PER_OUTPUT_TOKEN = 1024
 DEFAULT_MAX_RETRIES = 2
 MAX_RETRIES_LIMIT = 10
 STREAM_RETRY_CATEGORIES = frozenset({"STREAM_OVERLOADED", "STREAM_RATE_LIMITED"})
+# An attempt ends this long before the request deadline, so the deadline outcome
+# and its retry records reach the loop before the loop's own deadline
+# enforcement cancels the call.
+DEADLINE_MARGIN_SECONDS = 0.5
 
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 
@@ -174,7 +182,11 @@ class HttpStreamTransport:
                             client, url, request_headers, body,
                             deadline_monotonic, max_response_bytes, decode_stream,
                         )
-                    except (ProviderProtocolError, ProviderTransportError) as exc:
+                    except (
+                        KernelDeadlineExceededError,
+                        ProviderProtocolError,
+                        ProviderTransportError,
+                    ) as exc:
                         exc.transport_retries = tuple(retries)
                         raise
                     except Exception as exc:
@@ -188,7 +200,8 @@ class HttpStreamTransport:
                         if (
                             not retryable
                             or len(retries) >= self.retry.max_retries
-                            or self._clock() + wait >= deadline_monotonic
+                            or self._clock() + wait
+                            >= deadline_monotonic - DEADLINE_MARGIN_SECONDS
                         ):
                             raise ProviderTransportError(
                                 validation_type=category,
@@ -200,7 +213,11 @@ class HttpStreamTransport:
                         await self._sleep(wait)
                     else:
                         return HttpStreamResult(body=value, retries=tuple(retries))
-        except (ProviderProtocolError, ProviderTransportError):
+        except (
+            KernelDeadlineExceededError,
+            ProviderProtocolError,
+            ProviderTransportError,
+        ):
             raise
         except Exception as exc:
             raise ProviderTransportError(
@@ -212,23 +229,32 @@ class HttpStreamTransport:
         decode_stream,
     ) -> Mapping[str, Any]:
         remaining = deadline_monotonic - self._clock()
-        if remaining <= 0:
-            raise ProviderTransportError(validation_type="TIMEOUT")
-        async with client.stream(
-            "POST", url, content=body, headers=headers,
-            timeout=httpx.Timeout(remaining),
-        ) as response:
-            response.raise_for_status()
-            budget = _ByteBudget(max_response_bytes)
-            if decode_stream is None:
-                return _json_object(b"".join([
-                    budget.spend(chunk) async for chunk in response.aiter_bytes()
-                ]))
-            events = _sse_events(response, budget)
-            try:
-                return await decode_stream(events)
-            finally:
-                await events.aclose()
+        if remaining <= DEADLINE_MARGIN_SECONDS:
+            raise KernelDeadlineExceededError()
+        try:
+            # One total limit for the whole attempt. The per-phase httpx limits
+            # run to the deadline itself, so this one always fires first.
+            async with asyncio.timeout(remaining - DEADLINE_MARGIN_SECONDS) as scope:
+                async with client.stream(
+                    "POST", url, content=body, headers=headers,
+                    timeout=httpx.Timeout(remaining),
+                ) as response:
+                    response.raise_for_status()
+                    budget = _ByteBudget(max_response_bytes)
+                    if decode_stream is None:
+                        return _json_object(b"".join([
+                            budget.spend(chunk)
+                            async for chunk in response.aiter_bytes()
+                        ]))
+                    events = _sse_events(response, budget)
+                    try:
+                        return await decode_stream(events)
+                    finally:
+                        await events.aclose()
+        except TimeoutError:
+            if scope.expired():
+                raise KernelDeadlineExceededError() from None
+            raise
 
     def _backoff(self, retry_index: int) -> float:
         delay = min(

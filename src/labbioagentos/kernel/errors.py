@@ -117,11 +117,13 @@ class NoObservableProgressError(KernelContractError):
 
 
 class KernelDeadlineExceededError(KernelContractError):
-    def __init__(self):
+    def __init__(self, *, transport_retries: tuple[ProviderRetry, ...] = ()):
         super().__init__(
             "KERNEL_DEADLINE_EXCEEDED",
             "The kernel invocation deadline was reached",
         )
+        # Provider attempts discarded before the deadline, for the loop to record.
+        self.transport_retries = transport_retries
 
 
 class IncompleteProviderResponseError(KernelContractError):

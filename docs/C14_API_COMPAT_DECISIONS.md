@@ -72,6 +72,14 @@ SDKs. The retry code lands in step 1 with zero retries by default. The
 default becomes two in step 2, together with retry recording, so no commit
 retries without recording it.
 
+The transport enforces the request deadline itself. Each attempt has one
+total limit that ends 0.5 seconds before the deadline, and no attempt starts
+or retry waits inside that margin. The deadline outcome therefore reaches the
+loop with the retries that preceded it. The loop still cancels a provider
+call at the deadline, as a backstop for providers that ignore it. MOHAN CUI
+decided this on 2026-10-21, after step 2 showed that a call cancelled by the
+loop lost its retry records.
+
 ## DECIDED-C14-4 - Remote endpoints require https
 
 A remote endpoint must use https. Plain http is accepted only for loopback

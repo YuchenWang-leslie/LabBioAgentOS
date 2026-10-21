@@ -25,6 +25,7 @@ from .contracts import (
 )
 from .continuation import PrivateContinuationStore
 from .errors import (
+    KernelDeadlineExceededError,
     ProviderBindingMismatchError,
     ProviderProtocolError,
     ProviderTransportError,
@@ -205,7 +206,11 @@ class OpenAICompatibleChatProvider:
                 timeout_seconds=timeout,
                 max_response_bytes=response_byte_cap(request.max_output_tokens),
             )
-        except (ProviderTransportError, ProviderProtocolError):
+        except (
+            KernelDeadlineExceededError,
+            ProviderTransportError,
+            ProviderProtocolError,
+        ):
             raise
         except Exception:
             raise ProviderTransportError(validation_type="ADAPTER") from None

@@ -265,7 +265,9 @@ Step 1 - shared transport
    rate limiting. It honors `retry-after`, caps attempts, and never waits past
    `deadline_monotonic`. It resends the identical request to the identical
    endpoint and model. Other statuses (400, 401, 403, 404 and similar) fail
-   at once. Until criterion 8 holds, the default is zero retries.
+   at once. Until criterion 8 holds, the default is zero retries. Each
+   attempt has one total limit that ends 0.5 seconds before the deadline, so
+   a slow stream cannot outlast it.
 
 Step 2 - neutral contract
 
@@ -285,8 +287,9 @@ Step 2 - neutral contract
    final error. The loop records each one as a public kernel event, and the
    stage projects these events into the run trace. `model-boundaries.jsonl`
    holds no per-turn provider facts, so retries are not written there.
-   `PublicMessage` is unchanged. With recording in place, the default
-   becomes two retries (DECIDED-C14-3).
+   Retries are also recorded when the request deadline ends the final
+   attempt. `PublicMessage` is unchanged. With recording in place, the
+   default becomes two retries (DECIDED-C14-3).
 
 Step 3 - OpenAI Chat dialects
 

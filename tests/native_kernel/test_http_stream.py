@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import socket
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ import pytest
 
 from labbioagentos.kernel import (
     HttpxChatCompletionTransport,
+    KernelDeadlineExceededError,
     ModelRequest,
     OpenAICompatibleChatProvider,
     ProviderBinding,
@@ -480,7 +482,8 @@ async def test_retry_after_is_honored(monkeypatch, headers, expected):
 
 @pytest.mark.parametrize("headers,deadline", [
     ({"retry-after": "30"}, 1_010.0),
-    ({}, 1_000.3),
+    # The 0.5 s backoff would end inside the 0.5 s deadline margin.
+    ({}, 1_000.9),
 ])
 async def test_retry_never_waits_past_the_deadline(monkeypatch, headers, deadline):
     provider = Provider(lambda: httpx.Response(429, headers=headers), _ok)
@@ -493,6 +496,45 @@ async def test_retry_never_waits_past_the_deadline(monkeypatch, headers, deadlin
     assert caught.value.validation_type == "HTTP_429"
     assert len(provider.requests) == 1
     assert sleeps.waits == []
+
+
+class Stalls(httpx.AsyncByteStream):
+    """A response body that sends one event and then never finishes."""
+
+    async def __aiter__(self):
+        yield b"data: partial\n\n"
+        await asyncio.Event().wait()
+
+
+async def test_deadline_ends_a_stalled_attempt_with_its_retry_records(monkeypatch):
+    provider = Provider(
+        lambda: httpx.Response(503, headers={"retry-after": "0"}),
+        lambda: httpx.Response(200, stream=Stalls()),
+    )
+    _route(monkeypatch, provider)
+    clock = Clock(1_000.0)
+    transport, _sleeps = _transport(max_retries=2, clock=clock)
+
+    with pytest.raises(KernelDeadlineExceededError) as caught:
+        # 0.2 s of real time remain once the margin is taken off.
+        await _post(transport, deadline=1_000.7, decode=_collect)
+
+    assert caught.value.transport_retries == (ProviderRetry(category="HTTP_503", wait_ms=0),)
+    assert len(provider.requests) == 2
+    # Per-phase httpx limits run to the deadline itself, after the total limit.
+    assert provider.requests[1].extensions["timeout"]["read"] == pytest.approx(0.7)
+
+
+async def test_no_attempt_starts_inside_the_deadline_margin(monkeypatch):
+    provider = Provider(_ok)
+    _route(monkeypatch, provider)
+    transport, _sleeps = _transport()
+
+    with pytest.raises(KernelDeadlineExceededError) as caught:
+        await _post(transport, deadline=1_000.5)
+
+    assert caught.value.transport_retries == ()
+    assert provider.requests == []
 
 
 @pytest.mark.parametrize("fraction,factor", [(0.0, 1.0), (0.5, 0.875)])

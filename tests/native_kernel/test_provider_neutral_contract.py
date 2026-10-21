@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from time import monotonic
 from typing import get_args
 from uuid import uuid4
 
@@ -444,7 +446,7 @@ async def test_loop_records_retries_before_a_capability_stop():
     assert result.events[-1].status_code == "STOPPED"
 
 
-def _chat_provider(monkeypatch, *responses):
+def _chat_provider(monkeypatch, *responses, real_time=False):
     outcomes = list(responses)
     monkeypatch.setattr(
         "labbioagentos.kernel.http_stream.httpx.AsyncClient",
@@ -458,9 +460,12 @@ def _chat_provider(monkeypatch, *responses):
         clock[0] += seconds
 
     transport = HttpxChatCompletionTransport()
-    transport._http = HttpStreamTransport(
-        retry=RetryPolicy(), sleep=sleep, clock=lambda: clock[0],
-        random_fraction=lambda: 0.0,
+    transport._http = (
+        HttpStreamTransport(random_fraction=lambda: 0.0) if real_time
+        else HttpStreamTransport(
+            retry=RetryPolicy(), sleep=sleep, clock=lambda: clock[0],
+            random_fraction=lambda: 0.0,
+        )
     )
     binding = _binding()
     return OpenAICompatibleChatProvider(
@@ -555,6 +560,41 @@ async def test_truncated_stream_is_a_transport_error_and_not_retried(monkeypatch
 
     assert caught.value.validation_type == "STREAM_INCOMPLETE"
     assert caught.value.transport_retries == ()
+
+
+class Stalls(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        yield b'data: {"id":"request-2","choices":[]}\n\n'
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_deadline_stop_keeps_the_retries_that_preceded_it(monkeypatch):
+    from test_agent_loop import _tool_loop
+
+    loop, _provider, effects = _tool_loop(())
+    loop.provider, _binding_value = _chat_provider(
+        monkeypatch,
+        _stream({"id": "request-1", "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call-1", "type": "function",
+            "function": {"name": "record_value", "arguments": '{"value":"kept"}'},
+        }]}, "finish_reason": "tool_calls"}]}),
+        httpx.Response(503, headers={"retry-after": "0"}),
+        httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=Stalls()),
+        real_time=True,
+    )
+
+    result = await asyncio.wait_for(loop.run(
+        messages=(PublicMessage(role="USER", content="Run."),),
+        deadline_monotonic=monotonic() + 0.8,
+    ), timeout=5)
+
+    assert effects == [{"value": "kept", "nested": None}]
+    assert result.termination == "PROVIDER_DEADLINE_STOP"
+    assert result.events[-1].reason_code == "KERNEL_DEADLINE_EXCEEDED"
+    assert _retry_events(result.events) == [
+        ("HTTP_503", "RETRIED", {"turn_index": 2, "attempt": 1, "wait_ms": 0}),
+    ]
 
 
 @pytest.mark.asyncio
