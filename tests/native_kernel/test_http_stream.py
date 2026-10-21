@@ -6,7 +6,6 @@ import gzip
 import socket
 from datetime import datetime, timezone
 from email.utils import format_datetime
-from time import monotonic
 from uuid import uuid4
 
 import httpx
@@ -18,13 +17,14 @@ from labbioagentos.kernel import (
     OpenAICompatibleChatProvider,
     ProviderBinding,
     ProviderProtocolError,
+    ProviderRetry,
     ProviderTransportError,
     PublicMessage,
 )
 from labbioagentos.kernel.http_stream import (
     MAX_RESPONSE_BYTES,
+    HttpStreamResult,
     HttpStreamTransport,
-    RetryAttempt,
     RetryableStreamError,
     RetryPolicy,
     response_byte_cap,
@@ -213,7 +213,9 @@ async def test_provider_applies_the_cap_of_its_own_request():
 
         async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
             self.caps.append(max_response_bytes)
-            return {"choices": [{"finish_reason": "stop", "message": {"content": "done"}}]}
+            return HttpStreamResult(body={
+                "choices": [{"finish_reason": "stop", "message": {"content": "done"}}],
+            })
 
     binding = _binding()
     transport = Recording()
@@ -292,7 +294,7 @@ async def test_retryable_status_is_retried_and_recorded(monkeypatch, status):
     result = await _post(transport)
 
     assert result.body == {"ok": True}
-    assert result.retries == (RetryAttempt(category=f"HTTP_{status}", wait_ms=500),)
+    assert result.retries == (ProviderRetry(category=f"HTTP_{status}", wait_ms=500),)
     assert len(provider.requests) == 2
     assert sleeps.waits == [0.5]
 
@@ -310,7 +312,7 @@ async def test_connection_failure_is_retried(monkeypatch, failure, category):
 
     result = await _post(transport)
 
-    assert result.retries == (RetryAttempt(category=category, wait_ms=500),)
+    assert result.retries == (ProviderRetry(category=category, wait_ms=500),)
     assert len(provider.requests) == 2
 
 
@@ -325,7 +327,7 @@ async def test_connection_lost_mid_stream_discards_the_attempt(monkeypatch):
     result = await _post(transport, decode=_collect)
 
     assert result.body == {"events": [(None, "complete")]}
-    assert result.retries == (RetryAttempt(category="NETWORK_READ", wait_ms=500),)
+    assert result.retries == (ProviderRetry(category="NETWORK_READ", wait_ms=500),)
 
 
 @pytest.mark.parametrize("outcome,decode,category", [
@@ -386,7 +388,7 @@ async def test_stream_overload_event_is_retried(monkeypatch, category):
     result = await _post(transport, decode=decode)
 
     assert result.body == {"events": [(None, "complete")]}
-    assert result.retries == (RetryAttempt(category=category, wait_ms=500),)
+    assert result.retries == (ProviderRetry(category=category, wait_ms=500),)
 
 
 def test_stream_retry_category_is_bounded():
@@ -423,21 +425,26 @@ async def test_attempts_are_capped(monkeypatch):
     assert sleeps.waits == [0.5, 1.0]
 
 
-async def test_default_policy_never_retries(monkeypatch):
+async def test_default_policy_retries_twice(monkeypatch):
     provider = Provider(lambda: httpx.Response(503))
     _route(monkeypatch, provider)
+    clock = Clock()
+    sleeps = Sleeps(clock)
 
-    assert RetryPolicy().max_retries == 0
-    with pytest.raises(ProviderTransportError):
-        await HttpStreamTransport().post(
-            url=URL, headers={}, payload={}, deadline_monotonic=monotonic() + 600,
+    assert RetryPolicy().max_retries == 2
+    assert HttpxChatCompletionTransport()._http.retry == RetryPolicy()
+    with pytest.raises(ProviderTransportError) as caught:
+        await HttpStreamTransport(
+            sleep=sleeps, clock=clock, random_fraction=lambda: 0.0,
+        ).post(
+            url=URL, headers={}, payload={}, deadline_monotonic=clock.now + 600,
             max_response_bytes=MIB,
         )
-    with pytest.raises(ProviderTransportError):
-        await HttpxChatCompletionTransport().post_json(
-            url=URL, headers={}, payload={}, timeout_seconds=600,
-        )
-    assert len(provider.requests) == 2
+    assert len(provider.requests) == 3
+    assert caught.value.transport_retries == (
+        ProviderRetry(category="HTTP_503", wait_ms=500),
+        ProviderRetry(category="HTTP_503", wait_ms=1000),
+    )
 
 
 @pytest.mark.parametrize("max_retries", [-1, 11, True, 1.0, None])
@@ -468,7 +475,7 @@ async def test_retry_after_is_honored(monkeypatch, headers, expected):
     result = await _post(transport)
 
     assert sleeps.waits == [expected]
-    assert result.retries == (RetryAttempt(category="HTTP_429", wait_ms=round(expected * 1000)),)
+    assert result.retries == (ProviderRetry(category="HTTP_429", wait_ms=round(expected * 1000)),)
 
 
 @pytest.mark.parametrize("headers,deadline", [

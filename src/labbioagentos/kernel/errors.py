@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .contracts import InterruptSignal
+    from .contracts import InterruptSignal, ProviderRetry
 
 
 class KernelContractError(RuntimeError):
@@ -157,22 +157,37 @@ class FinalizationRejectedError(KernelContractError):
 
 
 class ProviderProtocolError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None, validation_fields: tuple[str, ...] = ()):
+    def __init__(
+        self,
+        *,
+        validation_type: str | None = None,
+        validation_fields: tuple[str, ...] = (),
+        transport_retries: tuple[ProviderRetry, ...] = (),
+    ):
         super().__init__(
             "PROVIDER_PROTOCOL_ERROR",
             "The provider returned an unsupported response shape",
         )
         self.validation_type = validation_type
         self.validation_fields = validation_fields
+        # Attempts discarded before this failure, for the loop to record.
+        self.transport_retries = transport_retries
 
 
 class ProviderTransportError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None):
+    def __init__(
+        self,
+        *,
+        validation_type: str | None = None,
+        transport_retries: tuple[ProviderRetry, ...] = (),
+    ):
         super().__init__(
             "PROVIDER_TRANSPORT_ERROR",
             "The provider request could not complete",
         )
         self.validation_type = validation_type
+        # Attempts discarded before this failure, for the loop to record.
+        self.transport_retries = transport_retries
 
 
 class AgentHistoryLimitError(KernelContractError):

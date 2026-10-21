@@ -17,14 +17,15 @@ from typing import Any
 
 import httpx
 
+from .contracts import ProviderRetry
 from .errors import ProviderProtocolError, ProviderTransportError
 
 # DECIDED-C14-8: a stream may frame every generated token as its own event, so
 # the cap is a fixed allowance plus a per-output-token allowance.
 RESPONSE_BYTES_BASE = 8 * 1024 * 1024
 RESPONSE_BYTES_PER_OUTPUT_TOKEN = 1024
-# DECIDED-C14-3: retry stays off until retry attempts are recorded with the turn.
-DEFAULT_MAX_RETRIES = 0
+# DECIDED-C14-3: at most three requests, as in the official SDKs.
+DEFAULT_MAX_RETRIES = 2
 MAX_RETRIES_LIMIT = 10
 STREAM_RETRY_CATEGORIES = frozenset({"STREAM_OVERLOADED", "STREAM_RATE_LIMITED"})
 
@@ -114,19 +115,11 @@ class RetryPolicy:
 
 
 @dataclass(frozen=True)
-class RetryAttempt:
-    """One discarded attempt: its bounded failure category and the wait after it."""
-
-    category: str
-    wait_ms: int
-
-
-@dataclass(frozen=True)
 class HttpStreamResult:
     """The accepted response body and the attempts discarded before it."""
 
     body: Mapping[str, Any]
-    retries: tuple[RetryAttempt, ...] = ()
+    retries: tuple[ProviderRetry, ...] = ()
 
 
 StreamDecoder = Callable[[AsyncIterator[SseEvent]], Awaitable[Mapping[str, Any]]]
@@ -164,7 +157,7 @@ class HttpStreamTransport:
     ) -> HttpStreamResult:
         if type(max_response_bytes) is not int or max_response_bytes < 1:
             raise ValueError("max_response_bytes must be a positive integer")
-        retries: list[RetryAttempt] = []
+        retries: list[ProviderRetry] = []
         try:
             # Serialized once, so every attempt sends identical bytes.
             body = json.dumps(
@@ -181,21 +174,27 @@ class HttpStreamTransport:
                             client, url, request_headers, body,
                             deadline_monotonic, max_response_bytes, decode_stream,
                         )
-                    except (ProviderProtocolError, ProviderTransportError):
+                    except (ProviderProtocolError, ProviderTransportError) as exc:
+                        exc.transport_retries = tuple(retries)
                         raise
                     except Exception as exc:
                         category, retryable, retry_after = _classify(
                             exc, self._wall_clock()
                         )
-                        if not retryable or len(retries) >= self.retry.max_retries:
-                            raise ProviderTransportError(validation_type=category) from None
                         wait = (
                             retry_after if retry_after is not None
                             else self._backoff(len(retries))
                         )
-                        if self._clock() + wait >= deadline_monotonic:
-                            raise ProviderTransportError(validation_type=category) from None
-                        retries.append(RetryAttempt(
+                        if (
+                            not retryable
+                            or len(retries) >= self.retry.max_retries
+                            or self._clock() + wait >= deadline_monotonic
+                        ):
+                            raise ProviderTransportError(
+                                validation_type=category,
+                                transport_retries=tuple(retries),
+                            ) from None
+                        retries.append(ProviderRetry(
                             category=category, wait_ms=round(wait * 1000),
                         ))
                         await self._sleep(wait)

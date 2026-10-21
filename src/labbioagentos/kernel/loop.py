@@ -167,6 +167,9 @@ class AgentLoop:
                         raise ProviderTransportError() from None
                 except (ProviderTransportError, ProviderProtocolError,
                         KernelDeadlineExceededError) as exc:
+                    self._emit_retries(
+                        getattr(exc, "transport_retries", ()), turn_index
+                    )
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -209,6 +212,7 @@ class AgentLoop:
                     raise ProviderTransportError() from None
                 finished = self.clock()
                 elapsed_ms = max(0, int(round((finished - started) * 1000)))
+                self._emit_retries(turn.transport_retries, turn_index)
                 observation = self._observe(turn, turn_index, elapsed_ms)
                 self.observations.append(observation)
                 self.argument_observations.append(())
@@ -412,6 +416,21 @@ class AgentLoop:
         return tuple(
             spec for spec in self.dispatcher.registry.specs if spec.name in allowed
         )
+
+    def _emit_retries(self, retries, turn_index: int) -> None:
+        """Record each provider attempt discarded before this turn's outcome."""
+
+        for attempt, retry in enumerate(retries, start=1):
+            self._emit(
+                KernelEventKind.PROVIDER_RETRY_OBSERVED,
+                status_code="RETRIED",
+                reason_code=retry.category,
+                numeric_facts={
+                    "turn_index": turn_index,
+                    "attempt": attempt,
+                    "wait_ms": retry.wait_ms,
+                },
+            )
 
     def _observe(self, turn, turn_index: int, elapsed_ms: int):
         if turn.tool_calls:

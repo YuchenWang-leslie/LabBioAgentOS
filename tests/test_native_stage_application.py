@@ -48,6 +48,7 @@ from labbioagentos.kernel import (
     ModelTurn,
     ProviderBinding,
     ProviderProtocolError,
+    ProviderRetry,
     ProviderTransportError,
     TokenUsage,
     ToolCall,
@@ -209,6 +210,46 @@ async def test_default_native_backend_completes_a_fake_provider_workflow(tmp_pat
     assert len(calls) == len(MAIN_PATH)
     assert all(request.tools == () for request in calls)
     assert all(request.response_schema is not None for request in calls)
+
+
+class RetryingWorkflowProvider(WorkflowProvider):
+    async def generate(self, request):
+        turn = await super().generate(request)
+        if len(self.calls) == 1:
+            return turn.model_copy(update={"transport_retries": (
+                ProviderRetry(category="HTTP_429", wait_ms=500),
+            )})
+        return turn
+
+
+@pytest.mark.asyncio
+async def test_provider_retries_reach_the_run_trace(tmp_path):
+    calls = []
+    application = LabBioApplication(
+        _configuration(tmp_path, lambda _model: RetryingWorkflowProvider(calls))
+    )
+    handle = application.create_run(_request())
+
+    outcome = await application.run(handle)
+
+    assert outcome.status is RunStatus.COMPLETED
+    events = application.trace_events(handle)
+    retried = [
+        event for event in events
+        if event.event_type is TraceEventType.PROVIDER_RETRY_OBSERVED
+    ]
+    assert len(retried) == 1
+    assert retried[0].status == "RETRIED"
+    assert retried[0].stage_id is WorkflowStage.INTAKE
+    assert retried[0].payload["reason_code"] == "HTTP_429"
+    assert retried[0].payload["numeric_facts"] == {
+        "turn_index": 1, "attempt": 1, "wait_ms": 500,
+    }
+    first_turn = next(
+        event for event in events
+        if event.event_type is TraceEventType.PROVIDER_TURN_OBSERVED
+    )
+    assert retried[0].sequence < first_turn.sequence
 
 
 @pytest.mark.asyncio

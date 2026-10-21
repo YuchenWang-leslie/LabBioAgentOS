@@ -16,11 +16,14 @@ from .contracts import (
     FinishReason,
     ModelRequest,
     ModelTurn,
+    OpenAIChatDialect,
     ProviderBinding,
+    ProviderRetry,
     PublicMessage,
     TokenUsage,
     ToolCall,
 )
+from .continuation import PrivateContinuationStore
 from .errors import (
     ProviderBindingMismatchError,
     ProviderProtocolError,
@@ -29,13 +32,13 @@ from .errors import (
 from .http_stream import (
     DEFAULT_MAX_RETRIES,
     MAX_RESPONSE_BYTES,
+    HttpStreamResult,
     HttpStreamTransport,
     RetryPolicy,
     SseEvent,
     response_byte_cap,
     strict_json_loads,
 )
-from .tooling import parse_strict_json_object
 
 
 class ChatCompletionTransport(Protocol):
@@ -47,7 +50,7 @@ class ChatCompletionTransport(Protocol):
         payload: Mapping[str, Any],
         timeout_seconds: float,
         max_response_bytes: int,
-    ) -> Mapping[str, Any]: ...
+    ) -> HttpStreamResult: ...
 
 
 class HttpxChatCompletionTransport:
@@ -62,8 +65,8 @@ class HttpxChatCompletionTransport:
     async def post_json(
         self, *, url, headers, payload, timeout_seconds,
         max_response_bytes=MAX_RESPONSE_BYTES,
-    ):
-        result = await self._http.post(
+    ) -> HttpStreamResult:
+        return await self._http.post(
             url=url,
             headers=headers,
             payload=payload,
@@ -73,8 +76,6 @@ class HttpxChatCompletionTransport:
                 _reassemble_chat_stream if payload.get("stream") is True else None
             ),
         )
-        # Retry attempts are not yet part of ModelTurn, so the default policy makes none.
-        return result.body
 
 
 async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[str, Any]:
@@ -172,10 +173,12 @@ class OpenAICompatibleChatProvider:
             raise ValueError("api_key is required")
         if binding.transport != "OPENAI_COMPATIBLE_CHAT":
             raise ValueError("Unsupported provider transport")
+        if binding.dialect != OpenAIChatDialect():
+            raise ValueError("Unsupported provider dialect")
         self._binding = binding
         self._api_key = api_key
         self._transport = transport or HttpxChatCompletionTransport()
-        self._private_reasoning: dict[tuple, str] = {}
+        self._private_reasoning = PrivateContinuationStore()
 
     @property
     def binding(self) -> ProviderBinding:
@@ -189,7 +192,7 @@ class OpenAICompatibleChatProvider:
             raise ProviderTransportError()
         payload = self._payload(request)
         try:
-            response = await self._transport.post_json(
+            result = await self._transport.post_json(
                 url=self._url(),
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
@@ -202,15 +205,22 @@ class OpenAICompatibleChatProvider:
             )
         except ProviderTransportError:
             raise
-        except Exception:
-            raise ProviderTransportError(validation_type="ADAPTER") from None
-        return self._parse_response(request, response)
+        except Exception as exc:
+            raise ProviderTransportError(
+                validation_type="ADAPTER",
+                transport_retries=(
+                    exc.transport_retries
+                    if isinstance(exc, ProviderProtocolError) else ()
+                ),
+            ) from None
+        try:
+            return self._parse_response(request, result.body, result.retries)
+        except ProviderProtocolError as exc:
+            exc.transport_retries = result.retries
+            raise
 
     def clear_invocation(self, kernel_run_id, invocation_id) -> None:
-        prefix = (kernel_run_id, invocation_id)
-        for key in tuple(self._private_reasoning):
-            if key[:2] == prefix:
-                del self._private_reasoning[key]
+        self._private_reasoning.clear(kernel_run_id, invocation_id)
 
     def _url(self) -> str:
         endpoint = self.binding.endpoint.rstrip("/")
@@ -297,17 +307,19 @@ class OpenAICompatibleChatProvider:
                 }
                 for call in message.tool_calls
             ]
-            key = self._reasoning_key(
-                request.kernel_run_id,
-                request.invocation_id,
-                message.tool_calls,
+            reasoning = self._private_reasoning.get(
+                request.kernel_run_id, request.invocation_id, message
             )
-            reasoning = self._private_reasoning.get(key) if key is not None else None
             if reasoning is not None:
                 wire["reasoning_content"] = reasoning
         return wire
 
-    def _parse_response(self, request, response: Mapping[str, Any]) -> ModelTurn:
+    def _parse_response(
+        self,
+        request,
+        response: Mapping[str, Any],
+        retries: tuple[ProviderRetry, ...] = (),
+    ) -> ModelTurn:
         component = "choices"
         try:
             choices = response["choices"]
@@ -350,15 +362,15 @@ class OpenAICompatibleChatProvider:
                 usage=usage,
                 provider_request_id=request_id,
                 private_reasoning_present=private_reasoning is not None,
+                transport_retries=retries,
             )
             if private_reasoning is not None and calls:
-                key = self._reasoning_key(
+                self._private_reasoning.put(
                     request.kernel_run_id,
                     request.invocation_id,
-                    calls,
+                    PublicMessage(role="ASSISTANT", content=content, tool_calls=calls),
+                    private_reasoning,
                 )
-                if key is not None:
-                    self._private_reasoning[key] = private_reasoning
             return turn
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
@@ -409,21 +421,4 @@ class OpenAICompatibleChatProvider:
             input_tokens=raw.get("prompt_tokens"),
             output_tokens=raw.get("completion_tokens"),
             total_tokens=raw.get("total_tokens"),
-        )
-
-    @staticmethod
-    def _reasoning_key(kernel_run_id, invocation_id, calls):
-        normalized = []
-        for call in calls:
-            try:
-                _arguments, canonical = parse_strict_json_object(
-                    call.arguments_json
-                )
-            except ValueError:
-                return None
-            normalized.append((call.call_id, call.name, canonical))
-        return (
-            kernel_run_id,
-            invocation_id,
-            tuple(normalized),
         )

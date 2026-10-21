@@ -808,6 +808,8 @@ class NativeKernelStageInvoker:
         for event in events:
             if event.kind is KernelEventKind.MODEL_TURN_OBSERVED:
                 trace_type = TraceEventType.PROVIDER_TURN_OBSERVED
+            elif event.kind is KernelEventKind.PROVIDER_RETRY_OBSERVED:
+                trace_type = TraceEventType.PROVIDER_RETRY_OBSERVED
             elif (
                 event.kind is KernelEventKind.TOOL_BATCH_VALIDATED
                 and event.status_code == "REJECTED"

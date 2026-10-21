@@ -31,6 +31,7 @@ from labbioagentos.kernel import (
     ToolDispatcher,
     ToolRegistry,
 )
+from labbioagentos.kernel.http_stream import HttpStreamResult
 
 from ..contracts import (
     AgentRunCapture,
@@ -119,7 +120,7 @@ class _RecordingTransport:
 
     async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
         self.requests.append(copy.deepcopy(payload))
-        return copy.deepcopy(next(self.responses))
+        return HttpStreamResult(body=copy.deepcopy(next(self.responses)))
 
 
 def _binding(*, thinking: bool = False) -> ProviderBinding:

@@ -20,6 +20,7 @@ from labbioagentos.kernel import (
     ToolCall,
     ToolSpec,
 )
+from labbioagentos.kernel.http_stream import HttpStreamResult
 
 
 class RecordingTransport:
@@ -39,7 +40,7 @@ class RecordingTransport:
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response
-        return deepcopy(response)
+        return HttpStreamResult(body=deepcopy(response))
 
 
 @pytest.mark.asyncio
@@ -59,7 +60,7 @@ async def test_http_transport_provider_only_proxy_policy(monkeypatch):
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture"}, timeout_seconds=1,
         )
-        assert response == {"ok": True}
+        assert response.body == {"ok": True}
     assert options == [False, True]
 
 
@@ -119,7 +120,7 @@ async def test_http_transport_reassembles_streamed_tool_call_and_usage(monkeypat
         headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
     )
 
-    assert response == {
+    assert response.body == {
         "id": "request-1",
         "choices": [{"finish_reason": "tool_calls", "message": {
             "role": "assistant", "content": None,

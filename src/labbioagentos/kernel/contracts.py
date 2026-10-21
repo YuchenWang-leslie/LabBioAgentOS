@@ -93,6 +93,7 @@ class KernelEventKind(StrEnum):
     STATE_TRANSITION = "STATE_TRANSITION"
     TASK_UPDATED = "TASK_UPDATED"
     MODEL_TURN_OBSERVED = "MODEL_TURN_OBSERVED"
+    PROVIDER_RETRY_OBSERVED = "PROVIDER_RETRY_OBSERVED"
     TOOL_BATCH_VALIDATED = "TOOL_BATCH_VALIDATED"
     TOOL_CALL_STARTED = "TOOL_CALL_STARTED"
     TOOL_CALL_FINISHED = "TOOL_CALL_FINISHED"
@@ -201,16 +202,87 @@ class ToolResult(KernelModel):
         return self
 
 
+ProviderTransport = Literal[
+    "OPENAI_COMPATIBLE_CHAT",
+    "OPENAI_RESPONSES",
+    "ANTHROPIC_MESSAGES",
+    "GEMINI_GENERATE_CONTENT",
+]
+ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+GeminiThinkingLevel = Literal["minimal", "low", "medium", "high"]
+
+
+class OpenAIChatDialect(KernelModel):
+    """Chat Completions request form; the defaults are the vendor dialect."""
+
+    kind: Literal["OPENAI_COMPATIBLE_CHAT"] = "OPENAI_COMPATIBLE_CHAT"
+    thinking_parameter: Literal["THINKING_OBJECT", "REASONING_EFFORT", "OMIT"] = (
+        "THINKING_OBJECT"
+    )
+    reasoning_effort: ReasoningEffort | None = None
+    output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
+    stream_include_usage: bool = False
+
+    @model_validator(mode="after")
+    def effort_matches_parameter(self) -> "OpenAIChatDialect":
+        if (self.thinking_parameter == "REASONING_EFFORT") != (
+            self.reasoning_effort is not None
+        ):
+            raise ValueError("reasoning_effort is required exactly for REASONING_EFFORT")
+        return self
+
+
+class OpenAIResponsesDialect(KernelModel):
+    """Responses API request form."""
+
+    kind: Literal["OPENAI_RESPONSES"] = "OPENAI_RESPONSES"
+    reasoning_effort: ReasoningEffort | None = None
+
+
+class AnthropicMessagesDialect(KernelModel):
+    """Messages API request form; thinking-off has no safe default."""
+
+    kind: Literal["ANTHROPIC_MESSAGES"] = "ANTHROPIC_MESSAGES"
+    anthropic_version: Literal["2023-06-01"] = "2023-06-01"
+    effort: Literal["low", "medium", "high"] | None = None
+    thinking_off: Literal["DISABLED", "OMIT"]
+
+
+class GeminiGenerateContentDialect(KernelModel):
+    """generateContent request form; both thinking levels are explicit."""
+
+    kind: Literal["GEMINI_GENERATE_CONTENT"] = "GEMINI_GENERATE_CONTENT"
+    thinking_level_enabled: GeminiThinkingLevel
+    thinking_level_disabled: GeminiThinkingLevel
+
+
+ProviderDialect = Annotated[
+    OpenAIChatDialect
+    | OpenAIResponsesDialect
+    | AnthropicMessagesDialect
+    | GeminiGenerateContentDialect,
+    Field(discriminator="kind"),
+]
+
+
 class ProviderBinding(KernelModel):
     """Exact immutable transport binding for one provider instance."""
 
     provider: Identifier
     model: Identifier
     endpoint: StrictStr = Field(min_length=1, max_length=2_048)
-    transport: Literal["OPENAI_COMPATIBLE_CHAT"]
+    transport: ProviderTransport
+    dialect: ProviderDialect
     thinking_mode: Literal["ENABLED", "DISABLED"]
     provider_tool_schema_strict: bool = True
     finalization_json_object: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_dialect_follows_transport(cls, data):
+        if isinstance(data, dict) and data.get("dialect") is None:
+            data = {**data, "dialect": {"kind": data.get("transport")}}
+        return data
 
     @field_validator("endpoint")
     @classmethod
@@ -218,6 +290,12 @@ class ProviderBinding(KernelModel):
         if value != value.strip() or not value.startswith(("https://", "http://")):
             raise ValueError("Provider endpoint must be an explicit HTTP(S) URL")
         return value
+
+    @model_validator(mode="after")
+    def dialect_matches_transport(self) -> "ProviderBinding":
+        if self.dialect.kind != self.transport:
+            raise ValueError("Provider dialect must match the transport")
+        return self
 
 
 class PublicMessage(KernelModel):
@@ -285,6 +363,13 @@ class ModelRequest(KernelModel):
         return self
 
 
+class ProviderRetry(KernelModel):
+    """One discarded provider attempt: its bounded failure category and wait."""
+
+    category: Identifier
+    wait_ms: int = Field(ge=0)
+
+
 class ModelTurn(KernelModel):
     """Normalized public result of one provider turn."""
 
@@ -294,6 +379,7 @@ class ModelTurn(KernelModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     provider_request_id: Identifier | None = None
     private_reasoning_present: bool = False
+    transport_retries: tuple[ProviderRetry, ...] = Field(default=(), max_length=10)
 
     @model_validator(mode="after")
     def tool_call_ids_are_unique(self) -> "ModelTurn":

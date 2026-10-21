@@ -282,8 +282,10 @@ Step 2 - neutral contract
    a test shows a value that the projected schema accepts and local validation
    rejects, and local rejection wins.
 8. Retry attempts (category and wait) are returned with the turn or the
-   final error, and the loop records them in public events and model-boundary
-   records. `PublicMessage` is unchanged. With recording in place, the default
+   final error. The loop records each one as a public kernel event, and the
+   stage projects these events into the run trace. `model-boundaries.jsonl`
+   holds no per-turn provider facts, so retries are not written there.
+   `PublicMessage` is unchanged. With recording in place, the default
    becomes two retries (DECIDED-C14-3).
 
 Step 3 - OpenAI Chat dialects
