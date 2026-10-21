@@ -67,6 +67,11 @@ Statuses that a retry cannot fix (400, 401, 403, 404 and similar) fail at
 once. A failed attempt is discarded in full and never enters the history.
 Retry is not a fallback: nothing else changes between attempts.
 
+The default is two retries, so at most three requests, as in the official
+SDKs. The retry code lands in step 1 with zero retries by default. The
+default becomes two in step 2, together with retry recording, so no commit
+retries without recording it.
+
 ## DECIDED-C14-4 - Remote endpoints require https
 
 A remote endpoint must use https. Plain http is accepted only for loopback
@@ -101,6 +106,32 @@ auditable from `RUNTIME.json`. Changing the endpoint host changes
 `runtime_revision`, so an unfinished run cannot continue against a different
 recipient. An internal gateway's hostname is visible to anyone who receives
 the run directory.
+
+## DECIDED-C14-8 - Per-response byte cap
+
+One response may hold at most `8 MiB + 1 KiB x max_output_tokens` bytes,
+computed from each request's own output limit. A stream can frame every
+generated token as a separate event, and each event carries roughly 140 to
+700 bytes of framing depending on the format. The fixed 8 MiB covers
+fixed-size content, such as the full response objects that the Responses API
+echoes and encrypted reasoning.
+
+| `max_output_tokens` | Cap |
+|---|---|
+| 8,192 (kernel default) | 16 MiB |
+| 16,384 (local default) | 24 MiB |
+| 32,768 (local maximum) | 40 MiB |
+| 131,072 (contract maximum) | 136 MiB |
+
+The cap applies to every attempt, and to streamed and non-streamed bodies
+alike. It counts bytes after decompression. Exceeding it raises the transport
+error `RESPONSE_TOO_LARGE`. No partial turn is returned, and the response is
+not retried, because it is outside DECIDED-C14-3.
+
+There is no separate setting; the cap follows `max_output_tokens`. Step 9
+measures the bytes per output token of each format against real endpoints and
+records them in the acceptance document. A setting is reconsidered only if
+those measurements approach the allowance.
 
 ## Recorded trade-offs
 

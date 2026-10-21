@@ -27,7 +27,7 @@ class RecordingTransport:
         self.responses = iter(responses)
         self.requests = []
 
-    async def post_json(self, *, url, headers, payload, timeout_seconds):
+    async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
         self.requests.append(
             {
                 "url": url,

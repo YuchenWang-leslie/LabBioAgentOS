@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from time import monotonic
 from typing import Any, Protocol
 
-import httpx
+# Not used here directly: tests reach the shared client class through
+# ``labbioagentos.kernel.openai_chat.httpx.AsyncClient``.
+import httpx  # noqa: F401
 from pydantic import ValidationError
 
 from .contracts import (
@@ -24,20 +26,16 @@ from .errors import (
     ProviderProtocolError,
     ProviderTransportError,
 )
+from .http_stream import (
+    DEFAULT_MAX_RETRIES,
+    MAX_RESPONSE_BYTES,
+    HttpStreamTransport,
+    RetryPolicy,
+    SseEvent,
+    response_byte_cap,
+    strict_json_loads,
+)
 from .tooling import parse_strict_json_object
-
-
-def _reject_duplicate_keys(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("Duplicate JSON key")
-        value[key] = item
-    return value
-
-
-def _reject_json_constant(_value):
-    raise ValueError("Non-finite JSON constant")
 
 
 class ChatCompletionTransport(Protocol):
@@ -48,147 +46,116 @@ class ChatCompletionTransport(Protocol):
         headers: Mapping[str, str],
         payload: Mapping[str, Any],
         timeout_seconds: float,
+        max_response_bytes: int,
     ) -> Mapping[str, Any]: ...
 
 
 class HttpxChatCompletionTransport:
-    """One HTTP transport with explicit environment policy and no fallback."""
+    """Chat Completions over the shared provider transport, with no fallback."""
 
-    def __init__(self, *, trust_env: bool = True):
+    def __init__(self, *, trust_env: bool = True, max_retries: int = DEFAULT_MAX_RETRIES):
         self.trust_env = trust_env
+        self._http = HttpStreamTransport(
+            trust_env=trust_env, retry=RetryPolicy(max_retries=max_retries)
+        )
 
-    async def post_json(self, *, url, headers, payload, timeout_seconds):
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout_seconds),
-                follow_redirects=False,
-                trust_env=self.trust_env,
-            ) as client:
-                async with client.stream(
-                    "POST", url, headers=dict(headers), json=dict(payload)
-                ) as response:
-                    response.raise_for_status()
-                    if payload.get("stream") is True:
-                        return await self._stream_response(response)
-                    body = await response.aread()
-            value = json.loads(
-                body.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            )
-            if not isinstance(value, dict):
-                raise ValueError("Provider response must be an object")
-            return value
-        except httpx.HTTPStatusError as exc:
-            raise ProviderTransportError(
-                validation_type=f"HTTP_{exc.response.status_code}"
-            ) from None
-        except httpx.TimeoutException:
-            raise ProviderTransportError(validation_type="TIMEOUT") from None
-        except httpx.RemoteProtocolError:
-            raise ProviderTransportError(validation_type="NETWORK_REMOTE_PROTOCOL") from None
-        except httpx.ReadError:
-            raise ProviderTransportError(validation_type="NETWORK_READ") from None
-        except httpx.TransportError:
-            raise ProviderTransportError(validation_type="NETWORK") from None
-        except (UnicodeDecodeError, ValueError):
-            raise ProviderTransportError(validation_type="INVALID_JSON") from None
-        except ProviderProtocolError:
-            raise
-        except Exception:
-            raise ProviderTransportError(validation_type="OTHER") from None
+    async def post_json(
+        self, *, url, headers, payload, timeout_seconds,
+        max_response_bytes=MAX_RESPONSE_BYTES,
+    ):
+        result = await self._http.post(
+            url=url,
+            headers=headers,
+            payload=payload,
+            deadline_monotonic=monotonic() + timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            decode_stream=(
+                _reassemble_chat_stream if payload.get("stream") is True else None
+            ),
+        )
+        # Retry attempts are not yet part of ModelTurn, so the default policy makes none.
+        return result.body
 
-    @staticmethod
-    async def _stream_response(response: httpx.Response) -> Mapping[str, Any]:
-        request_id = None
-        role = "assistant"
-        content = []
-        reasoning = []
-        tool_calls: dict[int, dict[str, Any]] = {}
-        finish_reason = None
-        usage = None
-        data_lines = []
-        done = False
-        async for line in response.aiter_lines():
-            if line.startswith("data:"):
-                data_lines.append(line[5:].lstrip(" "))
-                continue
-            if line or not data_lines:
-                continue
-            data = "\n".join(data_lines)
-            data_lines.clear()
-            if data == "[DONE]":
-                done = True
-                break
-            chunk = json.loads(
-                data, object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            )
-            if not isinstance(chunk, dict):
-                raise ValueError("Provider stream chunk must be an object")
-            chunk_id = chunk.get("id")
-            if chunk_id is not None:
-                if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
-                    raise ProviderProtocolError(validation_fields=("stream.id",))
-                request_id = chunk_id
-            if chunk.get("usage") is not None:
-                usage = chunk["usage"]
-            choices = chunk.get("choices")
-            if choices == []:
-                continue
-            if not isinstance(choices, list) or len(choices) != 1:
-                raise ProviderProtocolError(validation_fields=("stream.choices",))
-            choice = choices[0]
-            if not isinstance(choice, dict) or choice.get("index") != 0:
-                raise ProviderProtocolError(validation_fields=("stream.choices",))
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
-                raise ProviderProtocolError(validation_fields=("stream.delta",))
-            if delta.get("role") is not None:
-                role = delta["role"]
-            for key, target in (("content", content), ("reasoning_content", reasoning)):
-                fragment = delta.get(key)
+
+async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[str, Any]:
+    request_id = None
+    role = "assistant"
+    content = []
+    reasoning = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    finish_reason = None
+    usage = None
+    done = False
+    async for event in events:
+        if event.data == "[DONE]":
+            done = True
+            break
+        chunk = strict_json_loads(event.data)
+        if not isinstance(chunk, dict):
+            raise ValueError("Provider stream chunk must be an object")
+        chunk_id = chunk.get("id")
+        if chunk_id is not None:
+            if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
+                raise ProviderProtocolError(validation_fields=("stream.id",))
+            request_id = chunk_id
+        if chunk.get("usage") is not None:
+            usage = chunk["usage"]
+        choices = chunk.get("choices")
+        if choices == []:
+            continue
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise ProviderProtocolError(validation_fields=("stream.choices",))
+        choice = choices[0]
+        if not isinstance(choice, dict) or choice.get("index") != 0:
+            raise ProviderProtocolError(validation_fields=("stream.choices",))
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            raise ProviderProtocolError(validation_fields=("stream.delta",))
+        if delta.get("role") is not None:
+            role = delta["role"]
+        for key, target in (("content", content), ("reasoning_content", reasoning)):
+            fragment = delta.get(key)
+            if fragment is not None:
+                if not isinstance(fragment, str):
+                    raise ProviderProtocolError(validation_fields=(f"stream.delta.{key}",))
+                target.append(fragment)
+        for item in delta.get("tool_calls") or ():
+            if not isinstance(item, dict) or type(item.get("index")) is not int or item["index"] < 0:
+                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            call = tool_calls.setdefault(item["index"], {
+                "id": "", "type": "function", "function": {"name": "", "arguments": ""},
+            })
+            if item.get("type") is not None and item["type"] != call["type"]:
+                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            if item.get("id") is not None:
+                if not isinstance(item["id"], str):
+                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+                call["id"] += item["id"]
+            function = item.get("function") or {}
+            if not isinstance(function, dict):
+                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            for key in ("name", "arguments"):
+                fragment = function.get(key)
                 if fragment is not None:
                     if not isinstance(fragment, str):
-                        raise ProviderProtocolError(validation_fields=(f"stream.delta.{key}",))
-                    target.append(fragment)
-            for item in delta.get("tool_calls") or ():
-                if not isinstance(item, dict) or type(item.get("index")) is not int or item["index"] < 0:
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                call = tool_calls.setdefault(item["index"], {
-                    "id": "", "type": "function", "function": {"name": "", "arguments": ""},
-                })
-                if item.get("type") is not None and item["type"] != call["type"]:
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                if item.get("id") is not None:
-                    if not isinstance(item["id"], str):
                         raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                    call["id"] += item["id"]
-                function = item.get("function") or {}
-                if not isinstance(function, dict):
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                for key in ("name", "arguments"):
-                    fragment = function.get(key)
-                    if fragment is not None:
-                        if not isinstance(fragment, str):
-                            raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                        call["function"][key] += fragment
-            if choice.get("finish_reason") is not None:
-                finish_reason = choice["finish_reason"]
-        if not done or finish_reason is None or data_lines:
-            raise ProviderProtocolError(validation_fields=("stream.incomplete",))
-        if sorted(tool_calls) != list(range(len(tool_calls))):
-            raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-        return {
-            "id": request_id,
-            "choices": [{"finish_reason": finish_reason, "message": {
-                "role": role,
-                "content": "".join(content) if content else None,
-                "reasoning_content": "".join(reasoning) if reasoning else None,
-                "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
-            }}],
-            "usage": usage,
-        }
+                    call["function"][key] += fragment
+        if choice.get("finish_reason") is not None:
+            finish_reason = choice["finish_reason"]
+    if not done or finish_reason is None:
+        raise ProviderProtocolError(validation_fields=("stream.incomplete",))
+    if sorted(tool_calls) != list(range(len(tool_calls))):
+        raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+    return {
+        "id": request_id,
+        "choices": [{"finish_reason": finish_reason, "message": {
+            "role": role,
+            "content": "".join(content) if content else None,
+            "reasoning_content": "".join(reasoning) if reasoning else None,
+            "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
+        }}],
+        "usage": usage,
+    }
 
 
 class OpenAICompatibleChatProvider:
@@ -231,6 +198,7 @@ class OpenAICompatibleChatProvider:
                 },
                 payload=payload,
                 timeout_seconds=timeout,
+                max_response_bytes=response_byte_cap(request.max_output_tokens),
             )
         except ProviderTransportError:
             raise

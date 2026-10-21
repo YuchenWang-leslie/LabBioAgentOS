@@ -195,8 +195,8 @@ shared transport
 ### Shared transport
 
 Owns POST, SSE framing, strict JSON, bounded error categories without bodies,
-`trust_env`, no redirects, a per-response byte cap, and the bounded retry of
-DECIDED-C14-3. httpx strips only `Authorization` on cross-origin redirects,
+`trust_env`, no redirects, the per-response byte cap of DECIDED-C14-8, and the
+bounded retry of DECIDED-C14-3. httpx strips only `Authorization` on cross-origin redirects,
 not `x-api-key` or `x-goog-api-key`, so redirects stay disabled for every
 format.
 
@@ -255,8 +255,9 @@ Step 1 - shared transport
 1. `kernel/http_stream.py` owns POST, SSE framing, strict JSON, bounded error
    categories, `trust_env` and disabled redirects. The OpenAI Chat adapter uses
    it, and all existing provider tests pass without assertion changes.
-2. A per-response byte cap applies to streamed and non-streamed bodies.
-   Exceeding it is a transport error, and no partial turn is returned.
+2. A per-response byte cap of `8 MiB + 1 KiB x max_output_tokens`
+   (DECIDED-C14-8) applies to the decoded bytes of streamed and non-streamed
+   bodies. Exceeding it is a transport error, and no partial turn is returned.
 3. Any 3xx response is a transport error. Tests prove that no request reaches
    the redirect target for each credential header form.
 4. Retry follows DECIDED-C14-3. It applies only to HTTP 429, 529 and 5xx,
@@ -264,7 +265,7 @@ Step 1 - shared transport
    rate limiting. It honors `retry-after`, caps attempts, and never waits past
    `deadline_monotonic`. It resends the identical request to the identical
    endpoint and model. Other statuses (400, 401, 403, 404 and similar) fail
-   at once.
+   at once. Until criterion 8 holds, the default is zero retries.
 
 Step 2 - neutral contract
 
@@ -282,7 +283,8 @@ Step 2 - neutral contract
    rejects, and local rejection wins.
 8. Retry attempts (category and wait) are returned with the turn or the
    final error, and the loop records them in public events and model-boundary
-   records. `PublicMessage` is unchanged.
+   records. `PublicMessage` is unchanged. With recording in place, the default
+   becomes two retries (DECIDED-C14-3).
 
 Step 3 - OpenAI Chat dialects
 
