@@ -6,8 +6,9 @@ Status: pre-implementation architecture audit. This memo records current
 source behavior before any change. It is not an acceptance claim. C14 was
 requested by MOHAN CUI on 2026-10-21; its decisions are recorded in
 [API compatibility decisions](C14_API_COMPAT_DECISIONS.md) (DECIDED-C14-0 to
-DECIDED-C14-7). No implementation step has started. Each step starts only on
-MOHAN CUI's instruction.
+DECIDED-C14-10). The source audit below describes the starting revision.
+Implementation proceeds one step at a time, each started on MOHAN CUI's
+instruction, and the acceptance criteria are refined as the decisions are.
 
 Starting LabBio revision: `d7b1000251ccc00656b30a96e37785dcec07e4a2`
 (branch `feat/api-compat`, created from `main`).
@@ -21,7 +22,8 @@ and every stage calls the model through that format:
   self-hosted servers;
 - `openai-responses`: the OpenAI Responses API;
 - `anthropic`: the Anthropic Messages API;
-- `gemini`: the Google Gemini `generateContent` API.
+- `gemini`: the Google Gemini `generateContent` API;
+- `gemini-interactions`: the Google Gemini Interactions API, stateless only.
 
 Each format must reach parity with the current OpenAI-compatible path: tool
 calls including parallel calls, structured finalization, reasoning continuity
@@ -244,7 +246,6 @@ switches automatically after a failure.
 - Official vendor SDKs (DECIDED-C14-2).
 - Cloud-platform authentication: AWS SigV4 for Amazon Bedrock and Claude
   Platform on AWS, and Google Cloud credentials for Vertex AI.
-- The Gemini Interactions API.
 - Provider built-in tools, server-side state, prompt caching, and batch APIs.
 - Model-specific parameter inference.
 - Scientific behavior of any kind.
@@ -276,7 +277,8 @@ Step 1 - shared transport
 Step 2 - neutral contract
 
 5. `ProviderBinding.transport` admits exactly `OPENAI_COMPATIBLE_CHAT`,
-   `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES` and `GEMINI_GENERATE_CONTENT`.
+   `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES` and `GEMINI_GENERATE_CONTENT`,
+   and `GEMINI_INTERACTIONS` once its adapter lands in step 6b.
    A per-format dialect sub-model must match its transport. The team-wide
    single-binding check covers it.
 6. A generic private-continuation store is keyed by kernel run, invocation,
@@ -345,9 +347,18 @@ Step 6 - OpenAI Responses adapter
     the in-memory store. No built-in tools are sent. Event names and status
     values are verified against the official API reference and recorded.
 
+Step 6b - Gemini Interactions adapter
+
+12b. Every request sends `store: false` and never `previous_interaction_id`,
+     and resends the full history. Thought steps and their signatures are
+     replayed exactly as received, and function results reference `call_id`.
+     No built-in tools are sent. The endpoint version, field names and stream
+     event names are verified against the official reference when the step
+     starts and are recorded (DECIDED-C14-1).
+
 Step 7 - contract parity
 
-13. The four adapters pass one contract suite through the real AgentLoop with
+13. The five adapters pass one contract suite through the real AgentLoop with
     a fake transport, covering:
     - a tool round trip and parallel calls;
     - reasoning continuity;
@@ -387,7 +398,7 @@ Step 9 - documentation and live checks
     recipients, and relay gateways. `REAL_E2E_CONVERGENCE_WORKPLAN.md` records
     the state change at the top.
 20. Gated live tests, requiring an explicit environment flag and one env file
-    per provider, pass for all four formats: multi-turn tool use with thinking
+    per provider, pass for all five formats: multi-turn tool use with thinking
     enabled, and structured finalization. Results are reported by acceptance
     level.
 

@@ -5,7 +5,8 @@ earlier `OPEN_DECISIONS.md` was removed from `main` during the Native Kernel
 cleanup (`a8c0aa6`), so these decisions are kept here. Analysis and acceptance
 criteria: [API compatibility gap memo](C14_API_COMPAT_GAP_MEMO.md).
 
-All decisions below were made by MOHAN CUI on 2026-10-21. No item is open.
+All decisions below were made by MOHAN CUI between 2026-10-21 and
+2026-10-23; later refinements name their date. No item is open.
 
 ## DECIDED-C14-0 - Scope
 
@@ -19,7 +20,7 @@ AgentLoop control flow and collaboration policy are not redesigned.
 
 ## DECIDED-C14-1 - Wire formats
 
-Four formats, one per runtime, selected only in trusted configuration:
+Five formats, one per runtime, selected only in trusted configuration:
 
 - `openai` - OpenAI Chat Completions. It is the default, and keeps the
   existing vendor dialect plus an explicit official OpenAI dialect.
@@ -27,8 +28,16 @@ Four formats, one per runtime, selected only in trusted configuration:
   official reasoning models keep encrypted reasoning across tool turns.
 - `anthropic` - the Anthropic Messages API.
 - `gemini` - the Gemini `generateContent` API. Google labels it legacy, but it
-  remains fully supported and is what gateways implement. The Interactions
-  API is not used.
+  remains fully supported, has no announced end date, and is what gateways
+  implement.
+- `gemini-interactions` - the Gemini Interactions API, which Google recommends
+  for new development. It is used statelessly only: every request sends
+  `store: false`, never `previous_interaction_id`, and resends the full
+  history, as with the Responses API. MOHAN CUI added this format on
+  2026-10-23. It gets its own step after the Responses adapter, and its
+  endpoint version, fields and stream events are verified against the
+  official reference when that step starts, because the API is still
+  changing.
 
 A format never changes automatically, and formats are never mixed within one
 runtime.
