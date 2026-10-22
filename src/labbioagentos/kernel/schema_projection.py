@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -16,6 +17,16 @@ _SCHEMA_LIST_KEYWORDS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
 _SCHEMA_MAP_KEYWORDS = frozenset({
     "$defs", "definitions", "dependentSchemas", "patternProperties", "properties",
 })
+
+
+def schema_instruction(schema: Mapping[str, Any]) -> str:
+    """Prompt text that carries a JSON Schema the provider does not enforce."""
+
+    return (
+        "Return exactly one JSON object that matches this JSON Schema. "
+        "Do not add fields or prose outside the object. JSON Schema: "
+        + json.dumps(schema, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
 
 
 def project_json_schema(

@@ -45,6 +45,7 @@ from .contracts import (
     ToolResult,
     ToolSpec,
 )
+from .anthropic_messages import AnthropicMessagesProvider
 from .control import BudgetLedger, InterruptToken
 from .collaboration import AgentRegistry, CollaborationRuntime, TaskBoard
 from .errors import (
@@ -93,6 +94,7 @@ __all__ = [
     "AgentRegistry",
     "AgentSpec",
     "AnthropicMessagesDialect",
+    "AnthropicMessagesProvider",
     "BudgetDelta",
     "BudgetExceededError",
     "BudgetLedger",

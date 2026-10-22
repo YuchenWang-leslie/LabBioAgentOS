@@ -313,10 +313,14 @@ Step 4 - Anthropic Messages adapter
     - `tool_result` blocks grouped into one user message;
     - strict tools and `output_config.format`;
     - adaptive thinking with optional effort;
-    - the configured thinking-off form.
+    - the configured thinking-off form: `disabled`, `between_tools`, or
+      omitted with a stated effort, because some models cannot stop thinking.
 
     Stream reassembly handles text, thinking, signature and tool-input deltas.
-    Replayed `thinking` and `redacted_thinking` blocks are byte-identical.
+    Each assistant turn is replayed exactly as it was received, including
+    `thinking` and `redacted_thinking` blocks and the model's own tool-input key
+    order, so the history sent to the provider only grows. A refusal keeps its
+    declared category (DECIDED-C14-9).
     Unknown block and delta types fail with `unsupported_type`, which names
     them; unknown event types are ignored, and unknown stop reasons become
     `OTHER` (DECIDED-C14-2). A failed tool result carries `is_error: true`

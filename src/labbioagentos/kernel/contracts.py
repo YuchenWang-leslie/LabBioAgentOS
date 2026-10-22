@@ -211,6 +211,7 @@ ProviderTransport = Literal[
 # Model support differs; an unsupported value fails at the provider.
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 GeminiThinkingLevel = Literal["minimal", "low", "medium", "high"]
+AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class OpenAIChatDialect(KernelModel):
@@ -260,12 +261,24 @@ class OpenAIResponsesDialect(KernelModel):
 
 
 class AnthropicMessagesDialect(KernelModel):
-    """Messages API request form; thinking-off has no safe default."""
+    """Messages API request form; thinking-off has no safe default.
+
+    Models differ in how thinking is turned off: ``{"type": "disabled"}``,
+    ``{"type": "between_tools"}``, or not at all. With OMIT the model keeps
+    thinking, so the effort for the thinking-off state must be stated.
+    """
 
     kind: Literal["ANTHROPIC_MESSAGES"] = "ANTHROPIC_MESSAGES"
     anthropic_version: Literal["2023-06-01"] = "2023-06-01"
-    effort: Literal["low", "medium", "high"] | None = None
-    thinking_off: Literal["DISABLED", "OMIT"]
+    effort_enabled: AnthropicEffort | None = None
+    effort_disabled: AnthropicEffort | None = None
+    thinking_off: Literal["DISABLED", "BETWEEN_TOOLS", "OMIT"]
+
+    @model_validator(mode="after")
+    def omitted_thinking_off_states_its_effort(self) -> "AnthropicMessagesDialect":
+        if self.thinking_off == "OMIT" and self.effort_disabled is None:
+            raise ValueError("thinking_off OMIT requires effort_disabled")
+        return self
 
 
 class GeminiGenerateContentDialect(KernelModel):

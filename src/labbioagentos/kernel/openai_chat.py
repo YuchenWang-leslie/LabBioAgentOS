@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Mapping
 from time import monotonic
 from typing import Any, Protocol
@@ -40,6 +39,7 @@ from .http_stream import (
     response_byte_cap,
     strict_json_loads,
 )
+from .schema_projection import schema_instruction
 
 
 class ChatCompletionTransport(Protocol):
@@ -269,27 +269,17 @@ class OpenAICompatibleChatProvider:
         if request.response_schema is not None:
             if self.binding.finalization_json_object:
                 payload["response_format"] = {"type": "json_object"}
-                schema_text = json.dumps(
-                    request.response_schema,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                schema_instruction = (
-                    "Return exactly one JSON object that matches this JSON Schema. "
-                    "Do not add fields or prose outside the object. JSON Schema: "
-                    + schema_text
-                )
+                instruction = schema_instruction(request.response_schema)
                 for message in messages:
                     if message["role"] == "system":
                         message["content"] = (
-                            message.get("content", "") + "\n\n" + schema_instruction
+                            message.get("content", "") + "\n\n" + instruction
                         )
                         break
                 else:
                     messages.insert(0, {
                         "role": "system",
-                        "content": schema_instruction,
+                        "content": instruction,
                     })
             else:
                 payload["response_format"] = {

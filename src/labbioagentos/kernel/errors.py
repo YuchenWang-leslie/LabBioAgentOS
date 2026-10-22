@@ -183,16 +183,20 @@ class ProviderProtocolError(KernelContractError):
 _PROVIDER_TYPE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
 
 
+def bounded_provider_name(value: object) -> str:
+    """Return a provider-declared name if it is a plain identifier, else a marker."""
+
+    if isinstance(value, str) and _PROVIDER_TYPE_NAME.fullmatch(value):
+        return value
+    return "unrecognized"
+
+
 def unsupported_type_error(path: str, value: object) -> ProviderProtocolError:
     """Name an unknown content-bearing provider type without echoing other text."""
 
-    name = (
-        value
-        if isinstance(value, str) and _PROVIDER_TYPE_NAME.fullmatch(value)
-        else "unrecognized"
-    )
     return ProviderProtocolError(
-        validation_type="unsupported_type", validation_fields=(path, name)
+        validation_type="unsupported_type",
+        validation_fields=(path, bounded_provider_name(value)),
     )
 
 

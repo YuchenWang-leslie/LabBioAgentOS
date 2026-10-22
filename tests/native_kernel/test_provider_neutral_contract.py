@@ -129,8 +129,11 @@ def test_dialect_defaults_only_where_a_safe_default_exists():
             _binding(transport)
     assert _binding(
         "ANTHROPIC_MESSAGES",
-        dialect=AnthropicMessagesDialect(thinking_off="OMIT"),
+        dialect=AnthropicMessagesDialect(thinking_off="OMIT", effort_disabled="low"),
     ).dialect.anthropic_version == "2023-06-01"
+    # A model that keeps thinking when asked to stop needs its effort stated.
+    with pytest.raises(ValidationError):
+        AnthropicMessagesDialect(thinking_off="OMIT")
     assert _binding(
         "GEMINI_GENERATE_CONTENT",
         dialect=GeminiGenerateContentDialect(
