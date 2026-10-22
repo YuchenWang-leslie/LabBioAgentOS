@@ -299,7 +299,10 @@ Step 3 - OpenAI Chat dialects
 9. The existing dialect stays the default, and its request snapshots are
    unchanged. The official dialect sends `reasoning_effort`,
    `max_completion_tokens` and `stream_options.include_usage`. Neither dialect
-   sends `store: true` or built-in tools.
+   sends `store: true` or built-in tools. The reasoning effort is configured
+   for thinking on and for thinking off, because omitting it would leave a
+   reasoning model at its own default effort. A non-empty `refusal` becomes
+   the `CONTENT_FILTER` finish reason, and its text is not kept.
 
 Step 4 - Anthropic Messages adapter
 

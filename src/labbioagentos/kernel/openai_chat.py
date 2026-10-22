@@ -16,7 +16,6 @@ from .contracts import (
     FinishReason,
     ModelRequest,
     ModelTurn,
-    OpenAIChatDialect,
     ProviderBinding,
     ProviderRetry,
     PublicMessage,
@@ -84,6 +83,7 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
     role = "assistant"
     content = []
     reasoning = []
+    refusal = []
     tool_calls: dict[int, dict[str, Any]] = {}
     finish_reason = None
     usage = None
@@ -115,7 +115,9 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
             raise ProviderProtocolError(validation_fields=("stream.delta",))
         if delta.get("role") is not None:
             role = delta["role"]
-        for key, target in (("content", content), ("reasoning_content", reasoning)):
+        for key, target in (
+            ("content", content), ("reasoning_content", reasoning), ("refusal", refusal),
+        ):
             fragment = delta.get(key)
             if fragment is not None:
                 if not isinstance(fragment, str):
@@ -150,14 +152,17 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
         raise ProviderProtocolError(validation_fields=("stream.finish_reason",))
     if sorted(tool_calls) != list(range(len(tool_calls))):
         raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+    message = {
+        "role": role,
+        "content": "".join(content) if content else None,
+        "reasoning_content": "".join(reasoning) if reasoning else None,
+        "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
+    }
+    if refusal:
+        message["refusal"] = "".join(refusal)
     return {
         "id": request_id,
-        "choices": [{"finish_reason": finish_reason, "message": {
-            "role": role,
-            "content": "".join(content) if content else None,
-            "reasoning_content": "".join(reasoning) if reasoning else None,
-            "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
-        }}],
+        "choices": [{"finish_reason": finish_reason, "message": message}],
         "usage": usage,
     }
 
@@ -176,8 +181,6 @@ class OpenAICompatibleChatProvider:
             raise ValueError("api_key is required")
         if binding.transport != "OPENAI_COMPATIBLE_CHAT":
             raise ValueError("Unsupported provider transport")
-        if binding.dialect != OpenAIChatDialect():
-            raise ValueError("Unsupported provider dialect")
         self._binding = binding
         self._api_key = api_key
         self._transport = transport or HttpxChatCompletionTransport()
@@ -231,16 +234,24 @@ class OpenAICompatibleChatProvider:
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         messages = [self._message(request, item) for item in request.messages]
+        dialect = self.binding.dialect
         payload: dict[str, Any] = {
             "model": self.binding.model,
             "messages": messages,
-            "max_tokens": request.max_output_tokens,
+            dialect.output_limit_parameter: request.max_output_tokens,
             "n": 1,
             "stream": True,
-            "thinking": {
-                "type": self.binding.thinking_mode.lower(),
-            },
         }
+        if dialect.thinking_parameter == "THINKING_OBJECT":
+            payload["thinking"] = {"type": self.binding.thinking_mode.lower()}
+        elif dialect.thinking_parameter == "REASONING_EFFORT":
+            payload["reasoning_effort"] = (
+                dialect.reasoning_effort_enabled
+                if self.binding.thinking_mode == "ENABLED"
+                else dialect.reasoning_effort_disabled
+            )
+        if dialect.stream_include_usage:
+            payload["stream_options"] = {"include_usage": True}
         if request.tools:
             payload["tools"] = [
                 {
@@ -348,7 +359,15 @@ class OpenAICompatibleChatProvider:
                 or len(private_reasoning) > 64_000
             ):
                 raise ValueError("Unsupported private reasoning field")
+            component = "message.refusal"
+            refusal = message.get("refusal")
+            if refusal is not None and not isinstance(refusal, str):
+                raise ValueError("Unsupported provider refusal")
             finish = self._finish_reason(choice.get("finish_reason"))
+            if refusal:
+                # A refusal is kept only as its finish reason; neither its text
+                # nor any other output of the turn enters the history.
+                content, calls, finish = None, (), FinishReason.CONTENT_FILTER
             component = "usage"
             usage = self._usage(response.get("usage"))
             component = "id"

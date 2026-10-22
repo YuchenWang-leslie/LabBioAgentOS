@@ -208,35 +208,55 @@ ProviderTransport = Literal[
     "ANTHROPIC_MESSAGES",
     "GEMINI_GENERATE_CONTENT",
 ]
-ReasoningEffort = Literal["minimal", "low", "medium", "high"]
+# Model support differs; an unsupported value fails at the provider.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 GeminiThinkingLevel = Literal["minimal", "low", "medium", "high"]
 
 
 class OpenAIChatDialect(KernelModel):
-    """Chat Completions request form; the defaults are the vendor dialect."""
+    """Chat Completions request form; the defaults are the vendor dialect.
+
+    A deployment runs with thinking both on and off, so the reasoning-effort
+    form names one value for each state rather than omitting the parameter,
+    which would leave a reasoning model at its own default effort.
+    """
 
     kind: Literal["OPENAI_COMPATIBLE_CHAT"] = "OPENAI_COMPATIBLE_CHAT"
     thinking_parameter: Literal["THINKING_OBJECT", "REASONING_EFFORT", "OMIT"] = (
         "THINKING_OBJECT"
     )
-    reasoning_effort: ReasoningEffort | None = None
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
     output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     stream_include_usage: bool = False
 
     @model_validator(mode="after")
-    def effort_matches_parameter(self) -> "OpenAIChatDialect":
-        if (self.thinking_parameter == "REASONING_EFFORT") != (
-            self.reasoning_effort is not None
+    def efforts_match_parameter(self) -> "OpenAIChatDialect":
+        expected = self.thinking_parameter == "REASONING_EFFORT"
+        if any(
+            (value is not None) != expected
+            for value in (self.reasoning_effort_enabled, self.reasoning_effort_disabled)
         ):
-            raise ValueError("reasoning_effort is required exactly for REASONING_EFFORT")
+            raise ValueError(
+                "Both reasoning efforts are required exactly for REASONING_EFFORT"
+            )
         return self
 
 
 class OpenAIResponsesDialect(KernelModel):
-    """Responses API request form."""
+    """Responses API request form; efforts are given for both thinking states or neither."""
 
     kind: Literal["OPENAI_RESPONSES"] = "OPENAI_RESPONSES"
-    reasoning_effort: ReasoningEffort | None = None
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
+
+    @model_validator(mode="after")
+    def efforts_are_paired(self) -> "OpenAIResponsesDialect":
+        if (self.reasoning_effort_enabled is None) != (
+            self.reasoning_effort_disabled is None
+        ):
+            raise ValueError("Reasoning efforts must be given for both thinking states")
+        return self
 
 
 class AnthropicMessagesDialect(KernelModel):

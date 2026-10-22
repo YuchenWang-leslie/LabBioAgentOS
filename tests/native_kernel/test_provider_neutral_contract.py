@@ -151,11 +151,18 @@ def test_dialect_must_match_its_transport(transport, dialect):
 
 
 def test_chat_reasoning_effort_belongs_only_to_its_parameter_form():
-    OpenAIChatDialect(thinking_parameter="REASONING_EFFORT", reasoning_effort="high")
+    OpenAIChatDialect(
+        thinking_parameter="REASONING_EFFORT",
+        reasoning_effort_enabled="high", reasoning_effort_disabled="none",
+    )
     with pytest.raises(ValidationError):
         OpenAIChatDialect(thinking_parameter="REASONING_EFFORT")
     with pytest.raises(ValidationError):
-        OpenAIChatDialect(reasoning_effort="high")
+        OpenAIChatDialect(
+            thinking_parameter="REASONING_EFFORT", reasoning_effort_enabled="high",
+        )
+    with pytest.raises(ValidationError):
+        OpenAIChatDialect(reasoning_effort_enabled="high", reasoning_effort_disabled="low")
 
 
 def test_team_single_binding_check_covers_the_dialect():
@@ -181,11 +188,13 @@ def test_team_single_binding_check_covers_the_dialect():
         )
 
 
-def test_chat_adapter_rejects_a_dialect_it_does_not_implement():
-    binding = _binding(dialect=OpenAIChatDialect(stream_include_usage=True))
-    with pytest.raises(ValueError, match="dialect"):
-        OpenAICompatibleChatProvider(binding=binding, api_key="key")
-    OpenAICompatibleChatProvider(binding=_binding(), api_key="key")
+def test_chat_adapter_accepts_only_its_own_transport():
+    OpenAICompatibleChatProvider(
+        binding=_binding(dialect=OpenAIChatDialect(stream_include_usage=True)),
+        api_key="key",
+    )
+    with pytest.raises(ValueError, match="transport"):
+        OpenAICompatibleChatProvider(binding=_binding("OPENAI_RESPONSES"), api_key="key")
 
 
 # Criterion 6: generic private continuation
