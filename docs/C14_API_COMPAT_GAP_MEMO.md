@@ -303,7 +303,8 @@ Step 3 - OpenAI Chat dialects
    sends `store: true` or built-in tools. The reasoning effort is configured
    for thinking on and for thinking off, because omitting it would leave a
    reasoning model at its own default effort. A non-empty `refusal` becomes
-   the `CONTENT_FILTER` finish reason, and its text is not kept.
+   the `CONTENT_FILTER` finish reason, and its text is not kept
+   (DECIDED-C14-9).
 
 Step 4 - Anthropic Messages adapter
 

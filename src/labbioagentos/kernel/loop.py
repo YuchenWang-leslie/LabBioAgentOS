@@ -219,6 +219,7 @@ class AgentLoop:
                 self._emit(
                     KernelEventKind.MODEL_TURN_OBSERVED,
                     status_code=turn.finish_reason.value,
+                    reason_code=turn.refusal_category,
                     numeric_facts={
                         "turn_index": turn_index,
                         "tool_call_count": len(turn.tool_calls),
@@ -585,6 +586,10 @@ class AgentLoop:
     def _handle_finalization_turn(self, turn, *, response_model):
         if turn.tool_calls:
             raise FinalizationProtocolError()
+        if turn.content is None and turn.finish_reason is FinishReason.CONTENT_FILTER:
+            raise IncompleteProviderResponseError(
+                finish_reason=turn.finish_reason.value
+            )
         if turn.content is None:
             error = FinalizationRejectedError(validation_type="missing")
         else:

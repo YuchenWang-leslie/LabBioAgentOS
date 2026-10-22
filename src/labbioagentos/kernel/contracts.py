@@ -400,6 +400,17 @@ class ModelTurn(KernelModel):
     provider_request_id: Identifier | None = None
     private_reasoning_present: bool = False
     transport_retries: tuple[ProviderRetry, ...] = Field(default=(), max_length=10)
+    # The provider's declared reason for a refusal, such as "bio"; never its text.
+    refusal_category: Identifier | None = None
+
+    @model_validator(mode="after")
+    def refusal_category_needs_content_filter(self) -> "ModelTurn":
+        if (
+            self.refusal_category is not None
+            and self.finish_reason is not FinishReason.CONTENT_FILTER
+        ):
+            raise ValueError("A refusal category requires the CONTENT_FILTER finish")
+        return self
 
     @model_validator(mode="after")
     def tool_call_ids_are_unique(self) -> "ModelTurn":

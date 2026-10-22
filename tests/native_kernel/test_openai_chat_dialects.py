@@ -18,7 +18,7 @@ from labbioagentos.kernel import (
     BudgetLedger,
     FinishReason,
     HttpxChatCompletionTransport,
-    FinalizationRejectedError,
+    IncompleteProviderResponseError,
     KernelEventKind,
     KernelIdentity,
     ModelRequest,
@@ -363,16 +363,16 @@ async def test_finalization_fails_at_once_on_a_refusal():
         budget_ledger=BudgetLedger(_limits()),
     )
 
-    # The loop's existing path for a content-filtered turn without content:
-    # rejected at once, with no correction attempt.
-    with pytest.raises(FinalizationRejectedError) as caught:
+    # A content-filtered turn without content is an incomplete provider
+    # response, rejected at once with no correction attempt.
+    with pytest.raises(IncompleteProviderResponseError) as caught:
         await loop.run(
             messages=(PublicMessage(role="USER", content="Finish."),),
             deadline_monotonic=10_000_000_000.0,
             response_model=Envelope,
         )
 
-    assert caught.value.validation_type == "missing"
+    assert caught.value.validation_type == "CONTENT_FILTER"
     assert len(transport.payloads) == 1
     observed = [
         event.status_code for event in loop.events

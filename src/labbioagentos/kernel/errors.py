@@ -134,6 +134,8 @@ class IncompleteProviderResponseError(KernelContractError):
             "The provider response was incomplete and cannot be accepted",
         )
         self.finish_reason = finish_reason
+        # Read by stage runtimes that project failures into the run trace.
+        self.validation_type = finish_reason
 
 
 class FinalizationProtocolError(KernelContractError):

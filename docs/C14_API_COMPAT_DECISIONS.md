@@ -151,6 +151,26 @@ with `UNSUPPORTED_ENCODING`, and a corrupt or truncated gzip body fails with
 Before that, httpx inflated each received chunk in one step, and it also
 accepted brotli whenever the `brotli` package happened to be installed.
 
+## DECIDED-C14-9 - Provider refusals
+
+A provider refusal becomes the `CONTENT_FILTER` finish reason in every
+format: a non-empty OpenAI `refusal`, or the Anthropic `refusal` stop reason.
+The refusal text and any other output of that turn are not kept. When the
+provider declares a category, such as `bio` or `cyber`, the turn carries it as
+a bounded identifier and the loop records it as the `reason_code` of the
+turn event. The run trace therefore shows why the turn was declined, which
+matters because benign life-sciences work can trip provider safety
+classifiers.
+
+A refusal is an incomplete provider response, not a malformed result. In the
+capability phase it ends the invocation as before. In finalization it now
+raises `IncompleteProviderResponseError` like a truncated response, so the
+stage fails with `NATIVE_INVOCATION_FAILED` and the run stays in flight for the
+user to resume or cancel, instead of closing as `FAILED`. No other model is
+tried automatically. MOHAN CUI chose this on 2026-10-23 over keeping the
+terminal outcome, accepting that resuming on the same model may be declined
+again.
+
 ## Recorded trade-offs
 
 - Strict parsing: nothing that can carry content is dropped. An unknown

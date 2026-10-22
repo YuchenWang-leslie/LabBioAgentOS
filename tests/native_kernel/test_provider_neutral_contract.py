@@ -25,6 +25,7 @@ from labbioagentos.kernel import (
     FinishReason,
     GeminiGenerateContentDialect,
     HttpxChatCompletionTransport,
+    IncompleteProviderResponseError,
     KernelEventKind,
     KernelIdentity,
     ModelRequest,
@@ -730,3 +731,33 @@ async def test_unknown_finish_reason_becomes_other(monkeypatch):
     turn = await provider.generate(_request(binding))
 
     assert turn.finish_reason is FinishReason.OTHER
+
+
+# Refusals: the finish reason and the declared category reach the record.
+
+
+def test_refusal_category_requires_the_content_filter_finish():
+    ModelTurn(finish_reason=FinishReason.CONTENT_FILTER, refusal_category="bio")
+    ModelTurn(finish_reason=FinishReason.CONTENT_FILTER)
+    with pytest.raises(ValidationError):
+        ModelTurn(finish_reason=FinishReason.STOP, content="done", refusal_category="bio")
+
+
+@pytest.mark.asyncio
+async def test_refusal_category_is_recorded_on_the_turn_event():
+    loop = _plain_loop(FakeProvider(binding=_binding(), turns=(
+        ModelTurn(finish_reason=FinishReason.CONTENT_FILTER, refusal_category="bio"),
+    )))
+
+    with pytest.raises(IncompleteProviderResponseError) as caught:
+        await loop.run(
+            messages=(PublicMessage(role="USER", content="Run."),),
+            deadline_monotonic=10_000_000_000.0,
+        )
+
+    assert caught.value.validation_type == "CONTENT_FILTER"
+    observed = [
+        (event.status_code, event.reason_code) for event in loop.events
+        if event.kind is KernelEventKind.MODEL_TURN_OBSERVED
+    ]
+    assert observed == [("CONTENT_FILTER", "bio")]
