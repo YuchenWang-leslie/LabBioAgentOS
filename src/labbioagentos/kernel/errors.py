@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -174,6 +175,23 @@ class ProviderProtocolError(KernelContractError):
         self.validation_fields = validation_fields
         # Attempts discarded before this failure, for the loop to record.
         self.transport_retries = transport_retries
+
+
+# A provider type name is recorded only when it has this plain identifier form.
+_PROVIDER_TYPE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
+
+
+def unsupported_type_error(path: str, value: object) -> ProviderProtocolError:
+    """Name an unknown content-bearing provider type without echoing other text."""
+
+    name = (
+        value
+        if isinstance(value, str) and _PROVIDER_TYPE_NAME.fullmatch(value)
+        else "unrecognized"
+    )
+    return ProviderProtocolError(
+        validation_type="unsupported_type", validation_fields=(path, name)
+    )
 
 
 class ProviderTransportError(KernelContractError):

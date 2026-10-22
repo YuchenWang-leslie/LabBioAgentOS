@@ -207,8 +207,9 @@ Each adapter builds the request, reassembles the stream, normalizes to
 adapter:
 
 - always streams;
-- fails on incomplete streams and on unknown blocks, events or finish
-  reasons, and never guesses a completion;
+- fails on incomplete streams and on unknown content-bearing block or delta
+  types, ignores unknown event types and metadata, maps unknown finish reasons
+  to `OTHER` (DECIDED-C14-2), and never guesses a completion;
 - never repairs tool-call JSON. `arguments_json` stays the raw string for
   the kernel's strict parser;
 - keeps provider reasoning, signatures and encrypted reasoning in memory only,
@@ -315,8 +316,9 @@ Step 4 - Anthropic Messages adapter
 
     Stream reassembly handles text, thinking, signature and tool-input deltas.
     Replayed `thinking` and `redacted_thinking` blocks are byte-identical.
-    Unknown blocks, events or stop reasons fail. The key appears only in
-    `x-api-key`.
+    Unknown block and delta types fail with `unsupported_type`, which names
+    them; unknown event types are ignored, and unknown stop reasons become
+    `OTHER` (DECIDED-C14-2). The key appears only in `x-api-key`.
 
 Step 5 - Gemini adapter
 

@@ -153,11 +153,18 @@ accepted brotli whenever the `brotli` package happened to be installed.
 
 ## Recorded trade-offs
 
-- Strict parsing: unknown blocks, events or finish reasons fail rather than
-  being dropped. Newly introduced provider output, such as the Anthropic stop
-  reasons `refusal` and `model_context_window_exceeded`, needs an adapter update
-  before use. Pinning the API version and enabling no opt-in features keeps
-  this rare.
+- Strict parsing: nothing that can carry content is dropped. An unknown
+  content-bearing element, such as a content block type or delta type, fails
+  with the protocol error `unsupported_type`, which names the unknown type when
+  it is a plain identifier and `unrecognized` otherwise. Unknown event types and
+  metadata fields are ignored, and an unknown stop or finish reason becomes
+  `OTHER`, which the loop never accepts as a completed answer. Newly introduced
+  content still needs an adapter update before use; pinning the API version and
+  enabling no opt-in features keeps this rare. MOHAN CUI refined the rule this
+  way on 2026-10-23: the first version also failed on unknown events and stop
+  reasons, but Anthropic's versioning policy adds event types within an API
+  version and asks clients to ignore them, and the OpenAI Chat adapter already
+  mapped unknown finish reasons to `OTHER`.
 - A retried request whose failed attempt had already produced output may be
   billed twice.
 

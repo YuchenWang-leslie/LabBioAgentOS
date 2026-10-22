@@ -28,6 +28,7 @@ from .errors import (
     ProviderBindingMismatchError,
     ProviderProtocolError,
     ProviderTransportError,
+    unsupported_type_error,
 )
 from .http_stream import (
     DEFAULT_MAX_RETRIES,
@@ -130,7 +131,7 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
                 "id": "", "type": "function", "function": {"name": "", "arguments": ""},
             })
             if item.get("type") is not None and item["type"] != call["type"]:
-                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+                raise unsupported_type_error("stream.delta.tool_calls.type", item["type"])
             if item.get("id") is not None:
                 if not isinstance(item["id"], str):
                     raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
@@ -408,8 +409,10 @@ class OpenAICompatibleChatProvider:
             raise ValueError("Tool calls must be a list")
         calls = []
         for item in raw:
-            if not isinstance(item, dict) or item.get("type", "function") != "function":
+            if not isinstance(item, dict):
                 raise ValueError("Unsupported tool call")
+            if item.get("type", "function") != "function":
+                raise unsupported_type_error("message.tool_calls.type", item.get("type"))
             function = item.get("function")
             if not isinstance(function, dict):
                 raise ValueError("Missing tool function")

@@ -47,7 +47,8 @@ from labbioagentos.kernel.continuation import (
     PrivateContinuationStore,
     message_fingerprint,
 )
-from labbioagentos.kernel.http_stream import HttpStreamTransport, RetryPolicy
+from labbioagentos.kernel.errors import unsupported_type_error
+from labbioagentos.kernel.http_stream import HttpStreamResult, HttpStreamTransport, RetryPolicy
 from labbioagentos.kernel.schema_projection import project_json_schema
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -641,3 +642,89 @@ async def test_capability_stops_on_a_stream_format_error_as_a_protocol_stop(monk
     assert effects == [{"value": "kept", "nested": None}]
     assert result.termination == "PROVIDER_PROTOCOL_STOP"
     assert result.events[-1].reason_code == "PROVIDER_PROTOCOL_ERROR"
+
+
+# DECIDED-C14-2 as refined on 2026-10-23: unknown content-bearing types are
+# named and fail; unknown events and metadata are ignored.
+
+
+@pytest.mark.parametrize("value,name", [
+    ("custom", "custom"),
+    ("web_search.v2", "web_search.v2"),
+    ("Custom Tool PRIVATE_CANARY", "unrecognized"),
+    ("x" * 65, "unrecognized"),
+    (7, "unrecognized"),
+    (None, "unrecognized"),
+])
+def test_unsupported_type_error_names_only_plain_identifiers(value, name):
+    error = unsupported_type_error("stream.block.type", value)
+
+    assert error.validation_type == "unsupported_type"
+    assert error.validation_fields == ("stream.block.type", name)
+    assert "PRIVATE_CANARY" not in str(error)
+
+
+@pytest.mark.asyncio
+async def test_streamed_tool_call_of_unknown_type_is_named(monkeypatch):
+    provider, binding = _chat_provider(monkeypatch, _stream({
+        "id": "request-1", "choices": [{"index": 0, "delta": {"tool_calls": [{
+            "index": 0, "id": "call-1", "type": "custom",
+            "function": {"name": "inspect", "arguments": "{}"},
+        }]}, "finish_reason": "tool_calls"}],
+    }))
+
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding))
+
+    assert caught.value.validation_type == "unsupported_type"
+    assert caught.value.validation_fields == ("stream.delta.tool_calls.type", "custom")
+
+
+@pytest.mark.asyncio
+async def test_returned_tool_call_of_unknown_type_is_named():
+    class Recording:
+        async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
+            return HttpStreamResult(body={"choices": [{"finish_reason": "tool_calls", "message": {
+                "tool_calls": [{"id": "call-1", "type": "custom", "custom": {"input": "x"}}],
+            }}]})
+
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(binding=binding, api_key="key", transport=Recording())
+
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding))
+
+    assert caught.value.validation_fields == ("message.tool_calls.type", "custom")
+
+
+@pytest.mark.asyncio
+async def test_unknown_events_and_metadata_are_ignored(monkeypatch):
+    chunk = {
+        "id": "request-1", "object": "chat.completion.chunk", "obfuscation": "pad",
+        "moderation": None, "service_tier": "default", "future_metadata": {"a": 1},
+        "choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": "stop"}],
+    }
+    body = (
+        "event: future_event\ndata: " + json.dumps(chunk) + "\n\n"
+        + ": keep-alive comment\n\n"
+        + "data: [DONE]\n\n"
+    )
+    provider, binding = _chat_provider(monkeypatch, _raw_stream(body))
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.content == "done"
+    assert turn.finish_reason is FinishReason.STOP
+
+
+@pytest.mark.asyncio
+async def test_unknown_finish_reason_becomes_other(monkeypatch):
+    provider, binding = _chat_provider(monkeypatch, _stream({
+        "id": "request-1", "choices": [{
+            "index": 0, "delta": {"content": "done"}, "finish_reason": "future_reason",
+        }],
+    }))
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.finish_reason is FinishReason.OTHER
