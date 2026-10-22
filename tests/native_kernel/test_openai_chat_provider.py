@@ -98,8 +98,9 @@ async def test_http_transport_reports_only_safe_failure_class(
         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
     )
 
+    # Classification only; retry timing is covered by test_http_stream.py.
     with pytest.raises(ProviderTransportError) as caught:
-        await HttpxChatCompletionTransport().post_json(
+        await HttpxChatCompletionTransport(max_retries=0).post_json(
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture"}, timeout_seconds=1,
         )

@@ -609,7 +609,9 @@ async def test_deadline_stop_keeps_the_retries_that_preceded_it(monkeypatch):
 
     result = await asyncio.wait_for(loop.run(
         messages=(PublicMessage(role="USER", content="Run."),),
-        deadline_monotonic=monotonic() + 0.8,
+        # 1.0 s remains for the stalled attempt once the 0.5 s margin is
+        # taken off, so a slow machine still reaches that attempt.
+        deadline_monotonic=monotonic() + 1.5,
     ), timeout=5)
 
     assert effects == [{"value": "kept", "nested": None}]

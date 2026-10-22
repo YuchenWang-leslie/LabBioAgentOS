@@ -218,6 +218,13 @@ class HttpStreamTransport:
                             category=category, wait_ms=round(wait * 1000),
                         ))
                         await self._sleep(wait)
+                        if self._clock() >= deadline_monotonic - DEADLINE_MARGIN_SECONDS:
+                            # The wait ended too late for another attempt; the
+                            # outcome stays the failure that was being retried.
+                            raise ProviderTransportError(
+                                validation_type=category,
+                                transport_retries=tuple(retries),
+                            ) from None
                     else:
                         return HttpStreamResult(body=value, retries=tuple(retries))
         except (

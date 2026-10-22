@@ -540,6 +540,28 @@ async def test_deadline_ends_a_stalled_attempt_with_its_retry_records(monkeypatc
     assert provider.requests[1].extensions["timeout"]["read"] == pytest.approx(0.7)
 
 
+async def test_a_wait_that_ends_too_late_keeps_the_original_failure(monkeypatch):
+    provider = Provider(lambda: httpx.Response(503), _ok)
+    _route(monkeypatch, provider)
+    clock = Clock(1_000.0)
+
+    async def oversleeping(seconds):
+        # The process was slow: the wait ends well after it was due.
+        clock.now += seconds + 5
+
+    transport = HttpStreamTransport(
+        retry=RetryPolicy(max_retries=2), sleep=oversleeping, clock=clock,
+        wall_clock=lambda: 0.0, random_fraction=lambda: 0.0,
+    )
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await _post(transport, deadline=1_006.0)
+
+    assert caught.value.validation_type == "HTTP_503"
+    assert caught.value.transport_retries == (ProviderRetry(category="HTTP_503", wait_ms=500),)
+    assert len(provider.requests) == 1
+
+
 async def test_no_attempt_starts_inside_the_deadline_margin(monkeypatch):
     provider = Provider(_ok)
     _route(monkeypatch, provider)
