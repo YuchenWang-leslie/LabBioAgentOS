@@ -171,6 +171,17 @@ tried automatically. MOHAN CUI chose this on 2026-10-23 over keeping the
 terminal outcome, accepting that resuming on the same model may be declined
 again.
 
+## DECIDED-C14-10 - Failed tool results are marked
+
+`PublicMessage` gains `tool_error`, false by default and allowed only on tool
+messages. The loop sets it from the tool result's status when it creates the
+message, so the history stays append-only. The Anthropic adapter sends it as
+`is_error: true` on the `tool_result` block, as Anthropic recommends. Formats
+without such a field leave their requests unchanged; the OpenAI Chat request
+bytes were compared before and after. The result content already states the
+failure, so this is an explicit mark, not new information. MOHAN CUI chose
+this on 2026-10-23 over inferring failure from the result text.
+
 ## Recorded trade-offs
 
 - Strict parsing: nothing that can carry content is dropped. An unknown

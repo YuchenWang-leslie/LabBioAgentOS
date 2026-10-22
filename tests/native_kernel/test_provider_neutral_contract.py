@@ -761,3 +761,78 @@ async def test_refusal_category_is_recorded_on_the_turn_event():
         if event.kind is KernelEventKind.MODEL_TURN_OBSERVED
     ]
     assert observed == [("CONTENT_FILTER", "bio")]
+
+
+# Failed tool results are marked in the public history.
+
+
+def test_only_a_tool_message_can_mark_a_tool_error():
+    PublicMessage(role="TOOL", content="{}", tool_call_id="call-1", tool_error=True)
+    for role in ("SYSTEM", "USER"):
+        with pytest.raises(ValidationError):
+            PublicMessage(role=role, content="Run.", tool_error=True)
+    with pytest.raises(ValidationError):
+        PublicMessage(role="ASSISTANT", content="Done.", tool_error=True)
+
+
+@pytest.mark.asyncio
+async def test_loop_marks_failed_tool_results_only():
+    from test_agent_loop import _tool_loop
+
+    loop, _provider, effects = _tool_loop((
+        ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="good", name="record_value", arguments_json='{"value":"kept"}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),
+        ModelTurn(
+            tool_calls=(ToolCall(
+                call_id="bad", name="record_value", arguments_json='{"value":7}',
+            ),),
+            finish_reason=FinishReason.TOOL_CALLS,
+        ),
+        ModelTurn(content="done", finish_reason=FinishReason.STOP),
+    ))
+
+    result = await loop.run(
+        messages=(PublicMessage(role="USER", content="Run."),),
+        deadline_monotonic=10_000_000_000.0,
+    )
+
+    marks = {
+        message.tool_call_id: message.tool_error
+        for message in result.messages if message.role == "TOOL"
+    }
+    assert marks == {"good": False, "bad": True}
+    assert effects == [{"value": "kept", "nested": None}]
+
+
+@pytest.mark.asyncio
+async def test_chat_request_does_not_send_the_tool_error_mark():
+    class Recording:
+        payloads = None
+
+        async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
+            self.payloads = payload
+            return HttpStreamResult(body={"choices": [{
+                "finish_reason": "stop", "message": {"content": "done"},
+            }]})
+
+    binding = _binding()
+    transport = Recording()
+    provider = OpenAICompatibleChatProvider(binding=binding, api_key="key", transport=transport)
+    request = _request(binding).model_copy(update={"messages": (
+        PublicMessage(role="USER", content="Run."),
+        PublicMessage(role="ASSISTANT", tool_calls=(ToolCall(
+            call_id="call-1", name="inspect", arguments_json="{}",
+        ),)),
+        PublicMessage(role="TOOL", content='{"status":"FAILED"}', tool_call_id="call-1",
+                      tool_error=True),
+    )})
+
+    await provider.generate(request)
+
+    assert transport.payloads["messages"][2] == {
+        "role": "tool", "content": '{"status":"FAILED"}', "tool_call_id": "call-1",
+    }

@@ -292,8 +292,8 @@ Step 2 - neutral contract
    stage projects these events into the run trace. `model-boundaries.jsonl`
    holds no per-turn provider facts, so retries are not written there.
    Retries are also recorded when the request deadline ends the final
-   attempt. `PublicMessage` is unchanged. With recording in place, the
-   default becomes two retries (DECIDED-C14-3).
+   attempt. Retry records never enter `PublicMessage`. With recording in
+   place, the default becomes two retries (DECIDED-C14-3).
 
 Step 3 - OpenAI Chat dialects
 
@@ -319,7 +319,8 @@ Step 4 - Anthropic Messages adapter
     Replayed `thinking` and `redacted_thinking` blocks are byte-identical.
     Unknown block and delta types fail with `unsupported_type`, which names
     them; unknown event types are ignored, and unknown stop reasons become
-    `OTHER` (DECIDED-C14-2). The key appears only in `x-api-key`.
+    `OTHER` (DECIDED-C14-2). A failed tool result carries `is_error: true`
+    (DECIDED-C14-10). The key appears only in `x-api-key`.
 
 Step 5 - Gemini adapter
 

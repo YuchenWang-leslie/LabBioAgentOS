@@ -666,6 +666,7 @@ class AgentLoop:
             role="TOOL",
             content=content,
             tool_call_id=result.call_id,
+            tool_error=result.status == "FAILED",
         )
 
     def _result(self, *, output, termination: str) -> AgentLoopResult:

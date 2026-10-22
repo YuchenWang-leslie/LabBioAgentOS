@@ -325,9 +325,13 @@ class PublicMessage(KernelModel):
     content: PublicContent | None = None
     tool_calls: tuple[ToolCall, ...] = Field(default=(), max_length=64)
     tool_call_id: Identifier | None = None
+    # A failed tool result, fixed when the message is created.
+    tool_error: bool = False
 
     @model_validator(mode="after")
     def shape_matches_role(self) -> "PublicMessage":
+        if self.tool_error and self.role != "TOOL":
+            raise ValueError("Only a tool message can mark a tool error")
         if self.role == "TOOL":
             if self.tool_call_id is None or self.content is None or self.tool_calls:
                 raise ValueError(
