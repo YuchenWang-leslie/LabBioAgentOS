@@ -27,6 +27,7 @@ from labbioagentos.kernel import (
     OpenAIResponsesDialect,
     ProviderBinding,
     ProviderProtocolError,
+    ProviderTransportError,
     PublicMessage,
     ToolSpec,
 )
@@ -294,6 +295,50 @@ async def test_non_string_refusal_is_a_protocol_error(monkeypatch):
         await _official_turn(monkeypatch, _chunk({"refusal": 7}, finish="stop"))
 
     assert caught.value.validation_fields == ("stream.delta.refusal",)
+
+
+# A failure reported inside the stream is a transport error, as in the other formats
+
+
+@pytest.mark.parametrize("error", [
+    {"message": "PRIVATE_CANARY", "type": "server_error", "code": 502},
+    "PRIVATE_CANARY",
+], ids=["object", "string"])
+@pytest.mark.parametrize("dialect", [None, OFFICIAL], ids=["vendor", "official"])
+@pytest.mark.asyncio
+async def test_error_chunk_in_the_stream_fails_without_retry(monkeypatch, error, dialect):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        body = (f"data: {json.dumps(_chunk({'role': 'assistant', 'content': 'partial'}))}\n\n"
+                f"data: {json.dumps({'error': error})}\n\n")
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              stream=httpx.ByteStream(body.encode("utf-8")))
+
+    monkeypatch.setattr(
+        "labbioagentos.kernel.http_stream.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    binding = _binding(dialect)
+    provider = OpenAICompatibleChatProvider(
+        binding=binding, api_key="key", transport=HttpxChatCompletionTransport(),
+    )
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await provider.generate(_request(binding, tools=False, schema=False))
+
+    assert caught.value.validation_type == "STREAM_ERROR"
+    assert "PRIVATE_CANARY" not in str(caught.value)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_chunk_without_choices_or_error_stays_a_protocol_error(monkeypatch):
+    with pytest.raises(ProviderProtocolError) as caught:
+        await _official_turn(monkeypatch, {"id": "chatcmpl-1", "object": "chat.completion.chunk"})
+
+    assert caught.value.validation_fields == ("stream.choices",)
 
 
 # A refusal follows the loop's existing content-filter paths

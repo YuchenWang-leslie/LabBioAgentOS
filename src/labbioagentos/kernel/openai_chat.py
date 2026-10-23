@@ -96,6 +96,10 @@ async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[st
         chunk = strict_json_loads(event.data)
         if not isinstance(chunk, dict):
             raise ValueError("Provider stream chunk must be an object")
+        if chunk.get("error") is not None and "choices" not in chunk:
+            # Some services report a failure inside the stream. Chat documents
+            # no error codes for it, so none is retried (DECIDED-C14-3).
+            raise ProviderTransportError(validation_type="STREAM_ERROR")
         chunk_id = chunk.get("id")
         if chunk_id is not None:
             if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
