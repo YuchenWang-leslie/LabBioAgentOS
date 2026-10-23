@@ -277,6 +277,31 @@ async def test_refusal_is_kept_only_as_a_content_filter_finish(monkeypatch):
     assert "PRIVATE_REFUSAL" not in repr(turn)
 
 
+@pytest.mark.parametrize("dialect", [None, OFFICIAL], ids=["vendor", "official"])
+@pytest.mark.asyncio
+async def test_content_filter_finish_keeps_no_output(monkeypatch, dialect):
+    _route(monkeypatch, _sse(
+        _chunk({"role": "assistant", "content": "PRIVATE_PARTIAL ",
+                "reasoning_content": "PRIVATE_REASONING"}),
+        _chunk({"tool_calls": [{"index": 0, "id": "call-1", "type": "function",
+                                "function": {"name": "inspect", "arguments": "{}"}}]}),
+        _chunk({}, finish="content_filter"),
+    ))
+    binding = _binding(dialect)
+    provider = OpenAICompatibleChatProvider(
+        binding=binding, api_key="key", transport=HttpxChatCompletionTransport(),
+    )
+    request = _request(binding, tools=True, schema=False)
+
+    turn = await provider.generate(request)
+
+    assert turn.finish_reason is FinishReason.CONTENT_FILTER
+    assert turn.content is None and turn.tool_calls == ()
+    assert turn.refusal_category is None
+    assert "PRIVATE_PARTIAL" not in repr(turn) and "PRIVATE_REASONING" not in repr(turn)
+    assert "entries=0" in repr(provider._private_reasoning)
+
+
 @pytest.mark.asyncio
 async def test_empty_refusal_placeholder_is_not_a_refusal(monkeypatch):
     turn = await _official_turn(

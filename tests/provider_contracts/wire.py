@@ -90,8 +90,6 @@ class Wire:
     stream_retry: str | None = None
     # Category a CONTENT_FILTER turn declares in this format.
     filter_category: str | None = None
-    # Whether a provider-filtered turn keeps its output (a declared difference).
-    filter_keeps_output = False
 
     def dialect(self):
         return None
@@ -125,8 +123,6 @@ class ChatVendorWire(Wire):
     name = "chat-vendor"
     transport = "OPENAI_COMPATIBLE_CHAT"
     history_key = "messages"
-    # Only a refusal drops the output; a content_filter finish keeps it.
-    filter_keeps_output = True
     _finish = {"STOP": "stop", "TOOL_CALLS": "tool_calls", "LENGTH": "length",
                "CONTENT_FILTER": "content_filter", "OTHER": "future_reason"}
     _usage = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}

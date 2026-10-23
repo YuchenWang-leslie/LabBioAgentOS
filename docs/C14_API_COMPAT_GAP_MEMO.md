@@ -428,9 +428,11 @@ Step 7 - contract parity
     - official Chat returns no reasoning to replay;
     - Chat has no retryable in-stream error;
     - the content-filter category is declared by Messages, generateContent
-      and Interactions only;
-    - a Chat `content_filter` finish keeps the turn's output, whereas only a
-      refusal drops it.
+      and Interactions only.
+
+    A filtered turn keeps no output in any format; for Chat, a
+    `content_filter` finish now drops the output as a refusal does
+    (DECIDED-C14-9, amended 2026-10-23).
     One application-level test per variant runs the full workflow and checks
     that the run trace and every written file hold no private continuation
     or key. A Chat chunk that carries only an error now fails as

@@ -31,16 +31,15 @@ def _status(code: int, body: bytes = b"") -> httpx.Response:
 
 def test_formats_declare_their_differences():
     assert {
-        wire.name: (wire.carries_reasoning, wire.stream_retry, wire.filter_category,
-                    wire.filter_keeps_output)
+        wire.name: (wire.carries_reasoning, wire.stream_retry, wire.filter_category)
         for wire in WIRES
     } == {
-        "chat-vendor": (True, None, None, True),
-        "chat-official": (False, None, None, True),
-        "responses": (True, "STREAM_RATE_LIMITED", None, False),
-        "anthropic": (True, "STREAM_OVERLOADED", "bio", False),
-        "gemini": (True, "STREAM_OVERLOADED", "safety", False),
-        "interactions": (True, "STREAM_OVERLOADED", "safety", False),
+        "chat-vendor": (True, None, None),
+        "chat-official": (False, None, None),
+        "responses": (True, "STREAM_RATE_LIMITED", None),
+        "anthropic": (True, "STREAM_OVERLOADED", "bio"),
+        "gemini": (True, "STREAM_OVERLOADED", "safety"),
+        "interactions": (True, "STREAM_OVERLOADED", "safety"),
     }
 
 

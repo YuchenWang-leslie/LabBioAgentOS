@@ -27,10 +27,8 @@ async def test_finish_reasons_reach_the_loop_record(wire, server, finish):
     assert observed == [(finish, category)]
     (observation,) = loop.observations
     assert observation.finish_reason.value == finish
-    if finish == "CONTENT_FILTER":
-        assert observation.content_present is wire.filter_keeps_output
-    else:
-        assert observation.content_present is True
+    # A filtered turn keeps no output in any format (DECIDED-C14-9).
+    assert observation.content_present is (finish != "CONTENT_FILTER")
 
 
 @pytest.mark.parametrize("known", [True, False], ids=["known", "unknown"])

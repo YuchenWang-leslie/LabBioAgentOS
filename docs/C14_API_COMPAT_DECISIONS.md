@@ -180,6 +180,17 @@ tried automatically. MOHAN CUI chose this on 2026-10-23 over keeping the
 terminal outcome, accepting that resuming on the same model may be declined
 again.
 
+Amended 2026-10-23 (MOHAN CUI): the rule covers every provider signal that a
+turn was declined or filtered, in each format:
+- Chat: a `content_filter` finish, as well as a `refusal`;
+- Responses: a `refusal` part, or the `content_filter` incomplete reason;
+- generateContent: a filter finish reason, or a blocked prompt;
+- Interactions: a safety error code.
+
+In every case the output of the turn is dropped. The category is kept where
+the format declares one: the Anthropic stop details, the generateContent
+reason, or the Interactions error code.
+
 ## DECIDED-C14-10 - Failed tool results are marked
 
 `PublicMessage` gains `tool_error`, false by default and allowed only on tool

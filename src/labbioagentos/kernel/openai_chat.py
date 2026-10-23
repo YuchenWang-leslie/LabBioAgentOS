@@ -359,9 +359,9 @@ class OpenAICompatibleChatProvider:
             if refusal is not None and not isinstance(refusal, str):
                 raise ValueError("Unsupported provider refusal")
             finish = self._finish_reason(choice.get("finish_reason"))
-            if refusal:
-                # A refusal is kept only as its finish reason; neither its text
-                # nor any other output of the turn enters the history.
+            if refusal or finish is FinishReason.CONTENT_FILTER:
+                # A refusal or a provider filter is kept only as its finish
+                # reason; no output of the turn enters the history.
                 content, calls, finish = None, (), FinishReason.CONTENT_FILTER
             component = "usage"
             usage = self._usage(response.get("usage"))
