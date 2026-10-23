@@ -334,10 +334,15 @@ Step 5 - Gemini adapter
     `x-goog-api-key` and never in the URL. All function calls of a turn precede
     their responses. Thought signatures are replayed in their original
     positions, including a signature delivered on a final empty part.
-    `finishReason` and `promptFeedback.blockReason` map to `FinishReason`. No
-    `candidateCount`, `cachedContent`, `store` or built-in tools are sent.
-    Field names, call-ID format and defaults are verified against the official
-    API reference and recorded.
+    `finishReason` and `promptFeedback.blockReason` map to `FinishReason`; a
+    filter reason becomes `CONTENT_FILTER` with the reason as category
+    (DECIDED-C14-9). No `candidateCount`, `cachedContent`, `store` or built-in
+    tools are sent. Model parts are replayed with their original boundaries,
+    and a failed result is sent under the `error` key. Only Gemini 3 or later
+    is supported, since earlier models may omit function-call IDs. Field
+    names, the call-ID rule and defaults were checked against the official
+    reference on 2026-10-23; the ID format and stream error shape are
+    confirmed in step 9.
 
 Step 6 - OpenAI Responses adapter
 

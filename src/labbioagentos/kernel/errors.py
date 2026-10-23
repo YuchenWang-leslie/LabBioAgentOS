@@ -180,7 +180,7 @@ class ProviderProtocolError(KernelContractError):
 
 
 # A provider type name is recorded only when it has this plain identifier form.
-_PROVIDER_TYPE_NAME = re.compile(r"[a-z][a-z0-9_.]{0,63}")
+_PROVIDER_TYPE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
 
 
 def bounded_provider_name(value: object) -> str:

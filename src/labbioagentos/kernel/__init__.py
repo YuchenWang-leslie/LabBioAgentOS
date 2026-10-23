@@ -67,6 +67,7 @@ from .errors import (
     ToolResultProjectionError,
 )
 from .fake import FakeProvider
+from .gemini_content import GeminiGenerateContentProvider
 from .loop import AgentLoop
 from .openai_chat import HttpxChatCompletionTransport, OpenAICompatibleChatProvider
 from .tooling import (
@@ -108,6 +109,7 @@ __all__ = [
     "FinalizationRejectedError",
     "FinishReason",
     "GeminiGenerateContentDialect",
+    "GeminiGenerateContentProvider",
     "InterruptReason",
     "InterruptSignal",
     "InterruptToken",
