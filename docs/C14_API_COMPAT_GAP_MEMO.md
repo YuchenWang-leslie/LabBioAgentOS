@@ -346,11 +346,31 @@ Step 5 - Gemini adapter
 
 Step 6 - OpenAI Responses adapter
 
-12. Every request sends `store: false` and never `previous_response_id`.
-    Encrypted reasoning, requested through
-    `include: ["reasoning.encrypted_content"]`, is replayed byte-identical from
-    the in-memory store. No built-in tools are sent. Event names and status
-    values are verified against the official API reference and recorded.
+12. Every request sends `store: false` and never `previous_response_id`,
+    `conversation`, `background`, `truncation` or built-in tools, and resends
+    the full history. A leading system message becomes `instructions`; later
+    system messages stay in place as input items. The reasoning effort is
+    configured for thinking on and for thinking off, or for neither; when it
+    is configured, `include: ["reasoning.encrypted_content"]` is sent as
+    well. Each assistant turn's output items (reasoning, message and
+    function-call items) are replayed exactly as received, ids included, from
+    the in-memory store. Function tools always state `strict` explicitly,
+    because the Responses API otherwise treats them as strict. Structured
+    output uses `text.format` with the full schema, or `json_object` with the
+    schema in `instructions`. Only the full response of the terminal event
+    (`response.completed`, `response.incomplete` or `response.failed`) builds
+    a turn, and its status must match the event. `max_output_tokens` maps to
+    `LENGTH`, `content_filter` and any `refusal` part to `CONTENT_FILTER`
+    without a category, and other incomplete reasons to `OTHER`. Only
+    `rate_limit_exceeded` in a stream error or failed response is retried.
+    Unknown output item and content part types fail with `unsupported_type`,
+    which names them. The key appears only in `Authorization`. Event names,
+    status values and fields were checked against the official reference on
+    2026-10-23. Step 9 confirms that item ids are accepted under
+    `store: false`. A reasoning model configured without an effort returns
+    reasoning items without encrypted content, which the service reportedly
+    cannot resolve under `store: false`, so step 8 documents that reasoning
+    models need a configured effort.
 
 Step 6b - Gemini Interactions adapter
 

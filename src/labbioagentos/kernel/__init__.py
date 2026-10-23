@@ -70,6 +70,7 @@ from .fake import FakeProvider
 from .gemini_content import GeminiGenerateContentProvider
 from .loop import AgentLoop
 from .openai_chat import HttpxChatCompletionTransport, OpenAICompatibleChatProvider
+from .openai_responses import OpenAIResponsesProvider
 from .tooling import (
     DispatchOutcome,
     ModelResultProjector,
@@ -129,6 +130,7 @@ __all__ = [
     "OpenAIResponsesDialect",
     "NoObservableProgressError",
     "OpenAICompatibleChatProvider",
+    "OpenAIResponsesProvider",
     "ProviderBinding",
     "ProviderRetry",
     "ProviderBindingMismatchError",
