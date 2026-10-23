@@ -419,6 +419,24 @@ Step 7 - contract parity
     - error categories, retry and the byte cap;
     - the absence of private reasoning from events, trace and results.
 
+    `tests/provider_contracts/` runs every scenario against six wire variants:
+    Chat in its vendor and official dialects, Responses, Messages,
+    generateContent and Interactions. Each variant uses the real adapter and
+    the shared transport, and only the network is replaced. The variants
+    encode one neutral script in each documented stream form. The format
+    differences are declared and asserted, not skipped:
+    - official Chat returns no reasoning to replay;
+    - Chat has no retryable in-stream error;
+    - the content-filter category is declared by Messages, generateContent
+      and Interactions only;
+    - a Chat `content_filter` finish keeps the turn's output, whereas only a
+      refusal drops it.
+    One application-level test per variant runs the full workflow and checks
+    that the run trace and every written file hold no private continuation
+    or key. A Chat chunk that carries only an error now fails as
+    `STREAM_ERROR` without retry, matching the other formats (MOHAN CUI,
+    2026-10-23).
+
 Step 8 - configuration, credentials, identity
 
 14. `[provider] api_format` selects exactly one adapter, and the default is
