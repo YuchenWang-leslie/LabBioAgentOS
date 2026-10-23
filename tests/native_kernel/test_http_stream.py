@@ -412,19 +412,21 @@ def test_stream_retry_category_is_bounded():
         RetryableStreamError("PRIVATE_PROVIDER_MESSAGE")
 
 
-async def test_chat_stream_error_event_stays_a_protocol_error(monkeypatch):
+async def test_chat_stream_error_event_fails_without_retry(monkeypatch):
     provider = Provider(lambda: _sse(
         'event: error\ndata: {"error":{"type":"overloaded_error"}}\n\n'
     ))
     _route(monkeypatch, provider)
 
-    with pytest.raises(ProviderProtocolError) as caught:
+    # Chat documents no in-stream error codes, so none is retried.
+    with pytest.raises(ProviderTransportError) as caught:
         await HttpxChatCompletionTransport(max_retries=2).post_json(
             url=URL, headers={}, payload={"model": "fixture", "stream": True},
             timeout_seconds=600,
         )
 
-    assert caught.value.validation_fields == ("stream.choices",)
+    assert caught.value.validation_type == "STREAM_ERROR"
+    assert caught.value.transport_retries == ()
     assert len(provider.requests) == 1
 
 
