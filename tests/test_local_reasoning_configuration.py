@@ -3,11 +3,11 @@
 import pytest
 
 from labbioagentos import WorkflowStage
-from labbioagentos.local_config import build_application, load_settings, runtime_manifest
-from labbioagentos.runtime.native_stage import (
-    NativeRuntimeFactory,
-    environment_native_provider,
+from labbioagentos.local_config import (
+    build_application, load_settings, provider_credentials, runtime_manifest,
 )
+from labbioagentos.runtime.errors import RuntimeProfileConfigurationError
+from labbioagentos.runtime.native_stage import NativeRuntimeFactory
 from test_local_configuration import settings_file
 
 
@@ -57,9 +57,7 @@ def test_reasoning_configuration_reaches_native_model_profile(
         application.run_state_store.close()
 
 
-def test_provider_wire_compatibility_reaches_native_binding(
-    settings_file, monkeypatch,
-):
+def test_provider_wire_compatibility_reaches_native_binding(settings_file):
     content = settings_file.read_text().replace(
         "[provider]",
         "[provider]\nprovider_tool_schema_strict = false"
@@ -72,16 +70,29 @@ def test_provider_wire_compatibility_reaches_native_binding(
         settings.result_root / "wire-compatibility",
         load_provider=False,
     )
-    monkeypatch.setenv("OPENAI_API_BASE", "https://provider.invalid/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "secret-token")
     try:
-        factory = NativeRuntimeFactory(application.configuration.profile_catalog)
-        _profile, _prompt, model, _schema, provider = factory.resolve(
+        provider_credentials(application).provide("secret-token")
+        _profile, _prompt, model, _schema, provider = application.runtime_factory.resolve(
             "execution", {"protocol": "Generic protocol fixture."}
         )
         assert model.provider_tool_schema_strict is False
         assert model.finalization_json_object is True
         assert provider.binding.provider_tool_schema_strict is False
         assert provider.binding.finalization_json_object is True
+    finally:
+        application.run_state_store.close()
+
+
+def test_a_factory_without_a_provider_builder_fails_only_when_a_provider_is_needed(
+    settings_file,
+):
+    settings = load_settings(settings_file)
+    application = build_application(settings, settings.result_root / "no-builder",
+                                    load_provider=False)
+    try:
+        # No environment variable can stand in for the composer's provider.
+        factory = NativeRuntimeFactory(application.configuration.profile_catalog)
+        with pytest.raises(RuntimeProfileConfigurationError, match="not configured"):
+            factory.resolve("execution", {"protocol": "Generic protocol fixture."})
     finally:
         application.run_state_store.close()

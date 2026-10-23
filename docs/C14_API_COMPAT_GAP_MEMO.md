@@ -444,18 +444,52 @@ Step 8 - configuration, credentials, identity
 14. `[provider] api_format` selects exactly one adapter, and the default is
     `openai`. A per-format sub-table is accepted only with its format. Unknown
     or mismatched settings fail at configuration load.
+
+    Implemented as follows:
+    - The sub-tables are `[provider.openai]`, `[provider.openai-responses]`,
+      `[provider.anthropic]`, `[provider.gemini]` and
+      `[provider.gemini-interactions]`. The last three are required, because
+      their thinking settings have no safe default.
+    - Each table builds the kernel dialect at load, so the dialect's own
+      rules (paired efforts, `omit` with a stated effort) fail there too.
+    - `max_retries` (0-10, default 2) sets the transport retry bound.
+    - Failures report `PROVIDER_SETTINGS_INVALID` with the setting names
+      only, never their values.
+    - The kernel's `create_provider` maps each transport to its adapter with
+      no fallback.
 15. Remote endpoints must use https, and plain http is accepted only for
     loopback hosts (DECIDED-C14-4). Rejection uses a fixed CLI error code with
-    a value-free fix hint.
+    a value-free fix hint. The endpoint is the TOML setting `[provider]
+    endpoint` (DECIDED-C14-7, amended). The codes are:
+    - `PROVIDER_ENDPOINT_NOT_HTTPS`;
+    - `PROVIDER_ENDPOINT_INVALID`, for user information, a query, a
+      fragment, whitespace, a missing host, a bad port or another scheme;
+    - `PROVIDER_ENDPOINT_MOVED`, for a configuration that still names
+      `base_url_env`.
 16. The env file must belong to the current user and grant no group or other
     access (DECIDED-C14-5). Rejection uses a fixed CLI error code and names
-    `chmod 600` as the fix.
+    `chmod 600` as the fix. The codes are:
+    - `PROVIDER_ENV_FILE_PERMISSIONS`, which also covers a file that is not a
+      regular file;
+    - `PROVIDER_ENV_FILE_UNAVAILABLE`;
+    - `PROVIDER_KEY_MISSING`.
+
+    The file is checked at load when present, and again on the open file
+    before the key is read.
 17. Credentials are never written to `os.environ` (DECIDED-C14-6):
     - the provider is built from an in-memory credential holder, filled at
       the existing late-loading points, with the key held as a secret value;
     - the default environment-reading builder is removed;
     - tests prove that a child process started after loading carries no
       provider key.
+
+    `ProviderCredentials` holds the key as a `SecretStr`. It is filled by
+    `_load_provider` at the existing late points, or directly by `provide()`
+    for a Python embedder. A provider requested before the key is held fails
+    with `PROVIDER_CREDENTIALS_NOT_LOADED`. Without a configured builder,
+    `NativeRuntimeFactory` fails only when a provider is needed. The
+    `OPENAI_API_KEY` and `OPENAI_API_BASE` variables no longer configure
+    anything.
 18. The runtime manifest records the endpoint scheme and host
     (DECIDED-C14-7), but no path, query, userinfo or key. It hashes every
     adapter and the shared transport. Changing the host changes

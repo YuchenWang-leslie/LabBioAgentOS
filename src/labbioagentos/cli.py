@@ -240,7 +240,7 @@ def _read(args: argparse.Namespace, settings) -> int:
 
 async def _governance(args: argparse.Namespace, settings) -> int:
     from .contracts import GateUserDecision
-    from .local_config import _load_provider
+    from .local_config import _load_provider, provider_credentials
     from .local_workspace_cli import configured_curator
     from .local_gold import (
         completed_gold_source_record, decide_personal_gold, propose_from_completed_run,
@@ -256,7 +256,7 @@ async def _governance(args: argparse.Namespace, settings) -> int:
         if args.command in {"gold-propose", "gold-review", "gold-decide"}:
             completed_gold_source_record(application, run_id, settings.principal, settings.workspace)
         if args.command == "gold-propose":
-            _load_provider(settings.provider)
+            _load_provider(provider_credentials(application))
             proposal = await propose_from_completed_run(
                 application, run_id, principal=settings.principal, workspace=settings.workspace,
                 curator=configured_curator(application),
@@ -314,7 +314,7 @@ async def _governance(args: argparse.Namespace, settings) -> int:
             return 0
         if (args.gate_id != pending.gate_id or args.domain_reference_id != pending.domain_reference_id):
             raise ValueError("Decision must name the exact current gate and domain reference")
-        _load_provider(settings.provider)
+        _load_provider(provider_credentials(application))
         result = await application.resume_run(handle, GateUserDecision(
             gate_id=args.gate_id, domain_reference_id=args.domain_reference_id,
             approved=args.decision == "approve", decided_by=settings.principal.user_id,
@@ -380,6 +380,11 @@ def main(argv: list[str] | None = None) -> int:
         # Exception messages can contain provider bodies, credentials or raw data.
         from .local_gold_library import GoldExportConflict
         from .local_continuation import RunWriterActiveError
+        from .local_config import ProviderConfigurationError
+        if isinstance(exc, ProviderConfigurationError):
+            # A fixed code, a value-free fix and setting names only.
+            _emit({"error": exc.code, "detail": exc.hint, "fields": list(exc.fields)})
+            return 1
         if isinstance(exc, RunWriterActiveError):
             _emit({"error": "RUN_WRITER_ACTIVE", "detail":
                    "Another command still owns the run; no continuation was started."})

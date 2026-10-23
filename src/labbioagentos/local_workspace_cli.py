@@ -138,7 +138,7 @@ def configured_curator(application):
         )
     model = application.configuration.profile_catalog.models["runtime-default"]
     factory = application.runtime_factory
-    if not isinstance(factory, NativeRuntimeFactory):
+    if not isinstance(factory, NativeRuntimeFactory) or factory.provider_builder is None:
         raise ValueError("Native runtime factory is unavailable")
     return TypedAuditedAdaptiveSkillCurator(
         NativeTypedModelInvoker(model=model, provider_builder=factory.provider_builder),

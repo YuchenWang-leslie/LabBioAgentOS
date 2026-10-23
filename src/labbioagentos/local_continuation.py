@@ -149,7 +149,7 @@ def export_snapshot(application, run_id, directory, settings):
 
 async def reconcile_or_continue(args, settings):
     from . import cli
-    from .local_config import _load_provider
+    from .local_config import _load_provider, provider_credentials
     _, directory, _ = resolve_run(settings, args.conversation, args.run_id)
     if args.command == "reconcile" and writer_active(directory):
         cli._emit({"run_id": str(args.run_id), "continuation_action": "BLOCKED",
@@ -187,7 +187,7 @@ async def reconcile_or_continue(args, settings):
                            "detail": "Answer the pending question or resolve the approval gate; no model was called."})
                 return 2
             if status not in {"COMPLETED", "FAILED", "CANCELLED"}:
-                _load_provider(settings.provider)
+                _load_provider(provider_credentials(application))
             result = await application.continue_run(
                 args.run_id, principal=settings.principal, workspace=settings.workspace,
             )
@@ -202,7 +202,7 @@ async def reconcile_or_continue(args, settings):
 async def question_or_answer(args, settings):
     """Reuse conversation identity, writer lock and immutable continuation export."""
     from . import cli
-    from .local_config import _load_provider
+    from .local_config import _load_provider, provider_credentials
 
     _, directory, _ = resolve_run(settings, args.conversation, args.run_id)
     with run_writer(directory):
@@ -222,7 +222,7 @@ async def question_or_answer(args, settings):
                        "run_id": str(args.run_id), "question_id": args.question_id})
             if not recorded or args.save_only:
                 return 0
-            _load_provider(settings.provider)
+            _load_provider(provider_credentials(application))
             result = await application.continue_run(args.run_id, principal=settings.principal,
                                                    workspace=settings.workspace)
             delivery = export_snapshot(application, args.run_id, directory, settings)
@@ -329,8 +329,8 @@ async def revise(args, settings):
                 link = catalog.add_run(args.conversation, application.run_state_store.get(handle.run_id),
                                        directory, parent_run_id=args.from_run)
             cli._emit({"event": "started", **link.model_dump(mode="json"), "run_directory": str(directory)})
-            from .local_config import _load_provider
-            _load_provider(settings.provider)
+            from .local_config import _load_provider, provider_credentials
+            _load_provider(provider_credentials(application))
             result = await application.run(handle)
             delivery = export_snapshot(application, handle.run_id, directory, settings)
             cli._emit({"event": "finished", "conversation_id": args.conversation,

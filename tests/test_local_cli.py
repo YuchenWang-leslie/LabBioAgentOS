@@ -27,7 +27,7 @@ def local_cli(tmp_path, monkeypatch):
         "identity": {"user_id": "user", "project_id": "project", "lab_id": "lab"},
         "provider": {
             "env_file": tmp_path / "missing-secrets.env", "api_key_env": "TEST_KEY",
-            "base_url_env": "TEST_URL", "model_identifier": "offline-test-model",
+            "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
             "image_key": "python", "image_reference": "sha256:" + "1" * 64,

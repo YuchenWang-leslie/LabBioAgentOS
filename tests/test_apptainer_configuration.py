@@ -33,7 +33,7 @@ lab_id = "lab-local"
 [provider]
 env_file = "provider.env"
 api_key_env = "LOCAL_TEST_KEY"
-base_url_env = "LOCAL_TEST_URL"
+endpoint = "https://provider.invalid/v1"
 model_identifier = "test-provider-model"
 [execution]
 {execution}

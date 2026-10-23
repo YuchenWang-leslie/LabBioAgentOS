@@ -3,6 +3,8 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from pydantic import ValidationError
@@ -15,7 +17,10 @@ from labbioagentos import (
     WorkflowStage,
 )
 from labbioagentos import local_config
-from labbioagentos.local_config import build_application, load_settings, runtime_manifest
+from labbioagentos.local_config import (
+    ProviderConfigurationError, build_application, load_settings, provider_credentials,
+    runtime_manifest,
+)
 
 
 @pytest.fixture
@@ -30,9 +35,9 @@ user_id = "user-local"
 project_id = "project-local"
 lab_id = "lab-local"
 [provider]
+endpoint = "https://provider.invalid/v1"
 env_file = "provider.env"
 api_key_env = "LOCAL_TEST_KEY"
-base_url_env = "LOCAL_TEST_URL"
 model_identifier = "test-provider-model"
 [execution]
 image_key = "python-local"
@@ -71,11 +76,10 @@ def test_provider_proxy_policy_reaches_only_native_provider(
         "[provider]", f"[provider]\ntrust_env = {str(trust_env).lower()}",
     ))
     settings = load_settings(settings_file)
-    monkeypatch.setenv("OPENAI_API_BASE", "https://provider.invalid/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "fixture-key")
     original_proxy = os.environ.get("HTTPS_PROXY")
     application = build_application(settings, settings.result_root / "provider-route", load_provider=False)
     try:
+        provider_credentials(application).provide("fixture-key")
         model = next(iter(application.configuration.profile_catalog.models.values()))
         provider = application.configuration.native_provider_builder(model)
         assert provider._transport.trust_env is trust_env
@@ -173,8 +177,10 @@ def test_model_phase_budget_is_explicitly_bounded(settings_file, seconds):
         f'model_identifier = "test-provider-model"\nmax_model_phase_seconds = {seconds}',
     )
     settings_file.write_text(content, encoding="utf-8")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ProviderConfigurationError) as caught:
         load_settings(settings_file)
+    assert caught.value.code == "PROVIDER_SETTINGS_INVALID"
+    assert caught.value.fields == ("provider.max_model_phase_seconds",)
 
 
 def test_unsupported_backend_configuration_is_rejected(settings_file):
@@ -255,24 +261,29 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
         application.run_state_store.close()
 
 
-def test_run_provider_load_is_explicit_noninterpolating_and_proxy_preserving(settings_file, monkeypatch):
+def test_run_provider_load_keeps_the_key_out_of_the_process_environment(settings_file, monkeypatch):
     settings = load_settings(settings_file)
     settings.provider.env_file.write_text(
-        'LOCAL_TEST_KEY=literal-${DO_NOT_EXPAND}\nLOCAL_TEST_URL=https://example.invalid/v1\n'
-        'HTTPS_PROXY=http://evil.invalid\n', encoding="utf-8",
+        'LOCAL_TEST_KEY=literal-${DO_NOT_EXPAND}\nHTTPS_PROXY=http://evil.invalid\n',
+        encoding="utf-8",
     )
+    settings.provider.env_file.chmod(0o600)
     monkeypatch.setenv("DO_NOT_EXPAND", "PRIVATE_EXPANSION")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:12199")
     monkeypatch.setenv("OPENAI_API_KEY", "previous-key")
-    monkeypatch.setenv("OPENAI_API_BASE", "previous-base")
     before = dict(os.environ)
     application = build_application(settings, settings.result_root / "run-1")
     try:
-        assert os.environ["OPENAI_API_KEY"] == "literal-${DO_NOT_EXPAND}"
-        assert os.environ["OPENAI_API_BASE"] == "https://example.invalid/v1"
-        changed = {key for key in set(before) | set(os.environ) if before.get(key) != os.environ.get(key)}
-        assert changed == {"OPENAI_API_KEY", "OPENAI_API_BASE"}
+        # The key is held verbatim, without interpolation, and only in memory.
+        assert provider_credentials(application).api_key() == "literal-${DO_NOT_EXPAND}"
+        assert dict(os.environ) == before
+        child = subprocess.run(
+            [sys.executable, "-c", "import os, sys; sys.stdout.write(repr(dict(os.environ)))"],
+            capture_output=True, text=True, check=True,
+        )
+        assert "literal-" not in child.stdout and "evil.invalid" not in child.stdout
         assert "literal-" not in json.dumps(runtime_manifest(settings))
+        assert "literal-" not in repr(provider_credentials(application))
     finally:
         application.run_state_store.close()
 

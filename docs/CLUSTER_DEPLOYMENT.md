@@ -148,9 +148,10 @@ project_id = "project-a"
 lab_id = "lab-x"
 
 [provider]
-env_file = "~/.config/labbioagent/provider.env"
+api_format = "openai"           # or openai-responses, anthropic, gemini, gemini-interactions
+endpoint = "https://provider.example/v1"   # https unless the server is on localhost
+env_file = "~/.config/labbioagent/provider.env"   # holds only the key; chmod 600
 api_key_env = "PROVIDER_API_KEY"
-base_url_env = "PROVIDER_BASE_URL"
 model_identifier = "<model>"
 # trust_env = false   # Provider-only direct route; also ignores host certificate environment.
 

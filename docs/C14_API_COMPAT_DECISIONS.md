@@ -103,6 +103,11 @@ The provider env file must belong to the current user and grant no group or
 other access (0600 or stricter). Configuration load rejects other modes, and
 the error names `chmod 600` as the fix.
 
+The file is checked when the settings load, if it exists. It is checked again
+on the open file right before the key is read, so a path swapped in between
+cannot pass. A missing file fails only when a command needs the key, so
+read-only commands work without it.
+
 ## DECIDED-C14-6 - Credentials stay out of the process environment
 
 Provider credentials are no longer written to `os.environ`. After loading,
@@ -123,6 +128,12 @@ auditable from `RUNTIME.json`. Changing the endpoint host changes
 `runtime_revision`, so an unfinished run cannot continue against a different
 recipient. An internal gateway's hostname is visible to anyone who receives
 the run directory.
+
+Amended 2026-10-23 (MOHAN CUI): the endpoint moves from the env file into the
+non-secret `[provider] endpoint` setting, and the env file holds only the
+key. The identity is computed without reading the env file, as before, and
+the https check runs when the settings load. A configuration that still names
+`base_url_env` fails with `PROVIDER_ENDPOINT_MOVED`, which says how to migrate.
 
 ## DECIDED-C14-8 - Per-response byte cap
 
