@@ -24,6 +24,7 @@ from labbioagentos.kernel import (
     FakeProvider,
     FinishReason,
     GeminiGenerateContentDialect,
+    GeminiInteractionsDialect,
     HttpxChatCompletionTransport,
     IncompleteProviderResponseError,
     KernelEventKind,
@@ -110,12 +111,13 @@ def _request(binding, *, max_output_tokens=512):
 # Criterion 5: transports and dialects
 
 
-def test_binding_admits_exactly_four_transports():
+def test_binding_admits_exactly_five_transports():
     assert set(get_args(ProviderTransport)) == {
         "OPENAI_COMPATIBLE_CHAT",
         "OPENAI_RESPONSES",
         "ANTHROPIC_MESSAGES",
         "GEMINI_GENERATE_CONTENT",
+        "GEMINI_INTERACTIONS",
     }
     with pytest.raises(ValidationError):
         _binding("OPENAI_COMPATIBLE_RESPONSES")
@@ -124,7 +126,7 @@ def test_binding_admits_exactly_four_transports():
 def test_dialect_defaults_only_where_a_safe_default_exists():
     assert _binding().dialect == OpenAIChatDialect()
     assert _binding("OPENAI_RESPONSES").dialect == OpenAIResponsesDialect()
-    for transport in ("ANTHROPIC_MESSAGES", "GEMINI_GENERATE_CONTENT"):
+    for transport in ("ANTHROPIC_MESSAGES", "GEMINI_GENERATE_CONTENT", "GEMINI_INTERACTIONS"):
         with pytest.raises(ValidationError):
             _binding(transport)
     assert _binding(
@@ -140,6 +142,14 @@ def test_dialect_defaults_only_where_a_safe_default_exists():
             thinking_level_enabled="high", thinking_level_disabled="low",
         ),
     ).dialect.thinking_level_disabled == "low"
+    assert _binding(
+        "GEMINI_INTERACTIONS",
+        dialect=GeminiInteractionsDialect(
+            thinking_level_enabled="high", thinking_level_disabled="minimal",
+        ),
+    ).dialect.thinking_level_disabled == "minimal"
+    with pytest.raises(ValidationError):
+        GeminiInteractionsDialect(thinking_level_enabled="high")
 
 
 @pytest.mark.parametrize("transport,dialect", [
@@ -149,6 +159,12 @@ def test_dialect_defaults_only_where_a_safe_default_exists():
         thinking_level_enabled="high", thinking_level_disabled="low",
     )),
     ("GEMINI_GENERATE_CONTENT", AnthropicMessagesDialect(thinking_off="DISABLED")),
+    ("GEMINI_GENERATE_CONTENT", GeminiInteractionsDialect(
+        thinking_level_enabled="high", thinking_level_disabled="low",
+    )),
+    ("GEMINI_INTERACTIONS", GeminiGenerateContentDialect(
+        thinking_level_enabled="high", thinking_level_disabled="low",
+    )),
 ])
 def test_dialect_must_match_its_transport(transport, dialect):
     with pytest.raises(ValidationError):

@@ -14,6 +14,7 @@ from .contracts import (
     DelegationResult,
     FinishReason,
     GeminiGenerateContentDialect,
+    GeminiInteractionsDialect,
     InterruptReason,
     InterruptSignal,
     KernelEvent,
@@ -68,6 +69,7 @@ from .errors import (
 )
 from .fake import FakeProvider
 from .gemini_content import GeminiGenerateContentProvider
+from .gemini_interactions import GeminiInteractionsProvider
 from .loop import AgentLoop
 from .openai_chat import HttpxChatCompletionTransport, OpenAICompatibleChatProvider
 from .openai_responses import OpenAIResponsesProvider
@@ -111,6 +113,8 @@ __all__ = [
     "FinishReason",
     "GeminiGenerateContentDialect",
     "GeminiGenerateContentProvider",
+    "GeminiInteractionsDialect",
+    "GeminiInteractionsProvider",
     "InterruptReason",
     "InterruptSignal",
     "InterruptToken",

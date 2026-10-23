@@ -277,8 +277,8 @@ Step 1 - shared transport
 Step 2 - neutral contract
 
 5. `ProviderBinding.transport` admits exactly `OPENAI_COMPATIBLE_CHAT`,
-   `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES` and `GEMINI_GENERATE_CONTENT`,
-   and `GEMINI_INTERACTIONS` once its adapter lands in step 6b.
+   `OPENAI_RESPONSES`, `ANTHROPIC_MESSAGES`, `GEMINI_GENERATE_CONTENT` and
+   `GEMINI_INTERACTIONS`; the last was added with its adapter in step 6b.
    A per-format dialect sub-model must match its transport. The team-wide
    single-binding check covers it.
 6. A generic private-continuation store is keyed by kernel run, invocation,
@@ -374,12 +374,38 @@ Step 6 - OpenAI Responses adapter
 
 Step 6b - Gemini Interactions adapter
 
-12b. Every request sends `store: false` and never `previous_interaction_id`,
-     and resends the full history. Thought steps and their signatures are
-     replayed exactly as received, and function results reference `call_id`.
-     No built-in tools are sent. The endpoint version, field names and stream
-     event names are verified against the official reference when the step
-     starts and are recorded (DECIDED-C14-1).
+12b. Every request goes to `{endpoint}/interactions` with the key only in
+     `x-goog-api-key`. It sends `store: false` and `stream: true`. It never
+     sends `previous_interaction_id`, `background`, an agent, an
+     environment, `service_tier`, a webhook, `safety_settings`, labels or
+     built-in tools, and it resends the full history as steps. Leading
+     system messages become `system_instruction`; a later system message is
+     refused, because the API has no system step. Both thinking levels are
+     configured. Strict tools use `tool_choice: validated`. Tools and
+     `response_format` carry the full schema, or JSON-object mode puts the
+     schema in `system_instruction`. Because the completed event carries no
+     steps, the stream is reassembled from `step.start`, `step.delta` and
+     `step.stop`: text, thought signatures and argument fragments.
+     Thought, output and function-call steps are replayed exactly as
+     reassembled. Function results reference `call_id` and carry
+     `is_error` for a failed result (DECIDED-C14-10). The statuses map as
+     follows:
+     - `requires_action` maps to `TOOL_CALLS`;
+     - `completed` maps to `STOP`, or to `TOOL_CALLS` when it has calls;
+     - `incomplete` maps to `LENGTH`, since the documented case is the output
+       limit (MOHAN CUI, 2026-10-23);
+     - other statuses map to `OTHER`.
+     A safety error code (`safety`, `jailbreak`, `prohibited_content`,
+     `blocklist`) becomes `CONTENT_FILTER` with the code as category
+     (DECIDED-C14-9). `unavailable` and `resource_exhausted` are retried.
+     Unknown step and delta types fail with `unsupported_type`, which names
+     them, and unknown events are ignored. Field names, step types, event
+     names and statuses were checked against the official reference on
+     2026-10-23 (v1beta; DECIDED-C14-1). Step 9 confirms:
+     - the overload and rate-limit code strings;
+     - whether a blocked input arrives as HTTP 400 or a stream error;
+     - whether interaction ids fit the kernel identifier format;
+     - that the replayed steps are accepted.
 
 Step 7 - contract parity
 

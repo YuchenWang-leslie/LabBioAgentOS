@@ -207,6 +207,7 @@ ProviderTransport = Literal[
     "OPENAI_RESPONSES",
     "ANTHROPIC_MESSAGES",
     "GEMINI_GENERATE_CONTENT",
+    "GEMINI_INTERACTIONS",
 ]
 # Model support differs; an unsupported value fails at the provider.
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
@@ -289,11 +290,20 @@ class GeminiGenerateContentDialect(KernelModel):
     thinking_level_disabled: GeminiThinkingLevel
 
 
+class GeminiInteractionsDialect(KernelModel):
+    """Interactions API request form; both thinking levels are explicit."""
+
+    kind: Literal["GEMINI_INTERACTIONS"] = "GEMINI_INTERACTIONS"
+    thinking_level_enabled: GeminiThinkingLevel
+    thinking_level_disabled: GeminiThinkingLevel
+
+
 ProviderDialect = Annotated[
     OpenAIChatDialect
     | OpenAIResponsesDialect
     | AnthropicMessagesDialect
-    | GeminiGenerateContentDialect,
+    | GeminiGenerateContentDialect
+    | GeminiInteractionsDialect,
     Field(discriminator="kind"),
 ]
 
