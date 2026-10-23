@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from labbioagentos import cli
+from labbioagentos import cli, local_config
 from labbioagentos.kernel import (
     AnthropicMessagesDialect,
     AnthropicMessagesProvider,
@@ -26,6 +26,7 @@ from labbioagentos.local_config import (
     build_application,
     load_settings,
     provider_credentials,
+    runtime_manifest,
 )
 from test_local_configuration import settings_file  # noqa: F401  (fixture)
 
@@ -353,3 +354,65 @@ def test_the_environment_variable_names_no_longer_configure_a_provider(
         assert os.environ["OPENAI_API_KEY"] == KEY
     finally:
         application.run_state_store.close()
+
+
+# Criterion 18: where model traffic goes is part of the runtime identity (DECIDED-C14-7)
+
+
+def test_the_manifest_records_the_origin_but_not_the_path(settings_file):
+    _provider_section(settings_file, endpoint="https://gateway.invalid:8443/PRIVATE-PATH/v1")
+    settings = load_settings(settings_file)
+
+    manifest = runtime_manifest(settings)
+
+    assert manifest["provider_endpoint"]["origin"] == "https://gateway.invalid:8443"
+    assert len(manifest["provider_endpoint"]["sha256"]) == 64
+    assert "endpoint" not in manifest["configuration"]["provider"]
+    assert "PRIVATE-PATH" not in json.dumps(manifest)
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://other-host.invalid/v1",
+    "https://provider.invalid:8443/v1",
+    "https://provider.invalid/v1beta",
+], ids=["host", "port", "path"])
+def test_any_endpoint_change_changes_the_revision(settings_file, endpoint):
+    first = runtime_manifest(load_settings(settings_file))
+    _provider_section(settings_file, endpoint=endpoint)
+
+    changed = runtime_manifest(load_settings(settings_file))
+
+    assert changed["runtime_revision"] != first["runtime_revision"]
+
+
+def test_the_format_and_its_dialect_change_the_revision(settings_file):
+    plain = runtime_manifest(load_settings(settings_file))
+    _provider_section(settings_file, tables='[provider.openai]\nstream_include_usage = true\n')
+    dialect = runtime_manifest(load_settings(settings_file))
+    content = settings_file.read_text(encoding="utf-8").replace(
+        "[provider.openai]", "[provider.openai-responses]",
+    ).replace("stream_include_usage = true", 'reasoning_effort_enabled = "high"\n'
+              'reasoning_effort_disabled = "low"')
+    settings_file.write_text(content.replace(
+        "[provider]\n", '[provider]\napi_format = "openai-responses"\n'), encoding="utf-8")
+    responses = runtime_manifest(load_settings(settings_file))
+
+    revisions = {item["runtime_revision"] for item in (plain, dialect, responses)}
+    assert len(revisions) == 3
+    assert responses["configuration"]["provider"]["api_format"] == "openai-responses"
+
+
+def test_every_module_that_shapes_provider_traffic_is_hashed(settings_file, monkeypatch):
+    settings = load_settings(settings_file)
+    first = runtime_manifest(settings)
+    digests = first["source"]["native_provider_sha256"]
+    assert set(digests) == {
+        "anthropic_messages.py", "continuation.py", "gemini_content.py",
+        "gemini_interactions.py", "http_stream.py", "openai_chat.py",
+        "openai_responses.py", "providers.py", "schema_projection.py",
+    }
+    real = local_config._file_digest
+    monkeypatch.setattr(local_config, "_file_digest", lambda path: (
+        "0" * 64 if path.name == "gemini_interactions.py" else real(path)))
+
+    assert runtime_manifest(settings)["runtime_revision"] != first["runtime_revision"]

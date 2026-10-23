@@ -568,6 +568,28 @@ def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# Every module that shapes provider traffic: the five adapters, their factory,
+# the shared transport and the helpers they all use.
+_PROVIDER_SOURCES = (
+    "anthropic_messages.py", "continuation.py", "gemini_content.py",
+    "gemini_interactions.py", "http_stream.py", "openai_chat.py",
+    "openai_responses.py", "providers.py", "schema_projection.py",
+)
+
+
+def _provider_endpoint(endpoint: str) -> dict:
+    """Where model traffic goes: the origin in plain text (DECIDED-C14-7).
+
+    The path is not shown; its digest still changes the revision when any
+    part of the endpoint, such as an API version, changes.
+    """
+    parsed = urlsplit(endpoint)
+    return {
+        "origin": f"{parsed.scheme}://{parsed.netloc}",
+        "sha256": hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
+    }
+
+
 def runtime_manifest(settings: LocalSettings) -> dict:
     """Content-derived identity; provider env values are neither read nor retained."""
     profile_bytes = _profile_bytes(settings)
@@ -616,17 +638,22 @@ def runtime_manifest(settings: LocalSettings) -> dict:
     runtime_source = {
         "labbio_sha256": _source_digest(source_root),
         "native_kernel_sha256": _source_digest(source_root / "kernel"),
-        "native_provider_sha256": _file_digest(source_root / "kernel" / "openai_chat.py"),
+        "native_provider_sha256": {
+            name: _file_digest(source_root / "kernel" / name) for name in _PROVIDER_SOURCES
+        },
         "native_tool_schema_sha256": _file_digest(source_root / "runtime" / "native_tools.py"),
         "team_profile_sha256": hashlib.sha256(
             json.dumps(effective_profile, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
     }
+    configuration = settings.model_dump(mode="json")
+    endpoint = configuration["provider"].pop("endpoint")
     manifest = {
         "format_version": 1,
         "runtime_backend": settings.runtime_backend,
         "runtime_contract_version": 1,
-        "configuration": settings.model_dump(mode="json"),
+        "configuration": configuration,
+        "provider_endpoint": _provider_endpoint(endpoint),
         "profile": effective_profile,
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
         "source": runtime_source,

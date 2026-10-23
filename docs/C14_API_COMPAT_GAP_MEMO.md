@@ -495,6 +495,18 @@ Step 8 - configuration, credentials, identity
     adapter and the shared transport. Changing the host changes
     `runtime_revision`.
 
+    Implemented as follows:
+    - `provider_endpoint.origin` holds `scheme://host[:port]` in plain text.
+    - `provider_endpoint.sha256` is the digest of the full endpoint, so a
+      changed host, port or path (an API version, for example) changes the
+      revision while the path stays out of `RUNTIME.json`.
+    - The configuration snapshot leaves out the raw endpoint.
+    - `source.native_provider_sha256` now maps each file to its digest:
+      the five adapters, `providers.py`, `http_stream.py`, `continuation.py`
+      and `schema_projection.py`.
+    - `api_format` and the per-format table are part of the configuration
+      snapshot.
+
 Step 9 - documentation and live checks
 
 19. `KNOWN_LIMITATIONS.md`, `LOCAL_TASK_ENTRYPOINT.md`, `ARCHITECTURE.md`,
