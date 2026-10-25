@@ -577,10 +577,16 @@ Step 9 - documentation and live checks
     - The per-file limit test passed.
     - Three file-limit cases and the C3 execution-boundary test failed. They
       failed identically on the C14 base `d7b1000`, so C14 did not cause the
-      failure. In each case the container asserts that `/sys/class/net`
-      holds only `lo`. Docker Desktop's VM kernel also lists unconfigured
-      tunnel devices (`gre0`, `sit0`, `tunl0` and others) under
-      `--network none`.
+      failure. The two causes are unrelated:
+      - **File-limit cases.** The container asserts that `/sys/class/net`
+        holds only `lo`. Under `--network none`, Docker Desktop's VM kernel
+        also lists tunnel devices (`gre0`, `sit0`, `tunl0` and others). The
+        devices are down and have no address or route, and an outbound
+        connection fails as unreachable.
+      - **C3 test.** The C3 execution succeeds, and its structured output is
+        contract-valid. The test grants no release authorization, so the
+        output stays `RAW`. The test predates release authorization and
+        would fail on any host.
     - The C12 Docker suite and the input-identity test pin image IDs from the
       original Linux host, so they could not run here.
 
