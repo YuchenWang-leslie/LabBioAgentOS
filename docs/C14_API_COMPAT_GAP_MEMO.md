@@ -569,8 +569,23 @@ Step 9 - documentation and live checks
     The first round uses DeepSeek's OpenAI- and Anthropic-compatible
     endpoints and Gemini, on Scheduler + Apptainer. The OpenAI Responses API,
     the official Chat dialect and official Anthropic behavior stay at levels
-    1–2 until keys for those services are available. The local Docker path is
-    covered by the existing gated Docker tests, without model calls.
+    1–2 until keys for those services are available.
+
+    The local Docker path was checked on 2026-10-26 with the existing gated
+    Docker tests, which make no model calls. The host was Docker Desktop
+    29.8.2 on macOS arm64.
+    - The per-file limit test passed.
+    - Three file-limit cases and the C3 execution-boundary test failed. They
+      failed identically on the C14 base `d7b1000`, so C14 did not cause the
+      failure. In each case the container asserts that `/sys/class/net`
+      holds only `lo`. Docker Desktop's VM kernel also lists unconfigured
+      tunnel devices (`gre0`, `sit0`, `tunl0` and others) under
+      `--network none`.
+    - The C12 Docker suite and the input-identity test pin image IDs from the
+      original Linux host, so they could not run here.
+
+    Credentials cannot reach the Docker client: a child process started
+    after the key is loaded carries none (criterion 17).
 
 Across all steps
 
