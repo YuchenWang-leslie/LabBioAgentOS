@@ -23,8 +23,8 @@ labbio --help
 
 - `result_root`、`input_roots` 和默认输入格式；
 - 用户、项目、实验室身份；
-- provider endpoint/model、输出预算、phase deadline，以及仓库外凭据文件中的
-  环境变量名；
+- 模型服务的接口格式、端点、模型、输出预算、重试次数、phase deadline，以及
+  仓库外凭据文件中的密钥变量名（见下文"模型服务"）；
 - 已批准的不可变 Docker 镜像、模块清单、资源限额、输出限额和网络策略；
 - 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
 
@@ -35,6 +35,114 @@ labbio --help
 不稳定，可在可信配置的 `[provider]` 中设置 `trust_env = false`；这只影响
 模型 HTTP 客户端，不会更改文献检索或环境构建的网络环境。该选项同时停用模型
 客户端对宿主证书环境变量的读取，使用私有 CA 的站点须先验证证书路径。
+
+## 模型服务
+
+一个部署只用一种接口格式，写在可信配置的 `[provider]` 中。不会自动切换格式、
+模型或服务商。
+
+| `api_format` | 接口 | 端点示例 | 必须写的子表 |
+|---|---|---|---|
+| `openai`（默认） | Chat Completions | `https://api.openai.com/v1`；厂商服务如 `https://api.deepseek.com` | 无 |
+| `openai-responses` | Responses API | `https://api.openai.com/v1` | 无 |
+| `anthropic` | Messages API | `https://api.anthropic.com/v1` | `[provider.anthropic]` |
+| `gemini` | `generateContent` | `https://generativelanguage.googleapis.com/v1beta` | `[provider.gemini]` |
+| `gemini-interactions` | Interactions API | `https://generativelanguage.googleapis.com/v1beta` | `[provider.gemini-interactions]` |
+
+端点写到接口路径之前：适配器会自己补上 `/chat/completions`、`/responses`、
+`/messages`、`/models/...` 或 `/interactions`。厂商的兼容接口也一样，例如
+DeepSeek 的 Anthropic 兼容接口写 `https://api.deepseek.com/anthropic/v1`。兼容接口
+可能忽略思考设置等字段，只能说明请求格式能用，不代表官方服务的行为。
+
+远程端点必须用 https。http 只允许 `localhost`、`127.0.0.1` 和 `::1`；服务没有 TLS
+时，请在前面加一层 TLS 反向代理，或用 SSH 隧道把它转到本机。`RUNTIME.json` 记录
+端点的协议、主机和端口，以及完整端点的摘要；端点有任何改动，runtime revision
+都会变。
+
+```toml
+[provider]
+api_format = "anthropic"
+endpoint = "https://api.anthropic.com/v1"
+env_file = "~/.config/labbioagent/provider.env"   # 只放密钥，权限必须是 0600
+api_key_env = "ANTHROPIC_API_KEY"                  # env 文件中的变量名
+model_identifier = "<模型 ID>"
+thinking_enabled = false                 # 其他阶段共用的模型
+interpretation_thinking_enabled = true   # 解读阶段单独使用的模型
+provider_tool_schema_strict = false
+finalization_json_object = true
+max_output_tokens = 16384
+max_retries = 2                          # 限流、过载、服务端错误和连接失败的重试次数，0–10
+
+[provider.anthropic]
+thinking_off = "disabled"    # disabled | between-tools | omit（omit 必须同时写 effort_disabled）
+effort_enabled = "high"      # 可选：low | medium | high | xhigh | max
+```
+
+各格式的子表只能和自己的格式一起出现：
+
+- `[provider.openai]`：`thinking_parameter` 为 `thinking-object`（默认，厂商方言）、
+  `reasoning-effort` 或 `omit`。选 `reasoning-effort` 时必须同时写
+  `reasoning_effort_enabled` 和 `reasoning_effort_disabled`。另外还有
+  `output_limit_parameter`（`max_tokens` 或 `max_completion_tokens`）和
+  `stream_include_usage`。官方 OpenAI 服务用 `reasoning-effort`、
+  `max_completion_tokens` 和 `stream_include_usage = true`。
+- `[provider.openai-responses]`：`reasoning_effort_enabled` 和
+  `reasoning_effort_disabled`，要么都写，要么都不写。推理模型必须写；不写时，
+  无状态模式下无法回传推理内容。
+- `[provider.anthropic]`：`thinking_off` 必填，因为不同模型关闭思考的方式不同；
+  `effort_enabled` 和 `effort_disabled` 可选。
+- `[provider.gemini]` 和 `[provider.gemini-interactions]`：
+  `thinking_level_enabled` 和 `thinking_level_disabled` 都必填（`minimal`、`low`、
+  `medium` 或 `high`，以模型支持为准）。
+
+官方 OpenAI 和 Claude 的严格 schema 模式表达不了 LabBio 的阶段 schema（可选字段、
+联合类型、映射）。使用这两家时，请设 `provider_tool_schema_strict = false` 和
+`finalization_json_object = true`；本地校验在任何模式下都照常执行。
+
+换格式或端点，就是换数据接收方，中转网关能看到全部提示和密钥；见
+[已知限制](KNOWN_LIMITATIONS.md)。
+
+### 凭据文件
+
+```text
+# ~/.config/labbioagent/provider.env，执行 chmod 600
+ANTHROPIC_API_KEY=<密钥>
+```
+
+凭据文件必须是当前用户自己的普通文件，组用户和其他用户没有任何权限。文件存在
+时，加载配置就会检查；读取密钥前还会再查一次。只有需要调用模型的命令才读取密钥，
+`status`、`export` 等命令不需要这个文件。密钥只保存在进程内存中，不会写进环境
+变量，子进程、调度器命令和容器都拿不到它。请把凭据文件放在输入根、结果根和
+工作区之外。
+
+### 配置错误码
+
+模型服务配置有问题时，CLI 只输出固定错误码、改法和字段名，不包含任何值，例如
+`{"error": "PROVIDER_ENDPOINT_NOT_HTTPS", "detail": "...", "fields": ["provider.endpoint"]}`。
+
+| 错误码 | 含义 |
+|---|---|
+| `PROVIDER_SETTINGS_INVALID` | `[provider]` 设置不合法：格式名不对，子表和格式不匹配，缺少必须的子表，或子表取值不合法 |
+| `PROVIDER_ENDPOINT_NOT_HTTPS` | 远程端点不是 https |
+| `PROVIDER_ENDPOINT_INVALID` | 端点带用户名、密码、查询参数、片段或空白，缺少主机名，端口无效，或不是 http(s) |
+| `PROVIDER_ENDPOINT_MOVED` | 配置还在用 `base_url_env`，见下文"从旧配置迁移" |
+| `PROVIDER_ENV_FILE_PERMISSIONS` | 凭据文件不是普通文件、不属于当前用户或权限过宽；执行 `chmod 600` |
+| `PROVIDER_ENV_FILE_UNAVAILABLE` | 找不到凭据文件 |
+| `PROVIDER_KEY_MISSING` | 凭据文件里没有 `api_key_env` 指定的变量，或者它的值为空或跨行 |
+| `PROVIDER_CREDENTIALS_NOT_LOADED` | 内部组装错误：调用模型前没有加载密钥 |
+
+### 从旧配置迁移
+
+旧配置把端点放在凭据文件里，用 `base_url_env` 指向它。迁移步骤：
+
+1. 把凭据文件里那个地址移到 `[provider] endpoint`，删掉 `base_url_env`；
+2. 凭据文件只保留密钥，执行 `chmod 600`；
+3. 远程端点改用 https，或者用 SSH 隧道转到本机后写 `http://localhost:<端口>/...`；
+4. 不要再依赖 `OPENAI_API_KEY` 和 `OPENAI_API_BASE` 环境变量，它们已经不起作用；
+5. 在 Python 中直接组装时，用 `provider_credentials(application).provide(key)`
+   在内存中提供密钥，或者给 `NativeRuntimeFactory` 传入自己的构建函数（可以用
+   `labbioagentos.kernel.create_provider`）；
+6. 升级后 runtime revision 会变，升级前没跑完的运行不能续跑，请先跑完或取消。
 
 ## 提交任务
 

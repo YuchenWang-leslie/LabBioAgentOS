@@ -1,5 +1,59 @@
 # Real E2E Convergence Workplan
 
+## C14 provider API formats implemented; live checks pending — 2026-10-26
+
+C14 source is complete on branch `feat/api-compat`. The branch is not merged,
+released or deployed.
+
+**Formats.** Five provider API formats sit behind the Native `ModelProvider`
+port:
+- OpenAI Chat Completions, in the existing vendor dialect and an official
+  dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API;
+- the Gemini Interactions API, added on 2026-10-23 as a fifth format.
+
+A deployment selects one with `[provider] api_format`, and nothing switches
+format, model or provider automatically.
+
+**Changes around the provider:**
+- The adapters share one HTTP transport, with a byte cap, gzip-only decoding,
+  strict JSON, and a bounded retry that is recorded in the trace.
+- Credentials are held in memory and never written to the process
+  environment.
+- Remote endpoints require https, and the env file must be mode 0600.
+- The endpoint moved from the env file into `[provider] endpoint`.
+- The runtime identity records the endpoint origin and digests of every
+  provider module.
+- Refusals and provider filters become `CONTENT_FILTER`; a refused
+  finalization stays recoverable.
+- Failed tool results are marked in the history.
+
+The [decisions](C14_API_COMPAT_DECISIONS.md) and the
+[gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
+
+**Evidence: acceptance levels 1–2 only.**
+- On macOS without network, the deterministic suite gives `2340 passed, 68
+  skipped`. Of the skips, 44 are opt-in live checks.
+- One contract suite runs the same scenarios through the real AgentLoop for
+  six wire variants, including an application-level scan for leaked keys and
+  private reasoning.
+
+**Prepared but not yet run:**
+- live checks of each format (level 3);
+- a full workflow per format on Scheduler + Apptainer (levels 4–6).
+
+They are `tests/integration/test_provider_formats_live.py` and
+`tests/integration/test_provider_workflow_live.py`. With the keys available
+for this round, the OpenAI Responses API, the official Chat dialect and
+official Anthropic behavior cannot be checked live.
+
+**Upgrade.** Upgrading changes the runtime revision, and every configuration
+must migrate its `[provider]` table (see
+[LOCAL_TASK_ENTRYPOINT.md](LOCAL_TASK_ENTRYPOINT.md)). Production remains
+release `native-p8-20261016T085718Z`.
+
 ## C14 provider API format compatibility opened — 2026-10-21
 
 MOHAN CUI opened C14 on branch `feat/api-compat` from `d7b1000`. Behind the

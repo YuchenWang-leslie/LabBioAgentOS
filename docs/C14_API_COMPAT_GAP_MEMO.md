@@ -514,10 +514,63 @@ Step 9 - documentation and live checks
     migration (https, file mode, removed environment variables), data
     recipients, and relay gateways. `REAL_E2E_CONVERGENCE_WORKPLAN.md` records
     the state change at the top.
+
+    Done on 2026-10-26:
+    - `KNOWN_LIMITATIONS.md` covers:
+      - the five formats and stateless use;
+      - the strict-parsing trade-off and the format-specific limits;
+      - the strict-schema recommendation and Responses efforts;
+      - vendor compatibility layers and unsupported cloud authentication;
+      - retry billing and the byte cap;
+      - data recipients, relay gateways, and the endpoint origin in
+        `RUNTIME.json`;
+      - credential handling and its two remaining gaps.
+    - `LOCAL_TASK_ENTRYPOINT.md` has:
+      - a format table with endpoint examples and every per-format table;
+      - the recommended settings and credential-file rules;
+      - the configuration error codes;
+      - the migration steps.
+    - `ARCHITECTURE.md` describes the adapters, the shared transport, the
+      private continuation store, credentials and the runtime identity.
+    - `CLUSTER_DEPLOYMENT.md` has the credential rules for a cluster and the
+      site migration.
+    - `examples/` lists the endpoint of each format.
+    - The workplan records the state at the top.
+
+    Statements that depend on live results are marked as pending until
+    criterion 20 is met.
 20. Gated live tests, requiring an explicit environment flag and one env file
     per provider, pass for all five formats: multi-turn tool use with thinking
     enabled, and structured finalization. Results are reported by acceptance
     level.
+
+    The tests are prepared and were rehearsed offline against scripted
+    services; results are pending.
+    - `tests/integration/test_provider_formats_live.py` (level 3) is enabled
+      by `LABBIO_PROVIDER_LIVE=1` and reads one provider-only TOML per
+      variant. It checks:
+      - tools over two rounds with thinking on;
+      - a tool round with thinking off;
+      - finalization in both modes;
+      - a real stage schema.
+
+      `LABBIO_PROVIDER_LIVE_PROBES=1` adds probes of the thinking-off forms
+      each provider accepts.
+    - `tests/integration/test_provider_workflow_live.py` (levels 4–6) is
+      enabled by `LABBIO_PROVIDER_WORKFLOW_LIVE=1`. It runs the full workflow
+      on a synthetic table through the real CLI, then checks:
+      - completion and model turns in every stage;
+      - execution and delivery;
+      - the runtime identity;
+      - a scan of the run directory for the key and private reasoning.
+
+    Both write content-free JSON records.
+
+    The first round uses DeepSeek's OpenAI- and Anthropic-compatible
+    endpoints and Gemini, on Scheduler + Apptainer. The OpenAI Responses API,
+    the official Chat dialect and official Anthropic behavior stay at levels
+    1–2 until keys for those services are available. The local Docker path is
+    covered by the existing gated Docker tests, without model calls.
 
 Across all steps
 

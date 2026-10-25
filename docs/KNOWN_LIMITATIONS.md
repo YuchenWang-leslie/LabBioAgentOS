@@ -14,10 +14,71 @@ data types, methods, providers, and failure modes.
 
 ## Provider behavior
 
-The current adapter supports the required OpenAI-compatible Chat transport, not
-every provider dialect. Exact endpoint, model, thinking mode, tool-schema mode,
-response mode, deadline, and output limits are frozen in trusted configuration.
-Unsupported behavior fails explicitly rather than switching transport.
+A deployment selects exactly one provider API format in trusted configuration
+(`[provider] api_format`):
+
+- OpenAI Chat Completions (`openai`), in a vendor dialect for DeepSeek- and
+  MiMo-style services or in the official dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API;
+- the Gemini Interactions API.
+
+Exact endpoint, model, thinking settings, tool-schema mode, response mode,
+deadline, retry bound and output limits are frozen in trusted configuration.
+Nothing switches format, model or provider automatically, and unsupported
+behavior fails explicitly.
+
+Every format is used statelessly. Each request carries the full history, and
+nothing is kept on the provider side (`store: false` where the API offers
+it). Provider-hosted tools, such as web search, code execution, file search
+or MCP servers, are never offered, because they would act outside the
+governed execution plane.
+
+Parsing is strict:
+
+- An unknown content type fails the turn with a code that names the type.
+- Unknown event types and metadata are ignored.
+- An unknown finish reason is recorded as `OTHER`.
+
+A provider that adds a new kind of content therefore stops working until
+LabBio supports it, instead of silently losing that content.
+
+Format-specific limits:
+
+- **OpenAI Chat Completions.** The official service returns no reasoning, so
+  reasoning does not continue across tool calls; the Responses API does
+  continue it.
+- **OpenAI Responses.** A reasoning model needs both reasoning efforts
+  configured. Without them its reasoning cannot be replayed statelessly.
+- **Strict schema modes.** The official OpenAI and Anthropic strict modes
+  cannot represent LabBio's stage schemas, because of optional fields,
+  unions and maps; Anthropic also caps optional fields and unions. With
+  these providers use `provider_tool_schema_strict = false` and
+  `finalization_json_object = true`. Local validation stays authoritative in
+  every mode.
+- **Anthropic thinking.** How a model stops thinking differs by model, so
+  `thinking_off` has no default.
+- **Gemini.** Only Gemini 3 or later is supported, because earlier models may
+  omit function-call IDs. The Interactions API is used on `v1beta`, and its
+  rate-limit and overload error codes are not yet confirmed.
+- **Vendor compatibility layers.** A vendor's Anthropic- or OpenAI-compatible
+  endpoint may ignore fields such as thinking settings. Such an endpoint
+  validates the wire format only, not the official service's behavior.
+- **Authentication.** Only API keys are supported. Cloud-platform
+  authentication (Amazon Bedrock, Google Vertex AI, Claude Platform on AWS,
+  Microsoft Foundry) is not, and consumer chat subscriptions are not API keys.
+
+Rate limits, overloads, server errors and connection failures are retried a
+bounded number of times: twice by default, at most ten. Each retry is
+recorded in the run trace. A retried request can be billed again when the
+failed attempt had already produced output. Each response is capped, after
+decompression, at 8 MiB plus 1 KiB per requested output token.
+
+Live checks of the formats against real services are in progress: see
+[C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. Until results are
+recorded there, the new formats are validated by deterministic contract tests
+only.
 
 Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair
@@ -34,6 +95,28 @@ bounded previews and derived results can contain biological values or
 identifiers. Secret/path redaction is best effort and is not a general privacy
 or de-identification guarantee. Deployment owners must review provider and data
 use policy before enabling remote visibility.
+
+Choosing a provider format and endpoint chooses who receives model input:
+
+- **Relay gateways.** A relay gateway sees every prompt, derived result and
+  the API key. Use official endpoints or a gateway your institution approves.
+- **Provider terms.** Retention and training terms differ between providers
+  and tiers; some free tiers allow the provider to use submitted content.
+  Check them before sending unpublished or sensitive data.
+- **Run identity.** `RUNTIME.json` records the endpoint origin (scheme, host
+  and port), so a shared run directory reveals an internal gateway's
+  hostname.
+
+Provider keys are read from a private env file only when a command needs
+them. The file must belong to the user and be mode 0600. The key is held in
+memory and never written to the process environment, so child processes,
+scheduler commands and containers do not inherit it. Two cases remain
+outside LabBio's control:
+
+- A key exported in a shell startup file can still reach a job shell.
+- Mode 0600 does not stop a container that runs as the same user from
+  reading the env file if it lies under a mounted path. Keep it outside input
+  roots, result roots and workspaces.
 
 ## Local execution and storage
 

@@ -16,9 +16,13 @@ lab_id = "local-lab"
 # below is accepted only with its format; anthropic, gemini and
 # gemini-interactions require theirs.
 api_format = "openai"
-# Where model traffic goes. Remote endpoints must use https; plain http is
-# accepted only for localhost, 127.0.0.1 and ::1. RUNTIME.json records the
-# scheme and host.
+# Where model traffic goes, written up to the API path (the adapter adds
+# /chat/completions, /responses, /messages, /models/... or /interactions):
+#   openai, openai-responses        https://api.openai.com/v1
+#   anthropic                       https://api.anthropic.com/v1
+#   gemini, gemini-interactions     https://generativelanguage.googleapis.com/v1beta
+# Remote endpoints must use https; plain http is accepted only for localhost,
+# 127.0.0.1 and ::1. RUNTIME.json records the scheme, host and port.
 endpoint = "https://provider.example/v1"
 # The env file holds only the key; it must be yours with mode 0600 (chmod 600).
 env_file = "~/.config/labbioagent/provider.env"
