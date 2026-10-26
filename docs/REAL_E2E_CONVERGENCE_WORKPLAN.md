@@ -55,8 +55,14 @@ workflow per Gemini format completed with `gemini-3.1-flash-lite`:
 - the runtime identity was correct;
 - no key or private reasoning was found in the run directory.
 
-The reports did not name the synthetic task's expected top genes. That is
-not yet examined, and a completed workflow is not a correct result. No full
+The result tables were correct, but the reports were not. No stage ever
+read an output value, so the models wrote numbers that appear nowhere in the
+run, and `report_submit`, which checks citation coverage only, accepted
+them. The cause lies in the Artifact views and predates C14:
+- every view except `TOP_N` reports `available_count` 0;
+- the stages used only `SUMMARY`, which is empty for these records.
+
+A completed workflow is not a correct result. No full
 workflow has run with `gemini-3.6-flash`, and the DeepSeek formats have not
 run on the cluster. Details are in gap memo criterion 20.
 

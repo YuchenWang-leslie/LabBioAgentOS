@@ -664,9 +664,27 @@ Step 9 - documentation and live checks
       Usage was known for every turn: about 245k–318k input and 7k–9k
       output tokens per run. No request was retried.
     - **Report content.** The synthetic task's expected top genes are
-      GENE_C, GENE_G and GENE_E. The `gemini` report named none of them, and
-      the `gemini-interactions` report named only GENE_C. The cause has not
-      yet been examined. A completed workflow is not a correct result.
+      GENE_C, GENE_G and GENE_E. In both runs the analysis program's result
+      table is correct, but the report does not match it. The `gemini`
+      report named none of the three genes, and the `gemini-interactions`
+      report named only GENE_C. Both reports gave numbers that appear
+      nowhere in the run. A read-only check of `model-boundaries.jsonl`
+      shows that no stage ever saw an output value:
+      - the stages queried the result table only with the `SUMMARY` view;
+        for these records the summary is empty, and every view except
+        `TOP_N` reports `available_count` 0;
+      - records are read with `TOP_N`, which no stage used;
+      - `report_read` was denied because its target was RAW, and reading
+        generated files is off by default;
+      - by design the input preview shows only the first 8 columns, so
+        GENE_G and GENE_H were never visible.
+
+      The wrong top genes first appear in the EXECUTE stage's own summary,
+      and later stages repeat them. The numbers first appear in the report
+      itself. `report_submit` checks citation coverage, not the stated
+      numbers. All of this predates C14: C14 does not change the Artifact
+      views or tools. A fix lies outside C14 and awaits a decision. A
+      completed workflow is not a correct result.
     - **Test fix.** The first workflow run failed the test's own expectation
       that PREFLIGHT makes model calls. That expectation was wrong, because
       a configured execution profile makes PREFLIGHT host-owned; it is fixed
