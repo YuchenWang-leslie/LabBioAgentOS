@@ -424,7 +424,9 @@ def _index(data: Mapping[str, Any]) -> int | None:
 
 
 async def _reassemble_interaction_stream(events: AsyncIterator[SseEvent]) -> Mapping[str, Any]:
+    # Without storage (store: false) the service assigns no interaction id.
     interaction_id = None
+    created = False
     steps: list[dict[str, Any]] = []
     # index -> argument fragments of each started step not yet stopped
     open_steps: dict[int, list[str]] = {}
@@ -451,13 +453,15 @@ async def _reassemble_interaction_stream(events: AsyncIterator[SseEvent]) -> Map
             return result("failed", filter_code=_failure(data.get("error")))
         if kind == "interaction.created":
             interaction = data.get("interaction")
+            created_id = interaction.get("id") if isinstance(interaction, dict) else None
             if (
-                interaction_id is not None
+                created
                 or not isinstance(interaction, dict)
-                or not isinstance(interaction.get("id"), str)
+                or (created_id is not None and not isinstance(created_id, str))
             ):
                 raise _protocol("stream.interaction.created")
-            interaction_id = interaction["id"]
+            created = True
+            interaction_id = created_id
         elif kind == "step.start":
             index = _index(data)
             if index != len(steps):

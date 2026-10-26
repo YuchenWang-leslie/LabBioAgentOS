@@ -77,14 +77,17 @@ USAGE = {"total_input_tokens": 10, "total_tool_use_tokens": 2, "total_output_tok
 
 
 def _created(interaction_id="v1_int1"):
-    return _event("interaction.created", interaction={
-        "id": interaction_id, "model": "gemini-3.8-flash", "status": "in_progress",
-        "object": "interaction",
-    })
+    # With store: false the live service sends no id at all; None omits it.
+    interaction = {"model": "gemini-3.8-flash", "status": "in_progress", "object": "interaction"}
+    if interaction_id is not None:
+        interaction["id"] = interaction_id
+    return _event("interaction.created", interaction=interaction)
 
 
 def _completed(status="completed", *, usage=USAGE, interaction_id="v1_int1", **extra):
-    interaction = {"id": interaction_id, "status": status, **extra}
+    interaction = {"status": status, **extra}
+    if interaction_id is not None:
+        interaction["id"] = interaction_id
     if usage is not None:
         interaction["usage"] = usage
     return _event("interaction.completed", interaction=interaction) + DONE_MARKER
@@ -387,6 +390,32 @@ async def test_stream_reassembles_text_calls_signatures_and_usage(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stream_without_interaction_ids_completes(monkeypatch):
+    # The live shape under store: false: neither event carries an id.
+    body = (_created(None) + _text_step(0, "Let me check.")
+            + _call_step(1, "fc-1", "inspect", '{"view":"A"}')
+            + _completed("requires_action", interaction_id=None))
+    provider, binding, _requests = _provider(monkeypatch, body)
+
+    turn = await provider.generate(_request(binding, tools=(TOOL_SPEC,)))
+
+    assert turn.content == "Let me check."
+    assert [(c.call_id, c.arguments_json) for c in turn.tool_calls] == [("fc-1", '{"view":"A"}')]
+    assert turn.finish_reason is FinishReason.TOOL_CALLS
+    assert turn.provider_request_id is None
+
+
+@pytest.mark.asyncio
+async def test_completed_id_is_kept_when_created_has_none(monkeypatch):
+    body = _created(None) + _text_step(0, "done") + _completed(interaction_id="v1_int1")
+    provider, binding, _requests = _provider(monkeypatch, body)
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.provider_request_id == "v1_int1"
+
+
+@pytest.mark.asyncio
 async def test_interaction_id_outside_the_identifier_form_is_unknown(monkeypatch):
     body = (_created("_int 1") + _text_step(0, "done")
             + _completed(interaction_id="_int 1"))
@@ -513,8 +542,11 @@ async def test_unknown_content_types_fail_and_are_named(monkeypatch, body, field
      "stream.function_call.id"),
     (_stream(_call_step(0, "fc-1", "inspect", "[1]")), "stream.function_call.arguments"),
     (_created() + _created(), "stream.interaction.created"),
+    (_created(None) + _created(None), "stream.interaction.created"),
+    (_created(7), "stream.interaction.created"),
 ], ids=["skipped-index", "closed-step", "mismatched-delta", "changed-id", "open-step",
-        "call-without-id", "array-arguments", "two-created"])
+        "call-without-id", "array-arguments", "two-created", "two-created-without-id",
+        "non-string-id"])
 @pytest.mark.asyncio
 async def test_malformed_streams_are_protocol_errors(monkeypatch, body, field):
     provider, binding, _requests = _provider(monkeypatch, body)
