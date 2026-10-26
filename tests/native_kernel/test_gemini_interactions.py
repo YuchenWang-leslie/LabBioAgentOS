@@ -386,6 +386,18 @@ async def test_stream_reassembles_text_calls_signatures_and_usage(monkeypatch):
     assert "SIG_PRIVATE" not in repr(turn)
 
 
+@pytest.mark.asyncio
+async def test_interaction_id_outside_the_identifier_form_is_unknown(monkeypatch):
+    body = (_created("_int 1") + _text_step(0, "done")
+            + _completed(interaction_id="_int 1"))
+    provider, binding, _requests = _provider(monkeypatch, body)
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.content == "done"
+    assert turn.provider_request_id is None
+
+
 @pytest.mark.parametrize("status,expected", [
     ("completed", FinishReason.STOP),
     ("incomplete", FinishReason.LENGTH),

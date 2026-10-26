@@ -14,6 +14,8 @@ from pydantic import (
     JsonValue,
     StrictStr,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -36,6 +38,23 @@ PublicContent = Annotated[
     StrictStr,
     StringConstraints(min_length=1, max_length=64_000),
 ]
+_IDENTIFIER = TypeAdapter(Identifier)
+
+
+def provider_reference(value: str | None) -> str | None:
+    """Return a provider's request id when it has the Identifier form, else None.
+
+    The id only correlates a turn with the provider's own records, so an id in
+    another form is recorded as unknown instead of failing the turn.
+    """
+
+    if value is None:
+        return None
+    try:
+        checked = _IDENTIFIER.validate_python(value)
+    except ValidationError:
+        return None
+    return checked if checked == value else None
 
 
 class KernelModel(BaseModel):

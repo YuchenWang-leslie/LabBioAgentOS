@@ -361,6 +361,29 @@ async def test_terminal_response_is_the_only_source_of_the_turn(monkeypatch):
     assert "ENC_PRIVATE_CANARY" not in repr(turn)
 
 
+@pytest.mark.parametrize("response_id", ["_resp 1", None], ids=["other-form", "absent"])
+@pytest.mark.asyncio
+async def test_response_id_outside_the_identifier_form_is_unknown(monkeypatch, response_id):
+    provider, binding, _requests = _provider(
+        monkeypatch, _stream(_message("done"), response_id=response_id),
+    )
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.content == "done"
+    assert turn.provider_request_id is None
+
+
+@pytest.mark.asyncio
+async def test_non_string_response_id_is_a_protocol_error(monkeypatch):
+    provider, binding, _requests = _provider(monkeypatch, _stream(_message("done"), response_id=7))
+
+    with pytest.raises(ProviderProtocolError) as caught:
+        await provider.generate(_request(binding))
+
+    assert caught.value.validation_fields == ("id",)
+
+
 @pytest.mark.asyncio
 async def test_missing_usage_stays_unknown(monkeypatch):
     provider, binding, _requests = _provider(monkeypatch, _stream(_message("x"), usage=None))

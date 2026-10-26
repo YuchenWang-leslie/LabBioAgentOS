@@ -19,6 +19,7 @@ from .contracts import (
     TokenUsage,
     ToolCall,
     ToolSpec,
+    provider_reference,
 )
 from .continuation import PrivateContinuationStore
 from .errors import (
@@ -284,7 +285,7 @@ class AnthropicMessagesProvider:
                 return ModelTurn(
                     finish_reason=finish,
                     usage=usage,
-                    provider_request_id=message["id"],
+                    provider_request_id=provider_reference(message["id"]),
                     private_reasoning_present=private,
                     transport_retries=retries,
                     refusal_category=(
@@ -302,7 +303,7 @@ class AnthropicMessagesProvider:
                 tool_calls=calls,
                 finish_reason=finish,
                 usage=usage,
-                provider_request_id=message["id"],
+                provider_request_id=provider_reference(message["id"]),
                 private_reasoning_present=private,
                 transport_retries=retries,
             )

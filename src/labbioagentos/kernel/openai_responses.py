@@ -18,6 +18,7 @@ from .contracts import (
     PublicMessage,
     TokenUsage,
     ToolCall,
+    provider_reference,
 )
 from .continuation import PrivateContinuationStore
 from .errors import (
@@ -228,6 +229,11 @@ class OpenAIResponsesProvider:
             text: list[str] = []
             calls: list[ToolCall] = []
             kinds = {self._read_item(item, text, calls) for item in items}
+            component = "id"
+            request_id = response.get("id")
+            if request_id is not None and not isinstance(request_id, str):
+                raise TypeError("Unsupported provider request identity")
+            request_id = provider_reference(request_id)
             component = "model_turn"
             if response["status"] == "completed":
                 finish = FinishReason.TOOL_CALLS if calls else FinishReason.STOP
@@ -241,7 +247,7 @@ class OpenAIResponsesProvider:
                 return ModelTurn(
                     finish_reason=FinishReason.CONTENT_FILTER,
                     usage=usage,
-                    provider_request_id=response["id"],
+                    provider_request_id=request_id,
                     private_reasoning_present="reasoning" in kinds,
                     transport_retries=retries,
                 )
@@ -250,7 +256,7 @@ class OpenAIResponsesProvider:
                 tool_calls=tuple(calls),
                 finish_reason=finish,
                 usage=usage,
-                provider_request_id=response["id"],
+                provider_request_id=request_id,
                 private_reasoning_present="reasoning" in kinds,
                 transport_retries=retries,
             )

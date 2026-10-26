@@ -20,6 +20,7 @@ from .contracts import (
     PublicMessage,
     TokenUsage,
     ToolCall,
+    provider_reference,
 )
 from .continuation import PrivateContinuationStore
 from .errors import (
@@ -375,7 +376,7 @@ class OpenAICompatibleChatProvider:
                 tool_calls=calls,
                 finish_reason=finish,
                 usage=usage,
-                provider_request_id=request_id,
+                provider_request_id=provider_reference(request_id),
                 private_reasoning_present=private_reasoning is not None,
                 transport_retries=retries,
             )

@@ -538,3 +538,24 @@ async def test_transport_failure_is_bounded_and_never_falls_back():
         await provider.generate(request)
     assert len(transport.requests) == 1
     assert "PRIVATE_NETWORK_SENTINEL" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_request_id_outside_the_identifier_form_is_unknown():
+    response = {
+        "id": "-request 1",
+        "choices": [{"finish_reason": "stop", "message": {"content": "complete"}}],
+    }
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=RecordingTransport((response,)),
+    )
+
+    turn = await provider.generate(
+        _request(binding, (PublicMessage(role="USER", content="Inspect."),)),
+    )
+
+    assert turn.content == "complete"
+    assert turn.provider_request_id is None

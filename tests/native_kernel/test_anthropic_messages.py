@@ -381,6 +381,17 @@ async def test_stream_reassembles_thinking_text_and_tool_input(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_message_id_outside_the_identifier_form_is_unknown(monkeypatch):
+    body = _start(message_id="_msg 1") + _text(0, "done") + _end("end_turn")
+    provider, binding, _requests = _provider(monkeypatch, body)
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.content == "done"
+    assert turn.provider_request_id is None
+
+
+@pytest.mark.asyncio
 async def test_tool_without_input_deltas_keeps_its_start_input(monkeypatch):
     body = _start() + _tool(0, "toolu_1", "inspect") + _end("tool_use")
     provider, binding, _requests = _provider(monkeypatch, body)

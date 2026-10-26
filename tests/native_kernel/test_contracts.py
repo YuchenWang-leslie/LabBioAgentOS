@@ -31,6 +31,7 @@ from labbioagentos.kernel import (
     ToolSpec,
     PublicMessage,
 )
+from labbioagentos.kernel.contracts import provider_reference
 
 
 def _root_identity() -> KernelIdentity:
@@ -124,6 +125,19 @@ def test_public_message_contract_represents_tool_history_without_private_fields(
     assert assistant.content is None
     assert tool.tool_call_id == call.call_id
     assert "reasoning" not in PublicMessage.model_fields
+
+
+@pytest.mark.parametrize("value", ["resp-1", "msg_01AbC", "v1_int1", "a" * 128])
+def test_provider_reference_keeps_ids_in_identifier_form(value):
+    assert provider_reference(value) == value
+
+
+@pytest.mark.parametrize("value", [
+    None, "", "-leading", "_leading", "with space", " padded", "plus+sign", "a" * 129,
+], ids=["absent", "empty", "leading-dash", "leading-underscore", "space", "padded", "plus",
+        "too-long"])
+def test_provider_reference_records_other_ids_as_unknown(value):
+    assert provider_reference(value) is None
 
 
 def test_team_configuration_preserves_specialist_order_and_ownership():

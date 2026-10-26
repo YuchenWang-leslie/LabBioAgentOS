@@ -306,6 +306,19 @@ async def test_stream_reassembles_text_calls_signatures_and_usage(monkeypatch):
     assert "SIG_PRIVATE" not in repr(turn)
 
 
+@pytest.mark.asyncio
+async def test_response_id_outside_the_identifier_form_is_unknown(monkeypatch):
+    # Live response ids did not always have the kernel Identifier form.
+    body = _chunk({"text": "done"}, finish="STOP", usage=USAGE, response_id="-7bQaZ_x")
+    provider, binding, _requests = _provider(monkeypatch, body)
+
+    turn = await provider.generate(_request(binding))
+
+    assert turn.content == "done"
+    assert turn.finish_reason is FinishReason.STOP
+    assert turn.provider_request_id is None
+
+
 @pytest.mark.parametrize("finish,expected", [
     ("STOP", FinishReason.STOP),
     ("MAX_TOKENS", FinishReason.LENGTH),

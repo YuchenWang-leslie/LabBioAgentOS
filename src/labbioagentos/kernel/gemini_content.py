@@ -18,6 +18,7 @@ from .contracts import (
     PublicMessage,
     TokenUsage,
     ToolCall,
+    provider_reference,
 )
 from .continuation import PrivateContinuationStore
 from .errors import (
@@ -238,7 +239,7 @@ class GeminiGenerateContentProvider:
                 return ModelTurn(
                     finish_reason=FinishReason.CONTENT_FILTER,
                     usage=usage,
-                    provider_request_id=response["id"],
+                    provider_request_id=provider_reference(response["id"]),
                     private_reasoning_present=private,
                     transport_retries=retries,
                     refusal_category=bounded_provider_name(
@@ -257,7 +258,7 @@ class GeminiGenerateContentProvider:
                 tool_calls=tuple(calls),
                 finish_reason=normalized,
                 usage=usage,
-                provider_request_id=response["id"],
+                provider_request_id=provider_reference(response["id"]),
                 private_reasoning_present=private,
                 transport_retries=retries,
             )
