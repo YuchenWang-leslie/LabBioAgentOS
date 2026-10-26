@@ -41,8 +41,10 @@ STAMP = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 RESULTS = WORKFLOW_DIR / "results" / STAMP
 VARIANTS = ("openai-vendor", "openai-official", "openai-responses", "anthropic", "gemini",
             "gemini-interactions")
-MAIN_STAGES = ("INTAKE", "UNDERSTAND", "PLAN", "PREFLIGHT", "EXECUTE", "VALIDATE",
-               "INTERPRET", "REPORT", "LEARN")
+# PREFLIGHT is absent: with a configured execution profile, which every CLI
+# configuration has, the host completes it without a model call.
+MODEL_STAGES = ("INTAKE", "UNDERSTAND", "PLAN", "EXECUTE", "VALIDATE", "INTERPRET", "REPORT",
+                "LEARN")
 TASK = (
     "The supplied CSV file has one row per sample: a sample_id column, a group column "
     "(control or treated) and expression values for eight genes. For each gene, compute the "
@@ -192,8 +194,9 @@ def test_full_workflow_through_the_provider_format(variant, monkeypatch, capsys)
         "max_bytes_per_output_token": max(per_token) if per_token else None,
         "stages_with_provider_turns": observed_stages,
         "trace_counts": {kind.value: kinds[kind] for kind in (
-            TraceEventType.EXECUTION_STARTED, TraceEventType.EXECUTION_COMPLETED,
-            TraceEventType.EXECUTION_FAILED, TraceEventType.PROVIDER_RETRY_OBSERVED,
+            TraceEventType.PREFLIGHT_COMPLETED, TraceEventType.EXECUTION_STARTED,
+            TraceEventType.EXECUTION_COMPLETED, TraceEventType.EXECUTION_FAILED,
+            TraceEventType.PROVIDER_RETRY_OBSERVED,
             TraceEventType.STAGE_COMPLETED, TraceEventType.RUN_COMPLETED,
         )},
         "delivery_exported": bool(delivery) and delivery_dir.is_dir(),
@@ -218,7 +221,8 @@ def test_full_workflow_through_the_provider_format(variant, monkeypatch, capsys)
                                           "raw_endpoint_absent": True}
     assert record["endpoint_origin"] == local_config._provider_endpoint(
         settings.provider.endpoint)["origin"]
-    assert set(MAIN_STAGES) <= set(observed_stages)
+    assert set(MODEL_STAGES) <= set(observed_stages)
+    assert record["trace_counts"]["PREFLIGHT_COMPLETED"] >= 1
     assert record["trace_counts"]["EXECUTION_COMPLETED"] >= 1
     assert record["delivery_exported"]
     assert leaks == {"key_files": [], "private_files": []}
