@@ -642,8 +642,36 @@ Step 9 - documentation and live checks
       turns completed, which confirms the cause of the first defect. One
       per-minute rate limit was retried and recorded.
     - These results show that both wire formats work against the real
-      service. They show nothing about `gemini-3.6-flash` itself. Its kernel
-      checks and the full workflow runs wait for a paid tier.
+      service. They show nothing about `gemini-3.6-flash` itself.
+
+    The Gemini formats were then run on Scheduler + Apptainer on 2026-10-26,
+    with the fixed code and a paid tier.
+    - **Kernel checks.** All fourteen checks passed for both formats with
+      `gemini-3.6-flash`, and again with `gemini-3.1-flash-lite`. They
+      include the thinking-off probes and the INTAKE stage schema in
+      JSON-object mode. No request was retried.
+    - **Full workflow.** One run per format used `gemini-3.1-flash-lite`,
+      and both completed:
+      - every model stage made provider turns (37 and 38 turns);
+      - the host completed PREFLIGHT;
+      - in each run one execution failed and a revised program then
+        succeeded;
+      - delivery was exported;
+      - `RUNTIME.json` carried the format and the endpoint origin, without
+        the raw endpoint;
+      - the scan found no key and no private reasoning in the run directory.
+
+      Usage was known for every turn: about 245k–318k input and 7k–9k
+      output tokens per run. No request was retried.
+    - **Report content.** The synthetic task's expected top genes are
+      GENE_C, GENE_G and GENE_E. The `gemini` report named none of them, and
+      the `gemini-interactions` report named only GENE_C. The cause has not
+      yet been examined. A completed workflow is not a correct result.
+    - **Test fix.** The first workflow run failed the test's own expectation
+      that PREFLIGHT makes model calls. That expectation was wrong, because
+      a configured execution profile makes PREFLIGHT host-owned; it is fixed
+      in `08518c6`.
+    - **Still open.** No full workflow has run with `gemini-3.6-flash`.
 
 Across all steps
 

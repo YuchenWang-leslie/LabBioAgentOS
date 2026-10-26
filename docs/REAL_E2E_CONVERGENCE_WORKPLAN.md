@@ -33,7 +33,7 @@ format, model or provider automatically.
 The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 [gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
 
-**Evidence: acceptance levels 1–2; level 3 for the Gemini formats on a lite model.**
+**Evidence: acceptance levels 1–2; for the Gemini formats, levels 3–6 on Scheduler + Apptainer.**
 - On macOS without network, the deterministic suite gives `2363 passed, 68
   skipped`. Of the skips, 44 are opt-in live checks.
 - One contract suite runs the same scenarios through the real AgentLoop for
@@ -48,10 +48,17 @@ The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 - full stage schemas are too complex for Gemini's schema mode, so Gemini
   must use `finalization_json_object = true`.
 
-After the fixes, both Gemini formats passed every kernel check on
-`gemini-3.5-flash-lite` (free tier). The checks on `gemini-3.6-flash` and the
-full workflow runs wait for a paid tier. Details are in gap memo criterion
-20.
+After the fixes, both Gemini formats passed every kernel check, on lite
+models and on `gemini-3.6-flash`. On Scheduler + Apptainer, one full
+workflow per Gemini format completed with `gemini-3.1-flash-lite`:
+- delivery was exported;
+- the runtime identity was correct;
+- no key or private reasoning was found in the run directory.
+
+The reports did not name the synthetic task's expected top genes. That is
+not yet examined, and a completed workflow is not a correct result. No full
+workflow has run with `gemini-3.6-flash`, and the DeepSeek formats have not
+run on the cluster. Details are in gap memo criterion 20.
 
 **Prepared but not yet run:**
 - live checks of each format (level 3);

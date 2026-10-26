@@ -84,9 +84,10 @@ decompression, at 8 MiB plus 1 KiB per requested output token.
 Live checks of the formats against real services are in progress: see
 [C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. A first live run of
 the Gemini formats found three defects, which are fixed. After the fixes,
-both Gemini formats passed the kernel-level checks on a lite model; the full
-workflow has not yet run through them. The other formats are validated by
-deterministic contract tests only.
+both Gemini formats passed the kernel-level checks and completed the full
+workflow on Scheduler + Apptainer; the workflow runs used a lite model, and
+their reports did not name the expected answer of the synthetic task. The
+other formats are validated by deterministic contract tests only.
 
 Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair
