@@ -85,11 +85,12 @@ Live checks of the formats against real services are in progress: see
 [C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. A first live run of
 the Gemini formats found three defects, which are fixed. After the fixes,
 both Gemini formats passed the kernel-level checks and completed the full
-workflow on Scheduler + Apptainer. The workflow runs used a lite model, and
-no stage read the output values: both reports stated numbers that appear
-nowhere in the run, and the host accepted them. See criterion 20 for the
-cause. The other formats are validated by deterministic contract tests
-only.
+workflow on Scheduler + Apptainer. With a lite model, no stage read the
+output values. Both reports stated numbers that appear nowhere in the run,
+and the host accepted them. With `gemini-3.6-flash`, the same workflow read
+the result records, and both reports matched them. The host does not check
+a report's numbers against its evidence; see criterion 20. The other
+formats are validated by deterministic contract tests only.
 
 Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair

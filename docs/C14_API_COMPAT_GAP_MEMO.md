@@ -683,13 +683,31 @@ Step 9 - documentation and live checks
       and later stages repeat them. The numbers first appear in the report
       itself. `report_submit` checks citation coverage, not the stated
       numbers. All of this predates C14: C14 does not change the Artifact
-      views or tools. A fix lies outside C14 and awaits a decision. A
+      views or tools. A fix lies outside C14 and is left for discussion. A
       completed workflow is not a correct result.
     - **Test fix.** The first workflow run failed the test's own expectation
       that PREFLIGHT makes model calls. That expectation was wrong, because
       a configured execution profile makes PREFLIGHT host-owned; it is fixed
       in `08518c6`.
-    - **Still open.** No full workflow has run with `gemini-3.6-flash`.
+    - **Full workflow with `gemini-3.6-flash`.** One run per format used the
+      same code and configuration apart from the model. Both passed every
+      check of the corrected test:
+      - 31 and 30 provider turns;
+      - one failed execution followed by a revised one;
+      - no retries and no leaks;
+      - about 226k–267k input and 17k output tokens;
+      - about 200 seconds each.
+
+      Both reports name GENE_C 3.0, GENE_G 2.17 and GENE_E -2.0, which match
+      the result tables. In every stage that read results, the model used
+      `TOP_N` and received the real records. Every number in the reports
+      traces to a record that a tool returned.
+    - **Comparison.** Code and configuration were identical, so the two
+      models differed only in the views they chose. The lite model used
+      `SUMMARY` and `report_read` and never received a value.
+      `gemini-3.6-flash` used `TOP_N`. The test passes in both cases, because
+      it does not compare a report's numbers with the result table. The
+      platform relies on the model to choose a view that returns records.
 
 Across all steps
 

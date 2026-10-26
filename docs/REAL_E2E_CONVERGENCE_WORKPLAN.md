@@ -62,15 +62,18 @@ them. The cause lies in the Artifact views and predates C14:
 - every view except `TOP_N` reports `available_count` 0;
 - the stages used only `SUMMARY`, which is empty for these records.
 
-A completed workflow is not a correct result. No full
-workflow has run with `gemini-3.6-flash`, and the DeepSeek formats have not
-run on the cluster. Details are in gap memo criterion 20.
+A completed workflow is not a correct result.
 
-**Prepared but not yet run:**
-- live checks of each format (level 3);
-- a full workflow per format on Scheduler + Apptainer (levels 4–6).
+With `gemini-3.6-flash`, one full workflow per Gemini format also completed.
+Both reports matched their result tables, because the model read the
+records with `TOP_N`. The code and configuration were the same as in the
+lite runs, so the outcome depends on which view the model chooses. The
+DeepSeek formats have not run on the cluster. Details are in gap memo
+criterion 20.
 
-They are `tests/integration/test_provider_formats_live.py` and
+**Not yet run:** the DeepSeek formats, both the kernel checks (level 3) and
+the full workflow on Scheduler + Apptainer (levels 4–6). The tests are
+`tests/integration/test_provider_formats_live.py` and
 `tests/integration/test_provider_workflow_live.py`. With the keys available
 for this round, the OpenAI Responses API, the official Chat dialect and
 official Anthropic behavior cannot be checked live.
