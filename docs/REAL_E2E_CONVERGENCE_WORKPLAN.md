@@ -33,12 +33,23 @@ format, model or provider automatically.
 The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 [gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
 
-**Evidence: acceptance levels 1–2 only.**
-- On macOS without network, the deterministic suite gives `2340 passed, 68
+**Evidence: acceptance levels 1–2, plus a first partial Gemini run.**
+- On macOS without network, the deterministic suite gives `2363 passed, 68
   skipped`. Of the skips, 44 are opt-in live checks.
 - One contract suite runs the same scenarios through the real AgentLoop for
   six wire variants, including an application-level scan for leaked keys and
   private reasoning.
+
+**First live run (Gemini, 2026-10-26).** It found three defects:
+- response ids outside the kernel identifier form failed a turn; such ids
+  are now recorded as unknown (`8509da8`);
+- the Interactions service sends no interaction id under `store: false`;
+  the id is now optional (`1ef1363`);
+- full stage schemas are too complex for Gemini's schema mode, so Gemini
+  must use `finalization_json_object = true`.
+
+The free tier is too small for the remaining checks; a rerun is pending.
+Details are in gap memo criterion 20.
 
 **Prepared but not yet run:**
 - live checks of each format (level 3);

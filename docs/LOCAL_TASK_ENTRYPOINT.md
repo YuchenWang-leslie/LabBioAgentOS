@@ -93,11 +93,14 @@ effort_enabled = "high"      # 可选：low | medium | high | xhigh | max
   `effort_enabled` 和 `effort_disabled` 可选。
 - `[provider.gemini]` 和 `[provider.gemini-interactions]`：
   `thinking_level_enabled` 和 `thinking_level_disabled` 都必填（`minimal`、`low`、
-  `medium` 或 `high`，以模型支持为准）。
+  `medium` 或 `high`，以模型支持为准）。Gemini 的免费额度每个模型每天只有很少的
+  请求（检查时是 20 次），不够跑完一次工作流。
 
 官方 OpenAI 和 Claude 的严格 schema 模式表达不了 LabBio 的阶段 schema（可选字段、
-联合类型、映射）。使用这两家时，请设 `provider_tool_schema_strict = false` 和
-`finalization_json_object = true`；本地校验在任何模式下都照常执行。
+联合类型、映射）。Gemini 能接受小的 schema，但完整的阶段 schema 对它的约束解码
+来说太复杂，请求会被拒绝（HTTP 400）。使用这三家时，请设
+`provider_tool_schema_strict = false` 和 `finalization_json_object = true`；本地
+校验在任何模式下都照常执行。
 
 换格式或端点，就是换数据接收方，中转网关能看到全部提示和密钥；见
 [已知限制](KNOWN_LIMITATIONS.md)。

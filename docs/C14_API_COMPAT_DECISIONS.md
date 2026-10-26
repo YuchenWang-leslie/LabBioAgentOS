@@ -37,7 +37,9 @@ Five formats, one per runtime, selected only in trusted configuration:
   2026-10-23. It gets its own step after the Responses adapter, and its
   endpoint version, fields and stream events are verified against the
   official reference when that step starts, because the API is still
-  changing.
+  changing. A live check on 2026-10-26 showed that under `store: false`
+  the service assigns no interaction id, so these turns carry no provider
+  request id.
 
 A format never changes automatically, and formats are never mixed within one
 runtime.
@@ -229,6 +231,13 @@ this on 2026-10-23 over inferring failure from the result text.
   mapped unknown finish reasons to `OTHER`.
 - A retried request whose failed attempt had already produced output may be
   billed twice.
+- Provider request ids: an adapter keeps a provider's request id only when
+  it has the kernel identifier form, and records any other id as unknown.
+  The id only links a turn to the provider's records, so a turn no longer
+  fails because of it. MOHAN CUI chose this on 2026-10-26, after live Gemini
+  response ids did not always fit that form. The alternative, a separate
+  wider type for provider ids, would have changed the kernel event
+  contract.
 
 ## Not decided here
 

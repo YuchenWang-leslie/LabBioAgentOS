@@ -32,7 +32,8 @@ thinking_enabled = false                 # Shared model for the other stages.
 interpretation_thinking_enabled = true   # Separate InterpretationAgent only.
 max_output_tokens = 16384
 # max_retries = 2  # Rate limits, overloads and connection failures (0-10).
-# Official OpenAI and Claude reject our schemas in strict mode: keep
+# Official OpenAI and Claude reject our schemas in strict mode, and Gemini
+# rejects full stage schemas as too complex: with these providers keep
 # provider_tool_schema_strict = false and set finalization_json_object = true.
 
 # [provider.openai]                      # Official OpenAI Chat Completions:

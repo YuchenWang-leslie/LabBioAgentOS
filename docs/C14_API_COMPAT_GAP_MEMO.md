@@ -407,6 +407,13 @@ Step 6b - Gemini Interactions adapter
      - whether interaction ids fit the kernel identifier format;
      - that the replayed steps are accepted.
 
+     First live answers (2026-10-26, criterion 20): under `store: false`
+     the service sends no interaction id at all, so the id became optional.
+     A rate limit arrives as HTTP 429 with code `too_many_requests`. A
+     rejected schema arrives as HTTP 400 whose body is an SSE `error` event
+     with code `invalid_request`. The overload code, a blocked input and the
+     replay of steps are still open.
+
 Step 7 - contract parity
 
 13. The five adapters pass one contract suite through the real AgentLoop with
@@ -545,7 +552,7 @@ Step 9 - documentation and live checks
     level.
 
     The tests are prepared and were rehearsed offline against scripted
-    services; results are pending.
+    services. Results are pending, apart from the first Gemini run below.
     - `tests/integration/test_provider_formats_live.py` (level 3) is enabled
       by `LABBIO_PROVIDER_LIVE=1` and reads one provider-only TOML per
       variant. It checks:
@@ -592,6 +599,35 @@ Step 9 - documentation and live checks
 
     Credentials cannot reach the Docker client: a child process started
     after the key is loaded carries none (criterion 17).
+
+    The Gemini formats had a first live run on 2026-10-26, from macOS on the
+    Gemini free tier with `gemini-3.6-flash`. `gemini-3.1-flash-lite` served
+    the follow-up diagnosis.
+    - `generateContent` passed two tool rounds with parallel calls: thought
+      signatures were replayed unchanged and the answer was correct. Both
+      thinking-off levels, `minimal` and `low`, were accepted.
+    - Three defects surfaced and are fixed:
+      - **Response ids.** Some `generateContent` response ids did not fit the
+        kernel identifier form, and each such turn failed as a protocol
+        error. Every adapter now records a provider request id outside that
+        form as unknown (`8509da8`).
+      - **Interaction ids.** Under `store: false` the Interactions service
+        sends no id in `interaction.created` or `interaction.completed`. The
+        adapter required one, so every request failed. The id is now
+        optional (`1ef1363`). The rest of the stream matched the adapter.
+      - **Stage schemas.** Both formats rejected the full INTAKE stage
+        schema in schema mode with HTTP 400. The Interactions error says the
+        schema "produces a constraint that has too many states for
+        serving". With `finalization_json_object = true` the same stage
+        passed, so Gemini is configured like official OpenAI and Claude.
+        Small schemas still work in schema mode.
+    - The free tier allows 20 requests per model per day, and
+      `gemini-3.5-flash` shares the quota of `gemini-3.6-flash`. That is too
+      few for the full kernel checks and far too few for a workflow run.
+      Once the daily quota is spent, `generateContent` answers HTTP 429 with
+      the retry delay only in the response body, so the transport retries
+      with its own backoff up to the retry bound.
+    - A rerun after the fixes is pending.
 
 Across all steps
 

@@ -40,6 +40,8 @@ Parsing is strict:
 - An unknown content type fails the turn with a code that names the type.
 - Unknown event types and metadata are ignored.
 - An unknown finish reason is recorded as `OTHER`.
+- A provider request id that does not have LabBio's identifier form is
+  recorded as unknown; the id only links a turn to the provider's records.
 
 A provider that adds a new kind of content therefore stops working until
 LabBio supports it, instead of silently losing that content.
@@ -51,17 +53,21 @@ Format-specific limits:
   continue it.
 - **OpenAI Responses.** A reasoning model needs both reasoning efforts
   configured. Without them its reasoning cannot be replayed statelessly.
-- **Strict schema modes.** The official OpenAI and Anthropic strict modes
-  cannot represent LabBio's stage schemas, because of optional fields,
-  unions and maps; Anthropic also caps optional fields and unions. With
-  these providers use `provider_tool_schema_strict = false` and
-  `finalization_json_object = true`. Local validation stays authoritative in
-  every mode.
+- **Schema modes.** The official OpenAI and Anthropic strict modes cannot
+  represent LabBio's stage schemas, because of optional fields, unions and
+  maps; Anthropic also caps optional fields and unions. Gemini accepts small
+  schemas but rejects a full stage schema as too complex for constrained
+  decoding. With these providers use `provider_tool_schema_strict = false`
+  and `finalization_json_object = true`. Local validation stays
+  authoritative in every mode.
 - **Anthropic thinking.** How a model stops thinking differs by model, so
   `thinking_off` has no default.
 - **Gemini.** Only Gemini 3 or later is supported, because earlier models may
-  omit function-call IDs. The Interactions API is used on `v1beta`, and its
-  rate-limit and overload error codes are not yet confirmed.
+  omit function-call IDs. The Interactions API is used on `v1beta`. Under
+  `store: false` it assigns no interaction id, so its turns carry no
+  provider request id, and its overload error code is not yet confirmed.
+  The free tier allows only a few requests per model per day (20 when
+  checked), too few for a workflow run.
 - **Vendor compatibility layers.** A vendor's Anthropic- or OpenAI-compatible
   endpoint may ignore fields such as thinking settings. Such an endpoint
   validates the wire format only, not the official service's behavior.
@@ -76,9 +82,10 @@ failed attempt had already produced output. Each response is capped, after
 decompression, at 8 MiB plus 1 KiB per requested output token.
 
 Live checks of the formats against real services are in progress: see
-[C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. Until results are
-recorded there, the new formats are validated by deterministic contract tests
-only.
+[C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. A first live run of
+the Gemini formats found three defects, which are fixed; a rerun is pending.
+Until results are recorded there, the formats are validated by deterministic
+contract tests only.
 
 Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair
