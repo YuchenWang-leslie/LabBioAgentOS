@@ -411,8 +411,9 @@ Step 6b - Gemini Interactions adapter
      the service sends no interaction id at all, so the id became optional.
      A rate limit arrives as HTTP 429 with code `too_many_requests`. A
      rejected schema arrives as HTTP 400 whose body is an SSE `error` event
-     with code `invalid_request`. The overload code, a blocked input and the
-     replay of steps are still open.
+     with code `invalid_request`. In the rerun after the fixes, replayed
+     steps were accepted. The overload code and a blocked input are still
+     open.
 
 Step 7 - contract parity
 
@@ -627,7 +628,22 @@ Step 9 - documentation and live checks
       Once the daily quota is spent, `generateContent` answers HTTP 429 with
       the retry delay only in the response body, so the transport retries
       with its own backoff up to the retry bound.
-    - A rerun after the fixes is pending.
+    - After the fixes, the kernel checks were rerun the same day on
+      `gemini-3.5-flash-lite`, which has its own free-tier quota. All eleven
+      checks passed for both formats:
+      - two tool rounds with parallel calls, with thought signatures
+        replayed;
+      - a tool round with thinking off;
+      - finalization in both modes;
+      - the INTAKE stage schema in JSON-object mode.
+
+      The Interactions API accepted both thinking-off levels. Some response
+      ids started with `-` or `_`. They were recorded as unknown and the
+      turns completed, which confirms the cause of the first defect. One
+      per-minute rate limit was retried and recorded.
+    - These results show that both wire formats work against the real
+      service. They show nothing about `gemini-3.6-flash` itself. Its kernel
+      checks and the full workflow runs wait for a paid tier.
 
 Across all steps
 

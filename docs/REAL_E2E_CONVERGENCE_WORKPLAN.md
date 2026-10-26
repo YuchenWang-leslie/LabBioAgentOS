@@ -33,7 +33,7 @@ format, model or provider automatically.
 The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 [gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
 
-**Evidence: acceptance levels 1–2, plus a first partial Gemini run.**
+**Evidence: acceptance levels 1–2; level 3 for the Gemini formats on a lite model.**
 - On macOS without network, the deterministic suite gives `2363 passed, 68
   skipped`. Of the skips, 44 are opt-in live checks.
 - One contract suite runs the same scenarios through the real AgentLoop for
@@ -48,8 +48,10 @@ The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 - full stage schemas are too complex for Gemini's schema mode, so Gemini
   must use `finalization_json_object = true`.
 
-The free tier is too small for the remaining checks; a rerun is pending.
-Details are in gap memo criterion 20.
+After the fixes, both Gemini formats passed every kernel check on
+`gemini-3.5-flash-lite` (free tier). The checks on `gemini-3.6-flash` and the
+full workflow runs wait for a paid tier. Details are in gap memo criterion
+20.
 
 **Prepared but not yet run:**
 - live checks of each format (level 3);
