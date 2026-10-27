@@ -3,11 +3,11 @@
 ## Decision
 
 ```text
-PROPOSED: C14 PROVIDER API FORMATS ACCEPTED, CRITERION 20 IN PART
+C14 PROVIDER API FORMATS ACCEPTED, CRITERION 20 IN PART
 ```
 
-Status: draft for MOHAN CUI's decision. The decision line is final only when
-MOHAN CUI confirms it.
+Decided by MOHAN CUI on 2026-10-27. Acceptance covers source and evidence on
+branch `feat/api-compat`. It does not merge, release or deploy the branch.
 
 Criteria 1 to 19 and 21 to 23 are met. Criterion 20 asks for live checks of
 all five formats and is met in part:

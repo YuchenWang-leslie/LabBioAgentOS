@@ -1,6 +1,6 @@
 # Real E2E Convergence Workplan
 
-## C14 provider API formats implemented; acceptance proposed — 2026-10-26
+## C14 provider API formats accepted — 2026-10-27
 
 C14 source is complete on branch `feat/api-compat`. The branch is not merged,
 released or deployed.
@@ -90,8 +90,9 @@ the official Anthropic service, for lack of keys. Kimi accepted the
 official Chat dialect's request form. They rest on the
 deterministic contract suite.
 
-**Acceptance.** [C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md) proposes
-accepting C14 with criterion 20 met in part. The decision is MOHAN CUI's.
+**Acceptance.** MOHAN CUI accepted C14 on 2026-10-27, with criterion 20 met
+in part; see [C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md). The branch is
+not merged, released or deployed.
 
 **Upgrade.** Upgrading changes the runtime revision, and every configuration
 must migrate its `[provider]` table (see
