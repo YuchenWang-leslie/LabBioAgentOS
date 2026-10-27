@@ -552,8 +552,8 @@ Step 9 - documentation and live checks
     enabled, and structured finalization. Results are reported by acceptance
     level.
 
-    The tests are prepared and were rehearsed offline against scripted
-    services. Results are pending, apart from the first Gemini run below.
+    The tests were rehearsed offline against scripted services before the
+    live runs below.
     - `tests/integration/test_provider_formats_live.py` (level 3) is enabled
       by `LABBIO_PROVIDER_LIVE=1` and reads one provider-only TOML per
       variant. It checks:
@@ -574,8 +574,9 @@ Step 9 - documentation and live checks
 
     Both write content-free JSON records.
 
-    The first round uses DeepSeek's OpenAI- and Anthropic-compatible
-    endpoints and Gemini, on Scheduler + Apptainer. The OpenAI Responses API,
+    The first round was planned with DeepSeek's OpenAI- and
+    Anthropic-compatible endpoints and Gemini, on Scheduler + Apptainer. The
+    OpenAI Responses API,
     the official Chat dialect and official Anthropic behavior stay at levels
     1–2 until keys for those services are available.
 
@@ -708,6 +709,85 @@ Step 9 - documentation and live checks
       `gemini-3.6-flash` used `TOP_N`. The test passes in both cases, because
       it does not compare a report's numbers with the result table. The
       platform relies on the model to choose a view that returns records.
+
+    The DeepSeek formats had their kernel checks on 2026-10-26, from a Linux
+    workstation, with `deepseek-flash` through the OpenAI-compatible endpoint
+    (vendor dialect) and the Anthropic-compatible endpoint. No request was
+    retried.
+    - **Passed in both formats:**
+      - two tool rounds with thinking on, with the reasoning sent back
+        (`reasoning_content` for Chat, thinking blocks for Messages) and a
+        correct answer;
+      - a tool round with thinking off;
+      - finalization in JSON-object mode;
+      - the INTAKE stage schema in JSON-object mode.
+    - **Schema mode fails in both formats, in different ways:**
+      - The OpenAI-compatible endpoint rejects schema mode with HTTP 400,
+        both for the small finalization schema and for the INTAKE stage
+        schema. DeepSeek offers only JSON-object output.
+      - The Anthropic-compatible endpoint accepts `output_config.format` but
+        does not apply it. The model answered with a field the schema
+        forbids, and local validation rejected it (`extra_forbidden`). This
+        matches DeepSeek's compatibility notes, under which `output_config`
+        carries only `effort`.
+
+      Both DeepSeek formats therefore need `finalization_json_object =
+      true`, like official OpenAI, Claude and Gemini.
+    - **Thinking-off probes (Anthropic-compatible).** `disabled` was
+      accepted, `between-tools` failed with HTTP 422, and `omit` with a low
+      effort was accepted but the model still returned thinking.
+
+    The full DeepSeek workflow on Scheduler + Apptainer was not run. MOHAN
+    CUI dropped it from C14 acceptance on 2026-10-26, so both DeepSeek
+    formats stop at level 3.
+
+    Kimi was checked on 2026-10-27 with `kimi-k3`, through Moonshot's
+    OpenAI-compatible endpoint and its Anthropic-compatible endpoint. The
+    Chat configuration used the official dialect's request form:
+    `reasoning_effort`, `max_completion_tokens` and usage in the stream. The
+    service was Kimi, not OpenAI.
+    - **Kernel checks.** Every check passed in both formats, in schema mode
+      and in JSON-object mode:
+      - two tool rounds with the reasoning sent back and a correct answer;
+      - a tool round with thinking off;
+      - finalization in both modes.
+
+      The INTAKE stage schema passed in schema mode in both formats. In
+      JSON-object mode the same check once reached the
+      kernel deadline. Repeated, it passed: local validation rejected the
+      first answer, and the corrected second answer was accepted.
+    - **Retries.** Several HTTP 429 responses, one of them with a 60 s
+      `retry-after`, and one network error were retried and recorded.
+    - **Thinking off.** The documentation lists only `low`, `high` and `max`
+      for `kimi-k3`, but the service accepted three other values:
+      - with `reasoning_effort = "none"` the model returned no reasoning;
+      - with `minimal` or `low` it still reasoned.
+
+      On the Anthropic-compatible endpoint, `disabled` and `between-tools`
+      stopped thinking, and `omit` with a low effort did not. That endpoint
+      accepted the key in `x-api-key`, although its documentation names a
+      bearer token.
+    - **First run.** Every request returned HTTP 404 until the account was
+      set up in the provider console. The unchanged configuration then
+      passed.
+    - **Full workflow** (OpenAI-compatible endpoint, Scheduler + Apptainer):
+      - seven model stages ran with 23 provider turns, and the one execution
+        succeeded;
+      - every stage that read results used `TOP_N`;
+      - the report submitted in REPORT gives GENE_C 3.0, GENE_G 2.17 and
+        GENE_E -2.0, which match the result table.
+
+      The REPORT finalization then received HTTP 502 on all three attempts,
+      each after about 74 seconds. The stage failed with
+      `NATIVE_INVOCATION_FAILED` (`PROVIDER_TRANSPORT_ERROR`), short of the
+      no-progress limit. As designed, the run stayed in flight at REPORT. It
+      can be recovered by finalization only, through an operator `reconcile`
+      and `continue`, and it was not resumed. So no delivery was exported,
+      and LEARN did not start. The run took 1650 s, with 162k input and 10k
+      output tokens. It left no leaks, no scheduler job and no scratch.
+
+    The overall result of this criterion is in
+    [C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md).
 
 Across all steps
 

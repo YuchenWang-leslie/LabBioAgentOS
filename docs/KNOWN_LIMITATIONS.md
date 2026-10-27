@@ -57,7 +57,9 @@ Format-specific limits:
   represent LabBio's stage schemas, because of optional fields, unions and
   maps; Anthropic also caps optional fields and unions. Gemini accepts small
   schemas but rejects a full stage schema as too complex for constrained
-  decoding. With these providers use `provider_tool_schema_strict = false`
+  decoding. DeepSeek's OpenAI-compatible endpoint rejects schema mode, and
+  its Anthropic-compatible endpoint accepts the schema but does not apply
+  it. With these providers use `provider_tool_schema_strict = false`
   and `finalization_json_object = true`. Local validation stays
   authoritative in every mode.
 - **Anthropic thinking.** How a model stops thinking differs by model, so
@@ -70,7 +72,13 @@ Format-specific limits:
   checked), too few for a workflow run.
 - **Vendor compatibility layers.** A vendor's Anthropic- or OpenAI-compatible
   endpoint may ignore fields such as thinking settings. Such an endpoint
-  validates the wire format only, not the official service's behavior.
+  validates the wire format only, not the official service's behavior. On
+  DeepSeek's Anthropic-compatible endpoint, `thinking_off = "disabled"`
+  works, `between-tools` is rejected, and `omit` with a low effort still
+  thinks. Kimi's `kimi-k3` stops thinking only with `reasoning_effort =
+  "none"` on its OpenAI-compatible endpoint, a value its documentation does
+  not list. On its Anthropic-compatible endpoint, `disabled` and
+  `between-tools` both stop thinking.
 - **Authentication.** Only API keys are supported. Cloud-platform
   authentication (Amazon Bedrock, Google Vertex AI, Claude Platform on AWS,
   Microsoft Foundry) is not, and consumer chat subscriptions are not API keys.
@@ -79,18 +87,28 @@ Rate limits, overloads, server errors and connection failures are retried a
 bounded number of times: twice by default, at most ten. Each retry is
 recorded in the run trace. A retried request can be billed again when the
 failed attempt had already produced output. Each response is capped, after
-decompression, at 8 MiB plus 1 KiB per requested output token.
+decompression, at 8 MiB plus 1 KiB per requested output token. A provider
+failure that outlasts the retry bound fails the stage. The run stays in
+flight and can be resumed only by an operator, with `reconcile` and
+`continue`.
 
-Live checks of the formats against real services are in progress: see
-[C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20. A first live run of
+Live checks of the formats against real services are recorded in the
+[C14 gap memo](C14_API_COMPAT_GAP_MEMO.md), criterion 20, and summarized in
+[C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md). A first live run of
 the Gemini formats found three defects, which are fixed. After the fixes,
 both Gemini formats passed the kernel-level checks and completed the full
 workflow on Scheduler + Apptainer. With a lite model, no stage read the
 output values. Both reports stated numbers that appear nowhere in the run,
 and the host accepted them. With `gemini-3.6-flash`, the same workflow read
 the result records, and both reports matched them. The host does not check
-a report's numbers against its evidence; see criterion 20. The other
-formats are validated by deterministic contract tests only.
+a report's numbers against its evidence; see criterion 20. DeepSeek's
+OpenAI- and Anthropic-compatible endpoints passed the kernel-level checks in
+JSON-object mode, but no full DeepSeek workflow was run. Kimi's two
+compatible endpoints passed the kernel-level checks. Its one workflow
+submitted a correct report and then stopped, when the provider returned
+HTTP 502 to the REPORT finalization. The OpenAI
+Responses API, the official Chat dialect and the official Anthropic service
+are validated by deterministic contract tests only.
 
 Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair

@@ -98,7 +98,12 @@ effort_enabled = "high"      # 可选：low | medium | high | xhigh | max
 
 官方 OpenAI 和 Claude 的严格 schema 模式表达不了 LabBio 的阶段 schema（可选字段、
 联合类型、映射）。Gemini 能接受小的 schema，但完整的阶段 schema 对它的约束解码
-来说太复杂，请求会被拒绝（HTTP 400）。使用这三家时，请设
+来说太复杂，请求会被拒绝（HTTP 400）。DeepSeek 的 OpenAI 兼容接口不支持 schema
+模式（HTTP 400）；它的 Anthropic 兼容接口接受 schema，但不按 schema 输出。
+DeepSeek 的 Anthropic 兼容接口关闭思考请用 `thinking_off = "disabled"`。Kimi
+（`kimi-k3`）的 OpenAI 兼容接口要用 `thinking_parameter = "reasoning-effort"`，关闭
+思考只有 `reasoning_effort_disabled = "none"` 有效（文档没有列出这个值）。使用以上
+服务时，请设
 `provider_tool_schema_strict = false` 和 `finalization_json_object = true`；本地
 校验在任何模式下都照常执行。
 

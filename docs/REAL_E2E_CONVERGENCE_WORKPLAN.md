@@ -1,6 +1,6 @@
 # Real E2E Convergence Workplan
 
-## C14 provider API formats implemented; live checks pending — 2026-10-26
+## C14 provider API formats implemented; acceptance proposed — 2026-10-26
 
 C14 source is complete on branch `feat/api-compat`. The branch is not merged,
 released or deployed.
@@ -33,7 +33,7 @@ format, model or provider automatically.
 The [decisions](C14_API_COMPAT_DECISIONS.md) and the
 [gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
 
-**Evidence: acceptance levels 1–2; for the Gemini formats, levels 3–6 on Scheduler + Apptainer.**
+**Evidence: acceptance levels 1–2; for the Gemini formats, levels 3–6 on Scheduler + Apptainer; for the DeepSeek-compatible formats, level 3.**
 - On macOS without network, the deterministic suite gives `2363 passed, 68
   skipped`. Of the skips, 44 are opt-in live checks.
 - One contract suite runs the same scenarios through the real AgentLoop for
@@ -67,16 +67,31 @@ A completed workflow is not a correct result.
 With `gemini-3.6-flash`, one full workflow per Gemini format also completed.
 Both reports matched their result tables, because the model read the
 records with `TOP_N`. The code and configuration were the same as in the
-lite runs, so the outcome depends on which view the model chooses. The
-DeepSeek formats have not run on the cluster. Details are in gap memo
-criterion 20.
+lite runs, so the outcome depends on which view the model chooses. Details
+are in gap memo criterion 20.
 
-**Not yet run:** the DeepSeek formats, both the kernel checks (level 3) and
-the full workflow on Scheduler + Apptainer (levels 4–6). The tests are
-`tests/integration/test_provider_formats_live.py` and
-`tests/integration/test_provider_workflow_live.py`. With the keys available
-for this round, the OpenAI Responses API, the official Chat dialect and
-official Anthropic behavior cannot be checked live.
+**DeepSeek (level 3 only).** `deepseek-flash` passed the kernel checks
+through both the OpenAI-compatible and the Anthropic-compatible endpoint,
+in JSON-object mode. Schema mode does not work on either endpoint: the
+OpenAI-compatible one rejects it, and the Anthropic-compatible one ignores
+it. DeepSeek therefore needs `finalization_json_object = true`. MOHAN CUI
+dropped the full DeepSeek workflow on the cluster from C14 acceptance on
+2026-10-26.
+
+**Kimi (2026-10-27).** `kimi-k3` passed the kernel checks through both its
+OpenAI-compatible and its Anthropic-compatible endpoint. The stage schema
+passed in schema mode on both. A full workflow on Scheduler + Apptainer
+submitted a correct report, then stopped: the provider returned HTTP 502 on
+every attempt of the REPORT finalization. The run stayed recoverable and was
+not resumed. Details are in gap memo criterion 20.
+
+**Not run live:** the OpenAI Responses API, the official Chat dialect and
+the official Anthropic service, for lack of keys. Kimi accepted the
+official Chat dialect's request form. They rest on the
+deterministic contract suite.
+
+**Acceptance.** [C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md) proposes
+accepting C14 with criterion 20 met in part. The decision is MOHAN CUI's.
 
 **Upgrade.** Upgrading changes the runtime revision, and every configuration
 must migrate its `[provider]` table (see
