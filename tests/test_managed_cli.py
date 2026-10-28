@@ -34,7 +34,7 @@ def managed_cli(tmp_path, monkeypatch):
         "identity": {"user_id": "legacy", "project_id": "legacy", "lab_id": "legacy"},
         "provider": {
             "env_file": tmp_path / "absent-provider.env", "api_key_env": "TEST_KEY",
-            "base_url_env": "TEST_URL", "model_identifier": "offline-test-model",
+            "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
             "image_key": "python", "image_reference": "sha256:" + "1" * 64,
@@ -183,7 +183,8 @@ def test_new_process_restores_registered_identity_and_gold_store(managed_cli, tm
     for section in ("identity", "provider", "execution"):
         text.append(f"[{section}]")
         for name, value in configuration[section].items():
-            if name != "resources":
+            # TOML has no null; an absent per-format table stays absent.
+            if name != "resources" and value is not None:
                 text.append(f"{name} = {json.dumps(value)}")
     text.append("[execution.resources]")
     for name, value in configuration["execution"]["resources"].items():

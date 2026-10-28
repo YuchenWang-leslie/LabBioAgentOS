@@ -14,9 +14,12 @@ project_id = "local-project"
 lab_id = "local-lab"
 
 [provider]
+# api_format and the per-format tables are described in local-runtime.toml.
+api_format = "openai"
+endpoint = "https://provider.example/v1"  # https unless the server is on localhost.
+# The env file holds only the key; it must be yours with mode 0600 (chmod 600).
 env_file = "~/.config/labbioagent/provider.env"
 api_key_env = "PROVIDER_API_KEY"
-base_url_env = "PROVIDER_BASE_URL"
 model_identifier = "<model>"
 # trust_env = false  # Provider-only direct route; also ignores host certificate environment.
 

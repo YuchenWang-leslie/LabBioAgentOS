@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .contracts import InterruptSignal, TokenUsage
+    from .contracts import InterruptSignal, ProviderRetry, TokenUsage
 
 
 class KernelContractError(RuntimeError):
@@ -118,13 +119,16 @@ class NoObservableProgressError(KernelContractError):
 
 class KernelDeadlineExceededError(KernelContractError):
     def __init__(self, *, usage: TokenUsage | None = None,
-                 usage_snapshot: TokenUsage | None = None):
+                 usage_snapshot: TokenUsage | None = None,
+                 transport_retries: tuple[ProviderRetry, ...] = ()):
         super().__init__(
             "KERNEL_DEADLINE_EXCEEDED",
             "The kernel invocation deadline was reached",
         )
         self.usage = usage
         self.usage_snapshot = usage_snapshot
+        # Provider attempts discarded before the deadline, for the loop to record.
+        self.transport_retries = transport_retries
 
 
 class IncompleteProviderResponseError(KernelContractError):
@@ -134,6 +138,8 @@ class IncompleteProviderResponseError(KernelContractError):
             "The provider response was incomplete and cannot be accepted",
         )
         self.finish_reason = finish_reason
+        # Read by stage runtimes that project failures into the run trace.
+        self.validation_type = finish_reason
 
 
 class FinalizationProtocolError(KernelContractError):
@@ -160,8 +166,15 @@ class FinalizationRejectedError(KernelContractError):
 
 
 class ProviderProtocolError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None, validation_fields: tuple[str, ...] = (),
-                 usage: TokenUsage | None = None, usage_snapshot: TokenUsage | None = None):
+    def __init__(
+        self,
+        *,
+        validation_type: str | None = None,
+        validation_fields: tuple[str, ...] = (),
+        usage: TokenUsage | None = None,
+        usage_snapshot: TokenUsage | None = None,
+        transport_retries: tuple[ProviderRetry, ...] = (),
+    ):
         super().__init__(
             "PROVIDER_PROTOCOL_ERROR",
             "The provider returned an unsupported response shape",
@@ -170,11 +183,52 @@ class ProviderProtocolError(KernelContractError):
         self.validation_fields = validation_fields
         self.usage = usage
         self.usage_snapshot = usage_snapshot
+        # Attempts discarded before this failure, for the loop to record.
+        self.transport_retries = transport_retries
+
+
+# A provider type name is recorded only when it has this plain identifier form.
+_PROVIDER_TYPE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_.]{0,63}")
+
+
+def bounded_provider_name(value: object) -> str:
+    """Return a provider-declared name if it is a plain identifier, else a marker."""
+
+    if isinstance(value, str) and _PROVIDER_TYPE_NAME.fullmatch(value):
+        return value
+    return "unrecognized"
+
+
+def unsupported_type_error(path: str, value: object) -> ProviderProtocolError:
+    """Name an unknown content-bearing provider type without echoing other text."""
+
+    return ProviderProtocolError(
+        validation_type="unsupported_type",
+        validation_fields=(path, bounded_provider_name(value)),
+    )
+
+
+def preserve_failure_usage(error, raw, parser) -> None:
+    """Retain independently valid billing from a complete rejected response."""
+    try:
+        usage = parser(raw)
+    except (TypeError, ValueError):
+        return
+    if any(value is not None for value in (
+        usage.input_tokens, usage.output_tokens, usage.total_tokens,
+    )):
+        error.usage = usage
 
 
 class ProviderTransportError(KernelContractError):
-    def __init__(self, *, validation_type: str | None = None, usage: TokenUsage | None = None,
-                 usage_snapshot: TokenUsage | None = None):
+    def __init__(
+        self,
+        *,
+        validation_type: str | None = None,
+        usage: TokenUsage | None = None,
+        usage_snapshot: TokenUsage | None = None,
+        transport_retries: tuple[ProviderRetry, ...] = (),
+    ):
         super().__init__(
             "PROVIDER_TRANSPORT_ERROR",
             "The provider request could not complete",
@@ -182,6 +236,8 @@ class ProviderTransportError(KernelContractError):
         self.validation_type = validation_type
         self.usage = usage
         self.usage_snapshot = usage_snapshot
+        # Attempts discarded before this failure, for the loop to record.
+        self.transport_retries = transport_retries
 
 
 class AgentHistoryLimitError(KernelContractError):

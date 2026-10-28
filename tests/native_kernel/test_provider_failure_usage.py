@@ -99,11 +99,11 @@ class _Stream(httpx.AsyncByteStream):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("suffix,error,snapshot_total", [
-    ("truncated", ProviderProtocolError, 21),
+    ("truncated", ProviderTransportError, 21),
     ("network", ProviderTransportError, 21),
     ("cancel", asyncio.CancelledError, 21),
     ("deadline", KernelDeadlineExceededError, 21),
-    ("invalid_usage", ProviderProtocolError, 21),
+    ("invalid_usage", ProviderTransportError, 21),
     ("invalid_usage_done", ProviderProtocolError, 21),
     ("foreign_id", ProviderProtocolError, None),
 ])
@@ -122,7 +122,7 @@ async def test_stream_failure_preserves_only_valid_request_usage(
     )
     loop, ledger = _loop(HttpxChatCompletionTransport(trust_env=False), tokens=10)
     with pytest.raises(error):
-        await _run(loop, timeout=0.05 if suffix == "deadline" else 5)
+        await _run(loop, timeout=1 if suffix == "deadline" else 5)
     assert ledger.usage.tokens is None
     outcomes = [item for item in loop.events if "USAGE" in item.kind.value]
     assert len(outcomes) == 1 and outcomes[0].kind.value == "MODEL_USAGE_UNREPORTED"
@@ -169,7 +169,8 @@ async def test_complete_stream_uses_latest_valid_usage_once(monkeypatch, invalid
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(
             lambda _request: httpx.Response(
-                200, headers={"content-type": "text/event-stream"}, text=body,
+                200, headers={"content-type": "text/event-stream"},
+                stream=httpx.ByteStream(body.encode()),
             ),
         ), **kwargs),
     )
@@ -204,7 +205,8 @@ async def test_complete_stream_invalid_tool_index_retains_final_usage(monkeypatc
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(
             lambda _request: httpx.Response(
-                200, headers={"content-type": "text/event-stream"}, text=body,
+                200, headers={"content-type": "text/event-stream"},
+                stream=httpx.ByteStream(body.encode()),
             ),
         ), **kwargs),
     )

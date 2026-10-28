@@ -87,15 +87,17 @@ labbio --help
 
 A real task additionally requires:
 
-1. an OpenAI-compatible Chat provider with credentials stored outside the
-   repository;
+1. a model provider reachable in one supported API format (OpenAI Chat
+   Completions or Responses, Anthropic Messages, Gemini `generateContent` or
+   Interactions), with its API key in a private env file (mode 0600) outside
+   the repository;
 2. an existing, deployment-approved Docker image, or a registered SIF for a
    configured local/cluster backend with enforced resource limits;
 3. an external `runtime.toml` defining identity, allowed input roots, result
    root, resource limits, provider binding, and execution settings.
 
-Start from `examples/local-runtime.toml`. The configuration references secret
-environment variables; it must not contain API keys. See the
+Start from `examples/local-runtime.toml`. The configuration names the env file
+and the key variable inside it; it must not contain API keys. See the
 [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the local contract, or
 [cluster deployment guide](docs/CLUSTER_DEPLOYMENT.md) for site prerequisites.
 Local Apptainer requires real cgroup delegation; see its

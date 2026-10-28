@@ -48,11 +48,13 @@ from labbioagentos.kernel import (
     ModelTurn,
     ProviderBinding,
     ProviderProtocolError,
+    ProviderRetry,
     ProviderTransportError,
     TokenUsage,
     ToolCall,
 )
 from labbioagentos.runtime.native_stage import NativeKernelStageInvoker, NativeRuntimeFactory
+from labbioagentos.run_state import RunRecoveryState
 from labbioagentos.runtime.contracts import (
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
@@ -211,6 +213,85 @@ async def test_default_native_backend_completes_a_fake_provider_workflow(tmp_pat
     assert len(calls) == len(MAIN_PATH)
     assert all(request.tools == () for request in calls)
     assert all(request.response_schema is not None for request in calls)
+
+
+class RetryingWorkflowProvider(WorkflowProvider):
+    async def generate(self, request):
+        turn = await super().generate(request)
+        if len(self.calls) == 1:
+            return turn.model_copy(update={"transport_retries": (
+                ProviderRetry(category="HTTP_429", wait_ms=500),
+            )})
+        return turn
+
+
+@pytest.mark.asyncio
+async def test_provider_retries_reach_the_run_trace(tmp_path):
+    calls = []
+    application = LabBioApplication(
+        _configuration(tmp_path, lambda _model: RetryingWorkflowProvider(calls))
+    )
+    handle = application.create_run(_request())
+
+    outcome = await application.run(handle)
+
+    assert outcome.status is RunStatus.COMPLETED
+    events = application.trace_events(handle)
+    retried = [
+        event for event in events
+        if event.event_type is TraceEventType.PROVIDER_RETRY_OBSERVED
+    ]
+    assert len(retried) == 1
+    assert retried[0].status == "RETRIED"
+    assert retried[0].stage_id is WorkflowStage.INTAKE
+    assert retried[0].payload["reason_code"] == "HTTP_429"
+    assert retried[0].payload["numeric_facts"] == {
+        "turn_index": 1, "attempt": 1, "wait_ms": 500,
+    }
+    first_turn = next(
+        event for event in events
+        if event.event_type is TraceEventType.PROVIDER_TURN_OBSERVED
+    )
+    assert retried[0].sequence < first_turn.sequence
+
+
+class RefusingWorkflowProvider(WorkflowProvider):
+    async def generate(self, request):
+        self.calls.append(request)
+        return ModelTurn(finish_reason=FinishReason.CONTENT_FILTER, refusal_category="bio")
+
+
+@pytest.mark.asyncio
+async def test_refused_finalization_stays_recoverable_with_its_reason_traced(tmp_path):
+    calls = []
+    application = LabBioApplication(
+        _configuration(tmp_path, lambda _model: RefusingWorkflowProvider(calls))
+    )
+    handle = application.create_run(_request())
+
+    # A refusal is an incomplete provider response, not a malformed result:
+    # the run stays in flight for the user to resume or cancel.
+    with pytest.raises(RuntimeIntegrationError) as caught:
+        await application.run(handle)
+
+    assert caught.value.error_code == "NATIVE_INVOCATION_FAILED"
+    record = application.run_state_store.get(handle.run_id)
+    assert record.recovery_state is RunRecoveryState.STAGE_IN_FLIGHT
+    assert record.inflight_stage is WorkflowStage.INTAKE
+    assert record.workflow_run.status is not RunStatus.FAILED
+    assert len(calls) == 1
+    events = application.trace_events(handle)
+    failed = [
+        (event.payload["cause_code"], event.payload["validation_type"])
+        for event in events
+        if event.event_type is TraceEventType.FINALIZATION_PHASE_FAILED
+    ]
+    assert failed == [("INCOMPLETE_PROVIDER_RESPONSE", "CONTENT_FILTER")]
+    observed = [
+        (event.status, event.payload["reason_code"]) for event in events
+        if event.event_type is TraceEventType.PROVIDER_TURN_OBSERVED
+    ]
+    assert observed == [("CONTENT_FILTER", "bio")]
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,20 @@
 # Real E2E Convergence Workplan
 
+## Local integration of provider API PR 3 — 2026-10-28
+
+PR `#3`, head `99a809c7e442017253db5bb8726dcba39f7d1db8`, is integrated
+with local Native source `10838c7` in the original repository. Compatibility
+resolution retains interruption, bounded context, handoff and failure-usage
+contracts while adding the five provider formats. Private continuation cleanup
+now follows the shared store; every adapter measures its complete wire payload.
+Rejected complete responses retain independently valid usage, and discarded
+retry attempts keep their usage unknown rather than reporting a known total.
+The first merged regression and its failures are preserved externally. Final
+source regression passes 2807 tests with 73 opt-in checks skipped. A fresh,
+small synthetic live API/Docker task is the remaining local verification step.
+The earlier stress campaign remains paused. Integration uses one Git working
+tree; GitHub PR state and production activation are outside this local action.
+
 ## Original-repository Freeze 8 terminal review and narrow source corrections — 2026-10-20
 
 The generated sibling worktrees were removed after useful source changes were
@@ -234,6 +249,132 @@ Real Local Apptainer validation is blocked by missing Apptainer and CPU-controll
 delegation on this host; no host administration or resource-limit bypass was
 performed. Production activation and GitHub publication are not part of this
 candidate's current authorization.
+## C14 provider API formats accepted — 2026-10-27
+
+C14 source is complete on branch `feat/api-compat`. The branch is not merged,
+released or deployed.
+
+**Formats.** Five provider API formats sit behind the Native `ModelProvider`
+port:
+- OpenAI Chat Completions, in the existing vendor dialect and an official
+  dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API;
+- the Gemini Interactions API, added on 2026-10-23 as a fifth format.
+
+A deployment selects one with `[provider] api_format`, and nothing switches
+format, model or provider automatically.
+
+**Changes around the provider:**
+- The adapters share one HTTP transport, with a byte cap, gzip-only decoding,
+  strict JSON, and a bounded retry that is recorded in the trace.
+- Credentials are held in memory and never written to the process
+  environment.
+- Remote endpoints require https, and the env file must be mode 0600.
+- The endpoint moved from the env file into `[provider] endpoint`.
+- The runtime identity records the endpoint origin and digests of every
+  provider module.
+- Refusals and provider filters become `CONTENT_FILTER`; a refused
+  finalization stays recoverable.
+- Failed tool results are marked in the history.
+
+The [decisions](C14_API_COMPAT_DECISIONS.md) and the
+[gap memo](C14_API_COMPAT_GAP_MEMO.md) record each choice.
+
+**Evidence: acceptance levels 1–2; for the Gemini formats, levels 3–6 on Scheduler + Apptainer; for the DeepSeek-compatible formats, level 3.**
+- On macOS without network, the deterministic suite gives `2363 passed, 68
+  skipped`. Of the skips, 44 are opt-in live checks.
+- One contract suite runs the same scenarios through the real AgentLoop for
+  six wire variants, including an application-level scan for leaked keys and
+  private reasoning.
+
+**First live run (Gemini, 2026-10-26).** It found three defects:
+- response ids outside the kernel identifier form failed a turn; such ids
+  are now recorded as unknown (`8509da8`);
+- the Interactions service sends no interaction id under `store: false`;
+  the id is now optional (`1ef1363`);
+- full stage schemas are too complex for Gemini's schema mode, so Gemini
+  must use `finalization_json_object = true`.
+
+After the fixes, both Gemini formats passed every kernel check, on lite
+models and on `gemini-3.6-flash`. On Scheduler + Apptainer, one full
+workflow per Gemini format completed with `gemini-3.1-flash-lite`:
+- delivery was exported;
+- the runtime identity was correct;
+- no key or private reasoning was found in the run directory.
+
+The result tables were correct, but the reports were not. No stage ever
+read an output value, so the models wrote numbers that appear nowhere in the
+run, and `report_submit`, which checks citation coverage only, accepted
+them. The cause lies in the Artifact views and predates C14:
+- every view except `TOP_N` reports `available_count` 0;
+- the stages used only `SUMMARY`, which is empty for these records.
+
+A completed workflow is not a correct result.
+
+With `gemini-3.6-flash`, one full workflow per Gemini format also completed.
+Both reports matched their result tables, because the model read the
+records with `TOP_N`. The code and configuration were the same as in the
+lite runs, so the outcome depends on which view the model chooses. Details
+are in gap memo criterion 20.
+
+**DeepSeek (level 3 only).** `deepseek-flash` passed the kernel checks
+through both the OpenAI-compatible and the Anthropic-compatible endpoint,
+in JSON-object mode. Schema mode does not work on either endpoint: the
+OpenAI-compatible one rejects it, and the Anthropic-compatible one ignores
+it. DeepSeek therefore needs `finalization_json_object = true`. MOHAN CUI
+dropped the full DeepSeek workflow on the cluster from C14 acceptance on
+2026-10-26.
+
+**Kimi (2026-10-27).** `kimi-k3` passed the kernel checks through both its
+OpenAI-compatible and its Anthropic-compatible endpoint. The stage schema
+passed in schema mode on both. A full workflow on Scheduler + Apptainer
+submitted a correct report, then stopped: the provider returned HTTP 502 on
+every attempt of the REPORT finalization. The run stayed recoverable and was
+not resumed. Details are in gap memo criterion 20.
+
+**Not run live:** the OpenAI Responses API, the official Chat dialect and
+the official Anthropic service, for lack of keys. Kimi accepted the
+official Chat dialect's request form. They rest on the
+deterministic contract suite.
+
+**Acceptance.** MOHAN CUI accepted C14 on 2026-10-27, with criterion 20 met
+in part; see [C14 acceptance](C14_API_COMPAT_ACCEPTANCE.md). The branch is
+not merged, released or deployed.
+
+**Upgrade.** Upgrading changes the runtime revision, and every configuration
+must migrate its `[provider]` table (see
+[LOCAL_TASK_ENTRYPOINT.md](LOCAL_TASK_ENTRYPOINT.md)). Production remains
+release `native-p8-20261016T085718Z`.
+
+## C14 provider API format compatibility opened — 2026-10-21
+
+MOHAN CUI opened C14 on branch `feat/api-compat` from `d7b1000`. Behind the
+existing Native `ModelProvider` port, C14 adds four wire formats:
+
+- OpenAI Chat Completions, with an official dialect alongside the existing
+  vendor dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API.
+
+A runtime uses exactly one format, chosen only in trusted configuration.
+
+C14 also changes four things around the provider:
+
+- provider credentials move out of the process environment;
+- remote endpoints require https, and the provider env file must be mode 0600;
+- the runtime identity records the endpoint scheme and host;
+- transient provider failures get a bounded, recorded retry.
+
+The [gap memo](C14_API_COMPAT_GAP_MEMO.md) and
+[decisions](C14_API_COMPAT_DECISIONS.md) are the only C14 changes so far. No
+source has changed, and no acceptance level is claimed. The source baseline is
+`1756 passed, 24 skipped`.
+
+Once C14 source lands, the runtime revision changes, so runs started earlier
+cannot continue. Production remains release `native-p8-20261016T085718Z`.
 
 ## Source stress repair and fresh H5AD closure — 2026-10-19
 

@@ -8,12 +8,17 @@ import json
 import os
 import re
 from pathlib import Path
+import stat
 import tomllib
 from typing import Literal
 from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
+from pydantic import (
+    BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator,
+    model_serializer, model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from labbioagentos.literature import LiteratureSearchService
 from labbioagentos.artifacts import ExposurePolicy
@@ -26,16 +31,170 @@ from labbioagentos import (
     RuntimeBackend, RuntimeStageAssemblySpec, SQLiteRunStateStore, StructuredOutputContract,
     WorkflowStage, WorkspaceContext, default_agent_profiles,
 )
+from labbioagentos.kernel import (
+    AnthropicMessagesDialect, GeminiGenerateContentDialect, GeminiInteractionsDialect,
+    OpenAIChatDialect, OpenAIResponsesDialect, ProviderBinding, create_provider,
+)
+from labbioagentos.kernel.contracts import AnthropicEffort, GeminiThinkingLevel, ReasoningEffort
+from labbioagentos.kernel.http_stream import DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT
 
 
 class _SettingsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# Fix hints are value-free: a provider setting, URL or key never reaches output.
+_PROVIDER_FIX_HINTS = {
+    "PROVIDER_SETTINGS_INVALID": (
+        "Check the [provider] table: api_format names one supported format, a per-format "
+        "table appears only with its format, and anthropic, gemini and gemini-interactions "
+        "each require theirs."
+    ),
+    "PROVIDER_ENDPOINT_NOT_HTTPS": (
+        "Use an https endpoint. Plain http is accepted only for localhost, 127.0.0.1 and ::1; "
+        "put TLS in front of the server, or reach it through an SSH tunnel on localhost."
+    ),
+    "PROVIDER_ENDPOINT_INVALID": (
+        "Set [provider] endpoint to an http(s) URL with a host and without user information, "
+        "query, fragment or whitespace."
+    ),
+    "PROVIDER_ENDPOINT_MOVED": (
+        "Move the endpoint URL from the env file to [provider] endpoint and remove "
+        "base_url_env; the env file keeps only the key."
+    ),
+    "PROVIDER_ENV_FILE_PERMISSIONS": (
+        "Make the provider env file a regular file that you own, then run chmod 600 on it."
+    ),
+    "PROVIDER_ENV_FILE_UNAVAILABLE": "Create the provider env file named by [provider] env_file.",
+    "PROVIDER_KEY_MISSING": (
+        "Put the variable named by [provider] api_key_env in the provider env file, on one line."
+    ),
+    "PROVIDER_CREDENTIALS_NOT_LOADED": (
+        "The provider key was not loaded before a model call; this is a composition error."
+    ),
+}
+
+
+class ProviderConfigurationError(ValueError):
+    """An unsafe or invalid provider setting, reported by a fixed code only."""
+
+    def __init__(self, code: str, fields: tuple[str, ...] = ()):
+        if code not in _PROVIDER_FIX_HINTS:
+            raise ValueError("Unknown provider configuration code")
+        super().__init__(code)
+        self.code = code
+        self.fields = fields
+
+    @property
+    def hint(self) -> str:
+        return _PROVIDER_FIX_HINTS[self.code]
+
+
+ApiFormat = Literal["openai", "openai-responses", "anthropic", "gemini", "gemini-interactions"]
+_FORMAT_TRANSPORTS = {
+    "openai": "OPENAI_COMPATIBLE_CHAT",
+    "openai-responses": "OPENAI_RESPONSES",
+    "anthropic": "ANTHROPIC_MESSAGES",
+    "gemini": "GEMINI_GENERATE_CONTENT",
+    "gemini-interactions": "GEMINI_INTERACTIONS",
+}
+# Settings attribute of each per-format table, keyed by its api_format value.
+_FORMAT_TABLES = {
+    "openai": "openai",
+    "openai-responses": "openai_responses",
+    "anthropic": "anthropic",
+    "gemini": "gemini",
+    "gemini-interactions": "gemini_interactions",
+}
+# Formats whose thinking settings have no safe default.
+_TABLE_REQUIRED = frozenset({"anthropic", "gemini", "gemini-interactions"})
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _wire_name(value: str) -> str:
+    return value.upper().replace("-", "_")
+
+
+def _endpoint_error(code: str) -> PydanticCustomError:
+    return PydanticCustomError(code, _PROVIDER_FIX_HINTS[code])
+
+
+def _checked_endpoint(value: str) -> str:
+    """Accept https anywhere and plain http only on loopback (DECIDED-C14-4)."""
+    if (not value.startswith(("https://", "http://")) or "?" in value or "#" in value
+            or any(character.isspace() for character in value)):
+        raise _endpoint_error("PROVIDER_ENDPOINT_INVALID")
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # An unparseable port raises here.
+    except ValueError:
+        raise _endpoint_error("PROVIDER_ENDPOINT_INVALID") from None
+    if not parsed.hostname or "@" in parsed.netloc:
+        raise _endpoint_error("PROVIDER_ENDPOINT_INVALID")
+    if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
+        raise _endpoint_error("PROVIDER_ENDPOINT_NOT_HTTPS")
+    return value
+
+
+class LocalOpenAIChatSettings(_SettingsModel):
+    """`[provider.openai]`; the defaults are the vendor dialect."""
+
+    thinking_parameter: Literal["thinking-object", "reasoning-effort", "omit"] = "thinking-object"
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
+    output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
+    stream_include_usage: bool = Field(default=False, strict=True)
+
+    def dialect(self) -> OpenAIChatDialect:
+        return OpenAIChatDialect(
+            thinking_parameter=_wire_name(self.thinking_parameter),
+            reasoning_effort_enabled=self.reasoning_effort_enabled,
+            reasoning_effort_disabled=self.reasoning_effort_disabled,
+            output_limit_parameter=self.output_limit_parameter,
+            stream_include_usage=self.stream_include_usage,
+        )
+
+
+class LocalOpenAIResponsesSettings(_SettingsModel):
+    """`[provider.openai-responses]`; a reasoning model needs both efforts."""
+
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
+
+    def dialect(self) -> OpenAIResponsesDialect:
+        return OpenAIResponsesDialect(
+            reasoning_effort_enabled=self.reasoning_effort_enabled,
+            reasoning_effort_disabled=self.reasoning_effort_disabled,
+        )
+
+
+class LocalAnthropicSettings(_SettingsModel):
+    """`[provider.anthropic]`; how a model stops thinking has no safe default."""
+
+    thinking_off: Literal["disabled", "between-tools", "omit"]
+    effort_enabled: AnthropicEffort | None = None
+    effort_disabled: AnthropicEffort | None = None
+
+    def dialect(self) -> AnthropicMessagesDialect:
+        return AnthropicMessagesDialect(
+            thinking_off=_wire_name(self.thinking_off),
+            effort_enabled=self.effort_enabled,
+            effort_disabled=self.effort_disabled,
+        )
+
+
+class LocalGeminiThinkingSettings(_SettingsModel):
+    """`[provider.gemini]` or `[provider.gemini-interactions]`."""
+
+    thinking_level_enabled: GeminiThinkingLevel
+    thinking_level_disabled: GeminiThinkingLevel
+
+
 class LocalProviderSettings(_SettingsModel):
+    api_format: ApiFormat = "openai"
+    endpoint: str = Field(min_length=1, max_length=2_048)
     env_file: Path
     api_key_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
-    base_url_env: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     model_identifier: str = Field(min_length=1, max_length=256)
     trust_env: bool = Field(default=True, strict=True)
     thinking_enabled: bool = False
@@ -45,6 +204,48 @@ class LocalProviderSettings(_SettingsModel):
     max_model_phase_seconds: int = Field(default=300, ge=30, le=1_800)
     max_request_bytes: int = Field(default=256_000, ge=1, strict=True)
     finalization_json_object: bool = False
+    max_retries: int = Field(default=DEFAULT_MAX_RETRIES, ge=0, le=MAX_RETRIES_LIMIT, strict=True)
+    openai: LocalOpenAIChatSettings | None = None
+    openai_responses: LocalOpenAIResponsesSettings | None = Field(
+        default=None, alias="openai-responses",
+    )
+    anthropic: LocalAnthropicSettings | None = None
+    gemini: LocalGeminiThinkingSettings | None = None
+    gemini_interactions: LocalGeminiThinkingSettings | None = Field(
+        default=None, alias="gemini-interactions",
+    )
+
+    @field_validator("endpoint")
+    @classmethod
+    def endpoint_is_safe(cls, value: str) -> str:
+        return _checked_endpoint(value)
+
+    @model_validator(mode="after")
+    def format_table_matches(self) -> "LocalProviderSettings":
+        for name, attribute in _FORMAT_TABLES.items():
+            if getattr(self, attribute) is not None and name != self.api_format:
+                raise ValueError("A per-format table must match api_format")
+        if self.api_format in _TABLE_REQUIRED and self._format_table() is None:
+            raise ValueError("This api_format requires its per-format table")
+        # Build the kernel dialect now so its own rules fail at load.
+        self.dialect()
+        return self
+
+    def _format_table(self):
+        return getattr(self, _FORMAT_TABLES[self.api_format])
+
+    @property
+    def transport(self) -> str:
+        return _FORMAT_TRANSPORTS[self.api_format]
+
+    def dialect(self):
+        """The kernel dialect, or None where the transport default applies."""
+        table = self._format_table()
+        if self.api_format == "gemini":
+            return GeminiGenerateContentDialect(**table.model_dump())
+        if self.api_format == "gemini-interactions":
+            return GeminiInteractionsDialect(**table.model_dump())
+        return None if table is None else table.dialect()
 
 
 class LocalApptainerSettings(_SettingsModel):
@@ -278,10 +479,29 @@ class _LocalProfile(_SettingsModel):
     output_contract: StructuredOutputContract
 
 
+def _validated_settings(raw: dict) -> LocalSettings:
+    try:
+        return LocalSettings.model_validate(raw)
+    except ValidationError as exc:
+        issues = exc.errors(include_url=False, include_input=False, include_context=False)
+        provider = [item for item in issues if tuple(item["loc"][:1]) == ("provider",)]
+        if not provider:
+            raise
+        # Only a fixed code and setting names leave this function, never values.
+        code = next((item["type"] for item in provider if item["type"] in _PROVIDER_FIX_HINTS),
+                    "PROVIDER_SETTINGS_INVALID")
+        fields = tuple(dict.fromkeys(".".join(str(part) for part in item["loc"])
+                                     for item in provider))
+        raise ProviderConfigurationError(code, fields[:16]) from None
+
+
 def load_settings(path: Path) -> LocalSettings:
     """Read non-secret TOML once; resolve relative paths against its directory."""
     path = path.expanduser().resolve()
-    settings = LocalSettings.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    if isinstance(raw.get("provider"), dict) and "base_url_env" in raw["provider"]:
+        raise ProviderConfigurationError("PROVIDER_ENDPOINT_MOVED", ("provider.base_url_env",))
+    settings = _validated_settings(raw)
 
     def absolute(value: Path) -> Path:
         value = value.expanduser()
@@ -312,6 +532,10 @@ def load_settings(path: Path) -> LocalSettings:
         # Partitions and directives are checked as the build and download jobs will use them.
         environment_scheduler_policy(settings)
         environment_scheduler_policy(settings, download=True)
+    if settings.provider.env_file.exists():
+        # A present env file is checked at load; an absent one fails only when
+        # a command needs the key, so read-only commands work without it.
+        _check_env_file(settings.provider.env_file)
     return settings
 
 
@@ -363,6 +587,28 @@ def _file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# Every module that shapes provider traffic: the five adapters, their factory,
+# the shared transport and the helpers they all use.
+_PROVIDER_SOURCES = (
+    "anthropic_messages.py", "continuation.py", "gemini_content.py",
+    "gemini_interactions.py", "http_stream.py", "openai_chat.py",
+    "openai_responses.py", "providers.py", "schema_projection.py",
+)
+
+
+def _provider_endpoint(endpoint: str) -> dict:
+    """Where model traffic goes: the origin in plain text (DECIDED-C14-7).
+
+    The path is not shown; its digest still changes the revision when any
+    part of the endpoint, such as an API version, changes.
+    """
+    parsed = urlsplit(endpoint)
+    return {
+        "origin": f"{parsed.scheme}://{parsed.netloc}",
+        "sha256": hashlib.sha256(endpoint.encode("utf-8")).hexdigest(),
+    }
+
+
 def runtime_manifest(settings: LocalSettings) -> dict:
     """Content-derived identity; provider env values are neither read nor retained."""
     profile_bytes = _profile_bytes(settings)
@@ -411,17 +657,22 @@ def runtime_manifest(settings: LocalSettings) -> dict:
     runtime_source = {
         "labbio_sha256": _source_digest(source_root),
         "native_kernel_sha256": _source_digest(source_root / "kernel"),
-        "native_provider_sha256": _file_digest(source_root / "kernel" / "openai_chat.py"),
+        "native_provider_sha256": {
+            name: _file_digest(source_root / "kernel" / name) for name in _PROVIDER_SOURCES
+        },
         "native_tool_schema_sha256": _file_digest(source_root / "runtime" / "native_tools.py"),
         "team_profile_sha256": hashlib.sha256(
             json.dumps(effective_profile, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest(),
     }
+    configuration = settings.model_dump(mode="json")
+    endpoint = configuration["provider"].pop("endpoint")
     manifest = {
         "format_version": 1,
         "runtime_backend": settings.runtime_backend,
         "runtime_contract_version": 1,
-        "configuration": settings.model_dump(mode="json"),
+        "configuration": configuration,
+        "provider_endpoint": _provider_endpoint(endpoint),
         "profile": effective_profile,
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
         "source": runtime_source,
@@ -431,18 +682,103 @@ def runtime_manifest(settings: LocalSettings) -> dict:
     return manifest
 
 
-def _load_provider(settings: LocalProviderSettings) -> None:
-    if not settings.env_file.is_file():
-        raise ValueError("Configured provider environment file is unavailable")
-    values = dotenv_values(settings.env_file, interpolate=False)
-    key, endpoint = values.get(settings.api_key_env), values.get(settings.base_url_env)
-    if not key or not endpoint or any(character in key + endpoint for character in "\r\n"):
-        raise ValueError("Configured provider key or endpoint is missing or invalid")
-    parsed = urlsplit(endpoint)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
-        raise ValueError("Configured provider endpoint is invalid")
-    os.environ["OPENAI_API_KEY"] = key
-    os.environ["OPENAI_API_BASE"] = endpoint
+def _check_env_file_stat(info: os.stat_result) -> None:
+    """The env file holds the key: owned by this user and closed to everyone else."""
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ProviderConfigurationError("PROVIDER_ENV_FILE_PERMISSIONS", ("provider.env_file",))
+
+
+def _check_env_file(path: Path) -> None:
+    try:
+        info = path.stat()
+    except OSError:
+        raise ProviderConfigurationError(
+            "PROVIDER_ENV_FILE_UNAVAILABLE", ("provider.env_file",),
+        ) from None
+    _check_env_file_stat(info)
+
+
+class ProviderCredentials:
+    """The provider key, held in memory only and never written to os.environ."""
+
+    def __init__(self, settings: LocalProviderSettings):
+        self._settings = settings
+        self._key: SecretStr | None = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._key is not None
+
+    def load(self) -> None:
+        """Read the key from the env file after checking its owner and mode."""
+        path = self._settings.env_file
+        _check_env_file(path)
+        try:
+            handle = path.open("r", encoding="utf-8")
+        except OSError:
+            raise ProviderConfigurationError(
+                "PROVIDER_ENV_FILE_UNAVAILABLE", ("provider.env_file",),
+            ) from None
+        with handle:
+            # The open file is checked again, so a path swapped after the first
+            # check cannot pass.
+            _check_env_file_stat(os.fstat(handle.fileno()))
+            values = dotenv_values(stream=handle, interpolate=False)
+        self.provide(values.get(self._settings.api_key_env))
+
+    def provide(self, key: str | None) -> None:
+        """Hold a key supplied directly, as an embedding caller or a test does."""
+        if not isinstance(key, str) or not key or any(character in key for character in "\r\n"):
+            raise ProviderConfigurationError("PROVIDER_KEY_MISSING", ("provider.api_key_env",))
+        self._key = SecretStr(key)
+
+    def api_key(self) -> str:
+        if self._key is None:
+            raise ProviderConfigurationError("PROVIDER_CREDENTIALS_NOT_LOADED")
+        return self._key.get_secret_value()
+
+    def __repr__(self) -> str:
+        return f"ProviderCredentials(loaded={self.loaded})"
+
+
+class LocalProviderBuilder:
+    """Build the configured format's adapter from trusted settings and the held key."""
+
+    def __init__(self, settings: LocalProviderSettings, credentials: ProviderCredentials):
+        self.settings = settings
+        self.credentials = credentials
+
+    def __call__(self, model: ModelProfile):
+        settings = self.settings
+        dialect = settings.dialect()
+        binding = ProviderBinding(
+            provider=model.provider_config.provider,
+            model=model.model_identifier,
+            endpoint=settings.endpoint,
+            transport=settings.transport,
+            **({"dialect": dialect} if dialect is not None else {}),
+            thinking_mode="ENABLED" if model.thinking_enabled else "DISABLED",
+            provider_tool_schema_strict=model.provider_tool_schema_strict,
+            finalization_json_object=model.finalization_json_object,
+        )
+        return create_provider(
+            binding, api_key=self.credentials.api_key(),
+            trust_env=settings.trust_env, max_retries=settings.max_retries,
+        )
+
+
+def provider_credentials(application: LabBioApplication) -> ProviderCredentials:
+    """The credential holder of an application built by `build_application`."""
+    builder = application.configuration.native_provider_builder
+    if not isinstance(builder, LocalProviderBuilder):
+        raise ProviderConfigurationError("PROVIDER_CREDENTIALS_NOT_LOADED")
+    return builder.credentials
+
+
+def _load_provider(credentials: ProviderCredentials) -> None:
+    """The one late point that reads the provider key."""
+    credentials.load()
 
 
 def scheduler_policy(settings: LocalSettings):
@@ -616,10 +952,9 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
-    from .runtime.native_stage import environment_native_provider
-
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
+    credentials = ProviderCredentials(settings.provider)
     defaults = default_agent_profiles()
     # A separate catalog binding keeps the shared Coordinator's other stages
     # unchanged, including both capability and finalization model parameters.
@@ -645,8 +980,12 @@ def build_application(
         models=tuple(ModelProfile(
             profile_key=key, version=profile.version,
             model_identifier=settings.provider.model_identifier,
-            provider_config=ProviderConfigRef(config_id="local-provider", provider="openai-compatible"),
-            transport=ProviderTransport.OPENAI_CHAT_COMPLETIONS,
+            provider_config=ProviderConfigRef(
+                config_id="local-provider", provider=settings.provider.api_format,
+            ),
+            # A legacy descriptor; only Chat Completions has a named value.
+            transport=(ProviderTransport.OPENAI_CHAT_COMPLETIONS
+                       if settings.provider.api_format == "openai" else ProviderTransport.AUTO),
             thinking_enabled=thinking,
             private_tool_reasoning_continuity=thinking,
             provider_tool_schema_strict=settings.provider.provider_tool_schema_strict,
@@ -725,7 +1064,7 @@ def build_application(
             prompt.render(dict(assembly.capability_prompt_values))
         prompt.render(dict(assembly.finalization_prompt_values))
     if load_provider:
-        _load_provider(settings.provider)
+        _load_provider(credentials)
     run_root = run_root.expanduser().resolve()
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -762,9 +1101,7 @@ def build_application(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
             runtime_backend=RuntimeBackend(settings.runtime_backend),
-            native_provider_builder=lambda model: environment_native_provider(
-                model, trust_env=settings.provider.trust_env,
-            ),
+            native_provider_builder=LocalProviderBuilder(settings.provider, credentials),
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,

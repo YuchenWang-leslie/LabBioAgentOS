@@ -11,13 +11,49 @@ project_id = "local-project"
 lab_id = "local-lab"
 
 [provider]
+# One API format per deployment: openai (Chat Completions, the default) |
+# openai-responses | anthropic | gemini | gemini-interactions. A per-format table
+# below is accepted only with its format; anthropic, gemini and
+# gemini-interactions require theirs.
+api_format = "openai"
+# Where model traffic goes, written up to the API path (the adapter adds
+# /chat/completions, /responses, /messages, /models/... or /interactions):
+#   openai, openai-responses        https://api.openai.com/v1
+#   anthropic                       https://api.anthropic.com/v1
+#   gemini, gemini-interactions     https://generativelanguage.googleapis.com/v1beta
+# Remote endpoints must use https; plain http is accepted only for localhost,
+# 127.0.0.1 and ::1. RUNTIME.json records the scheme, host and port.
+endpoint = "https://provider.example/v1"
+# The env file holds only the key; it must be yours with mode 0600 (chmod 600).
 env_file = "~/.config/labbioagent/provider.env"
 api_key_env = "MIMO_API_KEY"
-base_url_env = "MIMO_BASE_URL"
 model_identifier = "mimo-v2.5-pro"
 thinking_enabled = false                 # Shared model for the other stages.
 interpretation_thinking_enabled = true   # Separate InterpretationAgent only.
 max_output_tokens = 16384
+# max_retries = 2  # Rate limits, overloads and connection failures (0-10).
+# Official OpenAI and Claude reject our schemas in strict mode, and Gemini
+# rejects full stage schemas as too complex: with these providers keep
+# provider_tool_schema_strict = false and set finalization_json_object = true.
+
+# [provider.openai]                      # Official OpenAI Chat Completions:
+# thinking_parameter = "reasoning-effort"
+# reasoning_effort_enabled = "high"
+# reasoning_effort_disabled = "none"
+# output_limit_parameter = "max_completion_tokens"
+# stream_include_usage = true
+#
+# [provider.openai-responses]            # A reasoning model needs both efforts;
+# reasoning_effort_enabled = "high"      # without them its reasoning cannot be
+# reasoning_effort_disabled = "low"      # replayed between tool calls.
+#
+# [provider.anthropic]
+# thinking_off = "disabled"              # disabled | between-tools | omit (omit needs effort_disabled)
+# effort_enabled = "high"
+#
+# [provider.gemini]                      # [provider.gemini-interactions] takes the same keys.
+# thinking_level_enabled = "high"
+# thinking_level_disabled = "low"
 
 [execution]
 image_key = "scientific-python"

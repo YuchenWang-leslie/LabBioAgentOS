@@ -6,12 +6,15 @@ from .contracts import (
     AgentMode,
     AgentProfile,
     AgentSpec,
+    AnthropicMessagesDialect,
     BudgetDelta,
     BudgetLimits,
     BudgetUsage,
     DelegationRequest,
     DelegationResult,
     FinishReason,
+    GeminiGenerateContentDialect,
+    GeminiInteractionsDialect,
     InterruptReason,
     InterruptSignal,
     KernelEvent,
@@ -22,7 +25,10 @@ from .contracts import (
     ModelProvider,
     ModelRequest,
     ModelTurn,
+    OpenAIChatDialect,
+    OpenAIResponsesDialect,
     ProviderBinding,
+    ProviderRetry,
     ProviderTurnObservation,
     PublicMessage,
     SpecialistSummary,
@@ -40,6 +46,7 @@ from .contracts import (
     ToolResult,
     ToolSpec,
 )
+from .anthropic_messages import AnthropicMessagesProvider
 from .control import BudgetLedger, InterruptToken
 from .collaboration import AgentRegistry, CollaborationRuntime, TaskBoard
 from .errors import (
@@ -62,8 +69,12 @@ from .errors import (
     ToolResultProjectionError,
 )
 from .fake import FakeProvider
+from .gemini_content import GeminiGenerateContentProvider
+from .gemini_interactions import GeminiInteractionsProvider
 from .loop import AgentLoop
 from .openai_chat import HttpxChatCompletionTransport, OpenAICompatibleChatProvider
+from .openai_responses import OpenAIResponsesProvider
+from .providers import create_provider
 from .tooling import (
     DispatchOutcome,
     ModelResultProjector,
@@ -88,6 +99,8 @@ __all__ = [
     "AgentProfile",
     "AgentRegistry",
     "AgentSpec",
+    "AnthropicMessagesDialect",
+    "AnthropicMessagesProvider",
     "BudgetDelta",
     "BudgetExceededError",
     "BudgetLedger",
@@ -101,6 +114,10 @@ __all__ = [
     "FinalizationProtocolError",
     "FinalizationRejectedError",
     "FinishReason",
+    "GeminiGenerateContentDialect",
+    "GeminiGenerateContentProvider",
+    "GeminiInteractionsDialect",
+    "GeminiInteractionsProvider",
     "InterruptReason",
     "InterruptSignal",
     "InterruptToken",
@@ -116,9 +133,13 @@ __all__ = [
     "ModelProvider",
     "ModelRequest",
     "ModelTurn",
+    "OpenAIChatDialect",
+    "OpenAIResponsesDialect",
     "NoObservableProgressError",
     "OpenAICompatibleChatProvider",
+    "OpenAIResponsesProvider",
     "ProviderBinding",
+    "ProviderRetry",
     "ProviderBindingMismatchError",
     "ProviderProtocolError",
     "ProviderTransportError",
@@ -152,6 +173,7 @@ __all__ = [
     "ProjectedModelResult",
     "HttpxChatCompletionTransport",
     "CollaborationRuntime",
+    "create_provider",
     "current_tool_execution_context",
     "inline_schema_references",
     "model_json_schema",

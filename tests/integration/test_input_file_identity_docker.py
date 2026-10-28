@@ -68,7 +68,7 @@ def local_identity_application(tmp_path):
         ),
         provider=LocalProviderSettings(
             env_file=tmp_path / "unused.env", api_key_env="IDENTITY_UNUSED_KEY",
-            base_url_env="IDENTITY_UNUSED_URL", model_identifier="unused-test-model",
+            endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
             image_key="identity-python", image_reference=IMAGE,

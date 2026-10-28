@@ -21,6 +21,7 @@ from labbioagentos.kernel import (
     ToolCall,
     ToolSpec,
 )
+from labbioagentos.kernel.http_stream import HttpStreamResult
 
 
 class RecordingTransport:
@@ -28,7 +29,7 @@ class RecordingTransport:
         self.responses = iter(responses)
         self.requests = []
 
-    async def post_json(self, *, url, headers, payload, timeout_seconds):
+    async def post_json(self, *, url, headers, payload, timeout_seconds, max_response_bytes):
         self.requests.append(
             {
                 "url": url,
@@ -40,7 +41,19 @@ class RecordingTransport:
         response = next(self.responses)
         if isinstance(response, Exception):
             raise response
-        return deepcopy(response)
+        return HttpStreamResult(body=deepcopy(response))
+
+
+def _on_the_wire(response):
+    """An unread copy of a pre-read test response, as the network delivers it."""
+
+    if not response.is_stream_consumed:
+        return response
+    return httpx.Response(
+        response.status_code,
+        headers=response.headers,
+        stream=httpx.ByteStream(response.content),
+    )
 
 
 @pytest.mark.asyncio
@@ -51,7 +64,7 @@ async def test_http_transport_provider_only_proxy_policy(monkeypatch):
     def client(**kwargs):
         options.append(kwargs["trust_env"])
         return real_client(transport=httpx.MockTransport(
-            lambda _request: httpx.Response(200, json={"ok": True})
+            lambda _request: _on_the_wire(httpx.Response(200, json={"ok": True}))
         ), **kwargs)
 
     monkeypatch.setattr("labbioagentos.kernel.openai_chat.httpx.AsyncClient", client)
@@ -60,7 +73,7 @@ async def test_http_transport_provider_only_proxy_policy(monkeypatch):
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture"}, timeout_seconds=1,
         )
-        assert response == {"ok": True}
+        assert response.body == {"ok": True}
     assert options == [False, True]
 
 
@@ -79,15 +92,16 @@ async def test_http_transport_reports_only_safe_failure_class(
     async def handler(_request):
         if isinstance(response_or_error, Exception):
             raise response_or_error
-        return response_or_error
+        return _on_the_wire(response_or_error)
 
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
         lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs),
     )
 
+    # Classification only; retry timing is covered by test_http_stream.py.
     with pytest.raises(ProviderTransportError) as caught:
-        await HttpxChatCompletionTransport().post_json(
+        await HttpxChatCompletionTransport(max_retries=0).post_json(
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture"}, timeout_seconds=1,
         )
@@ -109,7 +123,9 @@ async def test_http_transport_reassembles_streamed_tool_call_and_usage(monkeypat
 
     def handler(request):
         assert request.read() == b'{"model":"fixture","stream":true}'
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+        return _on_the_wire(httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=body,
+        ))
 
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
@@ -120,7 +136,7 @@ async def test_http_transport_reassembles_streamed_tool_call_and_usage(monkeypat
         headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
     )
 
-    assert response == {
+    assert response.body == {
         "id": "request-1",
         "choices": [{"finish_reason": "tool_calls", "message": {
             "role": "assistant", "content": None,
@@ -138,17 +154,20 @@ async def test_http_transport_rejects_truncated_stream(monkeypatch):
     real_client = httpx.AsyncClient
     monkeypatch.setattr(
         "labbioagentos.kernel.openai_chat.httpx.AsyncClient",
-        lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _request: httpx.Response(
-            200, headers={"content-type": "text/event-stream"},
-            text='data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+        lambda **kwargs: real_client(transport=httpx.MockTransport(lambda _request: _on_the_wire(
+            httpx.Response(
+                200, headers={"content-type": "text/event-stream"},
+                text='data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}\n\n',
+            )
         )), **kwargs),
     )
 
-    with pytest.raises(ProviderProtocolError):
+    with pytest.raises(ProviderTransportError) as caught:
         await HttpxChatCompletionTransport().post_json(
             url="https://provider.invalid/v1/chat/completions",
             headers={}, payload={"model": "fixture", "stream": True}, timeout_seconds=1,
         )
+    assert caught.value.validation_type == "STREAM_INCOMPLETE"
 
 
 @pytest.mark.asyncio
@@ -443,12 +462,12 @@ def test_discarded_batch_removes_only_its_exact_private_continuity():
     assert size_after == len(json.dumps(
         payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
     ).encode("utf-8"))
-    assert len(provider._private_reasoning) == 1
+    assert len(provider._private_reasoning._entries) == 1
     provider.discard_tool_batch(
         initial.kernel_run_id, initial.invocation_id, batches[1],
         retained_messages=request.messages,
     )
-    assert len(provider._private_reasoning) == 1
+    assert len(provider._private_reasoning._entries) == 1
 
 
 @pytest.mark.asyncio
@@ -570,3 +589,24 @@ async def test_transport_failure_is_bounded_and_never_falls_back():
         await provider.generate(request)
     assert len(transport.requests) == 1
     assert "PRIVATE_NETWORK_SENTINEL" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_request_id_outside_the_identifier_form_is_unknown():
+    response = {
+        "id": "-request 1",
+        "choices": [{"finish_reason": "stop", "message": {"content": "complete"}}],
+    }
+    binding = _binding()
+    provider = OpenAICompatibleChatProvider(
+        binding=binding,
+        api_key="secret-token",
+        transport=RecordingTransport((response,)),
+    )
+
+    turn = await provider.generate(
+        _request(binding, (PublicMessage(role="USER", content="Inspect."),)),
+    )
+
+    assert turn.content == "complete"
+    assert turn.provider_request_id is None

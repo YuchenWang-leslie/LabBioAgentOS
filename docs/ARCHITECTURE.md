@@ -63,6 +63,27 @@ scientific specialist itself.
 Private provider reasoning, where supported, is invocation-local transport
 state. It does not enter trace, Memory, Artifact evidence, or reports.
 
+Model providers sit behind one `ModelProvider` port. There is one adapter per
+API format:
+- OpenAI Chat Completions, in a vendor or official dialect;
+- the OpenAI Responses API;
+- the Anthropic Messages API;
+- the Gemini `generateContent` API;
+- the Gemini Interactions API.
+
+All adapters share one HTTP transport. It follows no redirects, caps decoded
+response bytes, accepts only gzip, parses strict JSON, and applies a bounded
+retry that is recorded in the run trace. Every format is used statelessly. An
+assistant turn returns to the provider exactly as it was received, from a
+memory-only store keyed by kernel run, invocation and public message, so
+reasoning signatures and encrypted reasoning stay valid. The store is cleared
+with the invocation.
+
+Local composition builds the configured adapter from trusted settings
+(`create_provider`). The API key is held in memory and is never placed in the
+process environment. The runtime identity records the endpoint origin, a
+digest of the full endpoint, and a digest of every provider module.
+
 ### Governed capability plane
 
 Trusted host composition binds Principal, Workspace, project, run, stage,

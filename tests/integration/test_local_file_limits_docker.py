@@ -84,7 +84,7 @@ def local_docker(tmp_path, request):
         ),
         provider=LocalProviderSettings(
             env_file=tmp_path / "not-read.env", api_key_env="FILE_LIMIT_UNUSED_KEY",
-            base_url_env="FILE_LIMIT_UNUSED_URL", model_identifier="unused-test-model",
+            endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
             image_key="file-limit-python", image_reference=image,

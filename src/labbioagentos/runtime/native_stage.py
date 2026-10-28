@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from collections.abc import Callable, Mapping
 from hashlib import sha256
 from time import monotonic
@@ -26,14 +25,11 @@ from labbioagentos.kernel import (
     BudgetLimits,
     CollaborationRuntime,
     FinalizationRejectedError,
-    HttpxChatCompletionTransport,
     KernelContractError,
     KernelIdentity,
     KernelEventKind,
     ModelProvider,
     ModelResultProjector,
-    OpenAICompatibleChatProvider,
-    ProviderBinding,
     PublicMessage,
     TeamSpec,
 )
@@ -84,39 +80,17 @@ from .tooling import RuntimeCapabilityContext, RuntimeCapabilityServices
 NativeProviderBuilder = Callable[[ModelProfile], ModelProvider]
 
 
-def environment_native_provider(model: ModelProfile, *, trust_env: bool = True) -> ModelProvider:
-    """Build the one supported native provider from externally loaded secrets."""
-
-    endpoint = os.environ.get("OPENAI_API_BASE")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not endpoint or not api_key:
-        raise RuntimeProfileConfigurationError(
-            "Native provider environment is not configured"
-        )
-    return OpenAICompatibleChatProvider(
-        binding=ProviderBinding(
-            provider=model.provider_config.provider,
-            model=model.model_identifier,
-            endpoint=endpoint,
-            transport="OPENAI_COMPATIBLE_CHAT",
-            thinking_mode="ENABLED" if model.thinking_enabled else "DISABLED",
-            provider_tool_schema_strict=model.provider_tool_schema_strict,
-            finalization_json_object=model.finalization_json_object,
-        ),
-        api_key=api_key,
-        transport=HttpxChatCompletionTransport(trust_env=trust_env),
-    )
-
-
 class NativeRuntimeFactory:
     """Resolve external profiles into native providers and full instructions."""
 
     def __init__(
         self,
         catalog: RuntimeProfileCatalog,
-        provider_builder: NativeProviderBuilder = environment_native_provider,
+        provider_builder: NativeProviderBuilder | None = None,
     ):
         self.catalog = catalog
+        # Provider credentials are supplied by the composer, never read from
+        # the process environment (DECIDED-C14-6).
         self.provider_builder = provider_builder
 
     def resolve(self, profile_key: str, prompt_values: Mapping[str, str] | None):
@@ -131,6 +105,8 @@ class NativeRuntimeFactory:
             raise RuntimeProfileConfigurationError(
                 f"Unknown native runtime profile {profile_key!r}"
             ) from exc
+        if self.provider_builder is None:
+            raise RuntimeProfileConfigurationError("Native provider is not configured")
         return profile, prompt, model, schema, self.provider_builder(model)
 
 
@@ -960,6 +936,8 @@ class NativeKernelStageInvoker:
                 trace_type = TraceEventType.PROVIDER_USAGE_ON_FAILURE
             elif event.kind is KernelEventKind.MODEL_REQUEST_PREPARED:
                 trace_type = TraceEventType.PROVIDER_REQUEST_PREPARED
+            elif event.kind is KernelEventKind.PROVIDER_RETRY_OBSERVED:
+                trace_type = TraceEventType.PROVIDER_RETRY_OBSERVED
             elif (
                 event.kind is KernelEventKind.TOOL_BATCH_VALIDATED
                 and event.status_code == "REJECTED"

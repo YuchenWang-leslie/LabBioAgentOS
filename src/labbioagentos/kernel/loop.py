@@ -181,6 +181,9 @@ class AgentLoop:
                         KernelDeadlineExceededError) as exc:
                     if provider_started:
                         self._record_failed_provider_usage(started, turn_index, exc)
+                    self._emit_retries(
+                        getattr(exc, "transport_retries", ()), turn_index
+                    )
                     if (
                         self.invocation.mode is AgentMode.CAPABILITY
                         and self.tool_results
@@ -231,12 +234,14 @@ class AgentLoop:
                     raise ProviderTransportError() from None
                 finished = self.clock()
                 elapsed_ms = max(0, int(round((finished - started) * 1000)))
+                self._emit_retries(turn.transport_retries, turn_index)
                 observation = self._observe(turn, turn_index, elapsed_ms)
                 self.observations.append(observation)
                 self.argument_observations.append(())
                 self._emit(
                     KernelEventKind.MODEL_TURN_OBSERVED,
                     status_code=turn.finish_reason.value,
+                    reason_code=turn.refusal_category,
                     numeric_facts={
                         "turn_index": turn_index,
                         "tool_call_count": len(turn.tool_calls),
@@ -653,6 +658,30 @@ class AgentLoop:
             json.dumps(payload, ensure_ascii=False, allow_nan=False), strict=True
         )
 
+    def _emit_retries(self, retries, turn_index: int) -> None:
+        """Record each provider attempt discarded before this turn's outcome."""
+
+        for attempt, retry in enumerate(retries, start=1):
+            # A discarded attempt has no final bill. Its numeric snapshot is
+            # audit evidence, not a replacement for unknown consumed tokens.
+            self.budget_ledger.record_observed_usage(tokens=None, wall_time_ms=0)
+            snapshot = retry.usage_snapshot
+            self._emit(
+                KernelEventKind.PROVIDER_RETRY_OBSERVED,
+                status_code="RETRIED",
+                reason_code=retry.category,
+                numeric_facts={
+                    "turn_index": turn_index,
+                    "attempt": attempt,
+                    "wait_ms": retry.wait_ms,
+                    **({
+                        "last_validated_input_tokens": snapshot.input_tokens,
+                        "last_validated_output_tokens": snapshot.output_tokens,
+                        "last_validated_total_tokens": snapshot.total_tokens,
+                    } if snapshot is not None else {}),
+                },
+            )
+
     def _observe(self, turn, turn_index: int, elapsed_ms: int):
         if turn.tool_calls:
             progress_kind = "TOOL_CALL"
@@ -842,6 +871,10 @@ class AgentLoop:
         self._finalization_feedback = "Validation type: incomplete_response."
         if turn.tool_calls:
             raise FinalizationProtocolError()
+        if turn.content is None and turn.finish_reason is FinishReason.CONTENT_FILTER:
+            raise IncompleteProviderResponseError(
+                finish_reason=turn.finish_reason.value
+            )
         if turn.content is None:
             error = FinalizationRejectedError(validation_type="missing")
         else:
@@ -952,6 +985,7 @@ class AgentLoop:
             role="TOOL",
             content=content,
             tool_call_id=result.call_id,
+            tool_error=result.status == "FAILED",
         )
 
     def _result(self, *, output, termination: str) -> AgentLoopResult:

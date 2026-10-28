@@ -14,6 +14,8 @@ from pydantic import (
     JsonValue,
     StrictStr,
     StringConstraints,
+    TypeAdapter,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -36,6 +38,23 @@ PublicContent = Annotated[
     StrictStr,
     StringConstraints(min_length=1, max_length=64_000),
 ]
+_IDENTIFIER = TypeAdapter(Identifier)
+
+
+def provider_reference(value: str | None) -> str | None:
+    """Return a provider's request id when it has the Identifier form, else None.
+
+    The id only correlates a turn with the provider's own records, so an id in
+    another form is recorded as unknown instead of failing the turn.
+    """
+
+    if value is None:
+        return None
+    try:
+        checked = _IDENTIFIER.validate_python(value)
+    except ValidationError:
+        return None
+    return checked if checked == value else None
 
 
 class KernelModel(BaseModel):
@@ -96,6 +115,7 @@ class KernelEventKind(StrEnum):
     MODEL_USAGE_UNREPORTED = "MODEL_USAGE_UNREPORTED"
     MODEL_USAGE_ON_FAILURE = "MODEL_USAGE_ON_FAILURE"
     MODEL_REQUEST_PREPARED = "MODEL_REQUEST_PREPARED"
+    PROVIDER_RETRY_OBSERVED = "PROVIDER_RETRY_OBSERVED"
     TOOL_BATCH_VALIDATED = "TOOL_BATCH_VALIDATED"
     TOOL_CALL_STARTED = "TOOL_CALL_STARTED"
     TOOL_CALL_FINISHED = "TOOL_CALL_FINISHED"
@@ -204,16 +224,130 @@ class ToolResult(KernelModel):
         return self
 
 
+ProviderTransport = Literal[
+    "OPENAI_COMPATIBLE_CHAT",
+    "OPENAI_RESPONSES",
+    "ANTHROPIC_MESSAGES",
+    "GEMINI_GENERATE_CONTENT",
+    "GEMINI_INTERACTIONS",
+]
+# Model support differs; an unsupported value fails at the provider.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+GeminiThinkingLevel = Literal["minimal", "low", "medium", "high"]
+AnthropicEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
+class OpenAIChatDialect(KernelModel):
+    """Chat Completions request form; the defaults are the vendor dialect.
+
+    A deployment runs with thinking both on and off, so the reasoning-effort
+    form names one value for each state rather than omitting the parameter,
+    which would leave a reasoning model at its own default effort.
+    """
+
+    kind: Literal["OPENAI_COMPATIBLE_CHAT"] = "OPENAI_COMPATIBLE_CHAT"
+    thinking_parameter: Literal["THINKING_OBJECT", "REASONING_EFFORT", "OMIT"] = (
+        "THINKING_OBJECT"
+    )
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
+    output_limit_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
+    stream_include_usage: bool = False
+
+    @model_validator(mode="after")
+    def efforts_match_parameter(self) -> "OpenAIChatDialect":
+        expected = self.thinking_parameter == "REASONING_EFFORT"
+        if any(
+            (value is not None) != expected
+            for value in (self.reasoning_effort_enabled, self.reasoning_effort_disabled)
+        ):
+            raise ValueError(
+                "Both reasoning efforts are required exactly for REASONING_EFFORT"
+            )
+        return self
+
+
+class OpenAIResponsesDialect(KernelModel):
+    """Responses API request form; efforts are given for both thinking states or neither."""
+
+    kind: Literal["OPENAI_RESPONSES"] = "OPENAI_RESPONSES"
+    reasoning_effort_enabled: ReasoningEffort | None = None
+    reasoning_effort_disabled: ReasoningEffort | None = None
+
+    @model_validator(mode="after")
+    def efforts_are_paired(self) -> "OpenAIResponsesDialect":
+        if (self.reasoning_effort_enabled is None) != (
+            self.reasoning_effort_disabled is None
+        ):
+            raise ValueError("Reasoning efforts must be given for both thinking states")
+        return self
+
+
+class AnthropicMessagesDialect(KernelModel):
+    """Messages API request form; thinking-off has no safe default.
+
+    Models differ in how thinking is turned off: ``{"type": "disabled"}``,
+    ``{"type": "between_tools"}``, or not at all. With OMIT the model keeps
+    thinking, so the effort for the thinking-off state must be stated.
+    """
+
+    kind: Literal["ANTHROPIC_MESSAGES"] = "ANTHROPIC_MESSAGES"
+    anthropic_version: Literal["2023-06-01"] = "2023-06-01"
+    effort_enabled: AnthropicEffort | None = None
+    effort_disabled: AnthropicEffort | None = None
+    thinking_off: Literal["DISABLED", "BETWEEN_TOOLS", "OMIT"]
+
+    @model_validator(mode="after")
+    def omitted_thinking_off_states_its_effort(self) -> "AnthropicMessagesDialect":
+        if self.thinking_off == "OMIT" and self.effort_disabled is None:
+            raise ValueError("thinking_off OMIT requires effort_disabled")
+        return self
+
+
+class GeminiGenerateContentDialect(KernelModel):
+    """generateContent request form; both thinking levels are explicit."""
+
+    kind: Literal["GEMINI_GENERATE_CONTENT"] = "GEMINI_GENERATE_CONTENT"
+    thinking_level_enabled: GeminiThinkingLevel
+    thinking_level_disabled: GeminiThinkingLevel
+
+
+class GeminiInteractionsDialect(KernelModel):
+    """Interactions API request form; both thinking levels are explicit."""
+
+    kind: Literal["GEMINI_INTERACTIONS"] = "GEMINI_INTERACTIONS"
+    thinking_level_enabled: GeminiThinkingLevel
+    thinking_level_disabled: GeminiThinkingLevel
+
+
+ProviderDialect = Annotated[
+    OpenAIChatDialect
+    | OpenAIResponsesDialect
+    | AnthropicMessagesDialect
+    | GeminiGenerateContentDialect
+    | GeminiInteractionsDialect,
+    Field(discriminator="kind"),
+]
+
+
 class ProviderBinding(KernelModel):
     """Exact immutable transport binding for one provider instance."""
 
     provider: Identifier
     model: Identifier
     endpoint: StrictStr = Field(min_length=1, max_length=2_048)
-    transport: Literal["OPENAI_COMPATIBLE_CHAT"]
+    transport: ProviderTransport
+    dialect: ProviderDialect
     thinking_mode: Literal["ENABLED", "DISABLED"]
     provider_tool_schema_strict: bool = True
     finalization_json_object: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_dialect_follows_transport(cls, data):
+        if isinstance(data, dict) and data.get("dialect") is None:
+            data = {**data, "dialect": {"kind": data.get("transport")}}
+        return data
 
     @field_validator("endpoint")
     @classmethod
@@ -221,6 +355,12 @@ class ProviderBinding(KernelModel):
         if value != value.strip() or not value.startswith(("https://", "http://")):
             raise ValueError("Provider endpoint must be an explicit HTTP(S) URL")
         return value
+
+    @model_validator(mode="after")
+    def dialect_matches_transport(self) -> "ProviderBinding":
+        if self.dialect.kind != self.transport:
+            raise ValueError("Provider dialect must match the transport")
+        return self
 
 
 class PublicMessage(KernelModel):
@@ -230,9 +370,13 @@ class PublicMessage(KernelModel):
     content: PublicContent | None = None
     tool_calls: tuple[ToolCall, ...] = Field(default=(), max_length=64)
     tool_call_id: Identifier | None = None
+    # A failed tool result, fixed when the message is created.
+    tool_error: bool = False
 
     @model_validator(mode="after")
     def shape_matches_role(self) -> "PublicMessage":
+        if self.tool_error and self.role != "TOOL":
+            raise ValueError("Only a tool message can mark a tool error")
         if self.role == "TOOL":
             if self.tool_call_id is None or self.content is None or self.tool_calls:
                 raise ValueError(
@@ -288,6 +432,14 @@ class ModelRequest(KernelModel):
         return self
 
 
+class ProviderRetry(KernelModel):
+    """One discarded provider attempt: its bounded failure category and wait."""
+
+    category: Identifier
+    wait_ms: int = Field(ge=0)
+    usage_snapshot: TokenUsage | None = None
+
+
 class ModelTurn(KernelModel):
     """Normalized public result of one provider turn."""
 
@@ -297,6 +449,18 @@ class ModelTurn(KernelModel):
     usage: TokenUsage = Field(default_factory=TokenUsage)
     provider_request_id: Identifier | None = None
     private_reasoning_present: bool = False
+    transport_retries: tuple[ProviderRetry, ...] = Field(default=(), max_length=10)
+    # The provider's declared reason for a refusal, such as "bio"; never its text.
+    refusal_category: Identifier | None = None
+
+    @model_validator(mode="after")
+    def refusal_category_needs_content_filter(self) -> "ModelTurn":
+        if (
+            self.refusal_category is not None
+            and self.finish_reason is not FinishReason.CONTENT_FILTER
+        ):
+            raise ValueError("A refusal category requires the CONTENT_FILTER finish")
+        return self
 
     @model_validator(mode="after")
     def tool_call_ids_are_unique(self) -> "ModelTurn":

@@ -148,9 +148,10 @@ project_id = "project-a"
 lab_id = "lab-x"
 
 [provider]
-env_file = "~/.config/labbioagent/provider.env"
+api_format = "openai"           # or openai-responses, anthropic, gemini, gemini-interactions
+endpoint = "https://provider.example/v1"   # https unless the server is on localhost
+env_file = "~/.config/labbioagent/provider.env"   # holds only the key; chmod 600
 api_key_env = "PROVIDER_API_KEY"
-base_url_env = "PROVIDER_BASE_URL"
 model_identifier = "<model>"
 # trust_env = false   # Provider-only direct route; also ignores host certificate environment.
 
@@ -214,6 +215,38 @@ cache_dir = "/shared/lab/labbio/pip-cache"
 per-execution scratch directory and is bounded only by the per-file size
 limit.
 
+### Provider settings and credentials
+
+`[provider] api_format` selects one provider API format.
+[LOCAL_TASK_ENTRYPOINT.md](LOCAL_TASK_ENTRYPOINT.md) lists the formats,
+endpoints, per-format tables and configuration error codes; they are the same
+on a cluster.
+
+- **Endpoint.** The endpoint must use https; plain http is accepted only on
+  the login node's loopback.
+- **Credentials file.**
+  - The env file holds only the key. It must be a regular file owned by the
+    operator, with mode 0600. Configuration load checks this when the file
+    exists, and the file is checked again before the key is read.
+  - Keep the file in the home directory, outside input roots, the result
+    root, scratch and the SIF store. Jobs start Apptainer with
+    `--containall`, so the home directory is not mounted, while a run's
+    inputs, workspace and scratch are. A job runs as the same user, so mode
+    0600 would not stop it from reading a mounted file.
+  - Only commands that call a model read the key. It stays in the control
+    plane's memory and never enters the process environment.
+
+To migrate a site configuration written before C14:
+
+1. Move the endpoint URL from the env file into `[provider] endpoint`, and
+   delete `base_url_env`. An unmigrated configuration fails with
+   `PROVIDER_ENDPOINT_MOVED`.
+2. Leave only the key in the env file, and run `chmod 600` on it.
+3. Make sure the endpoint uses https.
+
+Do this when the upgraded release is installed, not before: earlier releases
+reject the new `endpoint` setting.
+
 ### Environment builds
 
 When the runtime model asks for an environment, the build runs in three parts:
@@ -264,8 +297,9 @@ bundled; other schedulers or site variants use a site template file.
   and again after the control plane collects results.
 
 LabBio never passes provider keys to the scheduler command, the job script, or
-the container. Keys exported in shell startup files can still appear in the
-job shell, but not inside the container.
+the container. Since C14 the key is not in the control plane's process
+environment either, so no child process can inherit it. Keys exported in shell
+startup files can still appear in the job shell, but not inside the container.
 
 ## 7. Refused cases
 
@@ -292,7 +326,8 @@ LabBio refuses to start or to execute when:
 
 - **Restarts and upgrades.** Every LabBio upgrade changes the runtime revision,
   so runs started before an upgrade cannot continue afterwards. Drain or finish
-  runs first.
+  runs first. The C14 upgrade also changes the `[provider]` table; migrate the
+  configuration as described in §5 in the same change.
 - **Crash during a job.** Submitted jobs, including environment build and
   download jobs, are recorded in a job ledger under the run root. After a
   crash, reconciliation cancels identifiable queued or running jobs, and

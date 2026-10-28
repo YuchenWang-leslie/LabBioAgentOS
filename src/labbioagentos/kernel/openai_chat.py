@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from time import monotonic
 from typing import Any, Protocol
 
-import httpx
+# Not used here directly: tests reach the shared client class through
+# ``labbioagentos.kernel.openai_chat.httpx.AsyncClient``.
+import httpx  # noqa: F401
 from pydantic import ValidationError
 
 from .contracts import (
@@ -16,29 +18,31 @@ from .contracts import (
     ModelRequest,
     ModelTurn,
     ProviderBinding,
+    ProviderRetry,
     PublicMessage,
     TokenUsage,
     ToolCall,
+    provider_reference,
 )
+from .continuation import PrivateContinuationStore
 from .errors import (
+    KernelDeadlineExceededError,
     ProviderBindingMismatchError,
     ProviderProtocolError,
     ProviderTransportError,
+    unsupported_type_error,
 )
-from .tooling import parse_strict_json_object
-
-
-def _reject_duplicate_keys(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("Duplicate JSON key")
-        value[key] = item
-    return value
-
-
-def _reject_json_constant(_value):
-    raise ValueError("Non-finite JSON constant")
+from .http_stream import (
+    DEFAULT_MAX_RETRIES,
+    MAX_RESPONSE_BYTES,
+    HttpStreamResult,
+    HttpStreamTransport,
+    RetryPolicy,
+    SseEvent,
+    response_byte_cap,
+    strict_json_loads,
+)
+from .schema_projection import schema_instruction
 
 
 def _failure_usage(raw) -> TokenUsage | None:
@@ -60,174 +64,150 @@ class ChatCompletionTransport(Protocol):
         headers: Mapping[str, str],
         payload: Mapping[str, Any],
         timeout_seconds: float,
-    ) -> Mapping[str, Any]: ...
+        max_response_bytes: int,
+    ) -> HttpStreamResult: ...
 
 
 class HttpxChatCompletionTransport:
-    """One HTTP transport with explicit environment policy and no fallback."""
+    """Chat Completions over the shared provider transport, with no fallback."""
 
-    def __init__(self, *, trust_env: bool = True):
+    def __init__(self, *, trust_env: bool = True, max_retries: int = DEFAULT_MAX_RETRIES):
         self.trust_env = trust_env
+        self._http = HttpStreamTransport(
+            trust_env=trust_env, retry=RetryPolicy(max_retries=max_retries)
+        )
 
-    async def post_json(self, *, url, headers, payload, timeout_seconds):
-        accounting = {}
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(timeout_seconds),
-                follow_redirects=False,
-                trust_env=self.trust_env,
-            ) as client:
-                async with client.stream(
-                    "POST", url, headers=dict(headers), json=dict(payload)
-                ) as response:
-                    response.raise_for_status()
-                    if payload.get("stream") is True:
-                        return await self._stream_response(response, accounting)
-                    body = await response.aread()
-            value = json.loads(
-                body.decode("utf-8"),
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            )
-            if not isinstance(value, dict):
-                raise ValueError("Provider response must be an object")
-            return value
-        except httpx.HTTPStatusError as exc:
-            raise ProviderTransportError(
-                validation_type=f"HTTP_{exc.response.status_code}",
-                usage_snapshot=accounting.get("last_validated_usage"),
-            ) from None
-        except httpx.TimeoutException:
-            raise ProviderTransportError(
-                validation_type="TIMEOUT", usage_snapshot=accounting.get("last_validated_usage")) from None
-        except httpx.RemoteProtocolError:
-            raise ProviderTransportError(
-                validation_type="NETWORK_REMOTE_PROTOCOL",
-                usage_snapshot=accounting.get("last_validated_usage")) from None
-        except httpx.ReadError:
-            raise ProviderTransportError(
-                validation_type="NETWORK_READ",
-                usage_snapshot=accounting.get("last_validated_usage")) from None
-        except httpx.TransportError:
-            raise ProviderTransportError(
-                validation_type="NETWORK", usage_snapshot=accounting.get("last_validated_usage")) from None
-        except (UnicodeDecodeError, ValueError):
-            raise ProviderTransportError(
-                validation_type="INVALID_JSON", usage_snapshot=accounting.get("last_validated_usage")) from None
-        except (ProviderProtocolError, asyncio.CancelledError) as exc:
-            if getattr(exc, "usage", None) is None:
-                exc.usage_snapshot = accounting.get("last_validated_usage")
-            raise
-        except Exception:
-            raise ProviderTransportError(
-                validation_type="OTHER", usage_snapshot=accounting.get("last_validated_usage")) from None
+    async def post_json(
+        self, *, url, headers, payload, timeout_seconds,
+        max_response_bytes=MAX_RESPONSE_BYTES,
+    ) -> HttpStreamResult:
+        return await self._http.post(
+            url=url,
+            headers=headers,
+            payload=payload,
+            deadline_monotonic=monotonic() + timeout_seconds,
+            max_response_bytes=max_response_bytes,
+            decode_stream=(
+                _reassemble_chat_stream if payload.get("stream") is True else None
+            ),
+        )
 
-    @staticmethod
-    async def _stream_response(response: httpx.Response, accounting: dict) -> Mapping[str, Any]:
-        request_id = None
-        role = "assistant"
-        content = []
-        reasoning = []
-        tool_calls: dict[int, dict[str, Any]] = {}
-        finish_reason = None
-        usage = None
-        data_lines = []
-        done = False
-        async for line in response.aiter_lines():
-            if line.startswith("data:"):
-                data_lines.append(line[5:].lstrip(" "))
-                continue
-            if line or not data_lines:
-                continue
-            data = "\n".join(data_lines)
-            data_lines.clear()
-            if data == "[DONE]":
-                done = True
-                break
-            chunk = json.loads(
-                data, object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            )
-            if not isinstance(chunk, dict):
-                raise ValueError("Provider stream chunk must be an object")
-            chunk_id = chunk.get("id")
-            if chunk_id is not None:
-                if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
-                    # Conflicting identities cannot establish this request's usage.
-                    accounting.clear()
-                    raise ProviderProtocolError(validation_fields=("stream.id",))
-                request_id = chunk_id
-            if chunk.get("usage") is not None:
-                usage = chunk["usage"]
-                validated = _failure_usage(usage)
-                if validated is not None:
-                    accounting["last_validated_usage"] = validated
-            choices = chunk.get("choices")
-            if choices == []:
-                continue
-            if not isinstance(choices, list) or len(choices) != 1:
-                raise ProviderProtocolError(validation_fields=("stream.choices",))
-            choice = choices[0]
-            if not isinstance(choice, dict) or choice.get("index") != 0:
-                raise ProviderProtocolError(validation_fields=("stream.choices",))
-            delta = choice.get("delta")
-            if not isinstance(delta, dict):
-                raise ProviderProtocolError(validation_fields=("stream.delta",))
-            if delta.get("role") is not None:
-                role = delta["role"]
-            for key, target in (("content", content), ("reasoning_content", reasoning)):
-                fragment = delta.get(key)
+
+async def _reassemble_chat_stream(events: AsyncIterator[SseEvent]) -> Mapping[str, Any]:
+    accounting = {}
+    try:
+        return await _read_chat_stream(events, accounting)
+    except (Exception, asyncio.CancelledError) as exc:
+        if getattr(exc, "usage", None) is None:
+            exc.usage_snapshot = accounting.get("last_validated_usage")
+        raise
+
+
+async def _read_chat_stream(events: AsyncIterator[SseEvent], accounting: dict) -> Mapping[str, Any]:
+    request_id = None
+    role = "assistant"
+    content = []
+    reasoning = []
+    refusal = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    finish_reason = None
+    usage = None
+    done = False
+    async for event in events:
+        if event.data == "[DONE]":
+            done = True
+            break
+        chunk = strict_json_loads(event.data)
+        if not isinstance(chunk, dict):
+            raise ValueError("Provider stream chunk must be an object")
+        if chunk.get("error") is not None and "choices" not in chunk:
+            # Some services report a failure inside the stream. Chat documents
+            # no error codes for it, so none is retried (DECIDED-C14-3).
+            raise ProviderTransportError(validation_type="STREAM_ERROR")
+        chunk_id = chunk.get("id")
+        if chunk_id is not None:
+            if not isinstance(chunk_id, str) or (request_id and chunk_id != request_id):
+                accounting.clear()
+                raise ProviderProtocolError(validation_fields=("stream.id",))
+            request_id = chunk_id
+        if chunk.get("usage") is not None:
+            usage = chunk["usage"]
+            validated = _failure_usage(usage)
+            if validated is not None:
+                accounting["last_validated_usage"] = validated
+        choices = chunk.get("choices")
+        if choices == []:
+            continue
+        if not isinstance(choices, list) or len(choices) != 1:
+            raise ProviderProtocolError(validation_fields=("stream.choices",))
+        choice = choices[0]
+        if not isinstance(choice, dict) or choice.get("index") != 0:
+            raise ProviderProtocolError(validation_fields=("stream.choices",))
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            raise ProviderProtocolError(validation_fields=("stream.delta",))
+        if delta.get("role") is not None:
+            role = delta["role"]
+        for key, target in (
+            ("content", content), ("reasoning_content", reasoning), ("refusal", refusal),
+        ):
+            fragment = delta.get(key)
+            if fragment is not None:
+                if not isinstance(fragment, str):
+                    raise ProviderProtocolError(validation_fields=(f"stream.delta.{key}",))
+                target.append(fragment)
+        for item in delta.get("tool_calls") or ():
+            if not isinstance(item, dict) or type(item.get("index")) is not int or item["index"] < 0:
+                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            call = tool_calls.setdefault(item["index"], {
+                "id": "", "type": "function", "function": {"name": "", "arguments": ""},
+            })
+            if item.get("type") is not None and item["type"] != call["type"]:
+                raise unsupported_type_error("stream.delta.tool_calls.type", item["type"])
+            if item.get("id") is not None:
+                if not isinstance(item["id"], str):
+                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+                call["id"] += item["id"]
+            function = item.get("function") or {}
+            if not isinstance(function, dict):
+                raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
+            for key in ("name", "arguments"):
+                fragment = function.get(key)
                 if fragment is not None:
                     if not isinstance(fragment, str):
-                        raise ProviderProtocolError(validation_fields=(f"stream.delta.{key}",))
-                    target.append(fragment)
-            for item in delta.get("tool_calls") or ():
-                if not isinstance(item, dict) or type(item.get("index")) is not int or item["index"] < 0:
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                call = tool_calls.setdefault(item["index"], {
-                    "id": "", "type": "function", "function": {"name": "", "arguments": ""},
-                })
-                if item.get("type") is not None and item["type"] != call["type"]:
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                if item.get("id") is not None:
-                    if not isinstance(item["id"], str):
                         raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                    call["id"] += item["id"]
-                function = item.get("function") or {}
-                if not isinstance(function, dict):
-                    raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                for key in ("name", "arguments"):
-                    fragment = function.get(key)
-                    if fragment is not None:
-                        if not isinstance(fragment, str):
-                            raise ProviderProtocolError(validation_fields=("stream.delta.tool_calls",))
-                        call["function"][key] += fragment
-            if choice.get("finish_reason") is not None:
-                finish_reason = choice["finish_reason"]
-        if not done or finish_reason is None or data_lines:
-            raise ProviderProtocolError(validation_fields=("stream.incomplete",))
-        try:
-            OpenAICompatibleChatProvider._usage(usage)
-        except (TypeError, ValueError, ValidationError) as exc:
-            issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
-            raise ProviderProtocolError(
-                validation_type=issues[0]["type"] if issues else type(exc).__name__,
-                validation_fields=("usage",),
-            ) from None
-        if sorted(tool_calls) != list(range(len(tool_calls))):
-            raise ProviderProtocolError(
-                validation_fields=("stream.delta.tool_calls",), usage=_failure_usage(usage),
-            )
-        return {
-            "id": request_id,
-            "choices": [{"finish_reason": finish_reason, "message": {
-                "role": role,
-                "content": "".join(content) if content else None,
-                "reasoning_content": "".join(reasoning) if reasoning else None,
-                "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
-            }}],
-            "usage": usage,
-        }
+                    call["function"][key] += fragment
+        if choice.get("finish_reason") is not None:
+            finish_reason = choice["finish_reason"]
+    if not done:
+        raise ProviderTransportError(validation_type="STREAM_INCOMPLETE")
+    if finish_reason is None:
+        raise ProviderProtocolError(validation_fields=("stream.finish_reason",))
+    try:
+        OpenAICompatibleChatProvider._usage(usage)
+    except (TypeError, ValueError, ValidationError) as exc:
+        issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
+        raise ProviderProtocolError(
+            validation_type=issues[0]["type"] if issues else type(exc).__name__,
+            validation_fields=("usage",),
+        ) from None
+    if sorted(tool_calls) != list(range(len(tool_calls))):
+        raise ProviderProtocolError(
+            validation_fields=("stream.delta.tool_calls",), usage=_failure_usage(usage),
+        )
+    message = {
+        "role": role,
+        "content": "".join(content) if content else None,
+        "reasoning_content": "".join(reasoning) if reasoning else None,
+        "tool_calls": [tool_calls[index] for index in sorted(tool_calls)],
+    }
+    if refusal:
+        message["refusal"] = "".join(refusal)
+    return {
+        "id": request_id,
+        "choices": [{"finish_reason": finish_reason, "message": message}],
+        "usage": usage,
+    }
 
 
 class OpenAICompatibleChatProvider:
@@ -247,7 +227,7 @@ class OpenAICompatibleChatProvider:
         self._binding = binding
         self._api_key = api_key
         self._transport = transport or HttpxChatCompletionTransport()
-        self._private_reasoning: dict[tuple, str] = {}
+        self._private_reasoning = PrivateContinuationStore()
 
     @property
     def binding(self) -> ProviderBinding:
@@ -261,7 +241,7 @@ class OpenAICompatibleChatProvider:
             raise ProviderTransportError()
         payload = self._payload(request)
         try:
-            response = await self._transport.post_json(
+            result = await self._transport.post_json(
                 url=self._url(),
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
@@ -270,29 +250,32 @@ class OpenAICompatibleChatProvider:
                 },
                 payload=payload,
                 timeout_seconds=timeout,
+                max_response_bytes=response_byte_cap(request.max_output_tokens),
             )
-        except (ProviderTransportError, ProviderProtocolError):
+        except (
+            KernelDeadlineExceededError,
+            ProviderTransportError,
+            ProviderProtocolError,
+        ):
             raise
         except Exception:
             raise ProviderTransportError(validation_type="ADAPTER") from None
-        return self._parse_response(request, response)
+        try:
+            return self._parse_response(request, result.body, result.retries)
+        except ProviderProtocolError as exc:
+            exc.transport_retries = result.retries
+            exc.usage = _failure_usage(result.body.get("usage"))
+            raise
 
     def clear_invocation(self, kernel_run_id, invocation_id) -> None:
-        prefix = (kernel_run_id, invocation_id)
-        for key in tuple(self._private_reasoning):
-            if key[:2] == prefix:
-                del self._private_reasoning[key]
+        self._private_reasoning.clear(kernel_run_id, invocation_id)
 
     def discard_tool_batch(
         self, kernel_run_id, invocation_id, calls, *, retained_messages=()
     ) -> None:
-        key = self._reasoning_key(kernel_run_id, invocation_id, calls)
-        retained = any(
-            self._reasoning_key(kernel_run_id, invocation_id, message.tool_calls) == key
-            for message in retained_messages if message.tool_calls
+        self._private_reasoning.discard_tool_batch(
+            kernel_run_id, invocation_id, calls, retained_messages=retained_messages,
         )
-        if key is not None and not retained:
-            self._private_reasoning.pop(key, None)
 
     def request_size_bytes(self, request: ModelRequest) -> int:
         """Count the actual wire payload without exposing private continuity."""
@@ -309,16 +292,24 @@ class OpenAICompatibleChatProvider:
 
     def _payload(self, request: ModelRequest) -> dict[str, Any]:
         messages = [self._message(request, item) for item in request.messages]
+        dialect = self.binding.dialect
         payload: dict[str, Any] = {
             "model": self.binding.model,
             "messages": messages,
-            "max_tokens": request.max_output_tokens,
+            dialect.output_limit_parameter: request.max_output_tokens,
             "n": 1,
             "stream": True,
-            "thinking": {
-                "type": self.binding.thinking_mode.lower(),
-            },
         }
+        if dialect.thinking_parameter == "THINKING_OBJECT":
+            payload["thinking"] = {"type": self.binding.thinking_mode.lower()}
+        elif dialect.thinking_parameter == "REASONING_EFFORT":
+            payload["reasoning_effort"] = (
+                dialect.reasoning_effort_enabled
+                if self.binding.thinking_mode == "ENABLED"
+                else dialect.reasoning_effort_disabled
+            )
+        if dialect.stream_include_usage:
+            payload["stream_options"] = {"include_usage": True}
         if request.tools:
             payload["tools"] = [
                 {
@@ -335,27 +326,17 @@ class OpenAICompatibleChatProvider:
         if request.response_schema is not None:
             if self.binding.finalization_json_object:
                 payload["response_format"] = {"type": "json_object"}
-                schema_text = json.dumps(
-                    request.response_schema,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                schema_instruction = (
-                    "Return exactly one JSON object that matches this JSON Schema. "
-                    "Do not add fields or prose outside the object. JSON Schema: "
-                    + schema_text
-                )
+                instruction = schema_instruction(request.response_schema)
                 for message in messages:
                     if message["role"] == "system":
                         message["content"] = (
-                            message.get("content", "") + "\n\n" + schema_instruction
+                            message.get("content", "") + "\n\n" + instruction
                         )
                         break
                 else:
                     messages.insert(0, {
                         "role": "system",
-                        "content": schema_instruction,
+                        "content": instruction,
                     })
             else:
                 payload["response_format"] = {
@@ -386,17 +367,19 @@ class OpenAICompatibleChatProvider:
                 }
                 for call in message.tool_calls
             ]
-            key = self._reasoning_key(
-                request.kernel_run_id,
-                request.invocation_id,
-                message.tool_calls,
+            reasoning = self._private_reasoning.get(
+                request.kernel_run_id, request.invocation_id, message
             )
-            reasoning = self._private_reasoning.get(key) if key is not None else None
             if reasoning is not None:
                 wire["reasoning_content"] = reasoning
         return wire
 
-    def _parse_response(self, request, response: Mapping[str, Any]) -> ModelTurn:
+    def _parse_response(
+        self,
+        request,
+        response: Mapping[str, Any],
+        retries: tuple[ProviderRetry, ...] = (),
+    ) -> ModelTurn:
         component = "choices"
         try:
             choices = response["choices"]
@@ -424,7 +407,15 @@ class OpenAICompatibleChatProvider:
                 or len(private_reasoning) > 64_000
             ):
                 raise ValueError("Unsupported private reasoning field")
+            component = "message.refusal"
+            refusal = message.get("refusal")
+            if refusal is not None and not isinstance(refusal, str):
+                raise ValueError("Unsupported provider refusal")
             finish = self._finish_reason(choice.get("finish_reason"))
+            if refusal or finish is FinishReason.CONTENT_FILTER:
+                # A refusal or a provider filter is kept only as its finish
+                # reason; no output of the turn enters the history.
+                content, calls, finish = None, (), FinishReason.CONTENT_FILTER
             component = "usage"
             usage = self._usage(response.get("usage"))
             component = "id"
@@ -437,17 +428,17 @@ class OpenAICompatibleChatProvider:
                 tool_calls=calls,
                 finish_reason=finish,
                 usage=usage,
-                provider_request_id=request_id,
+                provider_request_id=provider_reference(request_id),
                 private_reasoning_present=private_reasoning is not None,
+                transport_retries=retries,
             )
             if private_reasoning is not None and calls:
-                key = self._reasoning_key(
+                self._private_reasoning.put(
                     request.kernel_run_id,
                     request.invocation_id,
-                    calls,
+                    PublicMessage(role="ASSISTANT", content=content, tool_calls=calls),
+                    private_reasoning,
                 )
-                if key is not None:
-                    self._private_reasoning[key] = private_reasoning
             return turn
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             issues = exc.errors(include_url=False, include_input=False, include_context=False) if isinstance(exc, ValidationError) else ()
@@ -466,8 +457,10 @@ class OpenAICompatibleChatProvider:
             raise ValueError("Tool calls must be a list")
         calls = []
         for item in raw:
-            if not isinstance(item, dict) or item.get("type", "function") != "function":
+            if not isinstance(item, dict):
                 raise ValueError("Unsupported tool call")
+            if item.get("type", "function") != "function":
+                raise unsupported_type_error("message.tool_calls.type", item.get("type"))
             function = item.get("function")
             if not isinstance(function, dict):
                 raise ValueError("Missing tool function")
@@ -499,21 +492,4 @@ class OpenAICompatibleChatProvider:
             input_tokens=raw.get("prompt_tokens"),
             output_tokens=raw.get("completion_tokens"),
             total_tokens=raw.get("total_tokens"),
-        )
-
-    @staticmethod
-    def _reasoning_key(kernel_run_id, invocation_id, calls):
-        normalized = []
-        for call in calls:
-            try:
-                _arguments, canonical = parse_strict_json_object(
-                    call.arguments_json
-                )
-            except ValueError:
-                return None
-            normalized.append((call.call_id, call.name, canonical))
-        return (
-            kernel_run_id,
-            invocation_id,
-            tuple(normalized),
         )
