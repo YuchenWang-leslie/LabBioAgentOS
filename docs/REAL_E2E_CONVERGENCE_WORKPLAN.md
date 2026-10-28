@@ -1,5 +1,18 @@
 # Real E2E Convergence Workplan
 
+## Authorized main publication and PR 3 merge — 2026-10-28
+
+The user authorized publishing the reviewed local integration. GitHub `main`
+advanced by ordinary fast-forward from `d7b1000` to `f4490c3`, retaining the
+tested merge `a2bae8a` and both parent histories. GitHub reports PR `#3` as
+`closed` with `merged=true`, merge commit `a2bae8a`, at 2026-10-28 03:50:28 UTC.
+The source/test tree is unchanged from the 2807-pass regression and the fresh
+MiMo/Docker delivery check below. This publication note changes documentation
+only. Exact remote-ref verification is recorded under
+`result/api-provider-pr3-20261028/PUBLICATION.json` in the WYC workspace.
+The user's local example edits and `sandbox-docker` remain preserved; the
+earlier stress campaign remains paused and no production Release is activated.
+
 ## Local integration of provider API PR 3 — 2026-10-28
 
 PR `#3`, head `99a809c7e442017253db5bb8726dcba39f7d1db8`, is integrated
