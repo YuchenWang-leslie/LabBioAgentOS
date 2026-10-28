@@ -10,8 +10,22 @@ now follows the shared store; every adapter measures its complete wire payload.
 Rejected complete responses retain independently valid usage, and discarded
 retry attempts keep their usage unknown rather than reporting a known total.
 The first merged regression and its failures are preserved externally. Final
-source regression passes 2807 tests with 73 opt-in checks skipped. A fresh,
-small synthetic live API/Docker task is the remaining local verification step.
+source regression passes 2807 tests with 73 opt-in checks skipped. Local merge
+commit `a2bae8a` passed a fresh MiMo `openai`-format API/Docker task, run
+`f69ad52a-35e1-4d18-bdf3-10317c56d55e`: `COMPLETED / LEARN`, with one successful
+execution, two selected outputs and one report. Independent arithmetic and all
+three source/export hashes agree (count 5, sum 21, min 1, max 10). Two invalid
+tool argument batches and five nonnumeric aggregate errors were corrected by
+the Agent and remain in the trace. All 38 provider turns reported usage
+(589094 tokens), without transport retries; this simple task still has material
+orchestration overhead. No task process or container remains. The current
+live check covers only the configured MiMo Chat endpoint; the other formats
+have local contract coverage. Records and replay scripts are under
+`result/api-provider-pr3-20261028/` relative to the WYC workspace.
+The test migrated the old endpoint setting in memory; external runtime TOMLs
+remain unchanged and require the documented `provider.endpoint` migration
+before direct CLI use. The local example retains the user's Native backend,
+MiMo v2.6 and phase-limit edits over the updated example schema.
 The earlier stress campaign remains paused. Integration uses one Git working
 tree; GitHub PR state and production activation are outside this local action.
 
