@@ -6,7 +6,8 @@ Status: pre-implementation architecture audit. This memo records current
 source behavior before any change. It is not an acceptance claim. C15 was
 requested by MOHAN CUI on 2026-10-28 as a feature extension of C13
 (Scheduler + Apptainer execution). Its decisions, DECIDED-C15-A to
-DECIDED-C15-H, are recorded under "Decisions required". Implementation proceeds one
+DECIDED-C15-H, are recorded in
+[container images decisions](C15_CONTAINER_IMAGES_DECISIONS.md). Implementation proceeds one
 step at a time, each started on MOHAN CUI's instruction, and the acceptance
 criteria are refined as the decisions are.
 
@@ -283,288 +284,23 @@ Trace and Gold Skill provenance must record, for every execution, an identity
 that can be compared across backends and rebuilds, in addition to the
 backend-specific `resolved_image`.
 
-## Decisions required
+## Decisions
 
-All decided by MOHAN CUI between 2026-10-28 and 2026-11-11. The
-implementation plan is written from these decisions.
+All decided by MOHAN CUI between 2026-10-28 and 2026-11-11. The full text is
+in [container images decisions](C15_CONTAINER_IMAGES_DECISIONS.md); this table
+is a summary.
 
-- DECIDED-C15-A (MOHAN CUI, 2026-10-28): a user-defined image enters the
-  catalog in one of three forms, all of them finished images:
-  - A1, an OCI reference pinned by digest (for example a member's own
-    registry, a lab registry or a public bioinformatics registry). The host
-    pulls it in a download job and converts it to SIF in a job.
-  - A2, an OCI archive (`docker save` output or an OCI layout), for sites
-    without registry access.
-  - A3, a SIF file. This includes a site-provided SIF, which is copied into
-    `SifStore` and pinned by sha256, never referenced in place.
-
-  Not in C15: definition files built by the host (A4), because they run
-  member-written build code with network access and are not reproducible.
-  Members build such images themselves and submit them as A1 or A2.
-  Lock-file environments (A5) are covered by DECIDED-C15-E, since they share
-  the `environment_build` mechanism.
-
-  Every admission, in any form:
-  1. rejects an image whose CPU architecture differs from the compute nodes;
-     the documentation tells members to build with `--platform`;
-  2. runs a probe with no network and no data mounts that checks the
-     declared entry point and records the installed software inventory;
-  3. records member-supplied metadata: a bounded, checked purpose, the
-     runtime family and GPU need;
-  4. enforces the size limit and quota (DECIDED-C15-H);
-  5. records the admitting principal, time, source and identity.
-
-  Private registry credentials stay on the host, like provider keys: 0600,
-  never in trace, model context or a container. Member-level and lab-level
-  credentials are both supported (DECIDED-C15-H).
-
-  The Agent's role is unchanged in kind. It reads the catalog projection,
-  explicitly selects an `image_key` for each execution, may build derived
-  environments, and decides how to handle a missing tool. It cannot admit an
-  image or name a raw reference. It may not propose an image (DECIDED-C15-E).
-- DECIDED-C15-B, visibility (MOHAN CUI, 2026-10-28): two scopes, as for
-  Gold Skills.
-  - An image a member admits is personal: only its owner's runs can
-    see and select it.
-  - It becomes a lab image only with `LAB_ADMIN` approval, because a lab
-    image enters every member's catalog.
-  - Base images in deployment configuration are lab images.
-  - The Agent sees the current user's personal images and the lab images,
-    and never another member's personal images.
-  - There is no project scope: projects have no shared writers today.
-- DECIDED-C15-B, recording (MOHAN CUI, 2026-11-11): Q9-1, a lab area held
-  by an administrator OS account. On a cluster, each member runs LabBio under
-  their own OS account, so the operating system, not LabBio code, enforces
-  the boundary:
-  - The lab area is writable only by the holding account and readable by
-    members, for example 0750 with a lab group. It contains the member
-    registry, roles, approval and revocation records, the lab image store
-    and the lab catalog.
-  - The holding account is configurable per deployment: a dedicated lab
-    service account or the administrator's own account.
-  - Each member's personal images, runs, Gold Skills and environments stay
-    under that member's own account.
-  - An administrator approves a member with an admin command run under the
-    holding account. The record names the member, the approving
-    `LAB_ADMIN`, the time and the member's OS uid.
-  - At start-up, LabBio checks that the process uid matches the registered
-    uid, so a configuration file cannot claim another member's `user_id`.
-  - `LAB_ADMIN` principals are listed in the lab area. Admin actions are
-    possible only where the lab area is writable.
-  - Promotion to a lab image: the member files a request in their own area.
-    An administrator approves it under the holding account, and the image is
-    copied into the lab image store and recorded.
-  - Revoking a member disables their personal images for new executions.
-    Existing trace and provenance references stay.
-  - On a single machine, the administrator and the member may be the same
-    account.
-  - The registry format moves from version 1 to version 2 through an
-    explicit migration command. Nothing is rewritten silently.
-
-  Rejected: a central LabBio service (Q9-2), because it replaces the
-  per-user control plane and is outside C15; and roles in the
-  single-account registry (Q9-3), because anyone with that account could
-  change them.
-- DECIDED-C15-C (MOHAN CUI, 2026-11-11): add a `SHELL` runtime family (C2).
-  - The Agent writes a shell script that runs with the image's `sh`. This
-    makes Python-less tool images usable.
-  - An image declares a set of runtime families instead of one.
-  - The Agent names both the runtime and the `image_key`, and the validator
-    checks that the image supports that runtime. The check moves from
-    equality to membership, so `RSCRIPT` can be added later.
-  - The admission probe verifies the entry point of every declared runtime
-    and rejects an image whose declared entry point is missing.
-  - The software inventory is layered: exact names and versions from
-    `conda-meta` when present, then the Python package inventory, otherwise
-    unknown. It is never empty by assumption and never guessed.
-  - Shell scripts are Agent-owned programs under the same isolation, mounts
-    and output collection as Python. Shell diagnostics are the bounded
-    stderr and exit code only, with no structured parsing.
-  - Rejected: Python-only with `subprocess` (C1), because it needs both
-    Python and the tools in one image; and a structured single-tool
-    invocation runtime (C3), because it splits pipelines and adds nothing a
-    one-line script lacks.
-- DECIDED-C15-D (MOHAN CUI, 2026-11-11): two-layer environment identity
-  (D3). This resolves OPEN-C13-I (C15-G1) and removes the effect of C15-G2
-  on identity.
-  1. A source identity defines "the same environment", independent of
-     backend:
-     - A1 uses the platform-specific OCI manifest digest for the compute
-       node architecture, never a multi-architecture index digest;
-     - A2 uses the archive's manifest digest;
-     - A3 uses the SIF sha256, since it has no upstream source;
-     - a derived environment uses a hash of the base source identity, the
-       lock list (name, version and file sha256 of each package), the recipe
-       version and the CPU architecture.
-  2. A realization identity is the backend-specific `resolved_image` (SIF
-     sha256 or Docker image id). One source identity may have many
-     realizations: a reconversion, a rebuild or another site adds one.
-  3. A realization is attached to a source identity only when the platform
-     produced it from that source by a fixed, recorded procedure. Its
-     admission-probe inventory must match the one recorded for the source,
-     or it is rejected. This shows that the realization came from the same
-     source by the same procedure with the same inventory. It does not claim
-     that two files are byte-identical.
-  4. The environment request hash uses the base image's source identity, so
-     a reconverted base keeps its cached builds and Gold Skill matches.
-  5. Trace and Gold Skill provenance record both layers. The source
-     identity answers "same environment?"; the realization answers "which
-     file ran?".
-  6. A1 and A2 share one source identity on Docker and Apptainer. A3 runs on
-     Apptainer only. The catalog records the backends that have a
-     realization, and the Agent sees only images usable on the current
-     backend.
-  7. Existing environment records have no source identity. They are marked
-     legacy and use their current realization as the source identity, like
-     A3, and are not rewritten silently.
-
-  Rejected: a `source_reference` link alone (D1), because it leaves the
-  request hash backend-specific; and a manual equivalence attestation (D2),
-  because it depends on continuing human review.
-- DECIDED-C15-E (MOHAN CUI, 2026-11-11):
-  - E1: derived environments may add conda packages as well as wheels.
-    - Only channels on an administrator-configured allowlist are used; the
-      default allowlist is conda-forge and bioconda. The Anaconda
-      `defaults` channel is not enabled, because its terms of service
-      require a paid licence for organizations above a size threshold.
-    - The platform supplies a trusted static micromamba, mounted into the
-      build, so a base image needs no conda of its own.
-    - The flow matches the wheel flow: solve and lock every package by
-      version and sha256, download on the login node or in a download job,
-      install offline from the lock only in the build job, run the
-      admission probe and derive the source identity (DECIDED-C15-D).
-    - The Agent supplies package names and version constraints only, never
-      channel URLs, installer options or scripts.
-  - E2: a member may submit a lock file (A5) through the same mechanism. The
-    result is a personal image (DECIDED-C15-B).
-  - E3: the Agent may not propose a new base image (E3-a). When no admitted
-    image fits, the Agent says so in its reply, for example that an image
-    with a given tool is needed, and the member finds and admits one. The
-    rule that the model never supplies a raw image reference is unchanged.
-    Rejected: a structured, allowlisted proposal confirmed at a user gate
-    (E3-b).
-- DECIDED-C15-F (MOHAN CUI, 2026-11-11): full NVIDIA GPU support in C15
-  (F1), resolving C15-G4.
-  - `RequestedResources` gains `gpus`, and host policy gains `max_gpus`,
-    which defaults to 0 (GPU disabled). The Agent requests a count
-    explicitly; a request over the limit is rejected, and the platform never
-    adds GPUs on its own.
-  - Site scheduler templates gain the GPU request and partition fields for
-    Slurm, PBS and LSF. Only Slurm is validated on real hardware; PBS and
-    LSF keep fake-output tests, as today.
-  - Apptainer adds `--nv` only when GPUs are requested. Its compatibility
-    with the current isolation options is verified on a GPU node, and trace
-    records the GPUs actually allocated.
-  - Docker adds `--gpus` only when GPUs are requested. Without a GPU runtime
-    the request is rejected, never silently run on CPU.
-  - The catalog records whether an image needs or supports GPUs, and the
-    admission probe checks the CUDA runtime libraries. Both facts are
-    model-visible.
-  - Deferred: AMD ROCm, and multi-node GPU jobs.
-  - Validation: Slurm + Apptainer on the test cluster's GPU partition, and
-    local Docker on the WSL development machine (NVIDIA GPU).
-- DECIDED-C15-G (MOHAN CUI, 2026-11-11): one isolation baseline for every
-  image, whoever admitted it. It closes four gaps and records one residual
-  limit.
-  1. Docker analysis execution does not override the image `ENTRYPOINT`;
-     only the probe does (`execution/docker.py:367`). An image entry point
-     could skip the Agent's script and forge outputs. Every Docker execution
-     sets `--entrypoint`.
-  2. The credential-path check becomes mandatory for every deployment
-     (C15-R2). At start-up, LabBio refuses to run when the provider
-     credential file, a workspace token or a registry credential lies under
-     a path that can be bound into a container: data roots, run roots,
-     `SifStore`, scratch, environment roots or cache directories. The error
-     carries a value-free fix hint.
-  3. Apptainer `/tmp` always lives in the execution's scratch directory. Its
-     size is polled during execution, and the execution is stopped and
-     recorded truthfully when it exceeds the limit (C15-R4). This is a
-     polled limit, not a hard quota, and is recorded in
-     `KNOWN_LIMITATIONS.md`.
-  4. Inventory read by the admission probe comes from an untrusted image.
-     It passes the same format and safety validation as other model-visible
-     text before it reaches the model, and invalid entries are marked
-     invalid rather than passed on.
-
-  GPU devices are exposed only on request (DECIDED-C15-F). The admission
-  probe runs under the same baseline.
-
-  Residual limit, recorded in `KNOWN_LIMITATIONS.md`: an image supplies its
-  own interpreter, so a malicious image can falsify results, and no
-  container isolation prevents that. This is contained by ownership and
-  review: a personal image serves only its owner's runs, a lab image needs
-  `LAB_ADMIN` approval (DECIDED-C15-B), and trace records which member's
-  image and which identity ran.
-- DECIDED-C15-H (MOHAN CUI, 2026-11-11): image storage and lifecycle (Q10).
-  1. Placement:
-     - The lab area, held by the lab account and read-only to members on
-       the shared filesystem, holds the lab catalog, the lab `SifStore`, the
-       admission and promotion records, and lab registry credentials. Those
-       credentials are readable by the lab account only, never by members.
-     - Each member's area, under their own account, holds the personal
-       catalog, the personal `SifStore`, derived-environment records and
-       the member's registry credentials (0600).
-     - Local Docker realizations stay in the Docker daemon's store, and
-       LabBio records their image ids.
-     - `SifStore` stays the execution store, because compute nodes read SIF
-       files from the shared filesystem.
-  2. Catalog records are one file per record, append-only, not SQLite, since
-     the lab area sits on NFS and is read while an administrator writes.
-     A record is written to a temporary file and renamed into place in the
-     same directory. A state change appends an event file, and existing
-     records are never modified. Each record holds:
-     - key, owner, scope, state and source identity;
-     - its realizations (backend, `resolved_image`, producing conversion);
-     - runtimes and inventory;
-     - metadata (purpose, GPU) and size;
-     - the admitting principal and time.
-  3. States:
-     - ACTIVE: selectable.
-     - DEPRECATED: hidden from the model-visible catalog, but continuation
-       and revision of runs that already use the image still work.
-     - REVOKED: execution is refused, for example after a security finding.
-
-     The owner changes the state of a personal image; a `LAB_ADMIN` changes
-     the state of a lab image. Every change records who, when and why.
-  4. Deletion:
-     - Records are kept forever; deletion removes image files only, so every
-       identity in trace and Gold Skill provenance stays resolvable.
-     - Deletion first checks references: trace executions, run records,
-       Gold Skill provenance and derived environments built on the image. It
-       is refused while references exist.
-     - A deleted A1, A2 or derived image can be pulled or rebuilt later as a
-       new realization of the same source identity (DECIDED-C15-D). A3 has
-       no upstream source, so deleting an A3 file needs explicit `LAB_ADMIN`
-       confirmation.
-     - Nothing is deleted automatically. Deletion is an explicit command that
-       first lists what it would remove. Owners delete personal images and
-       a `LAB_ADMIN` deletes lab images.
-     - For Docker, LabBio removes only the recorded image id and never runs
-       `prune`.
-  5. Quotas: an administrator configures each member's personal total, the
-     lab total and a per-image size limit. They are checked at admission
-     (DECIDED-C15-A, check 4) and at derived-environment builds. A rejection
-     names the limit exceeded. A command reports current usage.
-  6. Registries are supported generically (MOHAN CUI, 2026-11-11).
-     - LabBio uses only the OCI Distribution specification: pull by digest,
-       read the image index, and standard basic or bearer-token
-       authentication.
-     - One code path serves Docker Hub, quay.io, GHCR, Harbor, Nexus,
-       Artifactory, GitLab, Zot, `registry:2` and cloud registries alike.
-       Configuration maps a registry host to a credential, with no
-       vendor-specific options.
-     - No vendor API, for example scanning or webhooks, is used. A later
-       signature or SBOM condition would use OCI referrers and cosign-style
-       formats.
-     - Credentials are static only (username plus password or token), at
-       member level for personal admissions and at lab level for
-       administrator admissions and promotions. Registries whose tokens
-       expire, such as AWS ECR, need the operator to refresh the
-       credential.
-     - The Docker credential-helper protocol is deferred, because running an
-       external program to obtain secrets needs its own security design.
-     - An administrator may configure a registry host allowlist for
-       admissions. By default there is no restriction.
+| ID | Decision |
+|---|---|
+| DECIDED-C15-0 | Scope: Agent-chosen images from a governed catalog, user-defined images, both backends, cluster by default |
+| DECIDED-C15-A | Admission forms A1 OCI reference by digest, A2 OCI archive, A3 SIF; five admission checks; no host-built definition files |
+| DECIDED-C15-B | Personal images by default, lab images need `LAB_ADMIN`; a lab area held by an administrator OS account; member uid bound at approval |
+| DECIDED-C15-C | `SHELL` runtime; an image declares a set of runtimes; layered inventory; stderr and exit-code diagnostics for shell |
+| DECIDED-C15-D | Two-layer identity: backend-neutral source identity plus realizations; request hash on the source identity |
+| DECIDED-C15-E | Conda packages in derived environments from allowlisted channels; member lock files; the Agent cannot propose base images |
+| DECIDED-C15-F | Full NVIDIA GPU support on Apptainer, Slurm templates and Docker; `max_gpus` defaults to 0 |
+| DECIDED-C15-G | One isolation baseline; forced Docker entry point, mandatory credential-path check, polled Apptainer `/tmp` limit, validated probe inventory |
+| DECIDED-C15-H | Lab and member stores; append-only file records; ACTIVE, DEPRECATED, REVOKED; reference-checked deletion; quotas; generic OCI registries |
 
 ## Deferred to a later project
 

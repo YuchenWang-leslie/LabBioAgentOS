@@ -1,5 +1,27 @@
 # Real E2E Convergence Workplan
 
+## C15 container images decided — 2026-11-11
+
+MOHAN CUI opened C15, an extension of C13. A runtime Agent selects images from
+a governed catalog, and lab members admit their own images, on Docker and
+Apptainer. Analyses run on a cluster by default. Branch
+`feat/container-images` starts from `main` at `7827b49`. The
+[gap memo](C15_CONTAINER_IMAGES_GAP_MEMO.md) audits the current single-image,
+Python-only, wheel-only behavior. All decisions, DECIDED-C15-0 to
+DECIDED-C15-H, are in [C15 decisions](C15_CONTAINER_IMAGES_DECISIONS.md). They
+add:
+- a SHELL runtime;
+- conda-derived environments;
+- NVIDIA GPU support;
+- a two-layer source and realization identity, which resolves OPEN-C13-I;
+- an administrator-held lab area enforced by OS permissions;
+- generic OCI registry support.
+
+This entry changes documentation only. No source, test, release or
+deployment changed. The local development host now has Docker Engine 29.9.3
+and NVIDIA Container Toolkit 1.20.2, so local GPU validation is possible.
+Implementation has not started; each step needs MOHAN CUI's instruction.
+
 ## Authorized main publication and PR 3 merge — 2026-10-28
 
 The user authorized publishing the reviewed local integration. GitHub `main`
