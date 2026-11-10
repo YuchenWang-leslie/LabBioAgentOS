@@ -139,6 +139,19 @@ Add a `SHELL` runtime family (option C2):
   invocation runtime (C3), because it splits pipelines and adds nothing a
   one-line script lacks.
 
+Refined by MOHAN CUI on 2026-11-11:
+- `runtime` may be omitted in `execution_submit` and `execution_revise`, in
+  which case it is `PYTHON`, so existing Python flows are unchanged. The
+  default is stated in the model-visible tool schema and description.
+- Trace and receipts record the effective runtime and whether it was given
+  explicitly or taken from the default.
+- `SHELL` must always be named. The framework never infers a runtime from the
+  script or the image.
+- The old single-image configuration (`[execution] image_key`,
+  `image_reference`) is not accepted. Loading it fails with a fixed error
+  code that names the settings, not their values, and the migration to
+  multiple images is documented, as for the C14 endpoint migration.
+
 ## DECIDED-C15-D - Two-layer environment identity
 
 Decided by MOHAN CUI, 2026-11-11.

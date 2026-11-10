@@ -23,6 +23,15 @@ class JobState(StrEnum):
 
 TERMINAL_STATES = frozenset({JobState.COMPLETED, JobState.FAILED})
 
+# A watcher polls scratch usage and, over the limit, writes this marker in the
+# execution workspace root, which no container mounts, then stops the program.
+SCRATCH_LIMIT_MARKER = "scratch-limit-exceeded"
+SCRATCH_POLL_SECONDS = 5
+
+
+def scratch_limit_marker(workspace_root: Path) -> Path:
+    return workspace_root / SCRATCH_LIMIT_MARKER
+
 
 class JobLauncherError(RuntimeError):
     """A launcher operation could not be performed."""
@@ -42,6 +51,9 @@ class JobSpec:
     resources: RequestedResources
     workspace_root: Path
     cleanup_paths: tuple[Path, ...] = ()  # Removed when the job exits.
+    # Disk-backed /tmp directories and their polled size limit; None means unwatched.
+    scratch_paths: tuple[Path, ...] = ()
+    scratch_limit_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +68,7 @@ class JobLauncher(ABC):
 
     kind: str
     poll_interval_seconds: float = 5.0
+    enforces_scratch_limit: bool = False
 
     @abstractmethod
     async def submit(self, spec: JobSpec) -> JobHandle:

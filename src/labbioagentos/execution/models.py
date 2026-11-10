@@ -47,6 +47,7 @@ class ExecutionFailureClass(StrEnum):
     CONTAINER_START_FAILURE = "CONTAINER_START_FAILURE"
     TIMEOUT = "TIMEOUT"
     LOG_LIMIT = "LOG_LIMIT"
+    SCRATCH_LIMIT = "SCRATCH_LIMIT"
     NON_ZERO_EXIT = "NON_ZERO_EXIT"
     OUTPUT_CONTRACT_FAILURE = "OUTPUT_CONTRACT_FAILURE"
     ARTIFACT_REGISTRATION_FAILURE = "ARTIFACT_REGISTRATION_FAILURE"
@@ -513,6 +514,7 @@ class ExecutionReceipt(BaseModel):
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
             ExecutionFailureClass.NON_ZERO_EXIT,
+            ExecutionFailureClass.SCRATCH_LIMIT,
         }
         codes = tuple(issue.error_class for issue in result.issues)
         detail_codes = tuple(

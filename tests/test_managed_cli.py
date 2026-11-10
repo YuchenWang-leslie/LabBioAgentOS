@@ -17,7 +17,7 @@ _REAL_APPLICATION_RUN = LabBioApplication.run
 
 
 @pytest.fixture
-def managed_cli(tmp_path, monkeypatch):
+def managed_cli(tmp_path, tmp_path_factory, monkeypatch):
     root = tmp_path / "managed"
     credentials = {user: tmp_path / f"{user}.token" for user in ("alice", "bob")}
     with WorkspaceRegistry.initialize(root) as registry:
@@ -33,7 +33,9 @@ def managed_cli(tmp_path, monkeypatch):
         "result_root": tmp_path / "legacy-results", "input_roots": [tmp_path],
         "identity": {"user_id": "legacy", "project_id": "legacy", "lab_id": "legacy"},
         "provider": {
-            "env_file": tmp_path / "absent-provider.env", "api_key_env": "TEST_KEY",
+            # Outside the broad legacy input root: a key file may not sit in a data root.
+            "env_file": tmp_path_factory.mktemp("secrets") / "absent-provider.env",
+            "api_key_env": "TEST_KEY",
             "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
@@ -435,3 +437,21 @@ def test_workspace_administration_does_not_require_provider_or_emit_token(tmp_pa
         workspace = registry.resolve("TEST1", "PRJ1", token)
     assert workspace.data_root.is_dir() and workspace.result_root.is_dir()
     assert workspace.gold_root == root / "TEST1/GoldSkills"
+
+
+def test_a_workspace_token_inside_the_scoped_data_root_is_refused(managed_cli, capsys):
+    root, credentials, workspace, _, _, observed = managed_cli
+    copied = workspace.data_root / "alice.token"
+    copied.write_bytes(credentials["alice"].read_bytes())
+    copied.chmod(0o600)
+    arguments = ["run", "--workspace-root", str(root), "--user", "alice", "--project", "one",
+                 "--credential-file", str(copied), "--data", str(workspace.data_root / "selected.csv"),
+                 "--task", "Describe the selected data."]
+
+    assert cli.main(arguments) == 1
+
+    emitted = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert emitted["error"] == "CREDENTIAL_UNDER_BOUND_PATH"
+    assert emitted["fields"] == ["credential_file", "input_roots.0"]
+    assert str(copied) not in json.dumps(emitted)
+    assert observed["builds"] == []

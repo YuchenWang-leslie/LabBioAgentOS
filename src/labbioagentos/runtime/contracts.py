@@ -336,8 +336,10 @@ class RuntimeExecutionCapabilityView(BaseModel):
     tmpfs_size_mb: int | None = Field(
         default=None, ge=1,
         description=(
-            "Capacity of memory-backed /tmp in MiB, subject to container memory "
-            "and per-file limits. None means unspecified in an older snapshot."
+            "Capacity of /tmp in MiB, subject to container memory and per-file "
+            "limits. Where /tmp is disk-backed, its size is checked every few "
+            "seconds and exceeding it stops the execution with SCRATCH_LIMIT. "
+            "None means unspecified in an older snapshot."
         ),
     )
     available_python_modules: tuple[StrictStr, ...] = Field(

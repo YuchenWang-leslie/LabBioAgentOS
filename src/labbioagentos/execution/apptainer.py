@@ -234,6 +234,10 @@ class ApptainerCommandBuilder:
         # The per-execution --workdir holds the container's /tmp and /var/tmp.
         return (self.scratch_root / execution_id.hex,)
 
+    def scratch_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        # Apptainer has no sized tmpfs, so the launcher polls the --workdir instead.
+        return self.cleanup_paths(execution_id)
+
     def model_stderr(self, stderr: bytes) -> bytes:
         # --silent keeps INFO/WARNING out; FATAL/ERROR lines would name the runtime and
         # host paths. A script line in the same format is dropped too; the raw stderr

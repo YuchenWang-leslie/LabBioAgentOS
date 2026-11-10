@@ -110,6 +110,7 @@ class SchedulerLauncher(JobLauncher):
     """Job files live in the shared execution workspace; the exit record decides completion."""
 
     kind = "scheduler"
+    enforces_scratch_limit = True
 
     def __init__(
         self,

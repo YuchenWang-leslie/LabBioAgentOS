@@ -105,7 +105,8 @@ def test_cgroup_probe_rejects_unbounded_or_missing_limits():
 def test_supervisor_refuses_before_starting_command_when_limits_are_missing(monkeypatch):
     from labbioagentos.execution.launchers import _local_supervisor as supervisor
 
-    monkeypatch.setattr("sys.argv", ["supervisor", "1", "268435456", "32", "/bin/true"])
+    monkeypatch.setattr("sys.argv", ["supervisor", "1", "268435456", "32", "0", "/x/marker", "0",
+                                     "/bin/true"])
     monkeypatch.setattr(supervisor, "read_limits", lambda: {"cpu.max": "max 100000"})
     monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("executed"))
     assert supervisor.main() == 125

@@ -51,7 +51,10 @@ from .python_diagnostics import (
     script_error_locations,
 )
 from .job_ledger import JobLedger
-from .launchers import JobLauncher, JobSpec, LocalLauncher, TERMINAL_STATES
+from .launchers import (
+    SCRATCH_POLL_SECONDS, TERMINAL_STATES, JobLauncher, JobSpec, LocalLauncher,
+    scratch_limit_marker,
+)
 from .registration import OutputCollector
 from .process_streams import MAX_CAPTURED_STREAM_BYTES
 
@@ -151,6 +154,10 @@ class ContainerExecutor:
             await asyncio.to_thread(self._ensure_backend)
             prepared = self._prepare(plan)
             launcher = self.launcher or LocalLauncher(self.process_runner)
+            scratch = self.command_builder.scratch_paths(plan.execution_id)
+            if scratch and not launcher.enforces_scratch_limit:
+                # A disk-backed /tmp without a watcher would have no size limit at all.
+                raise ContainerStartError("This placement cannot enforce the scratch size limit")
             ledger = self.job_ledger
             if ledger is not None:
                 ledger.record_intent(run_id=plan.run_id, execution_id=plan.execution_id,
@@ -166,6 +173,9 @@ class ContainerExecutor:
                         resources=plan.resources,
                         workspace_root=prepared.workspace.root,
                         cleanup_paths=self.command_builder.cleanup_paths(plan.execution_id),
+                        scratch_paths=scratch,
+                        scratch_limit_bytes=(self.execution_policy.tmpfs_size_mb * 1_048_576
+                                             if scratch else None),
                     ))
                 except ContainerStartError:
                     stopped = True  # The launcher's contract confirms nothing started.
@@ -315,20 +325,22 @@ class ContainerExecutor:
         started_at, image, workspace, script_ref = (
             prepared.started_at, prepared.image, prepared.workspace, prepared.script_ref,
         )
+        scratch_exceeded = scratch_limit_marker(workspace.root).exists()
+        stopped = outcome.output_limit_exceeded or outcome.timed_out or scratch_exceeded
         try:
             stdout_ref = self._store_stream(
                 plan,
                 workspace.log_root / "stdout.log",
                 outcome.stdout,
                 "stdout",
-                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
+                complete=not stopped,
             )
             stderr_ref = self._store_stream(
                 plan,
                 workspace.log_root / "stderr.log",
                 outcome.stderr,
                 "stderr",
-                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
+                complete=not stopped,
             )
         except (ArtifactStoreError, OSError) as exc:
             completed_at = datetime.now(timezone.utc)
@@ -356,6 +368,20 @@ class ContainerExecutor:
         # The stored stderr Artifact stays complete; model-facing projections drop
         # lines the container runtime wrote about itself.
         model_stderr = self.command_builder.model_stderr(outcome.stderr)
+        if scratch_exceeded:
+            message = (
+                f"The container /tmp exceeded its {self.execution_policy.tmpfs_size_mb} MiB "
+                "capacity, so the execution was stopped. Usage is checked every "
+                f"{SCRATCH_POLL_SECONDS} seconds and can briefly exceed the capacity first."
+            )
+            self._emit_failure(plan, ExecutionFailureClass.SCRATCH_LIMIT, message)
+            return self._result(
+                plan, image, workspace, script_ref, status=ExecutionStatus.FAILED,
+                started_at=started_at, completed_at=completed_at,
+                duration_seconds=outcome.duration_seconds, exit_code=outcome.exit_code,
+                stdout_ref=stdout_ref, stderr_ref=stderr_ref,
+                error_class=ExecutionFailureClass.SCRATCH_LIMIT, error_message=message,
+            )
         if outcome.output_limit_exceeded:
             limit_message = (
                 f"Process output exceeded the {MAX_CAPTURED_STREAM_BYTES}-byte capture limit per stdout/stderr. "

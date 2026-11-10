@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
-from .base import JobSpec
+from .base import SCRATCH_POLL_SECONDS, JobSpec, scratch_limit_marker
 from .templates import SchedulerTemplate
 
 # Characters a shell or a directive parser could treat as structure.
@@ -79,7 +79,8 @@ def render_job_script(
     """Return the complete batch script; the analysis program stays a separate file."""
 
     validate_extra_directives(template, policy.extra_directives)
-    for path in (job_dir, *spec.cleanup_paths):
+    marker = scratch_limit_marker(spec.workspace_root)
+    for path in (job_dir, *spec.cleanup_paths, *spec.scratch_paths, marker):
         if not _safe_path(path):
             raise ValueError("Job paths must be plain absolute paths")
     for name, value in environment.items():
@@ -126,8 +127,12 @@ def render_job_script(
         f"timeout --kill-after={policy.kill_after_seconds} {timeout} env -i {assignments} "
         + " ".join(quote(item) for item in spec.argv)
         + f" < /dev/null > {quote(str(job_dir / 'stdout.log'))}"
-        + f" 2> {quote(str(job_dir / 'stderr.log'))}",
+        + f" 2> {quote(str(job_dir / 'stderr.log'))} &",
+        "main=$!",
+        *_scratch_watcher(spec, marker, policy.kill_after_seconds),
+        'wait "$main"',
         "status=$?",
+        *(['kill "$watcher" 2>/dev/null', 'wait "$watcher" 2>/dev/null'] if spec.scratch_paths else []),
         "elapsed=$((SECONDS - started))",
         "timed_out=0",
         'if { [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; } '
@@ -138,6 +143,35 @@ def render_job_script(
         'exit "$status"',
     ]
     return "\n".join(lines) + "\n"
+
+
+def _scratch_watcher(spec: JobSpec, marker: Path, kill_after: int) -> list[str]:
+    """Poll disk-backed /tmp; over the limit, record the marker and stop the program."""
+    if not spec.scratch_paths:
+        return []
+    if spec.scratch_limit_bytes is None or spec.scratch_limit_bytes < 1:
+        raise ValueError("Watched scratch paths need a positive size limit")
+    quote = shlex.quote
+    paths = " ".join(quote(str(path)) for path in spec.scratch_paths)
+    limit_kib = spec.scratch_limit_bytes // 1024
+    # timeout leads its own process group, so the group kill reaches the program too.
+    return [
+        "watch_scratch() {",
+        '  while kill -0 "$main" 2>/dev/null; do',
+        f"    sleep {SCRATCH_POLL_SECONDS}",
+        f"    used=$(du -skx -- {paths} 2>/dev/null | awk '{{s += $1}} END {{print s + 0}}')",
+        f'    if [ "$used" -gt {limit_kib} ]; then',
+        f"      : > {quote(str(marker))}",
+        '      kill -TERM "$main" 2>/dev/null',
+        f"      sleep {kill_after}",
+        '      kill -KILL -- "-$main" "$main" 2>/dev/null',
+        "      return",
+        "    fi",
+        "  done",
+        "}",
+        "watch_scratch &",
+        "watcher=$!",
+    ]
 
 
 def _walltime(total_seconds: int, style: str) -> str:

@@ -72,6 +72,11 @@ _PROVIDER_FIX_HINTS = {
     "PROVIDER_CREDENTIALS_NOT_LOADED": (
         "The provider key was not loaded before a model call; this is a composition error."
     ),
+    "CREDENTIAL_UNDER_BOUND_PATH": (
+        "Move the named credential file out of every directory that can be mounted into a "
+        "container: data and result roots, the managed workspace, environment, SIF, scratch, "
+        "cache and build directories."
+    ),
 }
 
 
@@ -536,7 +541,49 @@ def load_settings(path: Path) -> LocalSettings:
         # A present env file is checked at load; an absent one fails only when
         # a command needs the key, so read-only commands work without it.
         _check_env_file(settings.provider.env_file)
+    check_credentials_outside_bound_paths(settings)
     return settings
+
+
+def _bindable_roots(settings: LocalSettings) -> tuple[tuple[str, Path], ...]:
+    """Every configured directory whose contents a container or build job can see."""
+
+    roots = [("result_root", settings.result_root),
+             *((f"input_roots.{index}", root) for index, root in enumerate(settings.input_roots))]
+    if settings.managed_root is not None:
+        roots.append(("managed_root", settings.managed_root))
+    apptainer = settings.execution.apptainer
+    if apptainer is not None:
+        roots += [("execution.apptainer.sif_store", apptainer.sif_store),
+                  ("execution.apptainer.scratch_root", apptainer.scratch_root)]
+        if apptainer.cache_dir is not None:
+            roots.append(("execution.apptainer.cache_dir", apptainer.cache_dir))
+    environment = settings.environment
+    if environment is not None:
+        roots.append(("environment.root", environment.root))
+        # build_dir and download_work_root are not listed: jobs bind only a fresh
+        # mktemp subdirectory of them, which cannot already hold a credential.
+        for table in ("cluster", "local_apptainer"):
+            build = getattr(environment, table)
+            if build is not None and build.cache_dir is not None:
+                roots.append((f"environment.{table}.cache_dir", build.cache_dir))
+    return tuple(roots)
+
+
+def check_credentials_outside_bound_paths(
+    settings: LocalSettings, credentials: tuple[tuple[str, Path], ...] = (),
+) -> None:
+    """Refuse a credential file that a container could read (DECIDED-C15-G)."""
+
+    files = (("provider.env_file", settings.provider.env_file), *credentials)
+    roots = [(name, root.expanduser().resolve()) for name, root in _bindable_roots(settings)]
+    for credential_name, credential in files:
+        path = credential.expanduser().resolve()
+        for root_name, root in roots:
+            if path.is_relative_to(root):
+                raise ProviderConfigurationError(
+                    "CREDENTIAL_UNDER_BOUND_PATH", (credential_name, root_name),
+                )
 
 
 def _absolute_cluster_build(cluster: LocalClusterBuildSettings | None, absolute):

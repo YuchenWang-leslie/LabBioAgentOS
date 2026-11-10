@@ -347,10 +347,13 @@ class DockerCommandBuilder:
                     self._mount(mount.source, mount.target, mount.read_only),
                 ]
             )
+        # An image ENTRYPOINT would otherwise wrap, or replace, the Agent's program.
         argv.extend(
             [
+                "--entrypoint",
+                image.executable[0],
                 image.resolved_reference,
-                *image.executable,
+                *image.executable[1:],
                 str(self.SCRIPT_TARGET),
             ]
         )
@@ -370,6 +373,9 @@ class DockerCommandBuilder:
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         return ()  # Docker's /tmp is a tmpfs that disappears with the container.
+
+    def scratch_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        return ()  # The tmpfs size option already bounds /tmp.
 
     def model_stderr(self, stderr: bytes) -> bytes:
         return stderr
