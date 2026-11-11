@@ -21,6 +21,7 @@ from packaging.version import InvalidVersion, Version
 from labbioagentos.model_safety import UnsafeModelContentError, validate_model_visible_json
 
 from .images import ApprovedImage, ApprovedImageRegistry
+from .catalog import ImageCatalog
 from .errors import ImageNotApprovedError
 from .identity import SourceIdentity, derived_identity
 from .models import ExecutionRuntime
@@ -170,7 +171,8 @@ def _write_private(path: Path, value: dict) -> None:
 
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
-                 owner_user_id: str):
+                 owner_user_id: str, *, catalog: ImageCatalog | None = None):
+        self.catalog = catalog
         self.root = Path(root).expanduser().absolute()
         self.image_registry, self.builder, self.owner_user_id = image_registry, builder, owner_user_id
         if (not owner_user_id or len(owner_user_id) > 128 or
@@ -292,9 +294,13 @@ class EnvironmentService:
                 "version_satisfied": req.specifier.contains(version, prereleases=True) if version is not None else None,
                 "extras_verified": True if req.extras.issubset(documented_extras.get(name, set())) else None})
         known_satisfied = all(item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
-        return {"image_key": image.key, "image_reference": image.resolved_reference,
+        # Raw references stay hidden from models; provenance names the base by its key.
+        base_key = next((base.key for base in self.image_registry.list()
+                         if record and base.resolved_reference == record["base_image_reference"]), None)
+        return {"image_key": image.key,
+            **(self.catalog.describe(image.key) if self.catalog is not None else {}),
             "build_provenance": {
-                "base_image_reference": record["base_image_reference"],
+                "base_image_key": base_key,
                 "verified_requirements": list(record["requested_requirements"]),
                 "verified_import_modules": list(record["requested_import_modules"]),
             } if record else None,
@@ -309,7 +315,9 @@ class EnvironmentService:
         requirements = normalize_requirements(requirements)
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
             raise EnvironmentRequestError()
-        images = self.image_registry.list()
+        # Deprecated and revoked images are not offered for new selection.
+        images = [image for image in self.image_registry.list()
+                  if self.catalog is None or self.catalog.visible(image.key)]
         items = []
         for image in images[offset:offset + limit]:
             item = self._view(image, requirements)
@@ -329,6 +337,8 @@ class EnvironmentService:
         requirements, modules = normalize_requirements(requirements), normalize_modules(import_modules)
         try:
             base = self.image_registry.resolve(base_image_key, runtime=ExecutionRuntime.PYTHON)
+            if self.catalog is not None and not self.catalog.visible(base_image_key):
+                raise ImageNotApprovedError("A deprecated image is not a base for new builds")
         except (ValueError, ImageNotApprovedError):
             raise EnvironmentRequestError("UNKNOWN_IMAGE") from None
         verified_modules = normalize_modules(tuple(sorted(set(base.available_python_modules) | set(modules))), max_count=256)

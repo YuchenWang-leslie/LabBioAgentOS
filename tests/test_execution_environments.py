@@ -137,7 +137,8 @@ async def test_verified_build_registers_exact_image_and_normalized_cache_without
     )
     assert response["status"] == "SUCCEEDED" and response["cache_hit"] is False
     image = boundary.registry.resolve(response["image_key"])
-    assert image.reference == response["image_reference"] == DIGEST
+    assert image.reference == DIGEST
+    assert "image_reference" not in response and DIGEST not in json.dumps(response)
     assert image.available_python_modules == ("basepkg", "examplepkg")
     assert image.installed_packages["examplepkg"] == "2.0"
     assert image.network_allowed is False
@@ -302,7 +303,7 @@ async def test_build_provenance_survives_discovery_cache_and_restart(environment
 
     first = await environment.service.build_environment("base", ("examplepkg==2.0",), ("examplepkg",))
     expected = {
-        "base_image_reference": environment.base.resolved_reference,
+        "base_image_key": "base",
         "verified_requirements": ["examplepkg==2.0"],
         "verified_import_modules": ["examplepkg"],
     }

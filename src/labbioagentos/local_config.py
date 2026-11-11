@@ -898,7 +898,22 @@ def environment_scheduler_policy(settings: LocalSettings, *, download: bool = Fa
     )
 
 
-def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> dict:
+def _image_catalog(settings: LocalSettings):
+    """Configured images are lab images; the user's own builds are personal.
+
+    The lab and member stores that hold admitted images and state events are
+    attached once their locations exist (C15 step 4).
+    """
+    from .execution.catalog import ExecutionBackendName, ImageCatalog
+
+    return ImageCatalog(
+        owner_user_id=settings.principal.user_id,
+        backend=ExecutionBackendName(settings.execution.backend.upper()),
+        configured_keys=(image.key for image in settings.execution.images),
+    )
+
+
+def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog) -> dict:
     """Environment builds: Docker on the control-plane host, or cluster builds in jobs."""
     from .execution.environments import EnvironmentService
 
@@ -913,7 +928,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
                     proxy_url=environment.build_proxy, timeout_seconds=environment.build_timeout_seconds,
                     cpus=settings.execution.resources.cpus,
                 ),
-                owner_user_id=settings.principal.user_id,
+                owner_user_id=settings.principal.user_id, catalog=catalog,
             )
 
         return {"environment_service_factory": docker_service}
@@ -966,7 +981,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
                 sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
                 workspace_root=jobs_root, job_ledger=job_ledger, **placement,
             ),
-            owner_user_id=settings.principal.user_id,
+            owner_user_id=settings.principal.user_id, catalog=catalog,
         )
 
     # Crash cleanup reaches build and download jobs through the launcher of their shared root.
@@ -1176,10 +1191,12 @@ def build_application(
             from .execution.job_ledger import JobLedger
             execution_wiring = {"job_ledger": JobLedger(run_root / "jobs.sqlite")}
         cleanup.callback(execution_wiring["job_ledger"].close)
+        image_catalog = _image_catalog(settings)
         environment_wiring = {}
         if settings.environment is not None:
             # Build jobs share the execution ledger, so the run's crash cleanup covers them.
-            environment_wiring = _environment_wiring(settings, run_root, execution_wiring.get("job_ledger"))
+            environment_wiring = _environment_wiring(
+                settings, run_root, execution_wiring.get("job_ledger"), image_catalog)
         application = LabBioApplication(ApplicationRuntimeConfiguration(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
@@ -1188,7 +1205,8 @@ def build_application(
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,
-            approved_images=settings.execution.approved_images(), output_contracts=(profile.output_contract,),
+            approved_images=settings.execution.approved_images(), image_catalog=image_catalog,
+            output_contracts=(profile.output_contract,),
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,
             ),

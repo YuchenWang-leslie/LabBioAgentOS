@@ -27,6 +27,7 @@ from .models import (
     ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
     ExecutionReceipt, ExecutionResult, ExecutionScriptLocation, ExecutionSourceEdit,
 )
+from .catalog import ImageCatalog, ImageState
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 from .job_ledger import JobLedger
 
@@ -92,7 +93,9 @@ class ExecutionSubmissionService:
         trace_recorder: RunTraceRecorder | None = None,
         allow_generated_file_read: bool = False,
         job_ledger: JobLedger | None = None,
+        image_catalog: ImageCatalog | None = None,
     ):
+        self.image_catalog = image_catalog
         self.artifact_store = artifact_store
         self.access_service = access_service
         self.executor = executor
@@ -151,6 +154,11 @@ class ExecutionSubmissionService:
             draft.input_artifact_ids
         ).issubset(set(mountable_input_artifact_ids) | registered):
             raise ExecutionInputSelectionError()
+        catalog = self.image_catalog
+        if catalog is not None and catalog.state(draft.image_key) is not ImageState.ACTIVE:
+            # A deprecated image serves only runs that already executed with it.
+            catalog.require_selectable(
+                draft.image_key, used_by_run=draft.image_key in self._run_image_keys(run_id))
         try:
             ast.parse(draft.script_content)
         except SyntaxError as exc:
@@ -402,6 +410,17 @@ class ExecutionSubmissionService:
                 "source": source[source_offset:end],
             },
         }
+
+    def _run_image_keys(self, run_id: UUID) -> set[str]:
+        """Image keys this run has already executed with, from its exact submissions."""
+        keys = {value.receipt.image_key for value in self._submitted_executions.values()
+                if value.script_ref.run_id == run_id and value.receipt is not None}
+        if self.job_ledger is not None:
+            for execution_id in self.job_ledger.execution_submission_ids(run_id):
+                payload = self.job_ledger.execution_submission(run_id, execution_id)
+                if payload is not None:
+                    keys.add(_SubmissionBinding.model_validate_json(payload).receipt.image_key)
+        return keys
 
     def _require_confirmed_submissions(self, run_id: UUID) -> None:
         pending = self.job_ledger.unreceipted_executions(run_id) if self.job_ledger else ()

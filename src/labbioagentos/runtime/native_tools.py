@@ -481,6 +481,9 @@ _CAPABILITY_DESCRIPTIONS["environment_list"] = (
     "registered inventory. Changing requirements only compares recorded facts; "
     "listing does not probe the image. Listing does not select or build an "
     "environment. Missing inventory is unknown, not proof that a package is absent. "
+    "Each item states whether the image is the lab's or yours, its member-written "
+    "purpose when one exists, GPU support and where its inventory came from; "
+    "deprecated images are not listed. "
     "Returned image_key values can be explicitly selected for execution."
 )
 _CAPABILITY_DESCRIPTIONS["environment_build"] = (

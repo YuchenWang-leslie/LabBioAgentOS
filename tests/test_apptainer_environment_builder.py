@@ -200,7 +200,8 @@ async def test_environment_is_downloaded_locked_built_in_a_job_and_registered(cl
     receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=run_id)
 
     assert receipt["status"] == "SUCCEEDED", receipt
-    reference = receipt["image_reference"]
+    reference = service.image_registry.resolve(receipt["image_key"]).resolved_reference
+    assert reference not in json.dumps(receipt)
     assert json.loads(cluster.sif_store.path_for(reference).read_text())["packages"] == {
         "basepkg": "1.0", "examplepkg": "2.0"}
     assert service.image_registry.resolve(receipt["image_key"]).resolved_reference == reference
