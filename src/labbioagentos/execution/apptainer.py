@@ -143,6 +143,36 @@ class SifStore:
         return self.root / f"{match.group(1)}.sif"
 
 
+class SifStoreChain:
+    """Several content-addressed stores searched in order for one reference.
+
+    The first store holding a file with the referenced name answers; a file that
+    is present but fails its checks is an error, never a reason to try the next store.
+    """
+
+    def __init__(self, stores: tuple[SifStore, ...]):
+        if not stores:
+            raise ValueError("At least one SIF store is required")
+        self.stores = tuple(stores)
+        self.root = self.stores[0].root
+
+    def register(self, source: str | Path) -> str:
+        return self.stores[0].register(source)
+
+    def path_for(self, reference: str) -> Path:
+        return self._holder(reference).path_for(reference)
+
+    def verify(self, reference: str) -> Path:
+        return self._holder(reference).verify(reference)
+
+    def _holder(self, reference: str) -> SifStore:
+        for store in self.stores:
+            path = store._file(reference)
+            if path.exists() or path.is_symlink():
+                return store
+        raise SifStoreError("Referenced SIF is not registered")
+
+
 class ApptainerCommandBuilder:
     """Construct fixed `apptainer exec` argv equivalent to the Docker sandbox contract."""
 
@@ -154,7 +184,7 @@ class ApptainerCommandBuilder:
 
     def __init__(
         self,
-        sif_store: SifStore,
+        sif_store: SifStore | SifStoreChain,
         *,
         scratch_root: str | Path,
         resource_enforcement: ResourceEnforcement,

@@ -114,6 +114,35 @@ per-user control plane and is outside C15; and roles in the
 single-account registry (Q9-3), because anyone with that account could
 change them.
 
+### Promotion requests through a drop directory
+
+Refined by MOHAN CUI on 2026-11-11. A member's private area is closed to the
+holding account, and members cannot write the lab area, so a request filed in
+the member's own area cannot reach an administrator. Promotion therefore uses a
+drop directory (option (a)); rejected: (b), administrators re-admitting from a
+source named outside LabBio.
+
+- `<lab-root>/requests/` is the only directory in the lab area that members may
+  write. It has mode `3770`: setgid gives every file the lab group, and the
+  sticky bit lets a member remove only their own files. The start-up check
+  allows group write on this directory alone.
+- A member files a request (`image-promote-request`) naming a personal image:
+  the requester, the image key, its source identity and its metadata. For an
+  OCI reference (A1) the request is the whole delivery; the administrator pulls
+  the same digest again. For an OCI archive or SIF file (A2, A3) the member
+  places the file next to the request. A member may withdraw their own request.
+- An administrator, under the holding account, lists, approves or rejects
+  requests. Approval checks that the request file's owner uid is the
+  requester's registered uid, that the delivered image matches the stated
+  source identity (re-pulled digest or file sha256), and runs every admission
+  check. The decision is recorded under `<lab-root>/promotions/`, which only the
+  holding account writes, with the administrator, time and request. Processed
+  requests are removed by the administrator.
+- Residual risk, recorded in `KNOWN_LIMITATIONS.md` and the deployment guide: a
+  member can fill the shared filesystem through `requests/`. LabBio checks sizes
+  at approval and limits each member's pending requests, but only a site disk
+  quota bounds the writes themselves.
+
 ## DECIDED-C15-C - SHELL runtime family
 
 Decided by MOHAN CUI, 2026-11-11.

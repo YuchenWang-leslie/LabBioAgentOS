@@ -136,6 +136,42 @@ member_root = "~/labbio-member"   # 自己的私有区，0700；托管模式下�
 
 记录是"一条一个文件、只追加"，既有文件从不改写。最后一个管理员不能被撤销或降级。
 
+## 成员镜像入库
+
+已批准的成员可以把做好的镜像放进自己的个人镜像目录。只有自己的运行能看到和选用它，
+由 Agent 在执行时自己选择。有三种形式（DECIDED-C15-A）：
+
+```bash
+labbio image-admit --config <配置> --key samtools-1-21 --purpose "比对与 BAM 工具" \
+  --oci quay.io/biocontainers/samtools@sha256:<64 hex>     # A1：带 digest 的 OCI 地址
+labbio image-admit ... --archive image.tar                 # A2：OCI 布局归档（如 docker save 的输出）
+labbio image-admit ... --sif image.sif                     # A3：SIF 文件，只能用于 Apptainer
+labbio image-list  --config <配置>
+```
+
+- 地址必须写成 `主机/名称@sha256:<64 位>`，主机要含 `.` 或 `:`，或者是 `localhost`；
+  不接受 tag。
+- 入库检查：CPU 架构必须和计算节点一致（在 Mac 上构建时请加 `--platform linux/amd64`）；
+  在不联网、不挂载数据的容器里探测入口程序和软件清单；用途说明是一行文字，不能含路径、
+  URL 或镜像引用；检查大小和配额；记录是谁、何时、从哪个来源入库的。
+- 来源身份：同一个镜像不管用 OCI 地址还是归档交来，都是同一个 manifest digest，因此
+  算同一个环境。
+- `env-` 开头的 key 留给 Agent 构建的环境。
+- 私有仓库的凭据放在成员私有区的 `registries.json`（权限必须是 0600），格式为
+  `{"hosts": {"<主机>": {"username": "...", "secret": "..."}}}`。凭据只用于拉取，
+  不进入任何容器、trace 或模型。
+- 只按 OCI Distribution 标准访问仓库：Docker Hub、quay.io、GHCR、Harbor、Nexus 等
+  都走同一套代码，不使用任何厂商的私有接口。
+
+管理员在持有账号下设置入库策略（不设置时使用默认值：单个镜像 16 GiB、每个成员
+64 GiB、整个实验室 512 GiB、不限仓库）：
+
+```bash
+labbio lab-policy --lab-root <路径> --max-image-gib 16 --member-quota-gib 64 \
+  --allowed-registry quay.io --allowed-registry ghcr.io --reason "..."
+labbio lab-policy --lab-root <路径> --any-registry --reason "..."   # 清除仓库限制
+```
+
 ## 安全边界
 
 - 管理命令与普通任务分离；

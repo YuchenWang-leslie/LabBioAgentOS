@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import grp
 import os
+import re
 import stat
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -92,6 +93,26 @@ class MemberEvent(_Model):
     at: datetime
 
 
+_GIB = 1_073_741_824
+_HOST = r"^[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?$"
+
+
+class LabPolicy(_Model):
+    """Administrator limits for image admission (DECIDED-C15-H); the newest event applies."""
+
+    max_image_bytes: StrictInt = Field(default=16 * _GIB, ge=1)
+    member_quota_bytes: StrictInt = Field(default=64 * _GIB, ge=1)
+    lab_quota_bytes: StrictInt = Field(default=512 * _GIB, ge=1)
+    # Empty means any registry; otherwise only these hosts may be admitted from.
+    allowed_registries: tuple[StrictStr, ...] = Field(default=(), max_length=64)
+    actor: StrictStr | None = Field(default=None, pattern=_IDENTIFIER)
+    reason: StrictStr | None = Field(default=None, max_length=500)
+    at: datetime | None = None
+
+    def registry_allowed(self, host: str) -> bool:
+        return not self.allowed_registries or host in self.allowed_registries
+
+
 @dataclass(frozen=True)
 class LabMember:
     user_id: str
@@ -131,6 +152,7 @@ class LabArea:
     def __init__(self, root: Path):
         self.root = Path(root).expanduser().absolute()
         self.members_root = self.root / "members"
+        self.policy_root = self.root / "policy"
         self.catalog = CatalogStore(self.root / "catalog")
 
     @classmethod
@@ -190,8 +212,8 @@ class LabArea:
                     raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
 
     def shared_directories(self) -> tuple[Path, ...]:
-        return (self.root, self.members_root, self.catalog.root, self.catalog.records_root,
-                self.catalog.events_root)
+        return (self.root, self.members_root, self.policy_root, self.catalog.root,
+                self.catalog.records_root, self.catalog.events_root)
 
     def held_by_me(self) -> bool:
         return os.lstat(self.root).st_uid == os.getuid()
@@ -223,6 +245,23 @@ class LabArea:
         _replay([*read_events(self.members_root, MemberEvent), event])  # Refuse before writing.
         self._append(event)
         return event
+
+    def policy(self) -> LabPolicy:
+        try:
+            events = read_events(self.policy_root, LabPolicy)
+        except AppendOnlyError:
+            raise LabError("LAB_AREA_UNAVAILABLE", ("lab_root",)) from None
+        return events[-1] if events else LabPolicy()
+
+    def set_policy(self, *, reason: str, **limits) -> LabPolicy:
+        actor = self._acting_admin()
+        for host in limits.get("allowed_registries", ()):
+            if not re.fullmatch(_HOST, host):
+                raise LabError("LAB_MEMBER_ACTION_INVALID", ("allowed_registries",))
+        policy = LabPolicy(**{**self.policy().model_dump(exclude={"actor", "reason", "at"}), **limits},
+                           actor=actor.user_id, reason=reason, at=next_event_time(self.policy_root))
+        add_file(self.policy_root / event_name(policy.at), "event", policy.model_dump(mode="json"))
+        return policy
 
     def _acting_admin(self) -> LabMember:
         if not self.held_by_me():
@@ -258,7 +297,8 @@ def lab_error_payload(error: LabError) -> dict:
     return {"error": error.code, "detail": error.hint, "fields": list(error.fields)}
 
 
-LAB_COMMANDS = {"lab-init", "lab-members", "member-approve", "member-revoke", "admin-grant", "admin-revoke"}
+LAB_COMMANDS = {"lab-init", "lab-members", "lab-policy", "member-approve", "member-revoke", "admin-grant",
+                "admin-revoke"}
 _ACTIONS = {"member-approve": MemberAction.APPROVE, "member-revoke": MemberAction.REVOKE,
             "admin-grant": MemberAction.GRANT_ADMIN, "admin-revoke": MemberAction.REVOKE_ADMIN}
 
@@ -271,6 +311,14 @@ def add_lab_commands(commands) -> None:
             command.add_argument("--lab-id", required=True)
             command.add_argument("--admin-user", required=True)
             command.add_argument("--group", help="OS group whose members may read the lab area")
+        elif name == "lab-policy":
+            command.add_argument("--max-image-gib", type=int)
+            command.add_argument("--member-quota-gib", type=int)
+            command.add_argument("--lab-quota-gib", type=int)
+            command.add_argument("--allowed-registry", action="append",
+                                 help="Repeat per host; give none to keep the current list")
+            command.add_argument("--any-registry", action="store_true", help="Clear the allowlist")
+            command.add_argument("--reason", required=True)
         elif name != "lab-members":
             command.add_argument("--user", required=True)
             command.add_argument("--reason", required=True)
@@ -287,7 +335,16 @@ def administer_lab(args) -> dict:
     area = LabArea(args.lab_root)
     area.check_permissions()
     if args.command == "lab-members":
-        return area.summary()
+        return {**area.summary(), "policy": area.policy().model_dump(mode="json")}
+    if args.command == "lab-policy":
+        limits = {name: value * _GIB for name, value in (
+            ("max_image_bytes", args.max_image_gib), ("member_quota_bytes", args.member_quota_gib),
+            ("lab_quota_bytes", args.lab_quota_gib)) if value is not None}
+        if args.any_registry:
+            limits["allowed_registries"] = ()
+        elif args.allowed_registry:
+            limits["allowed_registries"] = tuple(sorted(set(args.allowed_registry)))
+        return {"event": "policy", **area.set_policy(reason=args.reason, **limits).model_dump(mode="json")}
     event = area.change(_ACTIONS[args.command], user_id=args.user,
                         uid=getattr(args, "uid", None), reason=args.reason)
     return {"event": event.action.value.lower(), "user_id": event.user_id, "uid": event.uid,
@@ -295,6 +352,7 @@ def administer_lab(args) -> dict:
 
 
 __all__ = [
-    "LAB_COMMANDS", "LabArea", "LabError", "LabManifest", "LabMember", "MemberAction", "MemberEvent",
+    "LAB_COMMANDS", "LabArea", "LabError", "LabManifest", "LabMember", "LabPolicy", "MemberAction",
+    "MemberEvent",
     "add_lab_commands", "administer_lab", "lab_error_payload", "private_member_root",
 ]

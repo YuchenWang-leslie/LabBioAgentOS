@@ -1,0 +1,314 @@
+"""Admitting a finished image into a member's personal catalog (DECIDED-C15-A).
+
+Forms: A1, an OCI reference pinned by digest; A2, an OCI layout archive; A3, a SIF
+file. Every admission runs the same checks: CPU architecture, an offline probe of
+the entry point and software inventory, member metadata, size and quota, and a
+record naming who admitted what and when. Nothing here chooses an image for a
+task; the Agent selects among admitted images later.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import stat
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from .backend import ProcessRunner
+from .catalog import (
+    CatalogStore,
+    ExecutionBackendName,
+    GpuSupport,
+    ImageRecord,
+    ImageScope,
+    InventorySnapshot,
+    Realization,
+)
+from .identity import SourceIdentity, SourceKind
+from .images import ApprovedImage
+from .inventory import InventoryOrigin, validate_inventory, validate_purpose
+from .models import ExecutionRuntime
+from .oci import AcquiredImage, OciError, OciReference, OciRegistryClient, RegistryCredential, layout_archive, read_archive
+
+# Runs inside the image with no network and no data: the interpreter's own view.
+PROBE_PROGRAM = r"""
+import glob, json, platform
+from importlib import metadata
+python = {}
+for dist in metadata.distributions():
+    name = dist.metadata.get("Name")
+    if isinstance(name, str):
+        python[name] = dist.version
+conda = {}
+for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/opt/micromamba"):
+    for path in sorted(glob.glob(prefix + "/conda-meta/*.json"))[:4096]:
+        try:
+            with open(path) as stream:
+                record = json.load(stream)
+            conda[record["name"]] = record["version"]
+        except Exception:
+            pass
+print(json.dumps({"machine": platform.machine(), "python": python, "conda": conda}))
+""".strip()
+_MAX_PROBE_BYTES = 2_097_152
+
+
+class AdmissionError(ValueError):
+    """A fixed, value-free reason an image was not admitted."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+    @property
+    def hint(self) -> str:
+        return ADMISSION_HINTS.get(self.code, "The image was not admitted; nothing was recorded.")
+
+
+ADMISSION_HINTS = {
+    "ADMISSION_REQUIRES_LAB": "Images are admitted into a lab member's personal area; configure [lab].",
+    "IMAGE_KEY_RESERVED": "Keys starting with env- belong to environments the Agent builds.",
+    "IMAGE_KEY_TAKEN": "Choose a key that no configured, lab or personal image uses.",
+    "PURPOSE_INVALID": "Give a one-line purpose without paths, URLs or image references.",
+    "FORM_UNSUPPORTED_ON_BACKEND": "A SIF file runs only under Apptainer; give an OCI reference or archive.",
+    "REFERENCE_NOT_PINNED": "Give the image as host/name@sha256:<64 hex>; tags are not accepted.",
+    "REGISTRY_NOT_ALLOWED": "The lab policy does not allow admissions from this registry.",
+    "REGISTRY_UNAUTHORIZED": "Add a credential for this registry to registries.json in your member area.",
+    "IMAGE_NOT_FOUND": "The registry has no image with this digest.",
+    "PLATFORM_NOT_AVAILABLE": "The image has no build for the compute nodes' architecture.",
+    "ARCHITECTURE_MISMATCH": "The image is built for another CPU architecture; build it with --platform.",
+    "IMAGE_TOO_LARGE": "The image exceeds the lab's per-image size limit.",
+    "MEMBER_QUOTA_EXCEEDED": "Your personal images would exceed your quota; deprecate or delete some first.",
+    "ENTRY_POINT_MISSING": "The image has no python entry point for the PYTHON runtime.",
+    "PROBE_FAILED": ("The offline probe failed: the image may have no python entry point for the PYTHON "
+                     "runtime, or it could not start without network and data."),
+    "REALIZATION_FAILED": "The image could not be loaded or converted on this backend.",
+    "DIGEST_MISMATCH": "Downloaded content does not match its digest.",
+}
+
+
+@dataclass(frozen=True)
+class AdmissionLimits:
+    max_image_bytes: int
+    member_quota_bytes: int
+    allowed_registries: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Realized:
+    reference: str
+    produced_by: str
+
+
+class Realizer:
+    """Turns an acquired image into this backend's executable file."""
+
+    backend: ExecutionBackendName
+
+    def realize_layout(self, image: AcquiredImage, staging: Path) -> Realized:
+        raise NotImplementedError
+
+    def realize_sif(self, sif: Path) -> Realized:
+        raise AdmissionError("FORM_UNSUPPORTED_ON_BACKEND")  # A SIF runs only under Apptainer.
+
+    def discard(self, realized: Realized) -> None:
+        """Remove a realization that was not admitted, when this admission created it."""
+
+
+class DockerRealizer(Realizer):
+    backend = ExecutionBackendName.DOCKER
+
+    def __init__(self, docker_binary: str = "docker", run: Callable = subprocess.run):
+        self.docker_binary, self._run = docker_binary, run
+
+    def realize_layout(self, image: AcquiredImage, staging: Path) -> Realized:
+        archive = staging / "layout.tar"
+        layout_archive(image.layout, archive)
+        result = self._run([self.docker_binary, "load", "--quiet", "--input", str(archive)],
+                           capture_output=True, text=True, timeout=1800, check=False)
+        lines = [line for line in result.stdout.splitlines() if line.startswith("Loaded image ID: ")]
+        if result.returncode != 0 or len(lines) != 1:
+            raise AdmissionError("REALIZATION_FAILED")
+        image_id = lines[0].removeprefix("Loaded image ID: ").strip()
+        if not image_id.startswith("sha256:") or len(image_id) != 71:
+            raise AdmissionError("REALIZATION_FAILED")
+        return Realized(image_id, f"docker-load-{uuid4().hex[:12]}")
+
+    def discard(self, realized: Realized) -> None:
+        # Only the exact id this admission loaded; never a prune.
+        self._run([self.docker_binary, "image", "rm", realized.reference],
+                  capture_output=True, text=True, timeout=120, check=False)
+
+
+class ApptainerRealizer(Realizer):
+    """Builds a SIF from the layout offline, in a job, then stores it by sha256."""
+
+    backend = ExecutionBackendName.APPTAINER
+
+    def __init__(self, *, sif_store, build: Callable[[Path, Path], None]):
+        self.sif_store, self._build = sif_store, build
+
+    def realize_layout(self, image: AcquiredImage, staging: Path) -> Realized:
+        output = staging / "image.sif"
+        self._build(image.layout, output)  # Raises AdmissionError when the job fails.
+        return self.realize_sif(output)
+
+    def realize_sif(self, sif: Path) -> Realized:
+        try:
+            reference = self.sif_store.register(sif)
+        except (OSError, ValueError):
+            raise AdmissionError("REALIZATION_FAILED") from None
+        return Realized(reference, f"sif-register-{uuid4().hex[:12]}")
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    machine: str
+    inventory: InventorySnapshot
+
+
+def parse_probe(stdout: bytes) -> ProbeResult:
+    """Untrusted output from inside the image: parsed and validated, never repaired."""
+    if len(stdout) > _MAX_PROBE_BYTES:
+        raise AdmissionError("PROBE_OUTPUT_INVALID")
+    try:
+        payload = json.loads(stdout.decode("utf-8").strip().splitlines()[-1])
+        machine = payload["machine"]
+        if not isinstance(machine, str) or not machine.isascii() or len(machine) > 32:
+            raise ValueError()
+    except (ValueError, KeyError, IndexError, UnicodeError, TypeError):
+        raise AdmissionError("PROBE_OUTPUT_INVALID") from None
+    conda, python = payload.get("conda") or {}, payload.get("python") or {}
+    origin, raw = ((InventoryOrigin.CONDA_META, conda) if conda else
+                   (InventoryOrigin.PYTHON, python) if python else (InventoryOrigin.UNKNOWN, None))
+    try:
+        validated = validate_inventory(raw, origin)
+    except ValueError:
+        raise AdmissionError("PROBE_OUTPUT_INVALID") from None
+    return ProbeResult(machine, InventorySnapshot(origin=validated.origin, packages=validated.packages,
+                                                  invalid_count=validated.invalid_count,
+                                                  truncated=validated.truncated))
+
+
+class ImageAdmission:
+    def __init__(self, *, owner_user_id: str, personal: CatalogStore, realizer: Realizer,
+                 probe: Callable[[ApprovedImage], bytes], machine: str, limits: AdmissionLimits,
+                 staging_root: Path, registry_client: Callable[[], OciRegistryClient],
+                 existing_keys: Callable[[], set[str]]):
+        self.owner_user_id, self.personal, self.realizer = owner_user_id, personal, realizer
+        self.probe, self.machine, self.limits = probe, machine, limits
+        self.staging_root, self.registry_client, self.existing_keys = staging_root, registry_client, existing_keys
+
+    def admit(self, *, key: str, purpose: str, gpu: GpuSupport, oci: str | None = None,
+              archive: Path | None = None, sif: Path | None = None) -> ImageRecord:
+        if sum(value is not None for value in (oci, archive, sif)) != 1:
+            raise AdmissionError("FORM_REQUIRED")
+        try:
+            purpose = validate_purpose(purpose)
+        except ValueError:
+            raise AdmissionError("PURPOSE_INVALID") from None
+        if key in self.existing_keys():
+            raise AdmissionError("IMAGE_KEY_TAKEN")
+        staging = self.staging_root / f"admission-{uuid4().hex}"
+        staging.mkdir(parents=True, mode=0o700)
+        realized = None
+        try:
+            acquired, size, delivery = self._acquire(staging, oci, archive, sif)
+            used = sum(record.size_bytes or 0 for record in self.personal.records().values())
+            if used + size > self.limits.member_quota_bytes:
+                raise AdmissionError("MEMBER_QUOTA_EXCEEDED")  # Checked before anything is built.
+            if isinstance(acquired, AcquiredImage):
+                source, realized = acquired.source, self.realizer.realize_layout(acquired, staging)
+            else:
+                realized = self.realizer.realize_sif(acquired)
+                # A SIF has no upstream source: the file is its own identity (DECIDED-C15-D).
+                source = SourceIdentity(kind=SourceKind.SIF, digest=realized.reference)
+            approved = ApprovedImage(key=key, reference=realized.reference, runtime=ExecutionRuntime.PYTHON,
+                                     source=source)
+            result = parse_probe(self.probe(approved))
+            if result.machine != self.machine:
+                raise AdmissionError("ARCHITECTURE_MISMATCH")
+            record = ImageRecord(
+                key=key, scope=ImageScope.PERSONAL, owner_user_id=self.owner_user_id, source=source,
+                realizations=(Realization(backend=self.realizer.backend, resolved_image=realized.reference,
+                                          produced_by=f"{delivery}:{realized.produced_by}"),),
+                runtime=ExecutionRuntime.PYTHON, inventory=result.inventory, purpose=purpose, gpu=gpu,
+                size_bytes=size, admitted_by=self.owner_user_id, admitted_at=datetime.now(timezone.utc),
+            )
+            self.personal.add_record(record)
+            return record
+        except BaseException:
+            if realized is not None:
+                self.realizer.discard(realized)
+            raise
+        finally:
+            shutil.rmtree(staging)
+
+    def _acquire(self, staging: Path, oci, archive, sif) -> tuple[AcquiredImage | Path, int, str]:
+        platform = _platform(self.machine)
+        try:
+            if oci is not None:
+                reference = OciReference.parse(oci)
+                if self.limits.allowed_registries and reference.host not in self.limits.allowed_registries:
+                    raise AdmissionError("REGISTRY_NOT_ALLOWED")
+                client = self.registry_client()
+                try:
+                    image = client.pull(reference, platform=platform, layout=staging / "layout",
+                                        max_bytes=self.limits.max_image_bytes)
+                finally:
+                    client.close()
+                return image, image.size_bytes, "oci"
+            if archive is not None:
+                image = read_archive(Path(archive), platform=platform, layout=staging / "layout",
+                                     max_bytes=self.limits.max_image_bytes)
+                return image, image.size_bytes, "archive"
+        except OciError as exc:
+            raise AdmissionError(exc.code) from None
+        path = Path(sif)
+        info = path.lstat() if path.exists() or path.is_symlink() else None
+        if info is None or not stat.S_ISREG(info.st_mode):
+            raise AdmissionError("SIF_INVALID")
+        if info.st_size > self.limits.max_image_bytes:
+            raise AdmissionError("IMAGE_TOO_LARGE")
+        return path, info.st_size, "sif"
+
+
+def _platform(machine: str) -> str:
+    from .oci import platform_for
+
+    try:
+        return platform_for(machine)
+    except OciError as exc:
+        raise AdmissionError(exc.code) from None
+
+
+def load_registry_credentials(path: Path | None) -> dict[str, RegistryCredential]:
+    """Member registry credentials: a 0600 file owned by this user, never shown or passed on."""
+    if path is None or not path.exists():
+        return {}
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise AdmissionError("REGISTRY_CREDENTIALS_PERMISSIONS")
+    try:
+        hosts = json.loads(path.read_text(encoding="utf-8"))["hosts"]
+        return {host: RegistryCredential(value["username"], value["secret"]) for host, value in hosts.items()
+                if isinstance(value.get("username"), str) and isinstance(value.get("secret"), str)}
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        raise AdmissionError("REGISTRY_CREDENTIALS_INVALID") from None
+
+
+def probe_with(builder, runner: ProcessRunner, timeout_seconds: float = 120.0) -> Callable[[ApprovedImage], bytes]:
+    """The probe runs through the backend's own data-free, network-disabled probe argv."""
+    def probe(image: ApprovedImage) -> bytes:
+        outcome = runner.run(builder.import_probe_argv(image, ("-I", "-c", PROBE_PROGRAM)),
+                             timeout_seconds=timeout_seconds)
+        if outcome.exit_code != 0 or outcome.timed_out or outcome.output_limit_exceeded:
+            raise AdmissionError("ENTRY_POINT_MISSING" if outcome.exit_code in {126, 127} else "PROBE_FAILED")
+        return outcome.stdout
+    return probe

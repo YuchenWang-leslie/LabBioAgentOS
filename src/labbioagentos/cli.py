@@ -62,6 +62,8 @@ def _parser() -> argparse.ArgumentParser:
     image_register.add_argument("--sif", type=Path, required=True)
     commands.add_parser("backend-check", help="Probe the configured Apptainer backend on this node")
     from .local_workspace_cli import add_commands
+    from .local_images import add_image_commands
+    add_image_commands(commands)  # Before add_commands, so managed identity arguments apply.
     add_commands(commands)
     from .local_lab import add_lab_commands
     add_lab_commands(commands)
@@ -354,6 +356,10 @@ def main(argv: list[str] | None = None) -> int:
             _emit(report)
             return 0 if passed else 1
         settings = bind_lab(scoped_settings(args, settings))
+        from .local_images import IMAGE_COMMANDS, image_admit, image_list
+        if args.command in IMAGE_COMMANDS:
+            _emit(image_admit(settings, args) if args.command == "image-admit" else image_list(settings))
+            return 0
         if args.command == "run":
             return asyncio.run(_run(args, settings))
         if args.command in {"history", "conversation-link", "reconcile", "continue", "revise", "question", "answer"}:
@@ -394,6 +400,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if isinstance(exc, LabError):
             _emit(lab_error_payload(exc))
+            return 1
+        from .execution.admission import AdmissionError
+        if isinstance(exc, AdmissionError):
+            _emit({"error": exc.code, "detail": exc.hint})
             return 1
         if isinstance(exc, RunWriterActiveError):
             _emit({"error": "RUN_WRITER_ACTIVE", "detail":

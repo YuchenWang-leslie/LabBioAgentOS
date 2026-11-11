@@ -220,6 +220,10 @@ class ImageCatalog:
         lab = key in self.configured_keys or key in self._lab_records
         return ImageScope.LAB if lab else ImageScope.PERSONAL
 
+    def held_keys(self) -> set[str]:
+        """Every key this view knows: configured, lab and personal images."""
+        return set(self.configured_keys) | set(self._lab_records) | set(self._personal_records)
+
     def record(self, key: str) -> ImageRecord | None:
         return self._lab_records.get(key) or self._personal_records.get(key)
 

@@ -1029,6 +1029,17 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
     return {"environment_service_factory": cluster_service, "environment_job_launcher": build_launcher}
 
 
+def sif_stores(settings: LocalSettings):
+    """The configured SIF store, then the member's personal one when a lab is configured."""
+    from .execution.apptainer import SifStore, SifStoreChain
+    from .local_lab import private_member_root
+
+    stores = [SifStore(settings.execution.apptainer.sif_store)]
+    if settings.lab is not None:
+        stores.append(SifStore(private_member_root(settings.lab.member_root) / "sif"))
+    return SifStoreChain(tuple(stores))
+
+
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     """Apptainer wiring; placement and capability checks are explicit."""
     from .execution.apptainer import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
@@ -1039,7 +1050,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
     image = settings.execution.default_approved_image()
-    store = SifStore(apptainer.sif_store)
+    store = sif_stores(settings)
     runner = SubprocessApptainerRunner(
         max_output_file_bytes=settings.execution.max_output_file_bytes,
         cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
