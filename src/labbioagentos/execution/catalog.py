@@ -8,17 +8,17 @@ that other members read while an administrator writes, so no database is used.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import re
 from collections.abc import Iterable
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+
+from labbioagentos.append_only import (
+    AppendOnlyError, add_file, event_name, list_files, next_event_time, read_events, read_file,
+)
 
 from .errors import ImageNotApprovedError
 from .identity import SourceIdentity
@@ -27,8 +27,6 @@ from .inventory import InventoryOrigin, validate_purpose
 from .models import ExecutionImageKey, ExecutionRuntime
 
 _RECORD_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\.json")
-_EVENT_NAME = re.compile(r"[0-9]{8}T[0-9]{12}Z-[0-9a-f]{32}\.json")
-_MAX_FILE_BYTES = 1_048_576
 
 
 class ImageScope(StrEnum):
@@ -61,7 +59,7 @@ _TRANSITIONS = {
 }
 
 
-class CatalogError(ValueError):
+class CatalogError(AppendOnlyError):
     """The catalog on disk is unreadable, inconsistent or would be changed unsafely."""
 
 
@@ -134,11 +132,6 @@ class ImageEvent(_Model):
     at: datetime
 
 
-def _digest(payload: dict) -> str:
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 class CatalogStore:
     """One directory of image records and state events; files are only ever added."""
 
@@ -155,67 +148,34 @@ class CatalogStore:
     def add_record(self, record: ImageRecord) -> None:
         if record.key in self.records():
             raise CatalogError("An image record with this key already exists")
-        self._add(self.records_root / f"{record.key}.json", "record", record.model_dump(mode="json"))
+        self._guard(add_file, self.records_root / f"{record.key}.json", "record",
+                    record.model_dump(mode="json"))
 
     def add_event(self, event: ImageEvent, *, current: ImageState) -> None:
         if event.state not in _TRANSITIONS[current]:
             raise CatalogError(f"An image cannot change from {current.value} to {event.state.value}")
-        stamp = event.at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        self._add(self.events_root / f"{stamp}-{uuid4().hex}.json", "event", event.model_dump(mode="json"))
+        self._guard(add_file, self.events_root / event_name(event.at), "event", event.model_dump(mode="json"))
 
     def records(self) -> dict[str, ImageRecord]:
         records = {}
-        for path in self._files(self.records_root, _RECORD_NAME):
-            record = self._read(path, "record", ImageRecord)
+        for path in self._guard(list_files, self.records_root, _RECORD_NAME):
+            record = self._guard(read_file, path, "record", ImageRecord)
             if path.name != f"{record.key}.json":
                 raise CatalogError("An image record file does not match its key")
             records[record.key] = record
         return records
 
     def events(self) -> list[ImageEvent]:
-        # File names start with the UTC time, so name order is event order.
-        return [self._read(path, "event", ImageEvent)
-                for path in sorted(self._files(self.events_root, _EVENT_NAME))]
-
-    def _add(self, path: Path, kind: str, payload: dict) -> None:
-        temporary = path.with_name(f".{uuid4().hex}.tmp")
-        body = json.dumps({kind: payload, "digest": _digest(payload)}, sort_keys=True).encode("utf-8")
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.link(temporary, path)  # Fails if the name exists: nothing is ever replaced.
-        except FileExistsError:
-            raise CatalogError("A catalog file with this name already exists") from None
-        finally:
-            temporary.unlink(missing_ok=True)
+        return self._guard(read_events, self.events_root, ImageEvent)
 
     @staticmethod
-    def _files(directory: Path, pattern: re.Pattern) -> Iterable[Path]:
-        if not directory.is_dir():
-            return []
-        found = []
-        for path in directory.iterdir():
-            if path.name.startswith(".") and path.name.endswith(".tmp"):
-                continue  # An interrupted write never became a catalog file.
-            if path.is_symlink() or not path.is_file() or pattern.fullmatch(path.name) is None:
-                raise CatalogError("The catalog directory holds an unexpected entry")
-            found.append(path)
-        return found
-
-    @staticmethod
-    def _read(path: Path, kind: str, model):
+    def _guard(function, *arguments):
         try:
-            if path.stat().st_size > _MAX_FILE_BYTES:
-                raise ValueError()
-            content = json.loads(path.read_text(encoding="utf-8"))
-            if set(content) != {kind, "digest"} or content["digest"] != _digest(content[kind]):
-                raise ValueError()
-            return model.model_validate_json(json.dumps(content[kind]))
-        except (OSError, UnicodeError, ValueError, ValidationError):
-            raise CatalogError("A catalog file is unreadable or fails its integrity check") from None
+            return function(*arguments)
+        except CatalogError:
+            raise
+        except AppendOnlyError as exc:
+            raise CatalogError(str(exc)) from None
 
 
 class ImageCatalog:
@@ -303,6 +263,6 @@ class ImageCatalog:
         if store is None:
             raise CatalogError("No catalog store owns this image")
         event = ImageEvent(key=key, state=state, actor=actor, reason=reason,
-                           at=datetime.now(timezone.utc))
+                           at=next_event_time(store.events_root))
         store.add_event(event, current=self.state(key))
         self._states[key] = state

@@ -1,0 +1,300 @@
+"""The lab area: member registry, roles and lab images, held by one OS account.
+
+On a cluster each member runs LabBio under their own OS account, so the
+operating system enforces the boundary, not LabBio code (DECIDED-C15-B). The lab
+area is writable only by its holding account (a lab service account or an
+administrator's own account) and readable by members through a lab group.
+Every approval, revocation and role change is an event file naming the acting
+LAB_ADMIN; nothing is edited in place.
+"""
+
+from __future__ import annotations
+
+import grp
+import os
+import stat
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import StrEnum
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+
+from .append_only import AppendOnlyError, add_file, event_name, next_event_time, read_events, read_file
+from .execution.catalog import CatalogStore
+from .governance.models import PrincipalRole
+
+_IDENTIFIER = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+_MANIFEST = "lab.json"
+
+_LAB_FIX_HINTS = {
+    "LAB_AREA_UNAVAILABLE": (
+        "The configured [lab] root is missing or is not a lab area; an administrator creates it "
+        "with lab-init under the holding account."
+    ),
+    "LAB_AREA_PERMISSIONS": (
+        "The lab area must be a directory owned by its holding account, writable only by that "
+        "account, readable by the lab group and closed to everyone else."
+    ),
+    "LAB_MEMBER_NOT_APPROVED": "Ask a lab administrator to approve this user with member-approve.",
+    "LAB_MEMBER_UID_MISMATCH": (
+        "This user is approved for another OS account. Run LabBio under the account that was "
+        "approved, or ask an administrator to approve this account."
+    ),
+    "LAB_ADMIN_REQUIRED": (
+        "Lab administration runs under the account that holds the lab area, as a registered "
+        "LAB_ADMIN."
+    ),
+    "LAB_MEMBER_ACTION_INVALID": (
+        "The requested member change does not apply to the member's current state, or would "
+        "leave the lab without an administrator."
+    ),
+}
+
+
+class LabError(ValueError):
+    """A lab area or membership problem, reported by a fixed code and setting names only."""
+
+    def __init__(self, code: str, fields: tuple[str, ...] = ()):
+        if code not in _LAB_FIX_HINTS:
+            raise ValueError("Unknown lab code")
+        super().__init__(code)
+        self.code, self.fields = code, fields
+
+    @property
+    def hint(self) -> str:
+        return _LAB_FIX_HINTS[self.code]
+
+
+class MemberAction(StrEnum):
+    APPROVE = "APPROVE"
+    REVOKE = "REVOKE"
+    GRANT_ADMIN = "GRANT_ADMIN"
+    REVOKE_ADMIN = "REVOKE_ADMIN"
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class LabManifest(_Model):
+    lab_id: StrictStr = Field(pattern=_IDENTIFIER)
+    created_by: StrictStr = Field(pattern=_IDENTIFIER)
+    created_at: datetime
+
+
+class MemberEvent(_Model):
+    user_id: StrictStr = Field(pattern=_IDENTIFIER)
+    uid: StrictInt = Field(ge=0)
+    action: MemberAction
+    actor: StrictStr = Field(pattern=_IDENTIFIER)
+    reason: StrictStr = Field(min_length=1, max_length=500)
+    at: datetime
+
+
+@dataclass(frozen=True)
+class LabMember:
+    user_id: str
+    uid: int
+    roles: frozenset[PrincipalRole]
+
+
+def _replay(events: list[MemberEvent]) -> dict[str, LabMember]:
+    """Current members; an event that does not fit the state before it fails closed."""
+    members: dict[str, LabMember] = {}
+    for event in events:
+        current = members.get(event.user_id)
+        if event.action is MemberAction.APPROVE:
+            if current is not None:
+                raise LabError("LAB_MEMBER_ACTION_INVALID")
+            members[event.user_id] = LabMember(event.user_id, event.uid, frozenset({PrincipalRole.MEMBER}))
+            continue
+        if current is None or current.uid != event.uid:
+            raise LabError("LAB_MEMBER_ACTION_INVALID")
+        admin = PrincipalRole.LAB_ADMIN in current.roles
+        if event.action is MemberAction.REVOKE:
+            del members[event.user_id]
+        elif event.action is MemberAction.GRANT_ADMIN and not admin:
+            members[event.user_id] = LabMember(current.user_id, current.uid,
+                                               current.roles | {PrincipalRole.LAB_ADMIN})
+        elif event.action is MemberAction.REVOKE_ADMIN and admin:
+            members[event.user_id] = LabMember(current.user_id, current.uid,
+                                               current.roles - {PrincipalRole.LAB_ADMIN})
+        else:
+            raise LabError("LAB_MEMBER_ACTION_INVALID")
+        if not any(PrincipalRole.LAB_ADMIN in item.roles for item in members.values()):
+            raise LabError("LAB_MEMBER_ACTION_INVALID")
+    return members
+
+
+class LabArea:
+    def __init__(self, root: Path):
+        self.root = Path(root).expanduser().absolute()
+        self.members_root = self.root / "members"
+        self.catalog = CatalogStore(self.root / "catalog")
+
+    @classmethod
+    def initialize(cls, root: Path, *, lab_id: str, admin_user_id: str, group: str | None) -> "LabArea":
+        """Create a lab area held by this account, with its first LAB_ADMIN."""
+        area = cls(root)
+        if area.root.exists():
+            raise LabError("LAB_AREA_UNAVAILABLE", ("lab_root",))
+        area.root.mkdir(parents=True, mode=0o700)
+        if group is not None:
+            try:
+                os.chown(area.root, -1, grp.getgrnam(group).gr_gid)
+            except (KeyError, PermissionError):
+                area.root.rmdir()
+                raise LabError("LAB_AREA_PERMISSIONS", ("group",)) from None
+        # Group members may read and traverse, never write. setgid makes every new file
+        # take the lab group, whichever primary group the administrator logs in with.
+        mode = 0o2750 if group is not None else 0o700
+        os.chmod(area.root, mode)
+        for directory in area.shared_directories()[1:]:
+            directory.mkdir(mode=0o700)
+            if group is not None:
+                os.chown(directory, -1, area.root.stat().st_gid)
+            os.chmod(directory, mode)
+        now = datetime.now(timezone.utc)
+        add_file(area.root / _MANIFEST, "manifest",
+                 LabManifest(lab_id=lab_id, created_by=admin_user_id, created_at=now).model_dump(mode="json"))
+        uid = os.getuid()
+        for action in (MemberAction.APPROVE, MemberAction.GRANT_ADMIN):
+            area._append(MemberEvent(user_id=admin_user_id, uid=uid, action=action, actor=admin_user_id,
+                                     reason="Lab area created by its holding account.",
+                                     at=next_event_time(area.members_root)))
+        return area
+
+    def manifest(self) -> LabManifest:
+        try:
+            return read_file(self.root / _MANIFEST, "manifest", LabManifest)
+        except AppendOnlyError:
+            raise LabError("LAB_AREA_UNAVAILABLE", ("lab_root",)) from None
+
+    def check_permissions(self) -> None:
+        """The OS boundary itself: refuse to run on a lab area others could rewrite."""
+        try:
+            info = os.lstat(self.root)
+        except OSError:
+            raise LabError("LAB_AREA_UNAVAILABLE", ("lab_root",)) from None
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o027:
+            raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+        if not self.held_by_me() and os.access(self.root, os.W_OK):
+            raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+        if info.st_mode & 0o050:
+            # A shared area without setgid gives new files the writer's own group,
+            # which members cannot read.
+            for directory in self.shared_directories():
+                mode = os.lstat(directory).st_mode
+                if not mode & stat.S_ISGID or mode & 0o027 or os.lstat(directory).st_gid != info.st_gid:
+                    raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+
+    def shared_directories(self) -> tuple[Path, ...]:
+        return (self.root, self.members_root, self.catalog.root, self.catalog.records_root,
+                self.catalog.events_root)
+
+    def held_by_me(self) -> bool:
+        return os.lstat(self.root).st_uid == os.getuid()
+
+    def members(self) -> dict[str, LabMember]:
+        try:
+            return _replay(read_events(self.members_root, MemberEvent))
+        except AppendOnlyError:
+            raise LabError("LAB_AREA_UNAVAILABLE", ("lab_root",)) from None
+
+    def require_member(self, user_id: str, uid: int) -> LabMember:
+        member = self.members().get(user_id)
+        if member is None:
+            raise LabError("LAB_MEMBER_NOT_APPROVED", ("identity.user_id",))
+        if member.uid != uid:
+            raise LabError("LAB_MEMBER_UID_MISMATCH", ("identity.user_id",))
+        return member
+
+    def change(self, action: MemberAction, *, user_id: str, uid: int | None, reason: str) -> MemberEvent:
+        """Apply one member change as the registered LAB_ADMIN of this holding account."""
+        actor = self._acting_admin()
+        members = self.members()
+        if uid is None:
+            if user_id not in members:
+                raise LabError("LAB_MEMBER_ACTION_INVALID")
+            uid = members[user_id].uid
+        event = MemberEvent(user_id=user_id, uid=uid, action=action, actor=actor.user_id, reason=reason,
+                            at=next_event_time(self.members_root))
+        _replay([*read_events(self.members_root, MemberEvent), event])  # Refuse before writing.
+        self._append(event)
+        return event
+
+    def _acting_admin(self) -> LabMember:
+        if not self.held_by_me():
+            raise LabError("LAB_ADMIN_REQUIRED")
+        admins = [member for member in self.members().values()
+                  if member.uid == os.getuid() and PrincipalRole.LAB_ADMIN in member.roles]
+        if len(admins) != 1:
+            raise LabError("LAB_ADMIN_REQUIRED")
+        return admins[0]
+
+    def _append(self, event: MemberEvent) -> None:
+        add_file(self.members_root / event_name(event.at), "event", event.model_dump(mode="json"))
+
+    def summary(self) -> dict:
+        """Operator view: user ids, roles and whether each uid is this account; no paths."""
+        return {"lab_id": self.manifest().lab_id, "members": [
+            {"user_id": member.user_id, "uid": member.uid,
+             "roles": sorted(role.value for role in member.roles)}
+            for member in sorted(self.members().values(), key=lambda item: item.user_id)]}
+
+
+def private_member_root(path: Path) -> Path:
+    """A member's own area: created 0700, and refused if anyone else could read it."""
+    root = Path(path).expanduser().absolute()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = os.lstat(root)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise LabError("LAB_AREA_PERMISSIONS", ("lab.member_root",))
+    return root
+
+
+def lab_error_payload(error: LabError) -> dict:
+    return {"error": error.code, "detail": error.hint, "fields": list(error.fields)}
+
+
+LAB_COMMANDS = {"lab-init", "lab-members", "member-approve", "member-revoke", "admin-grant", "admin-revoke"}
+_ACTIONS = {"member-approve": MemberAction.APPROVE, "member-revoke": MemberAction.REVOKE,
+            "admin-grant": MemberAction.GRANT_ADMIN, "admin-revoke": MemberAction.REVOKE_ADMIN}
+
+
+def add_lab_commands(commands) -> None:
+    for name in sorted(LAB_COMMANDS):
+        command = commands.add_parser(name, help="Lab area administration under its holding account")
+        command.add_argument("--lab-root", type=Path, required=True)
+        if name == "lab-init":
+            command.add_argument("--lab-id", required=True)
+            command.add_argument("--admin-user", required=True)
+            command.add_argument("--group", help="OS group whose members may read the lab area")
+        elif name != "lab-members":
+            command.add_argument("--user", required=True)
+            command.add_argument("--reason", required=True)
+        if name == "member-approve":
+            command.add_argument("--uid", type=int, required=True,
+                                 help="The member's own OS account uid on this system")
+
+
+def administer_lab(args) -> dict:
+    if args.command == "lab-init":
+        area = LabArea.initialize(args.lab_root, lab_id=args.lab_id, admin_user_id=args.admin_user,
+                                  group=args.group)
+        return {"event": "lab_initialized", **area.summary()}
+    area = LabArea(args.lab_root)
+    area.check_permissions()
+    if args.command == "lab-members":
+        return area.summary()
+    event = area.change(_ACTIONS[args.command], user_id=args.user,
+                        uid=getattr(args, "uid", None), reason=args.reason)
+    return {"event": event.action.value.lower(), "user_id": event.user_id, "uid": event.uid,
+            "actor": event.actor}
+
+
+__all__ = [
+    "LAB_COMMANDS", "LabArea", "LabError", "LabManifest", "LabMember", "MemberAction", "MemberEvent",
+    "add_lab_commands", "administer_lab", "lab_error_payload", "private_member_root",
+]

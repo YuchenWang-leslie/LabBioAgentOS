@@ -126,7 +126,7 @@ ANTHROPIC_API_KEY=<密钥>
 
 ### 配置错误码
 
-模型服务、镜像列表或凭据位置配置有问题时，CLI 只输出固定错误码、改法和字段名，
+模型服务、镜像列表、凭据位置或实验室成员身份有问题时，CLI 只输出固定错误码、改法和字段名，
 不包含任何值，例如
 `{"error": "PROVIDER_ENDPOINT_NOT_HTTPS", "detail": "...", "fields": ["provider.endpoint"]}`。
 
@@ -141,6 +141,12 @@ ANTHROPIC_API_KEY=<密钥>
 | `PROVIDER_KEY_MISSING` | 凭据文件里没有 `api_key_env` 指定的变量，或者它的值为空或跨行 |
 | `PROVIDER_CREDENTIALS_NOT_LOADED` | 内部组装错误：调用模型前没有加载密钥 |
 | `EXECUTION_IMAGES_MIGRATION_REQUIRED` | 配置还在用单镜像写法（`[execution] image_key` 等），见下文"从单镜像配置迁移" |
+| `LAB_AREA_UNAVAILABLE` | `[lab] root` 不存在、不是实验室区，或者记录无法读取、校验不通过 |
+| `LAB_AREA_PERMISSIONS` | 实验室区或成员私有区权限不对：其他人可写或可读、成员可写，或者共享目录缺少 setgid |
+| `LAB_MEMBER_NOT_APPROVED` | 当前用户不是已批准的成员，或者已被撤销 |
+| `LAB_MEMBER_UID_MISMATCH` | 该成员登记的是另一个操作系统账号 |
+| `LAB_ADMIN_REQUIRED` | 成员管理命令没有在持有账号下、由已登记的管理员执行 |
+| `LAB_MEMBER_ACTION_INVALID` | 成员变更不符合当前状态（例如重复批准），或者会让实验室没有管理员 |
 | `CREDENTIAL_UNDER_BOUND_PATH` | 凭据文件（模型 API 密钥文件或工作区令牌）位于可能被挂进容器的目录里，例如数据根、结果根、托管工作区、环境根、SIF 仓库、scratch 或缓存目录；把它移到这些目录之外 |
 
 ### 从旧配置迁移

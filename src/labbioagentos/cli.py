@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from .application import ApplicationRunRequest
-from .local_config import build_application, load_settings, runtime_manifest
+from .local_config import bind_lab, build_application, load_settings, runtime_manifest
 from .local_delivery import export_run
 
 
@@ -63,6 +63,8 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("backend-check", help="Probe the configured Apptainer backend on this node")
     from .local_workspace_cli import add_commands
     add_commands(commands)
+    from .local_lab import add_lab_commands
+    add_lab_commands(commands)
     for command in commands.choices.values():
         command.add_argument("--config", type=Path,
                              default=Path("~/.config/labbioagent/runtime.toml"))
@@ -335,8 +337,12 @@ def main(argv: list[str] | None = None) -> int:
         from .local_workspace_cli import (
             ADMIN_COMMANDS, administer, gold_catalog, gold_export, scoped_settings,
         )
+        from .local_lab import LAB_COMMANDS, administer_lab
         if args.command in ADMIN_COMMANDS:
             _emit(administer(args))
+            return 0
+        if args.command in LAB_COMMANDS:
+            _emit(administer_lab(args))
             return 0
         settings = load_settings(args.config.expanduser())
         if args.command in {"image-register", "backend-check"}:
@@ -347,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             report, passed = check_backend(settings)
             _emit(report)
             return 0 if passed else 1
-        settings = scoped_settings(args, settings)
+        settings = bind_lab(scoped_settings(args, settings))
         if args.command == "run":
             return asyncio.run(_run(args, settings))
         if args.command in {"history", "conversation-link", "reconcile", "continue", "revise", "question", "answer"}:
@@ -381,9 +387,13 @@ def main(argv: list[str] | None = None) -> int:
         from .local_gold_library import GoldExportConflict
         from .local_continuation import RunWriterActiveError
         from .local_config import ProviderConfigurationError
+        from .local_lab import LabError, lab_error_payload
         if isinstance(exc, ProviderConfigurationError):
             # A fixed code, a value-free fix and setting names only.
             _emit({"error": exc.code, "detail": exc.hint, "fields": list(exc.fields)})
+            return 1
+        if isinstance(exc, LabError):
+            _emit(lab_error_payload(exc))
             return 1
         if isinstance(exc, RunWriterActiveError):
             _emit({"error": "RUN_WRITER_ACTIVE", "detail":

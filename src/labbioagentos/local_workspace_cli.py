@@ -96,6 +96,9 @@ def scoped_settings(args, settings):
         "environment": settings.environment.model_copy(update={
             "root": workspace.user_root / "Environments",
         }) if settings.environment is not None else None,
+        # Logical users sharing one account must not share personal images.
+        "lab": settings.lab.model_copy(update={"member_root": workspace.user_root / "Images"})
+        if settings.lab is not None else None,
     })
     # The scoped roots differ from the TOML roots, so both credentials are checked again.
     check_credentials_outside_bound_paths(scoped, (("credential_file", credential),))

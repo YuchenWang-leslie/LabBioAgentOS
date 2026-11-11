@@ -94,6 +94,48 @@ labbio gold-export [identity arguments]
 候选、审查、批准版本和使用记录保存在用户 Gold 根内。批准版本不可原地修改；更新
 产生新版本。目录过滤是精确、稳定、有界的，不是语义搜索或科学质量排序。
 
+## 实验室区（多个操作系统账号）
+
+集群上每个成员用自己的操作系统账号运行 LabBio。实验室区存放成员名单、角色、
+审批和撤销记录，以及实验室镜像目录。它只归一个"持有账号"所有，可以是专门的实验室
+服务账号，也可以是管理员本人的账号。成员通过实验室用户组只读访问。权限由操作系统保证，
+不靠 LabBio 代码里的判断。
+
+在持有账号下初始化（第一个管理员就是当前账号）：
+
+```bash
+labbio lab-init --lab-root /shared/lab/labbio-lab --lab-id LAB1 \
+  --admin-user ADMIN1 --group <实验室用户组>
+```
+
+- 目录权限是 `2750`，归持有账号和实验室用户组所有。setgid 位让新文件自动属于实验室
+  用户组，所以管理员用什么主组登录都不影响成员读取。
+- 不加 `--group` 时权限是 `0700`，只适合单人单账号。
+
+成员管理（只能在持有账号下、由已登记的管理员执行，每条记录都写明操作者和原因）：
+
+```bash
+labbio member-approve --lab-root <路径> --user USER1 --uid <该成员账号的 uid> --reason "..."
+labbio member-revoke  --lab-root <路径> --user USER1 --reason "..."
+labbio admin-grant    --lab-root <路径> --user USER1 --reason "..."
+labbio admin-revoke   --lab-root <路径> --user USER1 --reason "..."
+labbio lab-members    --lab-root <路径>
+```
+
+成员在自己的配置里加：
+
+```toml
+[lab]
+root = "/shared/lab/labbio-lab"
+member_root = "~/labbio-member"   # 自己的私有区，0700；托管模式下改为 <用户目录>/Images
+```
+
+每次启动时检查：实验室区权限正确（成员不可写；共享时目录带 setgid）；当前用户是已批准的
+成员；当前进程的 uid 和审批时登记的一致。实验室 id 和角色从实验室区读取，配置文件
+不能指定。不满足就拒绝启动，报固定错误码（见 `LOCAL_TASK_ENTRYPOINT.md`）。
+
+记录是"一条一个文件、只追加"，既有文件从不改写。最后一个管理员不能被撤销或降级。
+
 ## 安全边界
 
 - 管理命令与普通任务分离；

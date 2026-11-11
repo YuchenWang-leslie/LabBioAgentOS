@@ -72,7 +72,7 @@ def test_a_record_round_trips_and_is_never_replaced(tmp_path):
 
     assert path.read_bytes() == before
     assert store.records() == {"tools": _record()}
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.stat().st_mode & 0o777 == 0o640  # Readable by the lab group, never written.
 
 
 def test_a_concurrent_writer_cannot_replace_a_record(tmp_path, monkeypatch):

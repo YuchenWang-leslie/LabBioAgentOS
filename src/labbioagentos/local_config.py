@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from dotenv import dotenv_values
 from pydantic import (
-    BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator,
+    BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, ValidationError, field_validator,
     model_serializer, model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -446,6 +446,13 @@ class LocalLauncherSettings(_SettingsModel):
         return SchedulerTemplate.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
 
 
+class LocalLabSettings(_SettingsModel):
+    """The lab area other members read, and this member's own private area."""
+
+    root: Path
+    member_root: Path
+
+
 class LocalSettings(_SettingsModel):
     runtime_backend: Literal["native"] = "native"
     result_root: Path
@@ -459,6 +466,9 @@ class LocalSettings(_SettingsModel):
     gold_root: Path | None = None
     environment: LocalEnvironmentSettings | None = None
     launcher: LocalLauncherSettings | None = None
+    lab: LocalLabSettings | None = None
+    # Set only by bind_lab from the lab member registry; TOML cannot supply a role.
+    _lab_roles: frozenset = PrivateAttr(default=frozenset())
 
     @model_validator(mode="after")
     def validate_placement(self) -> "LocalSettings":
@@ -484,6 +494,9 @@ class LocalSettings(_SettingsModel):
 
     @property
     def principal(self) -> Principal:
+        if self._lab_roles:
+            return Principal(user_id=self.identity.user_id, lab_id=self.identity.lab_id,
+                             roles=self._lab_roles)
         return Principal(user_id=self.identity.user_id, lab_id=self.identity.lab_id)
 
     @property
@@ -565,6 +578,9 @@ def load_settings(path: Path) -> LocalSettings:
             "apptainer": _absolute_apptainer(settings.execution.apptainer, absolute),
         }) if settings.execution.apptainer else settings.execution,
         "launcher": _absolute_launcher(settings.launcher, absolute),
+        "lab": settings.lab.model_copy(update={
+            "root": absolute(settings.lab.root), "member_root": absolute(settings.lab.member_root),
+        }) if settings.lab else None,
     })
     if settings.environment is not None and settings.environment.cluster is not None:
         # Partitions and directives are checked as the build and download jobs will use them.
@@ -898,18 +914,43 @@ def environment_scheduler_policy(settings: LocalSettings, *, download: bool = Fa
     )
 
 
+def bind_lab(settings: LocalSettings) -> LocalSettings:
+    """Run only as an approved lab member under the approved OS account (DECIDED-C15-B).
+
+    The lab id and roles come from the lab area, never from TOML or task text.
+    """
+    if settings.lab is None:
+        return settings
+    from .local_lab import LabArea
+
+    area = LabArea(settings.lab.root)
+    area.check_permissions()
+    member = area.require_member(settings.identity.user_id, os.getuid())
+    bound = settings.model_copy(update={
+        "identity": settings.identity.model_copy(update={"lab_id": area.manifest().lab_id}),
+    })
+    bound._lab_roles = member.roles
+    return bound
+
+
 def _image_catalog(settings: LocalSettings):
     """Configured images are lab images; the user's own builds are personal.
 
-    The lab and member stores that hold admitted images and state events are
-    attached once their locations exist (C15 step 4).
+    With a lab area, its catalog holds lab images and state events, and the
+    member's private area holds personal ones.
     """
-    from .execution.catalog import ExecutionBackendName, ImageCatalog
+    from .execution.catalog import CatalogStore, ExecutionBackendName, ImageCatalog
+    from .local_lab import LabArea, private_member_root
 
+    lab = personal = None
+    if settings.lab is not None:
+        lab = LabArea(settings.lab.root).catalog
+        personal = CatalogStore(private_member_root(settings.lab.member_root) / "catalog").initialize()
     return ImageCatalog(
         owner_user_id=settings.principal.user_id,
         backend=ExecutionBackendName(settings.execution.backend.upper()),
         configured_keys=(image.key for image in settings.execution.images),
+        lab=lab, personal=personal,
     )
 
 
@@ -1050,6 +1091,7 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
+    settings = bind_lab(settings)  # Idempotent; a library caller cannot skip the membership check.
     manifest = runtime_manifest(settings)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     credentials = ProviderCredentials(settings.provider)
