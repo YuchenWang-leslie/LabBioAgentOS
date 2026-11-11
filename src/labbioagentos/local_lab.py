@@ -35,7 +35,8 @@ _LAB_FIX_HINTS = {
     ),
     "LAB_AREA_PERMISSIONS": (
         "The lab area must be a directory owned by its holding account, writable only by that "
-        "account, readable by the lab group and closed to everyone else."
+        "account, readable by the lab group and closed to everyone else. The holding account "
+        "must itself belong to the lab group to read members' requests."
     ),
     "LAB_MEMBER_NOT_APPROVED": "Ask a lab administrator to approve this user with member-approve.",
     "LAB_MEMBER_UID_MISMATCH": (
@@ -223,6 +224,9 @@ class LabArea:
             if (stat.S_IMODE(requests.st_mode) != 0o3770 or requests.st_uid != info.st_uid
                     or requests.st_gid != info.st_gid):
                 raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+            if self.held_by_me() and info.st_gid not in {os.getegid(), *os.getgroups()}:
+                # Members' request files are readable only through the lab group.
+                raise LabError("LAB_AREA_PERMISSIONS", ("lab_group",))
         elif stat.S_IMODE(os.lstat(self.requests_root).st_mode) & 0o077:
             raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
 

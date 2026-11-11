@@ -48,6 +48,7 @@ _HINTS = {
     "REQUEST_NOT_FOUND": "No pending request has this id.",
     "REQUEST_NOT_YOURS": "Only the member who filed a request can withdraw it.",
     "REQUEST_FORGED": "The request file does not belong to the member it names; it was not acted on.",
+    "REQUEST_UNREADABLE": "This account cannot read the request; it must belong to the lab group.",
     "LAB_KEY_INVALID": "Lab image keys start with lab- and must not be in use.",
 }
 
@@ -140,6 +141,9 @@ def pending(area: LabArea) -> list[tuple[PromotionRequest | None, str, str | Non
         request_id = path.name.removesuffix(".json")
         if _REQUEST_NAME.fullmatch(path.name) is None or path.is_symlink():
             found.append((None, request_id, "REQUEST_FORGED"))
+            continue
+        if not os.access(path, os.R_OK):
+            found.append((None, request_id, "REQUEST_UNREADABLE"))
             continue
         try:
             request = read_file(path, "request", PromotionRequest)

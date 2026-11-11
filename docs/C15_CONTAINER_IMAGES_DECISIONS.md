@@ -59,6 +59,16 @@ explicitly selects an `image_key` for each execution, may build derived
 environments, and decides how to handle a missing tool. It cannot admit an
 image or name a raw reference. It may not propose an image (DECIDED-C15-E).
 
+### Where an OCI image is pulled
+
+Refined by MOHAN CUI on 2026-11-11. The OCI client pulls on the host where the
+admission or approval command runs; on a cluster this is the login node.
+Admission is a one-off command run by a person, comparable to `apptainer pull`
+on a login node. Pulling in a job would need LabBio's own Python on compute
+nodes and registry credentials read inside a job, which would need a separate
+design. Only the Apptainer conversion of the pulled layout runs in a job. This
+is recorded in `KNOWN_LIMITATIONS.md`.
+
 ## DECIDED-C15-B - Image visibility and member records
 
 ### Visibility

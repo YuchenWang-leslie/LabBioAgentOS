@@ -335,3 +335,23 @@ def test_a_consistent_request_written_by_another_account_is_flagged(tmp_path, mo
 
     monkeypatch.setattr(pathlib.Path, "lstat", lstat)
     assert local_promotion.pending(area)[0][2] == "REQUEST_FORGED"
+
+
+def test_a_holder_outside_the_lab_group_is_told_before_misreading_requests(tmp_path, monkeypatch):
+    area = _area(tmp_path, group=MY_GROUP)
+    monkeypatch.setattr(local_lab.os, "getegid", lambda: os.getgid() + 4242)
+    monkeypatch.setattr(local_lab.os, "getgroups", lambda: [])
+    with pytest.raises(LabError) as raised:
+        area.check_permissions()
+    assert raised.value.fields == ("lab_group",)
+
+
+def test_an_unreadable_request_is_reported_as_unreadable_not_forged(tmp_path):
+    area = _area(tmp_path)
+    request = _file(area)
+    path = area.requests_root / f"{request.request_id}.json"
+    path.chmod(0o000)
+    try:
+        assert local_promotion.pending(area)[0][2] == "REQUEST_UNREADABLE"
+    finally:
+        path.chmod(0o640)
