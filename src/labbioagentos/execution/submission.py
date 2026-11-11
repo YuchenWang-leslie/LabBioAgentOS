@@ -25,7 +25,8 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import (
     ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
-    ExecutionReceipt, ExecutionResult, ExecutionScriptLocation, ExecutionSourceEdit,
+    ExecutionReceipt, ExecutionResult, ExecutionRuntime, ExecutionScriptLocation, ExecutionSourceEdit,
+    RuntimeSource,
 )
 from .catalog import ImageCatalog, ImageState
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
@@ -159,13 +160,17 @@ class ExecutionSubmissionService:
             # A deprecated image serves only runs that already executed with it.
             catalog.require_selectable(
                 draft.image_key, used_by_run=draft.image_key in self._run_image_keys(run_id))
-        try:
-            ast.parse(draft.script_content)
-        except SyntaxError as exc:
-            raise ExecutionScriptValidationError(
-                script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
-                diagnostics=(self._syntax_diagnostic(exc, draft.script_content),),
-            ) from exc
+        # An omitted runtime is the documented PYTHON default; the source is recorded either way.
+        runtime = draft.runtime or ExecutionRuntime.PYTHON
+        source = RuntimeSource.EXPLICIT if draft.runtime is not None else RuntimeSource.DEFAULT
+        if runtime is ExecutionRuntime.PYTHON:
+            try:
+                ast.parse(draft.script_content)
+            except SyntaxError as exc:
+                raise ExecutionScriptValidationError(
+                    script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
+                    diagnostics=(self._syntax_diagnostic(exc, draft.script_content),),
+                ) from exc
         for artifact_id in draft.input_artifact_ids:
             ref = self.artifact_store.get_ref(artifact_id)
             self._require_exact_workspace(ref, workspace)
@@ -173,7 +178,8 @@ class ExecutionSubmissionService:
                 principal, ref, AccessAction.READ_ARTIFACT
             )
         plan = ExecutionPlan(
-            **draft.model_dump(),
+            **{**draft.model_dump(), "runtime": runtime},
+            runtime_source=source,
             run_id=run_id,
             stage_id=stage_id,
             invocation_id=invocation_id,
@@ -190,6 +196,8 @@ class ExecutionSubmissionService:
             {
                 "execution_id": str(plan.execution_id),
                 "image_key": plan.image_key,
+                "runtime": plan.runtime.value,
+                "runtime_source": plan.runtime_source.value,
                 "input_artifact_ids": [str(item) for item in plan.input_artifact_ids],
                 "revision_of": str(revision_of) if revision_of is not None else None,
                 "resources": plan.resources.model_dump(mode="json"),

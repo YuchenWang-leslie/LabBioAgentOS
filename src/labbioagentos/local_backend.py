@@ -21,6 +21,7 @@ from .execution.apptainer_build import (
     prepare_cache_dir,
 )
 from .execution.apptainer_probe import probe_capabilities
+from .execution.models import ExecutionRuntime
 from .execution.launchers import check_scheduler_client
 from .local_config import LocalSettings, scheduler_policy
 
@@ -132,7 +133,7 @@ def check_backend(
         local_resources = (local_check or launcher.probe)()
         runner = SystemdProbeRunner(launcher, settings.execution.resources)
     capabilities = probe(
-        binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
+        binary=apptainer.binary, sif_path=sif_path, executable=image.entry_point(ExecutionRuntime.PYTHON)[0],
         runner=runner,
         scratch_root=apptainer.scratch_root,
     )

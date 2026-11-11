@@ -19,6 +19,7 @@ from labbioagentos.execution.models import (
     ExecutionRuntime,
     ExecutionScriptContent,
     ExecutionSourceEdit,
+    RUNTIME_DESCRIPTION,
     RequestedResources,
 )
 from labbioagentos.kernel import (
@@ -167,7 +168,7 @@ class ExecutionReviseArguments(NativeToolArguments):
 class ExecutionSubmitArguments(NativeToolArguments):
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
-    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime: ExecutionRuntime | None = Field(default=None, description=RUNTIME_DESCRIPTION)
     input_artifact_ids: ExecutionInputArtifactIds = Field(
         default=(),
         description=(

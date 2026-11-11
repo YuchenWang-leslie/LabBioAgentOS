@@ -103,7 +103,9 @@ def test_docker_always_overrides_the_image_entry_point(executable, tmp_path):
     from labbioagentos import DockerCommandBuilder
     from labbioagentos.execution.mounts import ExecutionWorkspaceManager
 
-    image, plan = _image().model_copy(update={"executable": executable}), _plan()
+    from labbioagentos.execution.models import ExecutionRuntime
+
+    image, plan = _image().model_copy(update={"entry_points": {ExecutionRuntime.PYTHON: executable}}), _plan()
     workspace = ExecutionWorkspaceManager(tmp_path / "work").prepare(plan)
 
     argv = DockerCommandBuilder().build(plan, image, workspace, ())

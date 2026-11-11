@@ -1366,7 +1366,7 @@ class LabBioRuntimeToolSet:
         self,
         image_key: ExecutionImageKey,
         script_content: ExecutionScriptContent,
-        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
+        runtime: ExecutionRuntime | None = None,
         input_artifact_ids: ExecutionInputArtifactIds = (),
         parameters: dict[str, JsonValue] = {},
         requested_outputs: ExecutionRequestedOutputs = (),
@@ -1425,7 +1425,8 @@ class LabBioRuntimeToolSet:
             image_key: Approved key from the default execution capability or a
                 verified environment_list/environment_build result.
             script_content: Complete program to execute in the approved runtime.
-            runtime: Runtime family from the current execution capability.
+            runtime: Omit for PYTHON. Name SHELL to run script_content with sh in an
+                image whose runtimes include SHELL; the runtime is never inferred.
             input_artifact_ids: Exact UUID strings copied from the current stage's
                 input_artifact_usage[].artifact_id where execution_input_eligible
                 is true, or from execution_capability.mountable_input_artifact_ids.

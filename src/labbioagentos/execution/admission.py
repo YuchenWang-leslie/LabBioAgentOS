@@ -57,6 +57,13 @@ for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/op
             pass
 print(json.dumps({"machine": platform.machine(), "python": python, "conda": conda}))
 """.strip()
+# For images without Python: the CPU architecture, then conda-meta file names, which
+# conda writes as <name>-<version>-<build>.json.
+SHELL_PROBE_PROGRAM = (
+    "uname -m; for prefix in /opt/conda /usr/local /opt/miniconda3 /opt/mamba /opt/micromamba; do "
+    'ls "$prefix/conda-meta" 2>/dev/null | grep "\\.json$" | head -n 4096; done'
+)
+DEFAULT_ENTRY_POINTS = {ExecutionRuntime.PYTHON: ("python",), ExecutionRuntime.SHELL: ("sh",)}
 _MAX_PROBE_BYTES = 2_097_152
 
 
@@ -90,8 +97,9 @@ ADMISSION_HINTS = {
     "SOURCE_MISMATCH": "The delivered image is not the source the request names.",
     "INVENTORY_MISMATCH": "The re-probed software inventory differs from the member's record.",
     "ENTRY_POINT_MISSING": "The image has no python entry point for the PYTHON runtime.",
-    "PROBE_FAILED": ("The offline probe failed: the image may have no python entry point for the PYTHON "
-                     "runtime, or it could not start without network and data."),
+    "PROBE_FAILED": ("The offline probe failed: the image may lack the entry point of a declared runtime "
+                     "(python for PYTHON, sh for SHELL), or it could not start without network and data."),
+    "RUNTIMES_INVALID": "Declare each runtime the image supports once: PYTHON, SHELL or both.",
     "REALIZATION_FAILED": "The image could not be loaded or converted on this backend.",
     "DIGEST_MISMATCH": "Downloaded content does not match its digest.",
 }
@@ -185,6 +193,31 @@ class ProbeResult:
     inventory: InventorySnapshot
 
 
+def parse_shell_probe(stdout: bytes) -> ProbeResult:
+    """The shell probe: architecture first, then conda-meta file names; never repaired."""
+    if len(stdout) > _MAX_PROBE_BYTES:
+        raise AdmissionError("PROBE_OUTPUT_INVALID")
+    try:
+        lines = stdout.decode("utf-8").split("\n")
+    except UnicodeError:
+        raise AdmissionError("PROBE_OUTPUT_INVALID") from None
+    machine = lines[0].strip()
+    if not machine or not machine.isascii() or len(machine) > 32 or " " in machine:
+        raise AdmissionError("PROBE_OUTPUT_INVALID")
+    packages, invalid = {}, 0
+    for line in (line.strip() for line in lines[1:]):
+        parts = line.removesuffix(".json").rsplit("-", 2) if line.endswith(".json") else []
+        if len(parts) != 3:
+            invalid += bool(line)
+            continue
+        packages[parts[0]] = parts[1]
+    origin = InventoryOrigin.CONDA_META if packages else InventoryOrigin.UNKNOWN
+    validated = validate_inventory(packages if packages else None, origin)
+    return ProbeResult(machine, InventorySnapshot(origin=validated.origin, packages=validated.packages,
+                                                  invalid_count=validated.invalid_count + invalid,
+                                                  truncated=validated.truncated))
+
+
 def parse_probe(stdout: bytes) -> ProbeResult:
     """Untrusted output from inside the image: parsed and validated, never repaired."""
     if len(stdout) > _MAX_PROBE_BYTES:
@@ -217,7 +250,8 @@ class ImageAdmission:
     """
 
     def __init__(self, *, store: CatalogStore, scope: ImageScope, owner_user_id: str | None,
-                 admitted_by: str, realizer: Realizer, probe: Callable[[ApprovedImage], bytes], machine: str,
+                 admitted_by: str, realizer: Realizer, probe: Callable[[ApprovedImage, ExecutionRuntime], bytes],
+                 machine: str,
                  limits: AdmissionLimits, staging_root: Path, registry_client: Callable[[], OciRegistryClient],
                  existing_keys: Callable[[], set[str]]):
         self.store, self.scope, self.owner_user_id, self.admitted_by = store, scope, owner_user_id, admitted_by
@@ -226,9 +260,13 @@ class ImageAdmission:
 
     def admit(self, *, key: str, purpose: str, gpu: GpuSupport, oci: str | None = None,
               archive: Path | None = None, sif: Path | None = None,
+              runtimes: tuple[ExecutionRuntime, ...] = (ExecutionRuntime.PYTHON,),
               expected: ImageRecord | None = None) -> ImageRecord:
         if sum(value is not None for value in (oci, archive, sif)) != 1:
             raise AdmissionError("FORM_REQUIRED")
+        if not runtimes or len(set(runtimes)) != len(runtimes):
+            raise AdmissionError("RUNTIMES_INVALID")
+        entry_points = {runtime: DEFAULT_ENTRY_POINTS[runtime] for runtime in runtimes}
         try:
             purpose = validate_purpose(purpose)
         except ValueError:
@@ -253,12 +291,16 @@ class ImageAdmission:
                 raise AdmissionError("SOURCE_MISMATCH")
             realized = (self.realizer.realize_layout(acquired, staging) if isinstance(acquired, AcquiredImage)
                         else self.realizer.realize_sif(acquired))
-            approved = ApprovedImage(key=key, reference=realized.reference, runtime=ExecutionRuntime.PYTHON,
+            approved = ApprovedImage(key=key, reference=realized.reference, entry_points=entry_points,
                                      source=source)
-            result = parse_probe(self.probe(approved))
-            if result.machine != self.machine:
+            # Every declared entry point must start; Python, when declared, reports the inventory.
+            results = {runtime: (parse_probe if runtime is ExecutionRuntime.PYTHON else parse_shell_probe)(
+                self.probe(approved, runtime)) for runtime in runtimes}
+            if any(item.machine != self.machine for item in results.values()):
                 raise AdmissionError("ARCHITECTURE_MISMATCH")
-            if expected is not None and result.inventory != expected.inventory:
+            result = results.get(ExecutionRuntime.PYTHON) or results[ExecutionRuntime.SHELL]
+            if expected is not None and (result.inventory != expected.inventory
+                                         or entry_points != expected.entry_points):
                 raise AdmissionError("INVENTORY_MISMATCH")
             repository = None
             if oci is not None:
@@ -269,7 +311,7 @@ class ImageAdmission:
                 repository=repository,
                 realizations=(Realization(backend=self.realizer.backend, resolved_image=realized.reference,
                                           produced_by=f"{delivery}:{realized.produced_by}"),),
-                runtime=ExecutionRuntime.PYTHON, inventory=result.inventory, purpose=purpose, gpu=gpu,
+                entry_points=entry_points, inventory=result.inventory, purpose=purpose, gpu=gpu,
                 size_bytes=size, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
             )
             self.store.add_record(record)
@@ -342,10 +384,12 @@ def load_registry_credentials(path: Path | None) -> dict[str, RegistryCredential
         raise AdmissionError("REGISTRY_CREDENTIALS_INVALID") from None
 
 
-def probe_with(builder, runner: ProcessRunner, timeout_seconds: float = 120.0) -> Callable[[ApprovedImage], bytes]:
+def probe_with(builder, runner: ProcessRunner, timeout_seconds: float = 120.0):
     """The probe runs through the backend's own data-free, network-disabled probe argv."""
-    def probe(image: ApprovedImage) -> bytes:
-        outcome = runner.run(builder.import_probe_argv(image, ("-I", "-c", PROBE_PROGRAM)),
+    def probe(image: ApprovedImage, runtime: ExecutionRuntime) -> bytes:
+        arguments = (("-I", "-c", PROBE_PROGRAM) if runtime is ExecutionRuntime.PYTHON
+                     else ("-c", SHELL_PROBE_PROGRAM))
+        outcome = runner.run(builder.import_probe_argv(image, arguments, runtime),
                              timeout_seconds=timeout_seconds)
         if outcome.exit_code != 0 or outcome.timed_out or outcome.output_limit_exceeded:
             raise AdmissionError("ENTRY_POINT_MISSING" if outcome.exit_code in {126, 127} else "PROBE_FAILED")

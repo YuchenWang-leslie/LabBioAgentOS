@@ -37,6 +37,7 @@ from .models import (
     ExecutionIssue,
     ExecutionPlan,
     ExecutionResult,
+    ExecutionRuntime,
     ExecutionStatus,
     OutputContractFailureCode,
 )
@@ -277,6 +278,8 @@ class ContainerExecutor:
             "image_key": plan.image_key,
             "resolved_image": image.resolved_reference,
             "image_source": image.source_identity.model_dump(mode="json"),
+            "runtime": plan.runtime.value,
+            "runtime_source": plan.runtime_source.value,
             "script_hash": workspace.script_hash,
             "script_artifact_id": str(script_ref.artifact_id),
             "input_artifact_ids": [
@@ -464,6 +467,7 @@ class ContainerExecutor:
                 issues=issues,
                 error_context=(bounded_error_context(model_stderr)
                     if self.execution_policy.include_error_context else None),
+                # Python tracebacks are parsed for PYTHON only; SHELL keeps stderr and the exit code.
                 diagnostics=self._safe_python_diagnostics(
                     model_stderr,
                     script_content=plan.script_content,
@@ -471,7 +475,7 @@ class ContainerExecutor:
                         model_stderr, image, self.process_runner,
                         self.command_builder,
                     ),
-                ),
+                ) if plan.runtime is ExecutionRuntime.PYTHON else (),
             )
 
         queryable_output_count = sum(
@@ -618,6 +622,8 @@ class ContainerExecutor:
         return ExecutionResult(
             execution_id=plan.execution_id,
             run_id=plan.run_id,
+            runtime=plan.runtime,
+            runtime_source=plan.runtime_source,
             stage_id=plan.stage_id,
             invocation_id=plan.invocation_id,
             status=status,

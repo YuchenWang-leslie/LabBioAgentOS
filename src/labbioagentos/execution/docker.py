@@ -15,14 +15,14 @@ from uuid import UUID, uuid4
 from labbioagentos.artifacts import ArtifactStore
 from labbioagentos.trace import RunTraceRecorder
 
-from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
+from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner, container_script_path
 from .errors import ContainerStartError
 from .executor import ContainerExecutor
 from .job_ledger import JobLedger
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .launchers import JobLauncher
 from .launchers.base import JobLauncherError
-from .models import ExecutionPlan
+from .models import ExecutionPlan, ExecutionRuntime
 from .mounts import (
     ExecutionWorkspace,
     ExecutionWorkspaceManager,
@@ -318,7 +318,7 @@ class DockerCommandBuilder:
             "--env",
             f"NUMEXPR_NUM_THREADS={numeric_thread_limit}",
             "--mount",
-            self._mount(workspace.script_path, self.SCRIPT_TARGET, read_only=True),
+            self._mount(workspace.script_path, container_script_path(plan.runtime), read_only=True),
             "--mount",
             self._mount(
                 workspace.parameters_path,
@@ -351,23 +351,24 @@ class DockerCommandBuilder:
         argv.extend(
             [
                 "--entrypoint",
-                image.executable[0],
+                image.entry_point(plan.runtime)[0],
                 image.resolved_reference,
-                *image.executable[1:],
-                str(self.SCRIPT_TARGET),
+                *image.entry_point(plan.runtime)[1:],
+                str(container_script_path(plan.runtime)),
             ]
         )
         return tuple(argv)
 
     def import_probe_argv(
-        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
+        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...],
+        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
     ) -> tuple[str, ...]:
         return (
             self.docker_binary, "run", "--rm", "--pull", "never", "--name", "labbio-" + uuid4().hex,
             "--network", "none", "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--user", "65534:65534",
             "--memory", "256m", "--cpus", "1", "--pids-limit", "32",
-            "--entrypoint", image.executable[0], image.resolved_reference,
+            "--entrypoint", image.entry_point(runtime)[0], image.resolved_reference,
             *interpreter_arguments,
         )
 

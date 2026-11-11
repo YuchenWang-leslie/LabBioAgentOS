@@ -30,6 +30,14 @@ class ExecutionRuntime(StrEnum):
     """Runtime families supported by the deterministic executor contract."""
 
     PYTHON = "PYTHON"
+    SHELL = "SHELL"  # The program runs with sh; an image must declare it (DECIDED-C15-C).
+
+
+class RuntimeSource(StrEnum):
+    """Whether the Agent named the runtime or it was the documented default."""
+
+    EXPLICIT = "EXPLICIT"
+    DEFAULT = "DEFAULT"
 
 
 class ExecutionStatus(StrEnum):
@@ -200,6 +208,7 @@ class ExecutionPlan(BaseModel):
     project_id: StrictStr = Field(default="local-project", min_length=1)
     lab_id: StrictStr = Field(default="local-lab", min_length=1)
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = RuntimeSource.DEFAULT
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
     input_artifact_ids: tuple[UUID, ...] = ()
@@ -228,12 +237,19 @@ class ExecutionPlan(BaseModel):
         return self
 
 
+RUNTIME_DESCRIPTION = (
+    "Runtime family of script_content. Omit it for PYTHON. Name SHELL to run the script "
+    "with sh, in an image whose runtimes include SHELL. The host never infers a runtime "
+    "from the script or the image."
+)
+
+
 class ExecutionPlanDraft(BaseModel):
     """Untrusted model intent; trusted identity, provenance, paths and argv are absent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime: ExecutionRuntime | None = Field(default=None, description=RUNTIME_DESCRIPTION)
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
     input_artifact_ids: ExecutionInputArtifactIds = ()
@@ -434,6 +450,8 @@ class ExecutionResult(BaseModel):
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1)
     resolved_image: StrictStr = Field(min_length=1)
+    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = RuntimeSource.DEFAULT
     # Which environment ran, independent of backend; None in results from before C15.
     image_source: SourceIdentity | None = None
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
@@ -467,6 +485,11 @@ class ExecutionReceipt(BaseModel):
     execution_id: UUID
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1, max_length=128)
+    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = Field(
+        default=RuntimeSource.DEFAULT,
+        description="EXPLICIT when the request named the runtime; DEFAULT when it was omitted (PYTHON).",
+    )
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     exit_code: int | None = None
     resources: RequestedResources | None = Field(
@@ -540,6 +563,8 @@ class ExecutionReceipt(BaseModel):
             execution_id=result.execution_id,
             status=result.status,
             image_key=result.image_key,
+            runtime=result.runtime,
+            runtime_source=result.runtime_source,
             script_hash=result.script_hash,
             exit_code=result.exit_code,
             resources=resources,

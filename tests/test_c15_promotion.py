@@ -22,6 +22,7 @@ from labbioagentos.execution.catalog import (
     Realization,
 )
 from labbioagentos.execution.identity import SourceIdentity, SourceKind
+from labbioagentos.execution.models import ExecutionRuntime
 from labbioagentos.execution.inventory import InventoryOrigin
 from labbioagentos.local_lab import LabArea, LabError
 from labbioagentos.local_promotion import PromotionError, PromotionOutcome
@@ -36,6 +37,7 @@ def _record(key="tools", owner="admin", repository="registry.example/lab/tools",
         key=key, scope=ImageScope.PERSONAL, owner_user_id=owner, source=source, repository=repository,
         realizations=(Realization(backend=ExecutionBackendName.DOCKER, resolved_image=OCI.digest,
                                   produced_by="oci:load"),),
+        entry_points={ExecutionRuntime.PYTHON: ("python",)},
         inventory=InventorySnapshot(origin=InventoryOrigin.PYTHON, packages={"pip": "24.0"}),
         purpose="Tools.", size_bytes=1000, admitted_by=owner, admitted_at=datetime.now(timezone.utc))
 

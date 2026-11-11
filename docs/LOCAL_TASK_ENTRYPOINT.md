@@ -173,6 +173,12 @@ ANTHROPIC_API_KEY=<密钥>
 2. 在 `[execution]` 里加 `default_image = "<原来的 image_key>"`；
 3. 要提供更多镜像，就再加 `[[execution.images]]` 表，每张表的 `key` 不能重复；
    Apptainer 后端下每个 `reference` 都必须是已登记的 SIF。
+4. 每张表可以写 `runtimes = ["PYTHON", "SHELL"]`，不写时只有 `PYTHON`。`default_image`
+   必须支持 `PYTHON`，因为后端检查会在它里面运行 Python 探测。
+
+Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
+`SHELL`，平台不会根据脚本或镜像推断。回执和 trace 都记录实际的运行时，以及它是明确
+给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）。
 
 ```toml
 [execution]

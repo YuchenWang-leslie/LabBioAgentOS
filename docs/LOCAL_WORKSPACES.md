@@ -153,6 +153,10 @@ labbio image-list  --config <配置>
 
 - 地址必须写成 `主机/名称@sha256:<64 位>`，主机要含 `.` 或 `:`，或者是 `localhost`；
   不接受 tag。
+- `--runtime` 声明镜像支持的运行时，可重复：`PYTHON`（用 `python` 运行，默认）和
+  `SHELL`（用 `sh` 运行）。没有 Python 的工具镜像（例如 BioContainers）声明
+  `--runtime SHELL`。每个声明的入口程序都会在探测时实际启动；SHELL 镜像的软件清单
+  从 conda-meta 的文件名读取。
 - 入库检查：CPU 架构必须和计算节点一致（在 Mac 上构建时请加 `--platform linux/amd64`）；
   在不联网、不挂载数据的容器里探测入口程序和软件清单；用途说明是一行文字，不能含路径、
   URL 或镜像引用；检查大小和配额；记录是谁、何时、从哪个来源入库的。

@@ -25,6 +25,7 @@ from labbioagentos.execution.catalog import (
     Realization,
 )
 from labbioagentos.execution.identity import SourceIdentity, SourceKind
+from labbioagentos.execution.models import ExecutionRuntime
 from labbioagentos.execution.inventory import InventoryOrigin
 
 from test_execution_inspection import inspection, _submit  # noqa: F401
@@ -41,6 +42,7 @@ def _record(key="tools", scope=ImageScope.LAB, owner=None, **updates) -> ImageRe
         key=key, scope=scope, owner_user_id=owner, source=OCI,
         realizations=(Realization(backend=ExecutionBackendName.APPTAINER, resolved_image=SIF,
                                   produced_by="conversion-1"),),
+        entry_points={ExecutionRuntime.PYTHON: ("python",)},
         inventory=InventorySnapshot(origin=InventoryOrigin.CONDA_META, packages={"samtools": "1.21"}),
         purpose="Alignment and BAM utilities.", gpu=GpuSupport.NONE, size_bytes=300 * 1_048_576,
         admitted_by="admin-one", admitted_at=NOW,

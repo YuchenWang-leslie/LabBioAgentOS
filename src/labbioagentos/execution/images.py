@@ -30,8 +30,8 @@ class ApprovedImage(BaseModel):
     )
     reference: StrictStr = Field(min_length=1, max_length=512)
     digest: StrictStr | None = None
-    runtime: ExecutionRuntime
-    executable: tuple[StrictStr, ...] = ("python",)
+    # Each runtime family the image supports and the program that runs a script for it.
+    entry_points: dict[ExecutionRuntime, tuple[StrictStr, ...]] = Field(min_length=1, max_length=8)
     network_allowed: bool = False
     available_python_modules: tuple[StrictStr, ...] = Field(
         default=(),
@@ -49,6 +49,50 @@ class ApprovedImage(BaseModel):
         default=None,
         description="Backend-neutral source identity; None means a legacy image.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_single_runtime_form(cls, data):
+        """Records written before C15 name one runtime and its executable; read them as one entry point.
+
+        A model-level validator makes JSON input arrive as Python values, so the JSON
+        forms of these fields (arrays, string keys) are restated as tuples and enums.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "runtime" in data:
+            if "entry_points" in data:
+                raise ValueError("Give entry_points or the single-runtime form, not both")
+            data["entry_points"] = {data.pop("runtime"): data.pop("executable", ("python",))}
+        if isinstance(data.get("entry_points"), dict):
+            data["entry_points"] = {
+                ExecutionRuntime(key) if isinstance(key, str) else key:
+                tuple(value) if isinstance(value, list) else value
+                for key, value in data["entry_points"].items()
+            }
+        if isinstance(data.get("available_python_modules"), list):
+            data["available_python_modules"] = tuple(data["available_python_modules"])
+        return data
+
+    @field_validator("entry_points")
+    @classmethod
+    def validate_entry_points(cls, value: dict) -> dict:
+        for program in value.values():
+            if (not program or program[0].startswith("-")
+                    or any(not item or any(c.isspace() for c in item) for item in program)):
+                raise ValueError("Each entry point is a non-empty program of plain argv tokens")
+        return value
+
+    @property
+    def runtimes(self) -> frozenset[ExecutionRuntime]:
+        return frozenset(self.entry_points)
+
+    def entry_point(self, runtime: ExecutionRuntime) -> tuple[str, ...]:
+        try:
+            return self.entry_points[runtime]
+        except KeyError:
+            raise ImageNotApprovedError(f"Image key {self.key!r} does not support runtime {runtime.value}") from None
 
     @field_validator("reference")
     @classmethod
@@ -136,7 +180,7 @@ class ApprovedImageRegistry:
             raise ImageNotApprovedError(
                 f"Image key {image_key!r} is not present in the approved registry"
             )
-        if runtime is not None and image.runtime is not runtime:
+        if runtime is not None and runtime not in image.runtimes:
             raise ImageNotApprovedError(
                 f"Image key {image_key!r} does not support runtime {runtime.value}"
             )

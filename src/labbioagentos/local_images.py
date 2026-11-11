@@ -17,7 +17,7 @@ from .execution.admission import (
     probe_with,
 )
 from .execution.catalog import GpuSupport, ImageScope, ImageState
-from .execution.models import RequestedResources
+from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
 from .local_config import LocalSettings, _cluster_execution, _image_catalog
 from .execution.identity import SourceKind
@@ -44,6 +44,8 @@ def add_image_commands(commands) -> None:
     admit.add_argument("--key", required=True)
     admit.add_argument("--purpose", required=True, help="One line; shown to the Agent")
     admit.add_argument("--gpu", choices=[item.value for item in GpuSupport], default=GpuSupport.NONE.value)
+    admit.add_argument("--runtime", action="append", choices=[item.value for item in ExecutionRuntime],
+                       help="Repeat for each runtime the image supports; default PYTHON")
     form = admit.add_mutually_exclusive_group(required=True)
     form.add_argument("--oci", help="host/name@sha256:<64 hex>")
     form.add_argument("--archive", type=Path, help="An OCI layout archive, for example from docker save")
@@ -128,10 +130,12 @@ def image_admit(settings: LocalSettings, args) -> dict:
         registry_client=lambda: OciRegistryClient(credentials=credentials),
         existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
     )
+    runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
     record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
-                             oci=args.oci, archive=args.archive, sif=args.sif)
+                             oci=args.oci, archive=args.archive, sif=args.sif, runtimes=runtimes)
     return {"event": "image_admitted", "key": record.key, "scope": record.scope.value,
             "source": record.source.canonical, "size_bytes": record.size_bytes,
+            "runtimes": sorted(runtime.value for runtime in record.entry_points),
             "inventory_origin": record.inventory.origin.value,
             "inventory_count": len(record.inventory.packages),
             "inventory_invalid": record.inventory.invalid_count}
@@ -201,7 +205,7 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
         form = ({"oci": f"{record.repository}@{record.source.digest}"} if record.repository else
                 {"sif": payload} if record.source.kind is SourceKind.SIF else {"archive": payload})
         admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
-                        expected=record, **form)
+                        runtimes=tuple(record.entry_points), expected=record, **form)
 
     decision = decide(area, args.request, outcome=outcome, reason=args.reason, admit=admit,
                       lab_key=getattr(args, "key", None))

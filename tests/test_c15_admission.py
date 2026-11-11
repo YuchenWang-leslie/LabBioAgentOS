@@ -329,7 +329,7 @@ def _admission(tmp_path, *, registry=None, probe=None, realizer=None, quota=10**
     return ImageAdmission(
         store=personal, scope=ImageScope.PERSONAL, owner_user_id="member", admitted_by="member",
         realizer=realizer or FakeRealizer(),
-        probe=probe or (lambda image: _probe(python={"numpy": "2.1.3"})), machine="x86_64",
+        probe=probe or (lambda image, runtime: _probe(python={"numpy": "2.1.3"})), machine="x86_64",
         limits=AdmissionLimits(max_image_bytes=10**7, quota_bytes=quota, allowed_registries=allowed),
         staging_root=tmp_path / "staging", registry_client=registry.client,
         existing_keys=lambda: set(keys) | set(personal.records()),
@@ -366,8 +366,8 @@ def test_the_quota_is_checked_before_anything_is_realized(tmp_path):
 
 
 @pytest.mark.parametrize("probe, code", [
-    (lambda image: _probe(machine="aarch64"), "ARCHITECTURE_MISMATCH"),
-    (lambda image: b"garbage", "PROBE_OUTPUT_INVALID"),
+    (lambda image, runtime: _probe(machine="aarch64"), "ARCHITECTURE_MISMATCH"),
+    (lambda image, runtime: b"garbage", "PROBE_OUTPUT_INVALID"),
 ])
 def test_a_failed_probe_discards_the_realization_and_records_nothing(tmp_path, probe, code):
     realizer = FakeRealizer()

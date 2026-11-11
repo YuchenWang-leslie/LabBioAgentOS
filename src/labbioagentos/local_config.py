@@ -274,12 +274,18 @@ class LocalImageSettings(_SettingsModel):
 
     key: str
     reference: str
+    # Runtime families the image supports: python runs PYTHON scripts and sh runs SHELL ones.
+    runtimes: tuple[Literal["PYTHON", "SHELL"], ...] = Field(default=("PYTHON",), min_length=1)
     available_python_modules: tuple[str, ...] = ()
     installed_packages: dict[str, str] = Field(default_factory=dict)
 
     def approved(self) -> ApprovedImage:
+        from .execution.admission import DEFAULT_ENTRY_POINTS
+
         return ApprovedImage(
-            key=self.key, reference=self.reference, runtime=ExecutionRuntime.PYTHON,
+            key=self.key, reference=self.reference,
+            entry_points={ExecutionRuntime(name): DEFAULT_ENTRY_POINTS[ExecutionRuntime(name)]
+                          for name in dict.fromkeys(self.runtimes)},
             available_python_modules=self.available_python_modules,
             installed_packages=self.installed_packages,
         )
@@ -323,6 +329,9 @@ class LocalExecutionSettings(_SettingsModel):
             raise ValueError("Each [[execution.images]] key must be unique")
         if self.default_image not in keys:
             raise ValueError("default_image must name one of the [[execution.images]] keys")
+        if "PYTHON" not in next(image for image in self.images if image.key == self.default_image).runtimes:
+            # The backend check and the default capability run a Python probe in it.
+            raise ValueError("default_image must support the PYTHON runtime")
         self.approved_images()
         if self.backend == "apptainer":
             if self.apptainer is None:
@@ -1072,7 +1081,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
         sif_path = (store.verify(image.reference) if apptainer.verify_sif_on_execute
                     else store.path_for(image.reference))
         capabilities = probe_capabilities(
-            binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
+            binary=apptainer.binary, sif_path=sif_path, executable=image.entry_point(ExecutionRuntime.PYTHON)[0],
             runner=probe_runner, scratch_root=apptainer.scratch_root,
         )
         capabilities.require(resource_enforcement=apptainer.resource_enforcement)

@@ -225,7 +225,7 @@ class EnvironmentService:
             if (record["owner_user_id"] != self.owner_user_id or record["recipe_version"] != RECIPE_VERSION
                     or record["request_hash"] != request_hash or path.stem != request_hash
                     or image.key != "env-" + request_hash or image.network_allowed
-                    or image.runtime is not ExecutionRuntime.PYTHON):
+                    or image.runtimes != {ExecutionRuntime.PYTHON}):
                 raise ValueError()
             if not set(modules).issubset(image.available_python_modules):
                 raise ValueError()
@@ -297,7 +297,7 @@ class EnvironmentService:
         # Raw references stay hidden from models; provenance names the base by its key.
         base_key = next((base.key for base in self.image_registry.list()
                          if record and base.resolved_reference == record["base_image_reference"]), None)
-        return {"image_key": image.key,
+        return {"image_key": image.key, "runtimes": sorted(runtime.value for runtime in image.runtimes),
             **(self.catalog.describe(image.key) if self.catalog is not None else {}),
             "build_provenance": {
                 "base_image_key": base_key,

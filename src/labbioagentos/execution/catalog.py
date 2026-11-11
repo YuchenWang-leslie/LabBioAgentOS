@@ -91,8 +91,7 @@ class ImageRecord(_Model):
     repository: StrictStr | None = Field(default=None, max_length=255,
                                          pattern=r"^[a-z0-9.:-]+/[a-z0-9._/-]+$")
     realizations: tuple[Realization, ...] = Field(min_length=1, max_length=16)
-    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
-    executable: tuple[StrictStr, ...] = ("python",)
+    entry_points: dict[ExecutionRuntime, tuple[StrictStr, ...]] = Field(min_length=1, max_length=8)
     available_python_modules: tuple[StrictStr, ...] = Field(default=(), max_length=256)
     inventory: InventorySnapshot
     purpose: StrictStr | None = None
@@ -121,8 +120,8 @@ class ImageRecord(_Model):
         if realization is None:
             return None
         return ApprovedImage(
-            key=self.key, reference=realization.resolved_image, runtime=self.runtime,
-            executable=self.executable, available_python_modules=self.available_python_modules,
+            key=self.key, reference=realization.resolved_image, entry_points=dict(self.entry_points),
+            available_python_modules=self.available_python_modules,
             installed_packages=dict(self.inventory.packages), source=self.source,
         )
 

@@ -15,10 +15,10 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import UUID, uuid4
 
-from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
+from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner, container_script_path
 from .errors import ContainerStartError, ExecutionPlanRejected, ImageNotApprovedError
 from .images import ApprovedImage
-from .models import ExecutionPlan
+from .models import ExecutionPlan, ExecutionRuntime
 from .mounts import ExecutionWorkspace, ResolvedMount
 from .process_streams import capture_process
 
@@ -262,7 +262,7 @@ class ApptainerCommandBuilder:
         ):
             argv.extend(["--env", value])
         for source, target, read_only in (
-            (workspace.script_path, self.SCRIPT_TARGET, True),
+            (workspace.script_path, container_script_path(plan.runtime), True),
             (workspace.parameters_path, self.PARAMETERS_TARGET, True),
             (workspace.input_manifest_path, self.INPUT_MANIFEST_TARGET, True),
             (workspace.input_identities_path, self.INPUT_IDENTITIES_TARGET, True),
@@ -270,7 +270,7 @@ class ApptainerCommandBuilder:
             *((mount.source, mount.target, mount.read_only) for mount in input_mounts),
         ):
             argv.extend(["--bind", self._bind(source, target, read_only)])
-        argv.extend([str(sif), *image.executable, str(self.SCRIPT_TARGET)])
+        argv.extend([str(sif), *image.entry_point(plan.runtime), str(container_script_path(plan.runtime))])
         return tuple(argv)
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
@@ -291,11 +291,12 @@ class ApptainerCommandBuilder:
         )
 
     def import_probe_argv(
-        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
+        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...],
+        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
     ) -> tuple[str, ...]:
         return (
             self.apptainer_binary, "--silent", "exec", *ISOLATION_ARGUMENTS,
-            str(self._sif(image)), image.executable[0], *interpreter_arguments,
+            str(self._sif(image)), image.entry_point(runtime)[0], *interpreter_arguments,
         )
 
     def _sif(self, image: ApprovedImage) -> Path:

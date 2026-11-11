@@ -16,6 +16,11 @@ from .mounts import ExecutionWorkspace, ResolvedMount
 CONTAINER_SCRIPT_PATH = PurePosixPath("/labbio/script.py")
 
 
+def container_script_path(runtime) -> PurePosixPath:
+    """Where the submitted program is mounted; its suffix names the runtime it is for."""
+    return CONTAINER_SCRIPT_PATH if runtime.value == "PYTHON" else PurePosixPath("/labbio/script.sh")
+
+
 @dataclass(frozen=True)
 class ProcessOutcome:
     """Internal captured process streams; they never enter ExecutionResult."""

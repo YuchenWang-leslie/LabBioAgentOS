@@ -145,7 +145,11 @@ async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
 async def test_le2_runtime_enum_is_visible(execution_boundary):
     parameters = (await _execution_schema(execution_boundary[0]))["parameters"]
 
-    assert parameters["properties"]["runtime"]["enum"] == ["PYTHON"]
+    runtime = parameters["properties"]["runtime"]
+    # C15: SHELL joins PYTHON; omitting the field is the documented PYTHON default.
+    assert [item.get("enum") for item in runtime["anyOf"] if "enum" in item] == [["PYTHON", "SHELL"]]
+    assert {"type": "null"} in runtime["anyOf"] and runtime.get("default") is None
+    assert "Omit it for PYTHON" in runtime["description"] and "never infers" in runtime["description"]
 
 
 @pytest.mark.asyncio
