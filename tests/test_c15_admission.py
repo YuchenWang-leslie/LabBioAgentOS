@@ -327,9 +327,10 @@ def _admission(tmp_path, *, registry=None, probe=None, realizer=None, quota=10**
     registry = registry or FakeRegistry()
     personal = CatalogStore(tmp_path / "personal").initialize()
     return ImageAdmission(
-        owner_user_id="member", personal=personal, realizer=realizer or FakeRealizer(),
+        store=personal, scope=ImageScope.PERSONAL, owner_user_id="member", admitted_by="member",
+        realizer=realizer or FakeRealizer(),
         probe=probe or (lambda image: _probe(python={"numpy": "2.1.3"})), machine="x86_64",
-        limits=AdmissionLimits(max_image_bytes=10**7, member_quota_bytes=quota, allowed_registries=allowed),
+        limits=AdmissionLimits(max_image_bytes=10**7, quota_bytes=quota, allowed_registries=allowed),
         staging_root=tmp_path / "staging", registry_client=registry.client,
         existing_keys=lambda: set(keys) | set(personal.records()),
     ), registry, personal
@@ -465,7 +466,7 @@ def test_the_lab_policy_is_set_by_an_administrator_and_read_by_members(tmp_path,
         area.set_policy(reason="Bad host.", allowed_registries=("https://registry.example",))
     monkeypatch.setattr(local_lab.os, "getuid", lambda: 99999)
     with pytest.raises(LabError):
-        area.set_policy(reason="Not the holder.", lab_quota_bytes=1)
+        area.set_policy(reason="Not the holder.", lab_member_quota_bytes=1)
 
 
 def test_admission_requires_a_lab_and_keeps_env_keys_for_builds(tmp_path, capsys):

@@ -57,17 +57,30 @@ def _reject_aliases(path: Path) -> Path:
 class SifStore:
     """Read-only, content-addressed SIF files named by their sha256."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, shared_owner: int | None = None):
+        """A private store of this user, or, with shared_owner, the lab's store.
+
+        A lab store is held by the lab's holding account and only read by members
+        through the lab group: nobody else may write it, and files are read-only.
+        """
         self.root = _reject_aliases(Path(root))
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        info = self.root.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077):
-            raise SifStoreError("SIF store must be a private directory owned by this user")
+        self.owner = os.getuid() if shared_owner is None else shared_owner
+        self.shared = shared_owner is not None
+        if not self.shared:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            info = self.root.lstat()
+        except OSError as exc:
+            raise SifStoreError("SIF store is unavailable") from exc
+        closed = 0o027 if self.shared else 0o077
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner or info.st_mode & closed:
+            raise SifStoreError("SIF store must be a closed directory owned by its holder")
 
     def register(self, source: str | Path) -> str:
         """Copy one SIF into the store and return its immutable reference."""
 
+        if self.owner != os.getuid():
+            raise SifStoreError("Only the store's holder may register into it")
         source = Path(source).expanduser().absolute()
         try:
             descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
@@ -96,7 +109,7 @@ class SifStore:
             if target.exists() or target.is_symlink():
                 self.verify(reference)  # Idempotent only for an intact identical file.
                 return reference
-            os.chmod(temporary, 0o444)
+            os.chmod(temporary, 0o440 if self.shared else 0o444)
             os.rename(temporary, target)
             directory = os.open(self.root, os.O_RDONLY)
             try:
@@ -117,7 +130,7 @@ class SifStore:
         except OSError as exc:
             raise SifStoreError("Referenced SIF is not registered") from exc
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != os.getuid() or info.st_mode & 0o222):
+                or info.st_uid != self.owner or info.st_mode & 0o222):
             raise SifStoreError("Registered SIF must be a single read-only regular file")
         return path
 

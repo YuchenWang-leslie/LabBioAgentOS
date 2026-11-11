@@ -153,6 +153,10 @@ class LabArea:
         self.root = Path(root).expanduser().absolute()
         self.members_root = self.root / "members"
         self.policy_root = self.root / "policy"
+        self.promotions_root = self.root / "promotions"
+        self.sif_root = self.root / "sif"
+        # The one directory members may write: promotion requests (DECIDED-C15-B, drop directory).
+        self.requests_root = self.root / "requests"
         self.catalog = CatalogStore(self.root / "catalog")
 
     @classmethod
@@ -177,6 +181,11 @@ class LabArea:
             if group is not None:
                 os.chown(directory, -1, area.root.stat().st_gid)
             os.chmod(directory, mode)
+        area.requests_root.mkdir(mode=0o700)
+        if group is not None:
+            os.chown(area.requests_root, -1, area.root.stat().st_gid)
+            # Group-writable, but sticky: a member removes only their own files.
+            os.chmod(area.requests_root, 0o3770)
         now = datetime.now(timezone.utc)
         add_file(area.root / _MANIFEST, "manifest",
                  LabManifest(lab_id=lab_id, created_by=admin_user_id, created_at=now).model_dump(mode="json"))
@@ -210,10 +219,22 @@ class LabArea:
                 mode = os.lstat(directory).st_mode
                 if not mode & stat.S_ISGID or mode & 0o027 or os.lstat(directory).st_gid != info.st_gid:
                     raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+            requests = os.lstat(self.requests_root)
+            if (stat.S_IMODE(requests.st_mode) != 0o3770 or requests.st_uid != info.st_uid
+                    or requests.st_gid != info.st_gid):
+                raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+        elif stat.S_IMODE(os.lstat(self.requests_root).st_mode) & 0o077:
+            raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
+
+    def sif_store(self):
+        """The lab's SIF files: written by the holding account, read by members."""
+        from .execution.apptainer import SifStore
+
+        return SifStore(self.sif_root, shared_owner=os.lstat(self.root).st_uid)
 
     def shared_directories(self) -> tuple[Path, ...]:
-        return (self.root, self.members_root, self.policy_root, self.catalog.root,
-                self.catalog.records_root, self.catalog.events_root)
+        return (self.root, self.members_root, self.policy_root, self.promotions_root, self.sif_root,
+                self.catalog.root, self.catalog.records_root, self.catalog.events_root)
 
     def held_by_me(self) -> bool:
         return os.lstat(self.root).st_uid == os.getuid()
@@ -262,6 +283,10 @@ class LabArea:
                            actor=actor.user_id, reason=reason, at=next_event_time(self.policy_root))
         add_file(self.policy_root / event_name(policy.at), "event", policy.model_dump(mode="json"))
         return policy
+
+    def require_admin(self) -> LabMember:
+        """The registered LAB_ADMIN acting under this holding account."""
+        return self._acting_admin()
 
     def _acting_admin(self) -> LabMember:
         if not self.held_by_me():

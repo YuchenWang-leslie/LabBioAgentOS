@@ -87,6 +87,9 @@ class ImageRecord(_Model):
     scope: ImageScope
     owner_user_id: StrictStr | None = Field(default=None, min_length=1, max_length=128)
     source: SourceIdentity
+    # host/name an OCI source can be pulled from again by its digest; never shown to models.
+    repository: StrictStr | None = Field(default=None, max_length=255,
+                                         pattern=r"^[a-z0-9.:-]+/[a-z0-9._/-]+$")
     realizations: tuple[Realization, ...] = Field(min_length=1, max_length=16)
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
     executable: tuple[StrictStr, ...] = ("python",)

@@ -9,6 +9,7 @@ task; the Agent selects among admitted images later.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -73,7 +74,7 @@ class AdmissionError(ValueError):
 
 ADMISSION_HINTS = {
     "ADMISSION_REQUIRES_LAB": "Images are admitted into a lab member's personal area; configure [lab].",
-    "IMAGE_KEY_RESERVED": "Keys starting with env- belong to environments the Agent builds.",
+    "IMAGE_KEY_RESERVED": "Keys starting with env- belong to Agent-built environments and lab- to lab images.",
     "IMAGE_KEY_TAKEN": "Choose a key that no configured, lab or personal image uses.",
     "PURPOSE_INVALID": "Give a one-line purpose without paths, URLs or image references.",
     "FORM_UNSUPPORTED_ON_BACKEND": "A SIF file runs only under Apptainer; give an OCI reference or archive.",
@@ -85,6 +86,9 @@ ADMISSION_HINTS = {
     "ARCHITECTURE_MISMATCH": "The image is built for another CPU architecture; build it with --platform.",
     "IMAGE_TOO_LARGE": "The image exceeds the lab's per-image size limit.",
     "MEMBER_QUOTA_EXCEEDED": "Your personal images would exceed your quota; deprecate or delete some first.",
+    "LAB_QUOTA_EXCEEDED": "Lab images would exceed the lab quota.",
+    "SOURCE_MISMATCH": "The delivered image is not the source the request names.",
+    "INVENTORY_MISMATCH": "The re-probed software inventory differs from the member's record.",
     "ENTRY_POINT_MISSING": "The image has no python entry point for the PYTHON runtime.",
     "PROBE_FAILED": ("The offline probe failed: the image may have no python entry point for the PYTHON "
                      "runtime, or it could not start without network and data."),
@@ -96,7 +100,7 @@ ADMISSION_HINTS = {
 @dataclass(frozen=True)
 class AdmissionLimits:
     max_image_bytes: int
-    member_quota_bytes: int
+    quota_bytes: int
     allowed_registries: tuple[str, ...] = ()
 
 
@@ -104,6 +108,7 @@ class AdmissionLimits:
 class Realized:
     reference: str
     produced_by: str
+    created: bool = True  # False when the same file already existed, for example for another record.
 
 
 class Realizer:
@@ -130,6 +135,11 @@ class DockerRealizer(Realizer):
     def realize_layout(self, image: AcquiredImage, staging: Path) -> Realized:
         archive = staging / "layout.tar"
         layout_archive(image.layout, archive)
+        listed = self._run([self.docker_binary, "image", "ls", "--quiet", "--no-trunc"],
+                           capture_output=True, text=True, timeout=120, check=False)
+        if listed.returncode != 0:
+            raise AdmissionError("REALIZATION_FAILED")
+        before = set(listed.stdout.split())
         result = self._run([self.docker_binary, "load", "--quiet", "--input", str(archive)],
                            capture_output=True, text=True, timeout=1800, check=False)
         lines = [line for line in result.stdout.splitlines() if line.startswith("Loaded image ID: ")]
@@ -138,12 +148,14 @@ class DockerRealizer(Realizer):
         image_id = lines[0].removeprefix("Loaded image ID: ").strip()
         if not image_id.startswith("sha256:") or len(image_id) != 71:
             raise AdmissionError("REALIZATION_FAILED")
-        return Realized(image_id, f"docker-load-{uuid4().hex[:12]}")
+        return Realized(image_id, f"docker-load-{uuid4().hex[:12]}", created=image_id not in before)
 
     def discard(self, realized: Realized) -> None:
-        # Only the exact id this admission loaded; never a prune.
-        self._run([self.docker_binary, "image", "rm", realized.reference],
-                  capture_output=True, text=True, timeout=120, check=False)
+        # Only an id this admission newly loaded; one that existed before may serve other
+        # records. Never a prune.
+        if realized.created:
+            self._run([self.docker_binary, "image", "rm", realized.reference],
+                      capture_output=True, text=True, timeout=120, check=False)
 
 
 class ApptainerRealizer(Realizer):
@@ -197,16 +209,24 @@ def parse_probe(stdout: bytes) -> ProbeResult:
 
 
 class ImageAdmission:
-    def __init__(self, *, owner_user_id: str, personal: CatalogStore, realizer: Realizer,
-                 probe: Callable[[ApprovedImage], bytes], machine: str, limits: AdmissionLimits,
-                 staging_root: Path, registry_client: Callable[[], OciRegistryClient],
+    """One admission pipeline for personal images and for lab promotions.
+
+    A promotion passes the member's record as `expected`: the re-acquired source
+    and the re-probed inventory must equal it, or nothing is admitted
+    (DECIDED-C15-D: a realization joins a source only with the same inventory).
+    """
+
+    def __init__(self, *, store: CatalogStore, scope: ImageScope, owner_user_id: str | None,
+                 admitted_by: str, realizer: Realizer, probe: Callable[[ApprovedImage], bytes], machine: str,
+                 limits: AdmissionLimits, staging_root: Path, registry_client: Callable[[], OciRegistryClient],
                  existing_keys: Callable[[], set[str]]):
-        self.owner_user_id, self.personal, self.realizer = owner_user_id, personal, realizer
-        self.probe, self.machine, self.limits = probe, machine, limits
+        self.store, self.scope, self.owner_user_id, self.admitted_by = store, scope, owner_user_id, admitted_by
+        self.realizer, self.probe, self.machine, self.limits = realizer, probe, machine, limits
         self.staging_root, self.registry_client, self.existing_keys = staging_root, registry_client, existing_keys
 
     def admit(self, *, key: str, purpose: str, gpu: GpuSupport, oci: str | None = None,
-              archive: Path | None = None, sif: Path | None = None) -> ImageRecord:
+              archive: Path | None = None, sif: Path | None = None,
+              expected: ImageRecord | None = None) -> ImageRecord:
         if sum(value is not None for value in (oci, archive, sif)) != 1:
             raise AdmissionError("FORM_REQUIRED")
         try:
@@ -220,28 +240,39 @@ class ImageAdmission:
         realized = None
         try:
             acquired, size, delivery = self._acquire(staging, oci, archive, sif)
-            used = sum(record.size_bytes or 0 for record in self.personal.records().values())
-            if used + size > self.limits.member_quota_bytes:
-                raise AdmissionError("MEMBER_QUOTA_EXCEEDED")  # Checked before anything is built.
+            used = sum(record.size_bytes or 0 for record in self.store.records().values())
+            if used + size > self.limits.quota_bytes:
+                raise AdmissionError("MEMBER_QUOTA_EXCEEDED" if self.scope is ImageScope.PERSONAL
+                                     else "LAB_QUOTA_EXCEEDED")  # Checked before anything is built.
             if isinstance(acquired, AcquiredImage):
-                source, realized = acquired.source, self.realizer.realize_layout(acquired, staging)
+                source = acquired.source
             else:
-                realized = self.realizer.realize_sif(acquired)
                 # A SIF has no upstream source: the file is its own identity (DECIDED-C15-D).
-                source = SourceIdentity(kind=SourceKind.SIF, digest=realized.reference)
+                source = SourceIdentity(kind=SourceKind.SIF, digest=_file_digest(acquired))
+            if expected is not None and source != expected.source:
+                raise AdmissionError("SOURCE_MISMATCH")
+            realized = (self.realizer.realize_layout(acquired, staging) if isinstance(acquired, AcquiredImage)
+                        else self.realizer.realize_sif(acquired))
             approved = ApprovedImage(key=key, reference=realized.reference, runtime=ExecutionRuntime.PYTHON,
                                      source=source)
             result = parse_probe(self.probe(approved))
             if result.machine != self.machine:
                 raise AdmissionError("ARCHITECTURE_MISMATCH")
+            if expected is not None and result.inventory != expected.inventory:
+                raise AdmissionError("INVENTORY_MISMATCH")
+            repository = None
+            if oci is not None:
+                parsed = OciReference.parse(oci)
+                repository = f"{parsed.host}/{parsed.name}"
             record = ImageRecord(
-                key=key, scope=ImageScope.PERSONAL, owner_user_id=self.owner_user_id, source=source,
+                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
+                repository=repository,
                 realizations=(Realization(backend=self.realizer.backend, resolved_image=realized.reference,
                                           produced_by=f"{delivery}:{realized.produced_by}"),),
                 runtime=ExecutionRuntime.PYTHON, inventory=result.inventory, purpose=purpose, gpu=gpu,
-                size_bytes=size, admitted_by=self.owner_user_id, admitted_at=datetime.now(timezone.utc),
+                size_bytes=size, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
             )
-            self.personal.add_record(record)
+            self.store.add_record(record)
             return record
         except BaseException:
             if realized is not None:
@@ -277,6 +308,14 @@ class ImageAdmission:
         if info.st_size > self.limits.max_image_bytes:
             raise AdmissionError("IMAGE_TOO_LARGE")
         return path, info.st_size, "sif"
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1_048_576), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def _platform(machine: str) -> str:

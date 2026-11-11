@@ -184,6 +184,21 @@ cannot guarantee automatic cancellation. See
 Local Apptainer remains unvalidated on this host because its executable and
 CPU-controller delegation are unavailable; resource limits were not bypassed.
 
+## Lab area and images
+
+- Members may write the lab area's `requests/` drop directory, so a member can
+  fill the shared filesystem with request payloads. LabBio limits each member
+  to a few pending requests and checks sizes when an administrator approves,
+  but only a site disk quota bounds the writes themselves.
+- An admitted image supplies its own interpreter, so a malicious image can
+  falsify results; container isolation cannot prevent that. Personal images
+  serve only their owner, lab images need a LAB_ADMIN, and trace records which
+  image and source ran.
+- On Docker, records with the same source share one image id, so a lab image
+  and a personal image of the same manifest are one Docker image.
+- Image admission pulls on the host where the command runs, which on a cluster
+  is the login node; only the Apptainer conversion runs in a job.
+
 ## Persistence and concurrency
 
 SQLite state, JSONL trace, Artifact storage, Docker operations, and provider

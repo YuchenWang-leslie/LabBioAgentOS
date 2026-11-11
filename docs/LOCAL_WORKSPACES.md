@@ -163,6 +163,35 @@ labbio image-list  --config <配置>
 - 只按 OCI Distribution 标准访问仓库：Docker Hub、quay.io、GHCR、Harbor、Nexus 等
   都走同一套代码，不使用任何厂商的私有接口。
 
+### 升级为实验室镜像
+
+成员不能写实验室区，唯一的例外是 `requests/` 投递目录（权限 `3770`：组可写，带 sticky
+位，成员只能删除自己的文件）。
+
+```bash
+labbio image-promote-request  --config <配置> --key <个人镜像>            # OCI 来源：只交申请
+labbio image-promote-request  --config <配置> --key <个人镜像> --file image.tar   # 归档或 SIF：连同文件
+labbio image-promote-withdraw --config <配置> --request <申请 id>           # 撤回自己的申请
+```
+
+管理员在持有账号下处理申请：
+
+```bash
+labbio image-promote-list    --config <配置>
+labbio image-promote-approve --config <配置> --request <id> --key lab-<名字> --reason "..."
+labbio image-promote-reject  --config <配置> --request <id> --reason "..."
+```
+
+- 实验室镜像的 key 必须以 `lab-` 开头；个人镜像不能用 `lab-` 或 `env-` 开头，所以两者
+  不会重名。
+- 批准前先核对申请：申请文件的属主必须是申请人登记的账号，有附件时附件的属主也一样；
+  不一致的申请标为 `REQUEST_FORGED`，只能驳回。
+- 批准时按原来源重新取得镜像（OCI 来源按 digest 重新拉取，其他来源用附件），重新跑全部
+  入库检查，并要求来源身份和软件清单都与成员的记录完全一致；不一致就不入库，申请保留。
+- 每个决定都写进 `promotions/`，包括申请、管理员、时间和原因；处理完的申请文件由管理员
+  删除。每个成员最多同时有 4 个待处理申请。
+- 实验室 SIF 由持有账号写入 `sif/`（文件 0440），成员通过实验室组读取。
+
 管理员在持有账号下设置入库策略（不设置时使用默认值：单个镜像 16 GiB、每个成员
 64 GiB、整个实验室 512 GiB、不限仓库）：
 

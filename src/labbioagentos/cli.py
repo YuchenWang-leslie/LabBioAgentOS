@@ -356,9 +356,9 @@ def main(argv: list[str] | None = None) -> int:
             _emit(report)
             return 0 if passed else 1
         settings = bind_lab(scoped_settings(args, settings))
-        from .local_images import IMAGE_COMMANDS, image_admit, image_list
+        from .local_images import IMAGE_COMMANDS, run_image_command
         if args.command in IMAGE_COMMANDS:
-            _emit(image_admit(settings, args) if args.command == "image-admit" else image_list(settings))
+            _emit(run_image_command(settings, args))
             return 0
         if args.command == "run":
             return asyncio.run(_run(args, settings))
@@ -402,7 +402,8 @@ def main(argv: list[str] | None = None) -> int:
             _emit(lab_error_payload(exc))
             return 1
         from .execution.admission import AdmissionError
-        if isinstance(exc, AdmissionError):
+        from .local_promotion import PromotionError
+        if isinstance(exc, (AdmissionError, PromotionError)):
             _emit({"error": exc.code, "detail": exc.hint})
             return 1
         if isinstance(exc, RunWriterActiveError):

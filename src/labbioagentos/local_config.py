@@ -1030,12 +1030,13 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
 
 
 def sif_stores(settings: LocalSettings):
-    """The configured SIF store, then the member's personal one when a lab is configured."""
+    """The configured SIF store, then the lab's and the member's own when a lab is configured."""
     from .execution.apptainer import SifStore, SifStoreChain
-    from .local_lab import private_member_root
+    from .local_lab import LabArea, private_member_root
 
     stores = [SifStore(settings.execution.apptainer.sif_store)]
     if settings.lab is not None:
+        stores.append(LabArea(settings.lab.root).sif_store())
         stores.append(SifStore(private_member_root(settings.lab.member_root) / "sif"))
     return SifStoreChain(tuple(stores))
 
