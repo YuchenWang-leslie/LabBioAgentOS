@@ -18,7 +18,6 @@ from labbioagentos.execution.apptainer_build import (
     CONTAIN_ARGUMENTS,
     DownloadExit,
     DownloadRunner,
-    WheelLockError,
     attempt_lease,
     classify_download,
     prepare_cache_dir,
@@ -26,6 +25,7 @@ from labbioagentos.execution.apptainer_build import (
     render_download_program,
     verify_download,
 )
+from labbioagentos.execution.wheel_lock import WheelLockError
 
 # Maps container paths back through --bind, then imitates each pip step.
 # The pins step really runs the generated Python with the host interpreter.

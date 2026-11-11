@@ -19,11 +19,9 @@ from labbioagentos.execution.apptainer import ISOLATION_ARGUMENTS
 from labbioagentos.execution.apptainer_build import (
     PROBE_OUTPUT,
     BuildExit,
-    WheelLockError,
-    lock_wheelhouse,
     render_build_program,
-    render_lock,
 )
+from labbioagentos.execution.wheel_lock import WheelLockError, lock_wheelhouse, render_lock
 
 ANY_WHEEL = "example_pkg-2.0-py3-none-any.whl"
 LINUX_WHEEL = "fastlib-1.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
@@ -73,7 +71,8 @@ def test_lock_refuses_links_directories_and_oversized_sets(tmp_path, monkeypatch
     with pytest.raises(WheelLockError):
         lock_wheelhouse(directory, machine="x86_64")
     (directory / "nested-1.0-py3-none-any.whl").rmdir()
-    monkeypatch.setattr(apptainer_build, "MAX_LOCKED_WHEELS", 0)
+    from labbioagentos.execution import wheel_lock
+    monkeypatch.setattr(wheel_lock, "MAX_LOCKED_WHEELS", 0)
     with pytest.raises(WheelLockError):
         lock_wheelhouse(directory, machine="x86_64")
     with pytest.raises(WheelLockError):

@@ -17,6 +17,7 @@ from labbioagentos.execution.environments import EnvironmentBuildUnconfirmedErro
 BASE_ID = "sha256:" + "b" * 64
 IMAGE_ID = "sha256:" + "c" * 64
 REQUEST_HASH = "d" * 64
+WHEEL = "examplepkg-2.0-py3-none-any.whl"
 
 
 @pytest.fixture
@@ -45,6 +46,8 @@ def backend(tmp_path, monkeypatch):
         path.write_text(output, encoding="utf-8")
         if path.name == "build.log" and code == 0 and error is None:
             (root / "image-id.txt").write_text(IMAGE_ID + "\n", encoding="utf-8")
+        if path.name == "download.log" and code == 0 and error is None:
+            (root / "wheels" / WHEEL).write_bytes(b"wheel bytes")
         return code, error
 
     monkeypatch.setattr(boundary.builder, "_run", run)
@@ -65,33 +68,46 @@ def test_builder_matches_the_environment_builder_protocol():
 
 @pytest.mark.asyncio
 async def test_fixed_wheel_recipe_uses_inspected_identity_and_no_data_mounts(backend):
+    import hashlib
+
     result = await build(backend)
     assert result.image_id == IMAGE_ID
     assert result.installed_packages == {"examplepkg": "2.0"}
     assert result.available_python_modules == ("examplepkg",)
+    # C15: the wheel set is pinned on the host exactly as the Apptainer builder pins it.
+    sha = hashlib.sha256(b"wheel bytes").hexdigest()
+    assert result.locked_wheels == ({"name": "examplepkg", "version": "2.0", "sha256": sha},)
+    assert result.machine
     context = backend.root / "context"
-    assert {path.name for path in context.iterdir()} == {"Dockerfile", "requirements.txt"}
-    assert (context / "requirements.txt").read_text() == "examplepkg==2.0\n"
+    assert {path.name for path in context.iterdir()} == {"Dockerfile", "lock.txt", "wheels"}
+    assert (context / "lock.txt").read_text() == f"examplepkg==2.0 --hash=sha256:{sha}\n"
     recipe = (context / "Dockerfile").read_text()
     assert recipe.startswith(f"FROM {BASE_ID}\n")
     assert backend.base.resolved_reference not in recipe
-    assert "--only-binary=:all:" in recipe
-    assert "pip download" in recipe and "pip install" in recipe
-    assert "--no-index --find-links=/opt/labbio-environment/wheels" in recipe
+    assert "pip download" not in recipe
+    assert "--no-index --no-deps --require-hashes --find-links=/opt/labbio-environment/wheels" in recipe
     assert recipe.endswith("RUN python -m pip check\n")
     assert not any(line.startswith(("ADD ", "ENV ", "ARG ")) for line in recipe.splitlines())
-    inspect, docker_build, probe = backend.calls
+    inspect, download, docker_build, probe = backend.calls
     assert inspect == ["docker", "image", "inspect", "--format", "{{.Id}}", backend.base.resolved_reference]
+    # The download container sees only its wheel directory and the request, never data.
+    mounts = [download[index + 1] for index, item in enumerate(download) if item == "--mount"]
+    assert mounts == [f"type=bind,source={backend.root / 'wheels'},target=/labbio/wheels",
+                      f"type=bind,source={backend.root / 'requirements.txt'},target=/labbio/requirements.txt,readonly"]
+    assert download[download.index("--network") + 1] == "host"
+    assert "HTTPS_PROXY=http://127.0.0.1:12199" in download and "--read-only" in download
+    assert download[download.index("--label") + 1] == "labbio.environment.build=" + backend.root.name
+    assert "--only-binary=:all:" in download
     assert docker_build[-1] == str(context)
     assert "--pull=false" in docker_build and "--force-rm" in docker_build
-    assert docker_build[docker_build.index("--network") + 1] == "host"
-    assert "HTTP_PROXY=http://127.0.0.1:12199" in docker_build
+    assert docker_build[docker_build.index("--network") + 1] == "none"  # Offline: only locked wheels.
+    assert not any("PROXY" in item for item in docker_build)
     assert probe[probe.index("--network") + 1] == "none"
     assert "--read-only" in probe and probe[probe.index("--cap-drop") + 1] == "ALL"
     assert probe[probe.index("--security-opt") + 1] == "no-new-privileges"
     assert probe[probe.index("--pull") + 1] == "never"
     assert probe[-5:] == [IMAGE_ID, "-I", "-c", environment_builder._PROBE, '["examplepkg"]']
-    for argv in backend.calls:
+    for argv in (docker_build, probe):
         assert not {"--mount", "--volume", "-v", "--volumes-from", "--env-file", "--secret", "-e"}.intersection(argv)
 
 
@@ -125,12 +141,13 @@ async def test_invalid_inspected_identity_stops_before_build(backend, identity):
     ),
 ))
 async def test_failed_build_preserves_safe_package_and_transitive_constraint_facts(backend, log, code, diagnostics):
-    backend.responses["build.log"] = (1, None, log)
+    # Dependencies are resolved by the download step, so that is where these failures surface.
+    backend.responses["download.log"] = (1, None, log)
     result = await build(backend)
     assert result.failure_code == code
     assert result.diagnostics == diagnostics
     assert result.image_id is None and result.installed_packages == {}
-    assert not any(argv[:2] == ["docker", "run"] for argv in backend.calls)
+    assert not any(argv[:2] == ["docker", "build"] for argv in backend.calls)
 
 
 def test_failure_diagnostics_are_bounded_without_copying_log_text():
@@ -153,18 +170,18 @@ async def test_build_timeout_cleanup_only_uses_this_attempt_label_and_valid_cont
         else "DAEMON_TERMINATION_UNCONFIRMED"
     )
     assert failed.value.failure_code == "BUILD_TIMEOUT"
-    assert backend.calls[2] == [
+    assert backend.calls[3] == [
         "docker", "ps", "-aq", "--filter", "label=labbio.environment.build=" + backend.root.name,
     ]
     if identifiers.startswith("0123456789ab\n"):
-        assert backend.calls[3:] == [
+        assert backend.calls[4:] == [
             ["docker", "rm", "--force", "0123456789ab", "abcdef012345"],
-            backend.calls[2],
+            backend.calls[3],
         ]
     elif "/unowned/path" in identifiers:
-        assert len(backend.calls) == 3
+        assert len(backend.calls) == 4
     else:
-        assert backend.calls[3:] == [backend.calls[2]]
+        assert backend.calls[4:] == [backend.calls[3]]
 
 
 @pytest.mark.asyncio
@@ -175,10 +192,10 @@ async def test_probe_timeout_removes_only_the_generated_probe_name(backend):
         await build(backend)
     assert failed.value.reason_code == "DAEMON_TERMINATION_UNCONFIRMED"
     assert failed.value.failure_code == "BUILD_TIMEOUT"
-    probe = backend.calls[2]
+    probe = backend.calls[3]
     name = "labbio-env-check-" + backend.root.name
     assert probe[probe.index("--name") + 1] == name
-    assert backend.calls[3:] == [
+    assert backend.calls[4:] == [
         ["docker", "ps", "-aq", "--filter", "name=^/" + name + "$"],
         ["docker", "rm", "--force", "0123456789ab"],
         ["docker", "ps", "-aq", "--filter", "name=^/" + name + "$"],

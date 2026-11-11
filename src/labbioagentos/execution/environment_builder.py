@@ -1,4 +1,10 @@
-"""A fixed Docker wheel-install recipe with no data mounts or model-written build code."""
+"""A fixed Docker wheel-install recipe with no data mounts or model-written build code.
+
+Wheels are downloaded in a separate container, pinned by sha256 on the host with
+the same lock the Apptainer builder uses, and installed offline with
+--require-hashes. Both backends therefore give one environment one derived
+source identity (DECIDED-C15-D).
+"""
 
 from __future__ import annotations
 
@@ -7,13 +13,16 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import re
+import shutil
 import subprocess
 import threading
 import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from .wheel_lock import WheelLockError, lock_wheelhouse, render_lock
 from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError,
                            EnvironmentRequestError, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
@@ -215,6 +224,40 @@ class DockerEnvironmentBuilder:
         if list_owned(build_root / "cleanup-confirm.log"):
             raise EnvironmentBuildUnconfirmedError("CLEANUP_CONFIRM_FAILED")
 
+    def _download(self, base_id: str, requirements: tuple[str, ...], build_root: Path, deadline: float):
+        """Download wheels in a labelled, data-free container into a host directory."""
+        wheels, requested = build_root / "wheels", build_root / "requirements.txt"
+        wheels.mkdir(mode=0o700)
+        requested.write_text("\n".join(requirements) + "\n", encoding="utf-8")
+        name = "labbio-env-download-" + build_root.name
+        argv = ["docker", "run", "--rm", "--pull", "never", "--name", name,
+                "--label", "labbio.environment.build=" + build_root.name,
+                "--user", f"{os.getuid()}:{os.getgid()}", "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges", "--memory", "4g", "--cpus", format(self.cpus, "g"),
+                "--pids-limit", "256", "--tmpfs", "/tmp:rw,nosuid,size=1024m", "--env", "HOME=/tmp",
+                "--network", "host" if self.proxy_url else "bridge"]
+        if self.proxy_url:
+            argv += ["--env", "HTTP_PROXY=" + self.proxy_url, "--env", "HTTPS_PROXY=" + self.proxy_url]
+        argv += ["--mount", f"type=bind,source={wheels},target=/labbio/wheels",
+                 "--mount", f"type=bind,source={requested},target=/labbio/requirements.txt,readonly",
+                 "--entrypoint", "python", base_id, "-I", "-m", "pip", "download",
+                 "--disable-pip-version-check", "--no-input", "--progress-bar", "off", "--no-cache-dir",
+                 "--only-binary=:all:", "--dest", "/labbio/wheels", "-r", "/labbio/requirements.txt"]
+        log = build_root / "download.log"
+        code, error = self._run(argv, log, deadline)
+        if self._stop_requested() and error is None:
+            error = "BUILD_CANCELLED"
+        if error or code != 0:
+            if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
+                self._cleanup(build_root, probe_name=name)
+                raise EnvironmentBuildUnconfirmedError("DAEMON_TERMINATION_UNCONFIRMED", failure_code=error)
+            self._cleanup(build_root, probe_name=name)
+            text = self._tail(log)
+            failure_code = error or self._diagnose(text)
+            return EnvironmentBuildResult(failure_code=failure_code, diagnostics=self._diagnostics(text, failure_code),
+                                          log_id=build_root.name)
+        return wheels
+
     def _build(self, base_image, requirements, modules, build_root, request_hash):
         build_root = Path(build_root)
         if (re.fullmatch(r"[0-9a-f]{32}", build_root.name) is None
@@ -253,29 +296,33 @@ class DockerEnvironmentBuilder:
             return failed("BUILD_CANCELLED")
         context = build_root / "context"
         context.mkdir(mode=0o700)
-        with (context / "requirements.txt").open("x", encoding="utf-8") as stream:
-            stream.write("\n".join(requirements) + "\n")
         recipe = (f"FROM {base_id}\nUSER root\n"
-                  f"LABEL labbio.environment.build={build_root.name}\n"
-                  "COPY requirements.txt /opt/labbio-environment/requirements.txt\n")
+                  f"LABEL labbio.environment.build={build_root.name}\n")
+        locked: tuple = ()
+        machine = platform.machine()
         if requirements:
-            recipe += ("RUN python -m pip download --disable-pip-version-check --no-input --progress-bar off "
-                       "--only-binary=:all: --dest /opt/labbio-environment/wheels "
-                       "-r /opt/labbio-environment/requirements.txt\n"
-                       "RUN python -m pip install --disable-pip-version-check --no-input --no-index "
-                       "--find-links=/opt/labbio-environment/wheels -r /opt/labbio-environment/requirements.txt\n")
+            downloaded = self._download(base_id, requirements, build_root, deadline)
+            if isinstance(downloaded, EnvironmentBuildResult):
+                return downloaded
+            try:
+                locked = lock_wheelhouse(downloaded, machine=machine)
+            except WheelLockError:
+                return failed("VERIFICATION_FAILED")
+            shutil.copytree(downloaded, context / "wheels")
+            (context / "lock.txt").write_text(render_lock(locked), encoding="utf-8")
+            # Exactly the locked files, offline: never re-resolved inside the image.
+            recipe += ("COPY wheels /opt/labbio-environment/wheels\n"
+                       "COPY lock.txt /opt/labbio-environment/lock.txt\n"
+                       "RUN python -I -m pip install --disable-pip-version-check --no-input --no-cache-dir "
+                       "--progress-bar off --no-index --no-deps --require-hashes "
+                       "--find-links=/opt/labbio-environment/wheels -r /opt/labbio-environment/lock.txt\n")
         recipe += "RUN python -m pip check\n"
         with (context / "Dockerfile").open("x", encoding="utf-8") as stream:
             stream.write(recipe)
         image_file = build_root / "image-id.txt"
         argv = ["docker", "build", "--pull=false", "--force-rm", "--memory", "4g",
                 "--cpu-period", "100000", "--cpu-quota", str(math.floor(self.cpus * 100000)),
-                "--memory-swap", "4g", "--iidfile", str(image_file),
-                "--network", "host" if self.proxy_url else "default"]
-        if self.proxy_url:
-            # Docker's predefined proxy args are not ARG/ENV instructions or image history.
-            argv += ["--build-arg", "HTTP_PROXY=" + self.proxy_url,
-                     "--build-arg", "HTTPS_PROXY=" + self.proxy_url]
+                "--memory-swap", "4g", "--iidfile", str(image_file), "--network", "none"]
         build_log = build_root / "build.log"
         code, error = self._run([*argv, str(context)], build_log, deadline)
         if self._stop_requested() and error is None:
@@ -321,7 +368,12 @@ class DockerEnvironmentBuilder:
                                                            for module in failed_modules[:8]))
             if self._stop_requested():
                 interrupted_daemon("BUILD_CANCELLED", probe_name=probe_name, image_id=image_id)
-            return EnvironmentBuildResult(image_id=image_id, installed_packages=inventory["installed_packages"],
-                                          available_python_modules=modules, log_id=build_root.name)
+            return EnvironmentBuildResult(
+                image_id=image_id, installed_packages=inventory["installed_packages"],
+                available_python_modules=modules, log_id=build_root.name,
+                locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
+                                    for wheel in locked),
+                machine=machine if locked else None,
+            )
         except (ValueError, KeyError, TypeError):
             return failed("VERIFICATION_FAILED")

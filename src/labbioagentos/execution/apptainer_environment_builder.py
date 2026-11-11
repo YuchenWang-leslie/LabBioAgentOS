@@ -24,7 +24,6 @@ from .apptainer import SifStore, SifStoreError
 from .apptainer_build import (
     PROBE_OUTPUT,
     DownloadRunner,
-    WheelLockError,
     _check_path,
     _plain_url,
     attempt_lease,
@@ -34,9 +33,9 @@ from .apptainer_build import (
     remove_stale_downloads,
     render_build_program,
     render_download_program,
-    render_lock,
     verify_download,
 )
+from .wheel_lock import WheelLockError, render_lock
 from .backend import ProcessOutcome
 from .environments import (
     EnvironmentBuildResult,

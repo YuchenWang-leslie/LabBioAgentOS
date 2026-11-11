@@ -10,7 +10,6 @@ names; requirements reach the programs only as files.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -19,27 +18,25 @@ import shutil
 import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from .apptainer import ISOLATION_ARGUMENTS, SubprocessApptainerRunner
 # The same import probe and pip diagnosis as the Docker builder.
+from .wheel_lock import MAX_LOCKED_WHEELS, LockedWheel, WheelLockError, lock_wheelhouse
 from .environment_builder import _PROBE, diagnose_pip_log, pip_log_diagnostics
 from .environments import normalize_modules
 
-MAX_LOCKED_WHEELS = 2048
 MAX_REPORT_BYTES = 16_777_216
 PROBE_OUTPUT = "probe.json"
 LEASE_FILE = "active.lock"
 # The download step runs contained but with the host network; nothing else does.
 CONTAIN_ARGUMENTS = ISOLATION_ARGUMENTS[:ISOLATION_ARGUMENTS.index("--net")]
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
-_LINUX_PLATFORMS = ("manylinux", "musllinux", "linux_")
 _UNSAFE_PATH = re.compile(r"[\s\x00-\x1f\x7f:,]")  # ':' and ',' would split a bind spec.
 _CHUNK_BYTES = 1_048_576
 # Created in the sandbox only while installing, and removed before packing.
@@ -71,18 +68,6 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
 """.replace("MAX_LOCKED_WHEELS", str(MAX_LOCKED_WHEELS))
 
 
-class WheelLockError(ValueError):
-    """The downloaded wheel set cannot be pinned safely."""
-
-
-@dataclass(frozen=True)
-class LockedWheel:
-    name: str
-    version: str
-    filename: str
-    sha256: str
-
-
 class DownloadExit(IntEnum):
     """Download-program exit statuses that the control plane maps to failure codes."""
 
@@ -102,42 +87,7 @@ class BuildExit(IntEnum):
     PROBE_FAILED = 85
 
 
-def lock_wheelhouse(directory: Path, *, machine: str) -> tuple[LockedWheel, ...]:
-    """Pin every wheel of one download by sha256; anything else in the directory is refused."""
 
-    if _MACHINE.fullmatch(machine) is None:
-        raise WheelLockError("Unsupported machine name")
-    directory = Path(directory)
-    if directory.is_symlink() or not directory.is_dir():
-        raise WheelLockError("The wheel directory is unavailable")
-    entries = sorted(directory.iterdir())
-    if len(entries) > MAX_LOCKED_WHEELS:
-        raise WheelLockError("Too many wheels")
-    wheels, names = [], set()
-    for path in entries:
-        if path.is_symlink() or not path.is_file() or path.suffix != ".whl":
-            raise WheelLockError("Only regular wheel files can be locked")
-        try:
-            name, version, _, tags = parse_wheel_filename(path.name)
-        except InvalidWheelFilename:
-            raise WheelLockError("Invalid wheel file name") from None
-        if name in names:
-            raise WheelLockError("More than one wheel for one distribution")
-        if not all(tag.platform == "any" or (tag.platform.startswith(_LINUX_PLATFORMS)
-                                             and tag.platform.endswith("_" + machine))
-                   for tag in tags):
-            raise WheelLockError("A wheel does not match the target platform")
-        names.add(name)
-        wheels.append(LockedWheel(name=str(name), version=str(version), filename=path.name,
-                                  sha256=_sha256(path)))
-    return tuple(wheels)
-
-
-def render_lock(wheels: tuple[LockedWheel, ...]) -> str:
-    """pip requirements that install exactly these files: pinned, hashed, never re-resolved."""
-
-    return "".join(f"{wheel.name}=={wheel.version} --hash=sha256:{wheel.sha256}\n"
-                   for wheel in sorted(wheels, key=lambda item: item.name))
 
 
 def prepare_cache_dir(path: Path) -> None:
@@ -512,11 +462,3 @@ def _tail(path: Path, limit: int = 65_536) -> str:
     with path.open("rb") as stream:
         stream.seek(max(0, path.stat().st_size - limit))
         return stream.read(limit).decode("utf-8", errors="replace")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()
