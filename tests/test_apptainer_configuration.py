@@ -37,13 +37,15 @@ endpoint = "https://provider.invalid/v1"
 model_identifier = "test-provider-model"
 [execution]
 {execution}
-image_key = "python-local"
-image_reference = "{reference}"
+default_image = "python-local"
 [execution.resources]
 cpus = 1.0
 memory_mb = 512
 pids_limit = 64
 timeout_seconds = 60.0
+[[execution.images]]
+key = "python-local"
+reference = "{reference}"
 {apptainer}
 {launcher}
 '''

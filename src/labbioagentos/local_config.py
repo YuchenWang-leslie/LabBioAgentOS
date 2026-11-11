@@ -72,6 +72,11 @@ _PROVIDER_FIX_HINTS = {
     "PROVIDER_CREDENTIALS_NOT_LOADED": (
         "The provider key was not loaded before a model call; this is a composition error."
     ),
+    "EXECUTION_IMAGES_MIGRATION_REQUIRED": (
+        "Move each image into its own [[execution.images]] table with key, reference, "
+        "available_python_modules and installed_packages, and set [execution] default_image "
+        "to the key used when the Agent names no image."
+    ),
     "CREDENTIAL_UNDER_BOUND_PATH": (
         "Move the named credential file out of every directory that can be mounted into a "
         "container: data and result roots, the managed workspace, environment, SIF, scratch, "
@@ -264,13 +269,32 @@ class LocalApptainerSettings(_SettingsModel):
     verify_sif_on_execute: bool = Field(default=True, strict=True)
 
 
+class LocalImageSettings(_SettingsModel):
+    """One operator-configured base image; every configured image is a lab image."""
+
+    key: str
+    reference: str
+    available_python_modules: tuple[str, ...] = ()
+    installed_packages: dict[str, str] = Field(default_factory=dict)
+
+    def approved(self) -> ApprovedImage:
+        return ApprovedImage(
+            key=self.key, reference=self.reference, runtime=ExecutionRuntime.PYTHON,
+            available_python_modules=self.available_python_modules,
+            installed_packages=self.installed_packages,
+        )
+
+
+# Settings that described the one image before C15; they now live in [[execution.images]].
+_SINGLE_IMAGE_SETTINGS = ("image_key", "image_reference", "available_python_modules",
+                          "installed_packages")
+
+
 class LocalExecutionSettings(_SettingsModel):
     backend: Literal["docker", "apptainer"] = "docker"
     apptainer: LocalApptainerSettings | None = None
-    image_key: str
-    image_reference: str
-    available_python_modules: tuple[str, ...] = ()
-    installed_packages: dict[str, str] = Field(default_factory=dict)
+    images: tuple[LocalImageSettings, ...] = Field(min_length=1, max_length=32)
+    default_image: str  # The key execution_submit uses when the Agent names none.
     resources: RequestedResources
     max_output_file_bytes: int = Field(default=16_777_216, ge=1, strict=True)
     max_collected_output_bytes: int = Field(default=67_108_864, ge=1, strict=True)
@@ -286,22 +310,25 @@ class LocalExecutionSettings(_SettingsModel):
             data.pop("apptainer", None)
         return data
 
-    def approved_image(self) -> ApprovedImage:
-        return ApprovedImage(
-            key=self.image_key, reference=self.image_reference,
-            runtime=ExecutionRuntime.PYTHON,
-            available_python_modules=self.available_python_modules,
-            installed_packages=self.installed_packages,
-        )
+    def approved_images(self) -> tuple[ApprovedImage, ...]:
+        return tuple(image.approved() for image in self.images)
+
+    def default_approved_image(self) -> ApprovedImage:
+        return next(image for image in self.approved_images() if image.key == self.default_image)
 
     @model_validator(mode="after")
     def validate_image(self) -> "LocalExecutionSettings":
-        self.approved_image()
+        keys = [image.key for image in self.images]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Each [[execution.images]] key must be unique")
+        if self.default_image not in keys:
+            raise ValueError("default_image must name one of the [[execution.images]] keys")
+        self.approved_images()
         if self.backend == "apptainer":
             if self.apptainer is None:
                 raise ValueError("backend = 'apptainer' requires an [execution.apptainer] section")
-            if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_reference) is None:
-                raise ValueError("Apptainer image_reference must be a registered sha256:<64 hex> SIF")
+            if any(re.fullmatch(r"sha256:[0-9a-f]{64}", image.reference) is None for image in self.images):
+                raise ValueError("Apptainer image references must be registered sha256:<64 hex> SIFs")
         if self.max_output_file_bytes > self.max_collected_output_bytes:
             raise ValueError("Total collection limit must be at least the per-file limit")
         return self
@@ -506,6 +533,12 @@ def load_settings(path: Path) -> LocalSettings:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw.get("provider"), dict) and "base_url_env" in raw["provider"]:
         raise ProviderConfigurationError("PROVIDER_ENDPOINT_MOVED", ("provider.base_url_env",))
+    execution = raw.get("execution")
+    legacy = [name for name in _SINGLE_IMAGE_SETTINGS if isinstance(execution, dict) and name in execution]
+    if legacy:
+        # Not converted silently: the operator states the image list and the default.
+        raise ProviderConfigurationError("EXECUTION_IMAGES_MIGRATION_REQUIRED",
+                                         tuple(f"execution.{name}" for name in legacy))
     settings = _validated_settings(raw)
 
     def absolute(value: Path) -> Path:
@@ -949,7 +982,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
-    image = settings.execution.approved_image()
+    image = settings.execution.default_approved_image()
     store = SifStore(apptainer.sif_store)
     runner = SubprocessApptainerRunner(
         max_output_file_bytes=settings.execution.max_output_file_bytes,
@@ -965,6 +998,9 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     probe_runner = SystemdProbeRunner(job_launcher, settings.execution.resources) if local else runner
 
     def backend_check() -> dict:
+        check = store.verify if apptainer.verify_sif_on_execute else store.path_for
+        for other in settings.execution.approved_images():
+            check(other.reference)  # Every configured SIF must be present, not only the probed default.
         sif_path = (store.verify(image.reference) if apptainer.verify_sif_on_execute
                     else store.path_for(image.reference))
         capabilities = probe_capabilities(
@@ -1152,7 +1188,7 @@ def build_application(
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,
-            approved_images=(settings.execution.approved_image(),), output_contracts=(profile.output_contract,),
+            approved_images=settings.execution.approved_images(), output_contracts=(profile.output_contract,),
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,
             ),
@@ -1165,7 +1201,7 @@ def build_application(
                 include_error_context=settings.execution.include_error_context,
             ),
             execution_profile=ApplicationExecutionProfile(
-                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.image_key, resources=resources,
+                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.default_image, resources=resources,
                 network_required=False, output_contract_ids=(profile.output_contract.contract_id,),
                 minimum_queryable_output_count=1,
             ),

@@ -41,7 +41,7 @@ def _settings(tmp_path: Path, **updates) -> LocalSettings:
         "provider": {"env_file": tmp_path / "secrets" / "provider.env", "api_key_env": "KEY",
                      "endpoint": "https://provider.invalid/v1", "model_identifier": "m"},
         "execution": {
-            "backend": "apptainer", "image_key": "python", "image_reference": "sha256:" + "1" * 64,
+            "backend": "apptainer", "default_image": "python", "images": [{"key": "python", "reference": "sha256:" + "1" * 64}],
             "apptainer": {"binary": "/usr/bin/apptainer", "sif_store": tmp_path / "sif",
                           "scratch_root": tmp_path / "scratch", "cache_dir": tmp_path / "cache",
                           "resource_enforcement": "systemd-cgroups"},
@@ -126,8 +126,9 @@ def test_loading_a_configuration_refuses_a_key_file_inside_a_data_root(tmp_path)
         '[identity]\nuser_id = "u"\nproject_id = "p"\nlab_id = "l"\n'
         '[provider]\nenv_file = "data/provider.env"\napi_key_env = "KEY"\n'
         'endpoint = "https://provider.invalid/v1"\nmodel_identifier = "m"\n'
-        f'[execution]\nimage_key = "python"\nimage_reference = "sha256:{"1" * 64}"\n'
-        '[execution.resources]\ncpus = 1.0\nmemory_mb = 512\npids_limit = 32\ntimeout_seconds = 30.0\n',
+        '[execution]\ndefault_image = "python"\n'
+        '[execution.resources]\ncpus = 1.0\nmemory_mb = 512\npids_limit = 32\ntimeout_seconds = 30.0\n'
+        f'[[execution.images]]\nkey = "python"\nreference = "sha256:{"1" * 64}"\n',
         encoding="utf-8",
     )
 

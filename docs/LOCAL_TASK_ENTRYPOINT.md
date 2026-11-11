@@ -25,7 +25,8 @@ labbio --help
 - 用户、项目、实验室身份；
 - 模型服务的接口格式、端点、模型、输出预算、重试次数、phase deadline，以及
   仓库外凭据文件中的密钥变量名（见下文"模型服务"）；
-- 已批准的不可变 Docker 镜像、模块清单、资源限额、输出限额和网络策略；
+- 已批准的不可变镜像（每个镜像一张 `[[execution.images]]` 表，`[execution] default_image`
+  指定 Agent 没有点名镜像时使用哪一个）、模块清单、资源限额、输出限额和网络策略；
 - 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
 
 任务文字和工具参数不能修改上述权威值。新任务冻结配置与源码内容身份；不匹配
@@ -125,7 +126,8 @@ ANTHROPIC_API_KEY=<密钥>
 
 ### 配置错误码
 
-模型服务配置有问题时，CLI 只输出固定错误码、改法和字段名，不包含任何值，例如
+模型服务、镜像列表或凭据位置配置有问题时，CLI 只输出固定错误码、改法和字段名，
+不包含任何值，例如
 `{"error": "PROVIDER_ENDPOINT_NOT_HTTPS", "detail": "...", "fields": ["provider.endpoint"]}`。
 
 | 错误码 | 含义 |
@@ -138,6 +140,8 @@ ANTHROPIC_API_KEY=<密钥>
 | `PROVIDER_ENV_FILE_UNAVAILABLE` | 找不到凭据文件 |
 | `PROVIDER_KEY_MISSING` | 凭据文件里没有 `api_key_env` 指定的变量，或者它的值为空或跨行 |
 | `PROVIDER_CREDENTIALS_NOT_LOADED` | 内部组装错误：调用模型前没有加载密钥 |
+| `EXECUTION_IMAGES_MIGRATION_REQUIRED` | 配置还在用单镜像写法（`[execution] image_key` 等），见下文"从单镜像配置迁移" |
+| `CREDENTIAL_UNDER_BOUND_PATH` | 凭据文件（模型 API 密钥文件或工作区令牌）位于可能被挂进容器的目录里，例如数据根、结果根、托管工作区、环境根、SIF 仓库、scratch 或缓存目录；把它移到这些目录之外 |
 
 ### 从旧配置迁移
 
@@ -151,6 +155,28 @@ ANTHROPIC_API_KEY=<密钥>
    在内存中提供密钥，或者给 `NativeRuntimeFactory` 传入自己的构建函数（可以用
    `labbioagentos.kernel.create_provider`）；
 6. 升级后 runtime revision 会变，升级前没跑完的运行不能续跑，请先跑完或取消。
+
+### 从单镜像配置迁移
+
+旧配置在 `[execution]` 里直接写 `image_key`、`image_reference`、
+`available_python_modules` 和 `installed_packages`。现在每个镜像单独一张表，加载
+旧写法会报 `EXECUTION_IMAGES_MIGRATION_REQUIRED`，不会自动转换。迁移步骤：
+
+1. 删掉 `[execution]` 里的这四项，改写成一张 `[[execution.images]]` 表，字段依次
+   改名为 `key`、`reference`、`available_python_modules`、`installed_packages`；
+2. 在 `[execution]` 里加 `default_image = "<原来的 image_key>"`；
+3. 要提供更多镜像，就再加 `[[execution.images]]` 表，每张表的 `key` 不能重复；
+   Apptainer 后端下每个 `reference` 都必须是已登记的 SIF。
+
+```toml
+[execution]
+default_image = "scientific-python"
+
+[[execution.images]]
+key = "scientific-python"
+reference = "sha256:<64 hex>"
+available_python_modules = ["numpy"]
+```
 
 ## 提交任务
 

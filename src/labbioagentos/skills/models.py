@@ -143,6 +143,8 @@ class SkillExecutionRef(BaseModel):
     terminal_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
     image_key: StrictStr | None = Field(default=None, min_length=1)
     resolved_image: StrictStr | None = Field(default=None, min_length=1)
+    # Canonical backend-neutral source identity; None in lineage from before C15.
+    image_source_identity: StrictStr | None = Field(default=None, min_length=1)
     script_hash: StrictStr | None = Field(default=None, min_length=1)
     script_artifact_id: UUID | None = None
     input_artifact_ids: tuple[UUID, ...] = ()

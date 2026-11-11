@@ -101,7 +101,7 @@ def test_file_budgets_wire_policy_collection_docker_and_model_input(settings_fil
         contract = application.configuration.output_contracts[0]
         plan = ExecutionPlan(
             run_id=uuid4(), stage_id=WorkflowStage.EXECUTE,
-            image_key=settings.execution.image_key, script_content="pass\n",
+            image_key=settings.execution.default_image, script_content="pass\n",
             resources=settings.execution.resources,
             requested_outputs=(OutputArtifactSpec(
                 relative_path="summary.json", artifact_type="scalar-records",

@@ -40,14 +40,16 @@ env_file = "provider.env"
 api_key_env = "LOCAL_TEST_KEY"
 model_identifier = "test-provider-model"
 [execution]
-image_key = "python-local"
-image_reference = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-available_python_modules = ["numpy"]
+default_image = "python-local"
 [execution.resources]
 cpus = 1.0
 memory_mb = 512
 pids_limit = 64
 timeout_seconds = 60.0
+[[execution.images]]
+key = "python-local"
+reference = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+available_python_modules = ["numpy"]
 ''', encoding="utf-8")
     return path
 

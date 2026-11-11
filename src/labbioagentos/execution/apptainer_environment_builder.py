@@ -188,6 +188,7 @@ class ApptainerEnvironmentBuilder:
             available_python_modules=modules, log_id=build_root.name,
             locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                 for wheel in wheels),
+            machine=self.policy.machine,
         )
 
     async def _download(self, build_root: Path, base_sif: Path, run_id: UUID) -> ProcessOutcome | None:

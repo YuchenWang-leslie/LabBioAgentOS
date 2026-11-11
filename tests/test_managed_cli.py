@@ -39,7 +39,7 @@ def managed_cli(tmp_path, tmp_path_factory, monkeypatch):
             "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
-            "image_key": "python", "image_reference": "sha256:" + "1" * 64,
+            "default_image": "python", "images": [{"key": "python", "reference": "sha256:" + "1" * 64}],
             "resources": {"cpus": 1.0, "memory_mb": 512,
                           "pids_limit": 32, "timeout_seconds": 30.0},
         },
@@ -186,11 +186,14 @@ def test_new_process_restores_registered_identity_and_gold_store(managed_cli, tm
         text.append(f"[{section}]")
         for name, value in configuration[section].items():
             # TOML has no null; an absent per-format table stays absent.
-            if name != "resources" and value is not None:
+            if name not in {"resources", "images"} and value is not None:
                 text.append(f"{name} = {json.dumps(value)}")
     text.append("[execution.resources]")
     for name, value in configuration["execution"]["resources"].items():
         text.append(f"{name} = {json.dumps(value)}")
+    for image in configuration["execution"]["images"]:
+        text.append("[[execution.images]]")
+        text += [f"{name} = {json.dumps(value)}" for name, value in image.items() if value != {}]
     config.write_text("\n".join(text) + "\n", encoding="utf-8")
     directory = workspace.result_root / "run"
     for command in ("status", "export"):

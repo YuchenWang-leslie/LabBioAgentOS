@@ -276,6 +276,7 @@ class ContainerExecutor:
         planned: dict[str, Any] = {
             "image_key": plan.image_key,
             "resolved_image": image.resolved_reference,
+            "image_source": image.source_identity.model_dump(mode="json"),
             "script_hash": workspace.script_hash,
             "script_artifact_id": str(script_ref.artifact_id),
             "input_artifact_ids": [
@@ -622,6 +623,7 @@ class ContainerExecutor:
             status=status,
             image_key=plan.image_key,
             resolved_image=image.resolved_reference,
+            image_source=image.source_identity,
             script_hash=workspace.script_hash,
             script_ref=script_ref,
             exit_code=exit_code,

@@ -129,8 +129,8 @@ def test_local_setting_is_explicit_and_part_of_runtime_identity(tmp_path):
     from labbioagentos import ExecutionPlanDraft
     from pydantic import ValidationError
     settings = LocalExecutionSettings(
-        image_key='python-analysis', image_reference='sha256:' + '1' * 64,
-        resources={})
+        default_image='python-analysis',
+        images=[{'key': 'python-analysis', 'reference': 'sha256:' + '1' * 64}], resources={})
     assert settings.include_error_context is False
     assert settings.model_copy(update={'include_error_context': True}).model_dump()['include_error_context']
     with pytest.raises(ValidationError):

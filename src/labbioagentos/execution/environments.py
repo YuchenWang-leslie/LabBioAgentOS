@@ -22,6 +22,7 @@ from labbioagentos.model_safety import UnsafeModelContentError, validate_model_v
 
 from .images import ApprovedImage, ApprovedImageRegistry
 from .errors import ImageNotApprovedError
+from .identity import SourceIdentity, derived_identity
 from .models import ExecutionRuntime
 
 
@@ -83,6 +84,7 @@ class EnvironmentBuildResult:
     log_id: str | None = None
     # Exact wheels installed, as {"name", "version", "sha256"}; kept as provenance, never shown.
     locked_wheels: tuple[dict, ...] = ()
+    machine: str | None = None  # Architecture the lock was resolved for; needed for an identity.
 
 
 class EnvironmentBuilder(Protocol):
@@ -212,7 +214,11 @@ class EnvironmentService:
             record = self._read_json(path)
             requirements = normalize_requirements(tuple(record["requested_requirements"]))
             modules = normalize_modules(tuple(record["requested_import_modules"]))
-            request_hash = _request_hash(record["base_image_reference"], requirements, modules)
+            # Records from before C15 name only the base realization, which was the hash input.
+            base = (SourceIdentity.model_validate(record["base_source_identity"], strict=False)
+                    if "base_source_identity" in record else None)
+            request_hash = _request_hash(base.canonical if base else record["base_image_reference"],
+                                         requirements, modules)
             image = ApprovedImage.model_validate_json(json.dumps(record["image"]))
             if (record["owner_user_id"] != self.owner_user_id or record["recipe_version"] != RECIPE_VERSION
                     or record["request_hash"] != request_hash or path.stem != request_hash
@@ -225,7 +231,10 @@ class EnvironmentService:
                 req = Requirement(value)
                 if not req.specifier.contains(image.installed_packages[canonicalize_name(req.name)], prereleases=True):
                     raise ValueError()
-            _locked_wheels(record.get("locked_wheels", []))  # Absent in records built before lock lists.
+            locked = _locked_wheels(record.get("locked_wheels", []))  # Absent before lock lists.
+            if image.source is not None and (base is None or image.source != derived_identity(
+                    base, locked, RECIPE_VERSION, record["machine"])):
+                raise ValueError()
             return record, image
         except (KeyError, TypeError, ValueError):
             raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
@@ -323,7 +332,7 @@ class EnvironmentService:
         except (ValueError, ImageNotApprovedError):
             raise EnvironmentRequestError("UNKNOWN_IMAGE") from None
         verified_modules = normalize_modules(tuple(sorted(set(base.available_python_modules) | set(modules))), max_count=256)
-        request_hash = _request_hash(base.resolved_reference, requirements, modules)
+        request_hash = _request_hash(base.source_identity.canonical, requirements, modules)
         async with self._locks.setdefault(request_hash, asyncio.Lock()), self._request_lock(request_hash):
             path = self.records_root / (request_hash + ".json")
             self._check_unconfirmed_attempt(request_hash)
@@ -388,9 +397,13 @@ class EnvironmentService:
                                  if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", name)}
                     if len(inventory) != len(result.installed_packages) or set(result.available_python_modules) != set(verified_modules):
                         raise ValueError()
-                    image = ApprovedImage(key="env-" + request_hash, reference=result.image_id,
-                        runtime=ExecutionRuntime.PYTHON, available_python_modules=verified_modules, installed_packages=inventory)
                     locked_wheels = _locked_wheels(result.locked_wheels)
+                    # Without an exact lock there is no backend-neutral identity to claim.
+                    source = (derived_identity(base.source_identity, locked_wheels, RECIPE_VERSION, result.machine)
+                              if locked_wheels and result.machine else None)
+                    image = ApprovedImage(key="env-" + request_hash, reference=result.image_id,
+                        runtime=ExecutionRuntime.PYTHON, available_python_modules=verified_modules,
+                        installed_packages=inventory, source=source)
                     for value in requirements:
                         req = Requirement(value)
                         if not req.specifier.contains(inventory[canonicalize_name(req.name)], prereleases=True):
@@ -434,6 +447,8 @@ class EnvironmentService:
                 return receipt
             record = {"owner_user_id": self.owner_user_id, "recipe_version": RECIPE_VERSION,
                 "request_hash": request_hash, "base_image_reference": base.resolved_reference,
+                "base_source_identity": base.source_identity.model_dump(mode="json"),
+                "machine": result.machine if source is not None else None,
                 "requested_requirements": requirements, "requested_import_modules": modules,
                 "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels}
             try:

@@ -122,9 +122,11 @@ labbio image-register --config <site-config>.toml --sif /path/to/scientific-pyth
 ```
 
 Registration copies the file into the controlled SIF store as
-`<store>/<hash>.sif`, read-only. Put the printed reference into
-`[execution] image_reference`. Replacing an image means registering a new SIF
-and changing the reference; files in the store are never modified in place.
+`<store>/<hash>.sif`, read-only. Put the printed reference into the `reference`
+of an `[[execution.images]]` table. A site may configure several images; each
+needs its own table and key, and `[execution] default_image` names the one used
+when the Agent names none. Replacing an image means registering a new SIF and
+changing the reference; files in the store are never modified in place.
 
 Build or convert the SIF on a machine with network (for example
 `apptainer build scientific-python.sif docker://...` on the login node).
@@ -157,11 +159,15 @@ model_identifier = "<model>"
 
 [execution]
 backend = "apptainer"
-image_key = "scientific-python"
-image_reference = "sha256:<from image-register>"
-available_python_modules = []
+default_image = "scientific-python"
 max_output_file_bytes = 8589934592
 max_collected_output_bytes = 34359738368
+tmpfs_size_mb = 256   # /tmp in scratch is checked every few seconds; above this, SCRATCH_LIMIT
+
+[[execution.images]]
+key = "scientific-python"
+reference = "sha256:<from image-register>"
+available_python_modules = []
 
 [execution.resources]          # becomes the scheduler request, within policy bounds
 cpus = 4.0
@@ -315,8 +321,9 @@ LabBio refuses to start or to execute when:
 - a build proxy or package index URL carries credentials;
 - `--net --network none` is unavailable unprivileged;
 - a required bind target cannot be created and the image does not provide it;
-- `image_reference` is not a registered SIF, the file is missing, writable, a
-  symlink, or (when verification is enabled) its hash differs;
+- an `[[execution.images]]` reference is not a registered SIF, the file is
+  missing, writable, a symlink, or (when verification is enabled) its hash
+  differs;
 - a resource request exceeds policy;
 - an input or output path contains `:` or `,`;
 - `resource_enforcement = "apptainer-cgroups"` but cgroup flags are

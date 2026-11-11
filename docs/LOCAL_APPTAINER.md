@@ -34,9 +34,12 @@ Change only the backend and placement sections:
 ```toml
 [execution]
 backend = "apptainer"
-image_key = "python-local"
-image_reference = "sha256:<registered SIF digest>"
+default_image = "python-local"
 # Retain the existing [execution.resources] settings.
+
+[[execution.images]]          # One table per image; every reference is a registered SIF.
+key = "python-local"
+reference = "sha256:<registered SIF digest>"
 
 [execution.apptainer]
 binary = "/absolute/path/to/apptainer"

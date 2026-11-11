@@ -14,6 +14,7 @@ from pydantic import (
 )
 
 from .errors import ExecutionPlanRejected, ExecutionResourceLimitError, ImageNotApprovedError
+from .identity import SourceIdentity, legacy_identity
 from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, RequestedResources
 
 
@@ -43,6 +44,10 @@ class ApprovedImage(BaseModel):
     installed_packages: dict[StrictStr, StrictStr] = Field(
         default_factory=dict, max_length=2048,
         description="Verified distribution versions for this immutable image.",
+    )
+    source: SourceIdentity | None = Field(
+        default=None,
+        description="Backend-neutral source identity; None means a legacy image.",
     )
 
     @field_validator("reference")
@@ -92,6 +97,11 @@ class ApprovedImage(BaseModel):
         if self.digest is None or "@" in self.reference:
             return self.reference
         return f"{self.reference}@{self.digest}"
+
+    @property
+    def source_identity(self) -> SourceIdentity:
+        """Without a recorded source, the realization is the only identity there is."""
+        return self.source if self.source is not None else legacy_identity(self.resolved_reference)
 
 
 class ApprovedImageRegistry:

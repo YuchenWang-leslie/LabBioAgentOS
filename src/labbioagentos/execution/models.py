@@ -23,6 +23,8 @@ from pydantic import (
 from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef
 from labbioagentos.contracts import WorkflowStage
 
+from .identity import SourceIdentity
+
 
 class ExecutionRuntime(StrEnum):
     """Runtime families supported by the deterministic executor contract."""
@@ -432,6 +434,8 @@ class ExecutionResult(BaseModel):
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1)
     resolved_image: StrictStr = Field(min_length=1)
+    # Which environment ran, independent of backend; None in results from before C15.
+    image_source: SourceIdentity | None = None
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     script_ref: ArtifactRef
     exit_code: int | None = None

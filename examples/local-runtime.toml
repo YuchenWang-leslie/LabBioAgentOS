@@ -56,11 +56,7 @@ max_output_tokens = 16384
 # thinking_level_disabled = "low"
 
 [execution]
-image_key = "scientific-python"
-# Replace with the exact immutable identity of an already available image.
-image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-available_python_modules = []  # Enter the actual verified image import inventory.
-installed_packages = {}       # Optional verified distribution-to-version inventory.
+default_image = "scientific-python"  # Used when the Agent names no image.
 # Trusted local file limits; these do not change remote Artifact exposure.
 max_output_file_bytes = 8589934592       # 8 GiB per written/collected file, including intermediates.
 max_collected_output_bytes = 34359738368 # 32 GiB of declared outputs per execution, not a disk quota.
@@ -71,6 +67,14 @@ cpus = 4.0
 memory_mb = 4096
 pids_limit = 128
 timeout_seconds = 900.0
+
+# One table per base image; every configured image is a lab image.
+[[execution.images]]
+key = "scientific-python"
+# Replace with the exact immutable identity of an already available image.
+reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []  # Enter the actual verified image import inventory.
+installed_packages = {}       # Optional verified distribution-to-version inventory.
 
 # Optional Python dependency builds. Managed workspaces use USER/Environments,
 # overriding this root; no analysis data is mounted while installing packages.

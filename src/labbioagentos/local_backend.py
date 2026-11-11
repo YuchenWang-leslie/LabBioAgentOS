@@ -112,7 +112,9 @@ def check_backend(
             store, scratch_root=apptainer.scratch_root,
             resource_enforcement=apptainer.resource_enforcement, apptainer_binary=apptainer.binary,
         )
-        image = settings.execution.approved_image()
+        for other in settings.execution.approved_images():
+            store.verify(other.reference)  # Every configured SIF, not only the probed default.
+        image = settings.execution.default_approved_image()
         sif_path = store.verify(image.reference)
     except (SifStoreError, ValueError, OSError) as exc:
         report.update(status="REFUSED", security_failures=["image_store"], detail=type(exc).__name__)

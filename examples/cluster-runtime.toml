@@ -25,20 +25,27 @@ model_identifier = "<model>"
 
 [execution]
 backend = "apptainer"
-image_key = "scientific-python"
-# Output of `labbio image-register --sif <file>`: the SIF file's sha256.
-image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-available_python_modules = []
+default_image = "scientific-python"  # Used when the Agent names no image.
 max_output_file_bytes = 8589934592       # Enforced on the host with RLIMIT_FSIZE.
 max_collected_output_bytes = 34359738368
-# tmpfs_size_mb has no effect under Apptainer: /tmp lives in the per-execution
-# scratch directory and is bounded only by the per-file size limit.
+# Under Apptainer, /tmp lives in the per-execution scratch directory. Its size is
+# checked every few seconds and the run stops with SCRATCH_LIMIT above this value.
+tmpfs_size_mb = 256
 
 [execution.resources]
 cpus = 4.0
 memory_mb = 16384
 pids_limit = 256
 timeout_seconds = 3600.0
+
+
+# One table per base image; every configured image is a lab image.
+[[execution.images]]
+key = "scientific-python"
+# Output of `labbio image-register --sif <file>`: the SIF file's sha256.
+reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []  # Enter the actual verified image import inventory.
+installed_packages = {}       # Optional verified distribution-to-version inventory.
 
 [execution.apptainer]
 binary = "/path/to/apptainer/bin/apptainer"   # Absolute: jobs start from a cleared environment.
