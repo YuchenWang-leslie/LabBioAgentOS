@@ -49,6 +49,10 @@ class ApprovedImage(BaseModel):
         default=None,
         description="Backend-neutral source identity; None means a legacy image.",
     )
+    conda_packages: dict[StrictStr, StrictStr] = Field(
+        default_factory=dict, max_length=4096,
+        description="Verified conda packages of the derived environment, on PATH after the image's own.",
+    )
 
     @model_validator(mode="before")
     @classmethod

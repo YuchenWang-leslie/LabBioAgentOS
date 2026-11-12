@@ -23,6 +23,7 @@ from labbioagentos.model_safety import UnsafeModelContentError, validate_model_v
 from .images import ApprovedImage, ApprovedImageRegistry
 from .catalog import ImageCatalog
 from .errors import ImageNotApprovedError
+from .conda import CONDA_RECIPE, CondaError, normalize_conda_specs
 from .identity import SourceIdentity, derived_identity
 from .models import ExecutionRuntime
 
@@ -44,6 +45,9 @@ _FAILURES = {
     "PIP_CHECK_FAILED": "Installed dependency compatibility verification failed.",
     "IMPORT_CHECK_FAILED": "An explicitly requested import failed in the isolated image.",
     "VERIFICATION_FAILED": "The built image identity or installed package inventory is invalid.",
+    "CONDA_NO_SOLUTION": "The conda packages could not be resolved from the allowed channels.",
+    "CONDA_LOCK_INVALID": "The conda resolution named a package outside the allowed channels or without a sha256.",
+    "CONDA_PLATFORM_UNSUPPORTED": "Conda packages are not available for this machine architecture.",
 }
 
 
@@ -55,6 +59,8 @@ class EnvironmentRequestError(ValueError):
         self.safe_message = {
             "INVALID_REQUIREMENTS": "Use at most 64 Python package names with optional extras/version constraints; URLs, paths, markers and installer options are not accepted.",
             "INVALID_IMPORT_MODULES": "Import checks require bounded dotted Python module names, not code or paths.",
+            "INVALID_CONDA_PACKAGES": "Use at most 64 conda package names, each once, with optional version constraints; channels, URLs, paths and options are not accepted.",
+            "CONDA_UNAVAILABLE": "This deployment has no conda builder configured; request Python wheels only.",
             "UNKNOWN_IMAGE": "The requested base image key is not in the approved environment registry.",
             "ENVIRONMENT_CACHE_INVALID": "A persisted environment cache record is missing, corrupt or has an inconsistent identity.",
             "ENVIRONMENT_SCOPE_INVALID": "The environment cache does not match the current user scope.",
@@ -86,6 +92,9 @@ class EnvironmentBuildResult:
     # Exact wheels installed, as {"name", "version", "sha256"}; kept as provenance, never shown.
     locked_wheels: tuple[dict, ...] = ()
     machine: str | None = None  # Architecture the lock was resolved for; needed for an identity.
+    # Exact conda packages ({"name", "version", "sha256"} with "conda::" names) and the installed set.
+    locked_conda: tuple[dict, ...] = ()
+    conda_packages: dict[str, str] = field(default_factory=dict)
 
 
 class EnvironmentBuilder(Protocol):
@@ -97,7 +106,7 @@ class EnvironmentBuilder(Protocol):
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
         ...
 
 
@@ -156,9 +165,30 @@ def _locked_wheels(values) -> list[dict]:
     return sorted(locked, key=lambda item: item["name"])
 
 
-def _request_hash(base: str, requirements: tuple[str, ...], modules: tuple[str, ...]) -> str:
+def _identity_recipe(conda: tuple[str, ...]) -> str:
+    return RECIPE_VERSION if not conda else f"{CONDA_RECIPE}+{RECIPE_VERSION}"
+
+
+def _locked_conda(values) -> list[dict]:
+    if not isinstance(values, (tuple, list)) or len(values) > 2048:
+        raise ValueError()
+    locked = []
+    for item in values:
+        if (not isinstance(item, dict) or set(item) != {"name", "version", "sha256"}
+                or not isinstance(item["name"], str) or not item["name"].startswith("conda::")
+                or not isinstance(item["version"], str) or not isinstance(item["sha256"], str)
+                or _SHA256.fullmatch(item["sha256"]) is None):
+            raise ValueError()
+        locked.append(dict(item))
+    return sorted(locked, key=lambda item: item["name"])
+
+
+def _request_hash(base: str, requirements: tuple[str, ...], modules: tuple[str, ...],
+                  conda: tuple[str, ...] = ()) -> str:
     payload = {"base_image": base, "requirements": requirements,
                "import_modules": modules, "recipe_version": RECIPE_VERSION}
+    if conda:  # Absent for wheel-only requests, so their hashes are unchanged.
+        payload["conda_packages"] = conda
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -216,16 +246,17 @@ class EnvironmentService:
             record = self._read_json(path)
             requirements = normalize_requirements(tuple(record["requested_requirements"]))
             modules = normalize_modules(tuple(record["requested_import_modules"]))
+            conda = normalize_conda_specs(tuple(record.get("requested_conda", ())))
             # Records from before C15 name only the base realization, which was the hash input.
             base = (SourceIdentity.model_validate(record["base_source_identity"], strict=False)
                     if "base_source_identity" in record else None)
             request_hash = _request_hash(base.canonical if base else record["base_image_reference"],
-                                         requirements, modules)
+                                         requirements, modules, conda)
             image = ApprovedImage.model_validate_json(json.dumps(record["image"]))
             if (record["owner_user_id"] != self.owner_user_id or record["recipe_version"] != RECIPE_VERSION
                     or record["request_hash"] != request_hash or path.stem != request_hash
                     or image.key != "env-" + request_hash or image.network_allowed
-                    or image.runtimes != {ExecutionRuntime.PYTHON}):
+                    or ExecutionRuntime.PYTHON not in image.runtimes):
                 raise ValueError()
             if not set(modules).issubset(image.available_python_modules):
                 raise ValueError()
@@ -234,11 +265,14 @@ class EnvironmentService:
                 if not req.specifier.contains(image.installed_packages[canonicalize_name(req.name)], prereleases=True):
                     raise ValueError()
             locked = _locked_wheels(record.get("locked_wheels", []))  # Absent before lock lists.
+            locked_conda = _locked_conda(record.get("locked_conda", []))
+            if conda and not locked_conda:
+                raise ValueError()
             if image.source is not None and (base is None or image.source != derived_identity(
-                    base, locked, RECIPE_VERSION, record["machine"])):
+                    base, locked + locked_conda, _identity_recipe(conda), record["machine"])):
                 raise ValueError()
             return record, image
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, CondaError):
             raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
 
     def _check_unconfirmed_attempt(self, request_hash: str) -> None:
@@ -333,8 +367,14 @@ class EnvironmentService:
             "available_count": len(images), "next_offset": end if end < len(images) else None}
 
     async def build_environment(self, base_image_key, requirements: tuple[str, ...], import_modules: tuple[str, ...] = (),
-                                *, run_id: UUID | None = None) -> dict:
+                                *, run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> dict:
         requirements, modules = normalize_requirements(requirements), normalize_modules(import_modules)
+        try:
+            conda = normalize_conda_specs(tuple(conda_packages))
+        except CondaError:
+            raise EnvironmentRequestError("INVALID_CONDA_PACKAGES") from None
+        if conda and not getattr(self.builder, "supports_conda", False):
+            raise EnvironmentRequestError("CONDA_UNAVAILABLE")
         try:
             base = self.image_registry.resolve(base_image_key, runtime=ExecutionRuntime.PYTHON)
             if self.catalog is not None and not self.catalog.visible(base_image_key):
@@ -342,7 +382,7 @@ class EnvironmentService:
         except (ValueError, ImageNotApprovedError):
             raise EnvironmentRequestError("UNKNOWN_IMAGE") from None
         verified_modules = normalize_modules(tuple(sorted(set(base.available_python_modules) | set(modules))), max_count=256)
-        request_hash = _request_hash(base.source_identity.canonical, requirements, modules)
+        request_hash = _request_hash(base.source_identity.canonical, requirements, modules, conda)
         async with self._locks.setdefault(request_hash, asyncio.Lock()), self._request_lock(request_hash):
             path = self.records_root / (request_hash + ".json")
             self._check_unconfirmed_attempt(request_hash)
@@ -375,7 +415,7 @@ class EnvironmentService:
             try:
                 result = await self.builder.build(base_image=base, requirements=requirements,
                     import_modules=verified_modules, build_root=attempt, request_hash=request_hash,
-                    run_id=run_id)
+                    run_id=run_id, **({"conda_packages": conda} if conda else {}))
             except EnvironmentRequestError:
                 result = EnvironmentBuildResult(failure_code="BUILD_FAILED", log_id=attempt.name)
             except EnvironmentBuildUnconfirmedError as exc:
@@ -408,12 +448,19 @@ class EnvironmentService:
                     if len(inventory) != len(result.installed_packages) or set(result.available_python_modules) != set(verified_modules):
                         raise ValueError()
                     locked_wheels = _locked_wheels(result.locked_wheels)
+                    locked_conda = _locked_conda(result.locked_conda)
+                    conda_inventory = dict(result.conda_packages)
+                    if conda and (not locked_conda or any(
+                            re.split(r"[=<>!,]", spec)[0] not in conda_inventory for spec in conda)):
+                        raise ValueError()  # Every requested conda package must be installed and locked.
+                    locked = locked_wheels + locked_conda
                     # Without an exact lock there is no backend-neutral identity to claim.
-                    source = (derived_identity(base.source_identity, locked_wheels, RECIPE_VERSION, result.machine)
-                              if locked_wheels and result.machine else None)
+                    source = (derived_identity(base.source_identity, locked, _identity_recipe(conda), result.machine)
+                              if locked and result.machine else None)
+                    # A derived environment keeps every runtime its base declares.
                     image = ApprovedImage(key="env-" + request_hash, reference=result.image_id,
-                        runtime=ExecutionRuntime.PYTHON, available_python_modules=verified_modules,
-                        installed_packages=inventory, source=source)
+                        entry_points=dict(base.entry_points), available_python_modules=verified_modules,
+                        installed_packages=inventory, source=source, conda_packages=conda_inventory)
                     for value in requirements:
                         req = Requirement(value)
                         if not req.specifier.contains(inventory[canonicalize_name(req.name)], prereleases=True):
@@ -460,7 +507,8 @@ class EnvironmentService:
                 "base_source_identity": base.source_identity.model_dump(mode="json"),
                 "machine": result.machine if source is not None else None,
                 "requested_requirements": requirements, "requested_import_modules": modules,
-                "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels}
+                "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels,
+                **({"requested_conda": list(conda), "locked_conda": locked_conda} if conda else {})}
             try:
                 _write_private(path, record)
             except FileExistsError:

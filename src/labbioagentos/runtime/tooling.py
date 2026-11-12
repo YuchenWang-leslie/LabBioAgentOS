@@ -1140,7 +1140,7 @@ class LabBioRuntimeToolSet:
 
     async def environment_build(
         self, base_image_key: ExecutionImageKey, requirements: list[str],
-        import_modules: list[str] = [],
+        import_modules: list[str] = [], conda_packages: list[str] = [],
     ) -> dict:
         """Prepare and verify a reusable Python image, without running analysis.
 
@@ -1155,11 +1155,14 @@ class LabBioRuntimeToolSet:
         A successful build is saved for this user and discoverable in later
         tasks. To execute in that built environment, submit its returned
         image_key; the base key still denotes the unchanged base image.
+        conda_packages optionally adds locked conda packages from the lab's allowed
+        channels, installed apart from the image's Python and appended to PATH.
         """
         return await self._call("environment_build", lambda: (
             self._environment_service().build_environment(
                 base_image_key=base_image_key, requirements=tuple(requirements),
                 import_modules=tuple(import_modules), run_id=self.binding.run_id,
+                conda_packages=tuple(conda_packages),
             )
         ))
 

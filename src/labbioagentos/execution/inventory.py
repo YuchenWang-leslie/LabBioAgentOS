@@ -15,8 +15,8 @@ from enum import StrEnum
 
 from labbioagentos.model_safety import UnsafeModelContentError, validate_model_visible_json
 
-# The same identifier shapes ApprovedImage accepts for a verified inventory.
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# Plain package identifiers; conda names may also start with "_" (for example _openmp_mutex).
+_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}")
 _HIDDEN_REFERENCE = re.compile(r"(?:^|[\s(\"'=,;])(?:/|~/|[A-Za-z]:[\\/])|://|sha256:[0-9a-fA-F]")
 MAX_INVENTORY_ENTRIES = 4096

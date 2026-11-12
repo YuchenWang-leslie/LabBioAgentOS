@@ -122,7 +122,12 @@ class ImageRecord(_Model):
         return ApprovedImage(
             key=self.key, reference=realization.resolved_image, entry_points=dict(self.entry_points),
             available_python_modules=self.available_python_modules,
-            installed_packages=dict(self.inventory.packages), source=self.source,
+            # Conda metadata and Python distributions are different namespaces.
+            installed_packages=(dict(self.inventory.packages)
+                                if self.inventory.origin is InventoryOrigin.PYTHON else {}),
+            conda_packages=(dict(self.inventory.packages)
+                            if self.inventory.origin is InventoryOrigin.CONDA_META else {}),
+            source=self.source,
         )
 
 

@@ -176,6 +176,25 @@ ANTHROPIC_API_KEY=<密钥>
 4. 每张表可以写 `runtimes = ["PYTHON", "SHELL"]`，不写时只有 `PYTHON`。`default_image`
    必须支持 `PYTHON`，因为后端检查会在它里面运行 Python 探测。
 
+### conda 派生环境
+
+派生环境除了 PyPI wheel，还可以加 conda 包（例如 `samtools=1.21`），前提是部署配置了平台
+自己的 micromamba：
+
+```toml
+[environment.conda]
+micromamba = "/path/to/micromamba"          # 官方发布的 micromamba-linux-64；不可写
+micromamba_sha256 = "<64 位十六进制>"        # 每次使用前都核对
+channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、main 等 Anaconda 渠道
+```
+
+- 求解在宿主机上进行：不读任何用户配置（`--no-rc`），只用列出的渠道；每个包必须来自这些
+  渠道（平台子目录或 `noarch`），并带 sha256。
+- 每个包按 sha256 下载校验，再在构建中离线安装到 `/opt/labbio-env`；安装器会再核对一次哈希。
+- 这个环境追加在 PATH 末尾，所以镜像自己的 `python` 仍是 PYTHON 的入口程序，conda 装的
+  命令行工具可以直接调用。micromamba 只依赖 glibc，基础镜像不能是 musl（如 Alpine）。
+- 同样的基础镜像、锁定的 wheel 和 conda 包，得到同一个 DERIVED 来源身份。
+
 Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
 `SHELL`，平台不会根据脚本或镜像推断。回执和 trace 都记录实际的运行时，以及它是明确
 给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）。

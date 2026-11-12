@@ -22,13 +22,15 @@ import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from .conda import (CONDA_ENV_PREFIX, CondaError, CondaPolicy, download as conda_download, lock_entries,
+                    render_explicit, solve as conda_solve, verify_micromamba)
 from .wheel_lock import WheelLockError, lock_wheelhouse, render_lock
 from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError,
                            EnvironmentRequestError, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
 
 
-_PROBE = """import contextlib, importlib, importlib.metadata, json, sys
+_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, sys
 modules = json.loads(sys.argv[1])
 failed = []
 with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
@@ -38,8 +40,20 @@ with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log),
         except BaseException:
             failed.append(module)
     packages = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
-print(json.dumps({'installed_packages': packages, 'failed_imports': failed}, sort_keys=True))
+    conda = {}
+    for path in sorted(glob.glob('/opt/labbio-env/conda-meta/*.json'))[:4096]:
+        try:
+            with open(path) as stream:
+                record = json.load(stream)
+            conda[record['name']] = record['version']
+        except Exception:
+            pass
+print(json.dumps({'installed_packages': packages, 'conda_packages': conda, 'failed_imports': failed}, sort_keys=True))
 """
+
+
+_CONDA_FAILURES = {"CONDA_NO_SOLUTION", "CONDA_LOCK_INVALID", "CONDA_PLATFORM_UNSUPPORTED", "CONDA_UNAVAILABLE",
+                   "NETWORK_FAILURE", "VERIFICATION_FAILED", "BUILD_TIMEOUT"}
 
 
 def diagnose_pip_log(text: str) -> str:
@@ -77,7 +91,7 @@ def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
 
 class DockerEnvironmentBuilder:
     def __init__(self, proxy_url: str | None = None, timeout_seconds: float = 600,
-                 cpus: float = 4.0):
+                 cpus: float = 4.0, conda: CondaPolicy | None = None):
         if not 1 <= timeout_seconds <= 3600:
             raise EnvironmentRequestError()
         if (isinstance(cpus, bool) or not isinstance(cpus, (int, float))
@@ -90,11 +104,16 @@ class DockerEnvironmentBuilder:
                     or any(ord(char) < 32 for char in proxy_url)):
                 raise EnvironmentRequestError()
         self.proxy_url, self.timeout_seconds, self.cpus = proxy_url, timeout_seconds, cpus
+        self.conda = conda
         self._attempt_state = threading.local()
+
+    @property
+    def supports_conda(self) -> bool:
+        return self.conda is not None
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
         # Docker builds run on the control-plane host and submit no job, so run_id is unused.
         requirements, import_modules = normalize_requirements(requirements), normalize_modules(import_modules, max_count=256)
         stop = threading.Event()
@@ -102,7 +121,8 @@ class DockerEnvironmentBuilder:
         def work():
             self._attempt_state.stop = stop
             try:
-                return self._build(base_image, requirements, import_modules, build_root, request_hash)
+                return self._build(base_image, requirements, import_modules, build_root, request_hash,
+                                   tuple(conda_packages))
             finally:
                 del self._attempt_state.stop
 
@@ -258,7 +278,7 @@ class DockerEnvironmentBuilder:
                                           log_id=build_root.name)
         return wheels
 
-    def _build(self, base_image, requirements, modules, build_root, request_hash):
+    def _build(self, base_image, requirements, modules, build_root, request_hash, conda_packages=()):
         build_root = Path(build_root)
         if (re.fullmatch(r"[0-9a-f]{32}", build_root.name) is None
                 or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None
@@ -296,10 +316,32 @@ class DockerEnvironmentBuilder:
             return failed("BUILD_CANCELLED")
         context = build_root / "context"
         context.mkdir(mode=0o700)
-        recipe = (f"FROM {base_id}\nUSER root\n"
-                  f"LABEL labbio.environment.build={build_root.name}\n")
+        recipe, locked_conda = "", ()
+        if conda_packages:
+            if self.conda is None:
+                return failed("BUILDER_UNAVAILABLE")
+            try:
+                (build_root / "conda").mkdir(mode=0o700)
+                locked_conda = conda_solve(self.conda, conda_packages, build_root / "conda")
+                conda_download(locked_conda, context / "conda-pkgs", proxy_url=self.conda.proxy_url)
+                shutil.copy2(verify_micromamba(self.conda), context / "micromamba")
+            except CondaError as exc:
+                return failed(exc.code if exc.code in _CONDA_FAILURES else "BUILD_FAILED")
+            (context / "explicit.txt").write_text(render_explicit(locked_conda, "/labbio/conda-pkgs"))
+            # Installed offline in a separate stage; only the finished environment is copied on.
+            recipe += (f"FROM {base_id} AS labbio-conda\nUSER root\n"
+                       "COPY micromamba /labbio/micromamba\nCOPY conda-pkgs /labbio/conda-pkgs\n"
+                       "COPY explicit.txt /labbio/explicit.txt\n"
+                       "RUN /labbio/micromamba create -y -q --no-rc -r /tmp/labbio-mamba "
+                       f"-p {CONDA_ENV_PREFIX} --offline --file /labbio/explicit.txt && rm -rf /tmp/labbio-mamba\n")
+        recipe += (f"FROM {base_id}\nUSER root\n"
+                   f"LABEL labbio.environment.build={build_root.name}\n")
+        if conda_packages:
+            # Appended, so the image's own python stays the PYTHON entry point.
+            recipe += (f"COPY --from=labbio-conda {CONDA_ENV_PREFIX} {CONDA_ENV_PREFIX}\n"
+                       f"ENV PATH=$PATH:{CONDA_ENV_PREFIX}/bin\n")
         locked: tuple = ()
-        machine = platform.machine()
+        machine = self.conda.machine if self.conda is not None else platform.machine()
         if requirements:
             downloaded = self._download(base_id, requirements, build_root, deadline)
             if isinstance(downloaded, EnvironmentBuildResult):
@@ -373,7 +415,12 @@ class DockerEnvironmentBuilder:
                 available_python_modules=modules, log_id=build_root.name,
                 locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                     for wheel in locked),
-                machine=machine if locked else None,
+                machine=machine if locked or locked_conda else None,
+                locked_conda=tuple(lock_entries(locked_conda)),
+                conda_packages={name: version for name, version in inventory.get("conda_packages", {}).items()
+                                if isinstance(name, str) and isinstance(version, str)
+                                and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}", name)
+                                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}", version)},
             )
         except (ValueError, KeyError, TypeError):
             return failed("VERIFICATION_FAILED")

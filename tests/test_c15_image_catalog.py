@@ -205,7 +205,8 @@ def test_only_realizations_for_this_backend_execute(tmp_path):
 
     assert set(images) == {"tools"}
     assert images["tools"].reference == SIF and images["tools"].source_identity == OCI
-    assert images["tools"].installed_packages == {"samtools": "1.21"}
+    # Conda metadata is not a Python distribution inventory (C15 step 7b).
+    assert images["tools"].conda_packages == {"samtools": "1.21"} and images["tools"].installed_packages == {}
 
 
 def test_a_revoked_admitted_image_never_executes(tmp_path):

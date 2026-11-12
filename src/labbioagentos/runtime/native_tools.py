@@ -129,6 +129,13 @@ class EnvironmentBuildArguments(NativeToolArguments):
         "Optional dotted Python import names to verify in the built environment. "
         "This check does not install packages; declare distributions in requirements."
     ))
+    conda_packages: list[Annotated[StrictStr, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=64, description=(
+            "Optional conda package names, each with an optional version constraint such as "
+            "samtools=1.21, from the lab's allowed channels only. Channels, URLs and options are "
+            "not accepted. They are installed apart from the image's Python and added to PATH "
+            "after it, so command-line tools become available."
+        ))
 
 
 class ExecutionInspectArguments(NativeToolArguments):

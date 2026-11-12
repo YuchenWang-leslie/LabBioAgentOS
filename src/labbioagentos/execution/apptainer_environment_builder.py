@@ -112,7 +112,7 @@ class ApptainerEnvironmentBuilder:
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
         requirements = normalize_requirements(requirements)
         import_modules = normalize_modules(import_modules, max_count=256)
         build_root = Path(build_root)
@@ -124,6 +124,8 @@ class ApptainerEnvironmentBuilder:
             raise EnvironmentRequestError()
         await asyncio.to_thread(remove_stale_downloads, build_root.parent)
         with attempt_lease(build_root):
+            if conda_packages:  # The service checks supports_conda first; this is a second guard.
+                raise EnvironmentRequestError("CONDA_UNAVAILABLE")
             result = await self._build(base_image, requirements, import_modules, build_root, run_id)
             # Downloaded wheels are not kept; the lock list and logs are.
             shutil.rmtree(build_root / "download" / "wheels", ignore_errors=True)

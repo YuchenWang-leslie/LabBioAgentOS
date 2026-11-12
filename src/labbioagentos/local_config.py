@@ -395,18 +395,35 @@ class LocalClusterBuildSettings(LocalApptainerBuildSettings):
         return self
 
 
+class LocalCondaSettings(_SettingsModel):
+    """The platform's own micromamba and the channels derived environments may use."""
+
+    micromamba: Path
+    micromamba_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    channels: tuple[str, ...] = ("conda-forge", "bioconda")
+
+    @field_validator("channels")
+    @classmethod
+    def check_channels(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        from .execution.conda import validate_channels
+
+        return validate_channels(value)
+
+
 class LocalEnvironmentSettings(_SettingsModel):
     root: Path
     build_proxy: str | None = None
     build_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
     cluster: LocalClusterBuildSettings | None = None
     local_apptainer: LocalApptainerBuildSettings | None = None
+    conda: LocalCondaSettings | None = None
 
     @model_serializer(mode="wrap")
     def omit_absent_local_apptainer(self, handler):
         data = handler(self)
-        if data.get("local_apptainer") is None:
-            data.pop("local_apptainer", None)
+        for name in ("local_apptainer", "conda"):
+            if data.get(name) is None:
+                data.pop(name, None)
         return data
 
     @model_validator(mode="after")
@@ -581,6 +598,9 @@ def load_settings(path: Path) -> LocalSettings:
             "root": absolute(settings.environment.root),
             "cluster": _absolute_cluster_build(settings.environment.cluster, absolute),
             "local_apptainer": _absolute_cluster_build(settings.environment.local_apptainer, absolute),
+            "conda": settings.environment.conda.model_copy(update={
+                "micromamba": absolute(settings.environment.conda.micromamba),
+            }) if settings.environment.conda else None,
         }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
         "execution": settings.execution.model_copy(update={
@@ -963,6 +983,20 @@ def _image_catalog(settings: LocalSettings):
     )
 
 
+def _conda_policy(settings: LocalSettings):
+    """The conda builder policy, or None when this deployment configures no conda."""
+    conda = settings.environment.conda if settings.environment else None
+    if conda is None:
+        return None
+    import platform as host_platform
+
+    from .execution.conda import CondaPolicy
+
+    return CondaPolicy(micromamba=conda.micromamba, micromamba_sha256=conda.micromamba_sha256,
+                       channels=conda.channels, machine=host_platform.machine(),
+                       proxy_url=settings.environment.build_proxy)
+
+
 def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog) -> dict:
     """Environment builds: Docker on the control-plane host, or cluster builds in jobs."""
     from .execution.environments import EnvironmentService
@@ -976,7 +1010,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 root=environment.root, image_registry=registry,
                 builder=DockerEnvironmentBuilder(
                     proxy_url=environment.build_proxy, timeout_seconds=environment.build_timeout_seconds,
-                    cpus=settings.execution.resources.cpus,
+                    cpus=settings.execution.resources.cpus, conda=_conda_policy(settings),
                 ),
                 owner_user_id=settings.principal.user_id, catalog=catalog,
             )
