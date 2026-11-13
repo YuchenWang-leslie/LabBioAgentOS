@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import platform as host_platform
+import shutil
+import stat
+import subprocess
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,13 +18,21 @@ from .execution.admission import (
     ApptainerRealizer,
     DockerRealizer,
     ImageAdmission,
+    LockedBuild,
     load_registry_credentials,
     probe_with,
 )
 from .execution.catalog import GpuSupport, ImageScope, ImageState
 from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
-from .local_config import LocalSettings, _cluster_execution, _image_catalog
+from .execution.conda import CondaError, lock_explicit, parse_explicit
+from .execution.environments import (EnvironmentBuildUnconfirmedError, EnvironmentRequestError, PinnedLocks,
+                                     _identity_recipe)
+from .execution.errors import ImageNotApprovedError
+from .execution.images import ApprovedImage, ApprovedImageRegistry
+from .execution.wheel_lock import MAX_LOCK_BYTES, WheelLockError, parse_wheel_lock, render_pins
+from .local_config import (LocalSettings, _cluster_execution, _conda_policy, _environment_wiring, _image_catalog,
+                           sif_stores)
 from .execution.identity import SourceKind
 from .local_lab import LabArea, private_member_root
 from .local_promotion import (
@@ -50,6 +63,9 @@ def add_image_commands(commands) -> None:
     form.add_argument("--oci", help="host/name@sha256:<64 hex>")
     form.add_argument("--archive", type=Path, help="An OCI layout archive, for example from docker save")
     form.add_argument("--sif", type=Path, help="A SIF file; Apptainer only")
+    form.add_argument("--base", help="Build from lock files on this image key (see image-list)")
+    admit.add_argument("--lock", type=Path, action="append",
+                       help="With --base: a hashed wheel lock or an @EXPLICIT conda lock; repeat for both")
     commands.add_parser("image-list", help="List the images you can select, with their state")
     request = commands.add_parser("image-promote-request", help="Ask for one of your images to become a lab image")
     request.add_argument("--key", required=True)
@@ -130,15 +146,135 @@ def image_admit(settings: LocalSettings, args) -> dict:
         registry_client=lambda: OciRegistryClient(credentials=credentials),
         existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
     )
-    runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
-    record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
-                             oci=args.oci, archive=args.archive, sif=args.sif, runtimes=runtimes)
+    if getattr(args, "base", None) is not None:
+        if not args.lock:
+            raise AdmissionError("LOCK_REQUIRED")
+        if args.runtime:
+            raise AdmissionError("RUNTIMES_INHERITED")
+        base = _base_image(settings, catalog, args.base)
+        builder = _lock_builder(settings, member_root)
+        texts = [_read_lock(path) for path in args.lock]
+        try:
+            record = admission.admit_locked(
+                key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu), base=base,
+                build=lambda image: build_locked(builder, image, texts, member_root / "staging" / "lock-builds",
+                                                 backend=settings.execution.backend))
+        finally:
+            if getattr(builder, "job_ledger", None) is not None:
+                builder.job_ledger.close()
+    else:
+        if getattr(args, "lock", None):
+            raise AdmissionError("LOCK_REQUIRED")
+        runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
+        record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
+                                 oci=args.oci, archive=args.archive, sif=args.sif, runtimes=runtimes)
     return {"event": "image_admitted", "key": record.key, "scope": record.scope.value,
             "source": record.source.canonical, "size_bytes": record.size_bytes,
             "runtimes": sorted(runtime.value for runtime in record.entry_points),
             "inventory_origin": record.inventory.origin.value,
             "inventory_count": len(record.inventory.packages),
             "inventory_invalid": record.inventory.invalid_count}
+
+
+def _base_image(settings: LocalSettings, catalog, key: str) -> ApprovedImage:
+    """An image this member may select now: configured, lab or their own, and not deprecated."""
+    images = {image.key: image for image in (*settings.execution.approved_images(), *catalog.admitted_images())}
+    if key not in images:
+        raise AdmissionError("BASE_NOT_FOUND")
+    try:
+        catalog.require_selectable(key, used_by_run=False)
+    except ImageNotApprovedError:
+        raise AdmissionError("BASE_NOT_FOUND") from None
+    return images[key]
+
+
+def _read_lock(path: Path) -> str:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_LOCK_BYTES:
+            raise ValueError()
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError):
+        raise AdmissionError("WHEEL_LOCK_FILE_INVALID") from None
+
+
+def _lock_builder(settings: LocalSettings, member_root: Path):
+    """The deployment's environment builder; a cluster build registers its SIF in the member's store."""
+    if settings.environment is None:
+        raise AdmissionError("LOCK_BUILDS_UNAVAILABLE")
+    if settings.execution.backend == "docker":
+        from .execution.environment_builder import DockerEnvironmentBuilder
+
+        environment = settings.environment
+        return DockerEnvironmentBuilder(proxy_url=environment.build_proxy,
+                                        timeout_seconds=environment.build_timeout_seconds,
+                                        cpus=settings.execution.resources.cpus, conda=_conda_policy(settings))
+    from .execution.apptainer import SifStore, SifStoreChain
+    from .execution.job_ledger import JobLedger
+
+    jobs = member_root / "jobs"
+    jobs.mkdir(mode=0o700, exist_ok=True)
+    chain = SifStoreChain((SifStore(member_root / "sif"), *sif_stores(settings).stores))
+    wiring = _environment_wiring(settings, jobs, JobLedger(jobs / "jobs.sqlite"), _image_catalog(settings),
+                                 sif_store=chain)
+    return wiring["environment_service_factory"](ApprovedImageRegistry(())).builder
+
+
+def build_locked(builder, base: ApprovedImage, texts: list[str], attempts_root: Path, *, backend: str) -> LockedBuild:
+    """Parse the member's locks, build exactly them on the base, and report what was built."""
+    wheel_texts = [text for text in texts if not _is_explicit(text)]
+    conda_texts = [text for text in texts if _is_explicit(text)]
+    if len(wheel_texts) > 1 or len(conda_texts) > 1:
+        raise AdmissionError("LOCK_KIND_REPEATED")
+    try:
+        pins = parse_wheel_lock(wheel_texts[0]) if wheel_texts else ()
+    except WheelLockError:
+        raise AdmissionError("WHEEL_LOCK_FILE_INVALID") from None
+    attempts_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root = attempts_root / uuid4().hex
+    root.mkdir(mode=0o700)
+    conda = ()
+    if conda_texts:
+        if not getattr(builder, "supports_conda", False):
+            raise AdmissionError("CONDA_UNAVAILABLE")
+        try:
+            entries = parse_explicit(conda_texts[0], builder.conda)
+            (root / "lock-solve").mkdir(mode=0o700)
+            conda = lock_explicit(builder.conda, entries, root / "lock-solve")
+        except CondaError as exc:
+            raise AdmissionError(exc.code) from None
+        finally:
+            shutil.rmtree(root / "lock-solve", ignore_errors=True)  # The repodata cache is large.
+    pinned = PinnedLocks(wheels=pins, conda=conda)
+    request = json.dumps({"base": base.source_identity.canonical, "wheels": render_pins(pins),
+                          "conda": [package.url + "#" + package.sha256 for package in conda]}, sort_keys=True)
+    try:
+        result = asyncio.run(builder.build(
+            base_image=base, requirements=(), import_modules=(), build_root=root,
+            request_hash=hashlib.sha256(request.encode()).hexdigest(), run_id=uuid4(), pinned=pinned))
+    except EnvironmentRequestError as exc:
+        raise AdmissionError(exc.code) from None
+    except EnvironmentBuildUnconfirmedError:
+        raise AdmissionError("ENVIRONMENT_BUILD_UNCONFIRMED") from None
+    if result.failure_code is not None:
+        raise AdmissionError(result.failure_code)
+    if backend == "docker":
+        inspected = subprocess.run(["docker", "image", "inspect", "--format", "{{.Size}}", result.image_id],
+                                   capture_output=True, text=True, timeout=60, check=False)
+        if inspected.returncode != 0 or not inspected.stdout.strip().isdigit():
+            raise AdmissionError("REALIZATION_FAILED")
+        size = int(inspected.stdout.strip())
+    else:
+        size = builder.sif_store.path_for(result.image_id).stat().st_size
+    return LockedBuild(reference=result.image_id, produced_by=root.name,
+                       locked=(*result.locked_wheels, *result.locked_conda),
+                       recipe=_identity_recipe(("conda",) if conda else ()), machine=result.machine,
+                       size_bytes=size)
+
+
+def _is_explicit(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    return bool(lines) and lines[0] == "@EXPLICIT"
 
 
 def image_list(settings: LocalSettings) -> dict:

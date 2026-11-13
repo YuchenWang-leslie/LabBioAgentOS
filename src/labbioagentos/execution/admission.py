@@ -31,7 +31,7 @@ from .catalog import (
     InventorySnapshot,
     Realization,
 )
-from .identity import SourceIdentity, SourceKind
+from .identity import SourceIdentity, SourceKind, derived_identity
 from .images import ApprovedImage
 from .inventory import InventoryOrigin, validate_inventory, validate_purpose
 from .models import ExecutionRuntime
@@ -47,7 +47,7 @@ for dist in metadata.distributions():
     if isinstance(name, str):
         python[name] = dist.version
 conda = {}
-for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/opt/micromamba"):
+for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/opt/micromamba", "/opt/labbio-env"):
     for path in sorted(glob.glob(prefix + "/conda-meta/*.json"))[:4096]:
         try:
             with open(path) as stream:
@@ -60,7 +60,7 @@ print(json.dumps({"machine": platform.machine(), "python": python, "conda": cond
 # For images without Python: the CPU architecture, then conda-meta file names, which
 # conda writes as <name>-<version>-<build>.json.
 SHELL_PROBE_PROGRAM = (
-    "uname -m; for prefix in /opt/conda /usr/local /opt/miniconda3 /opt/mamba /opt/micromamba; do "
+    "uname -m; for prefix in /opt/conda /usr/local /opt/miniconda3 /opt/mamba /opt/micromamba /opt/labbio-env; do "
     'ls "$prefix/conda-meta" 2>/dev/null | grep "\\.json$" | head -n 4096; done'
 )
 DEFAULT_ENTRY_POINTS = {ExecutionRuntime.PYTHON: ("python",), ExecutionRuntime.SHELL: ("sh",)}
@@ -76,7 +76,10 @@ class AdmissionError(ValueError):
 
     @property
     def hint(self) -> str:
-        return ADMISSION_HINTS.get(self.code, "The image was not admitted; nothing was recorded.")
+        from .environments import _FAILURES  # Lock builds report the environment build's own codes.
+
+        return ADMISSION_HINTS.get(self.code) or _FAILURES.get(
+            self.code, "The image was not admitted; nothing was recorded.")
 
 
 ADMISSION_HINTS = {
@@ -102,6 +105,21 @@ ADMISSION_HINTS = {
     "RUNTIMES_INVALID": "Declare each runtime the image supports once: PYTHON, SHELL or both.",
     "REALIZATION_FAILED": "The image could not be loaded or converted on this backend.",
     "DIGEST_MISMATCH": "Downloaded content does not match its digest.",
+    "BASE_NOT_FOUND": "Give --base as the key of an active image you can select (see image-list).",
+    "BASE_NOT_LAB": "A lock-built image can be promoted only when its base is a lab image.",
+    "LOCK_REQUIRED": "Give --base together with one or more --lock files.",
+    "RUNTIMES_INHERITED": "A lock-built image keeps its base image's runtimes; omit --runtime.",
+    "LOCK_BUILDS_UNAVAILABLE": "This deployment has no [environment] builder, so lock files cannot be built.",
+    "WHEEL_LOCK_FILE_INVALID": ("A wheel lock needs name==version with --hash=sha256 for every package, "
+                                "for example from pip-compile --generate-hashes; extras, markers and options "
+                                "are not accepted."),
+    "CONDA_LOCK_FILE_INVALID": ("A conda lock is an @EXPLICIT file of package URLs in the allowed channels "
+                                "for the compute nodes' platform, each with an md5 or sha256."),
+    "CONDA_LOCK_MISMATCH": ("The conda lock is incomplete, inconsistent or no longer matches its channel: "
+                            "solving exactly its builds gave other files or hashes."),
+    "LOCK_KIND_REPEATED": "Give at most one wheel lock and one conda lock.",
+    "ENVIRONMENT_BUILD_UNCONFIRMED": ("The build could not be confirmed stopped or cleaned up; check for "
+                                      "leftover build containers before trying again."),
 }
 
 
@@ -185,6 +203,19 @@ class ApptainerRealizer(Realizer):
         except (OSError, ValueError):
             raise AdmissionError("REALIZATION_FAILED") from None
         return Realized(reference, f"sif-register-{uuid4().hex[:12]}")
+
+
+@dataclass(frozen=True)
+class LockedBuild:
+    """A finished lock build: its realization and the exact packages its identity is derived from."""
+
+    reference: str
+    produced_by: str
+    locked: tuple[dict, ...]
+    recipe: str
+    machine: str
+    size_bytes: int
+    created: bool = True
 
 
 @dataclass(frozen=True)
@@ -322,6 +353,60 @@ class ImageAdmission:
             raise
         finally:
             shutil.rmtree(staging)
+
+    def admit_locked(self, *, key: str, purpose: str, gpu: GpuSupport, base: ApprovedImage,
+                     build: Callable[[ApprovedImage], LockedBuild],
+                     expected: ImageRecord | None = None) -> ImageRecord:
+        """Admit an image built from a member's lock on an admitted base (DECIDED-C15-E2).
+
+        The source identity is derived from the base's source and the exact
+        locked packages, as for an environment the Agent builds, so the same
+        lock on the same base is the same image whoever submits it. The image
+        keeps the base's runtimes; every admission check still runs.
+        """
+
+        try:
+            purpose = validate_purpose(purpose)
+        except ValueError:
+            raise AdmissionError("PURPOSE_INVALID") from None
+        if key in self.existing_keys():
+            raise AdmissionError("IMAGE_KEY_TAKEN")
+        built = build(base)  # Raises AdmissionError with the build's failure code.
+        realized = Realized(built.reference, built.produced_by, created=built.created)
+        try:
+            if built.size_bytes > self.limits.max_image_bytes:
+                raise AdmissionError("IMAGE_TOO_LARGE")
+            used = sum(record.size_bytes or 0 for record in self.store.records().values())
+            if used + built.size_bytes > self.limits.quota_bytes:
+                raise AdmissionError("MEMBER_QUOTA_EXCEEDED" if self.scope is ImageScope.PERSONAL
+                                     else "LAB_QUOTA_EXCEEDED")
+            if built.machine != self.machine:
+                raise AdmissionError("ARCHITECTURE_MISMATCH")
+            source = derived_identity(base.source_identity, list(built.locked), built.recipe, built.machine)
+            if expected is not None and source != expected.source:
+                raise AdmissionError("SOURCE_MISMATCH")
+            entry_points = dict(base.entry_points)
+            approved = ApprovedImage(key=key, reference=built.reference, entry_points=entry_points, source=source)
+            results = {runtime: (parse_probe if runtime is ExecutionRuntime.PYTHON else parse_shell_probe)(
+                self.probe(approved, runtime)) for runtime in entry_points}
+            if any(item.machine != self.machine for item in results.values()):
+                raise AdmissionError("ARCHITECTURE_MISMATCH")
+            result = results.get(ExecutionRuntime.PYTHON) or results[ExecutionRuntime.SHELL]
+            if expected is not None and (result.inventory != expected.inventory
+                                         or entry_points != expected.entry_points):
+                raise AdmissionError("INVENTORY_MISMATCH")
+            record = ImageRecord(
+                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
+                realizations=(Realization(backend=self.realizer.backend, resolved_image=built.reference,
+                                          produced_by=f"lock:{built.produced_by}"),),
+                entry_points=entry_points, inventory=result.inventory, purpose=purpose, gpu=gpu,
+                size_bytes=built.size_bytes, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
+            )
+            self.store.add_record(record)
+            return record
+        except BaseException:
+            self.realizer.discard(realized)
+            raise
 
     def _acquire(self, staging: Path, oci, archive, sif) -> tuple[AcquiredImage | Path, int, str]:
         platform = _platform(self.machine)

@@ -252,6 +252,33 @@ Decided by MOHAN CUI, 2026-11-11.
     channel URLs, installer options or scripts.
 - E2: a member may submit a lock file (A5) through the same mechanism. The
   result is a personal image (DECIDED-C15-B).
+
+### Member lock files
+
+Refined by MOHAN CUI on 2026-11-13.
+
+- The command is `image-admit --base <image key> --lock <file>`, with one or
+  more lock files.
+- Conda lock: an explicit file. Each line is a
+  `https://conda.anaconda.org/<allowed channel>/<platform or noarch>/<file>`
+  URL with a sha256 or an md5. Common tools export md5 only, so an md5 line is
+  accepted: the platform finds the file's sha256 in the channel metadata and
+  checks that the md5 matches. Only the sha256 is recorded and used to verify
+  the download.
+- Wheel lock: `name==version --hash=sha256:...` for every package, as
+  `pip-compile --generate-hashes` and `uv pip compile --generate-hashes`
+  write it. Exactly the listed packages are downloaded, without dependency
+  resolution, and each downloaded file must match one of its hashes.
+- The source identity uses the same recipe as an environment the Agent
+  builds. The same base and the same locked contents give the same identity,
+  whoever submitted them.
+- A personal image built from a lock can be promoted. The request carries
+  the base image key, which must be a lab image, and the lock files. On
+  approval, the image is rebuilt under the holding account, and its source
+  identity must equal the member's.
+- Admission jobs, both the Apptainer conversion and lock builds, are
+  recorded in the job ledger with their own purpose, so crash cleanup covers
+  them.
 - E3: the Agent may not propose a new base image (E3-a). When no admitted
   image fits, the Agent says so in its reply, for example that an image
   with a given tool is needed, and the member finds and admits one. The

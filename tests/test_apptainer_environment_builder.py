@@ -106,9 +106,9 @@ if "-m" in command:
     elif action == "download":
         step("download")
         for line in open(command[command.index("-r") + 1]):
-            name, version = line.strip().split("==")
+            name, version = line.split()[0].split("==")  # A member's lock line also carries hashes.
             wheel = Path(command[command.index("--dest") + 1]) / f"{{name.replace('-', '_')}}-{{version}}-py3-none-any.whl"
-            wheel.write_text(line)
+            wheel.write_text(name + "==" + version)
     elif action == "install":
         step("install")
         state = json.loads((image / "state.json").read_text())
@@ -269,7 +269,7 @@ async def test_requirements_already_in_the_base_image_build_without_downloading(
     ("sandbox", "", "BUILDER_UNAVAILABLE"),
     ("writable", "", "BUILDER_UNAVAILABLE"),
     ("pack-check", "", "BUILDER_UNAVAILABLE"),
-    ("install", "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "BUILD_FAILED"),
+    ("install", "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "WHEEL_LOCK_MISMATCH"),
     ("check", "examplepkg 2.0 has requirement other>=3", "PIP_CHECK_FAILED"),
     ("pack", "", "BUILD_FAILED"),
     ("probe", "", "VERIFICATION_FAILED"),

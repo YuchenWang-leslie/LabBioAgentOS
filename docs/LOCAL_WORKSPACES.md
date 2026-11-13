@@ -169,6 +169,33 @@ labbio image-list  --config <配置>
 - 只按 OCI Distribution 标准访问仓库：Docker Hub、quay.io、GHCR、Harbor、Nexus 等
   都走同一套代码，不使用任何厂商的私有接口。
 
+### 用锁定清单构建个人镜像
+
+成员也可以不交现成镜像，而是交锁定清单，由平台在一个已有镜像上构建（DECIDED-C15-E2）。
+部署需要配置 `[environment]`；用到 conda 时，还要配置 `[environment.conda]`。
+
+```bash
+labbio image-admit --config <配置> --key six-samtools --purpose "six 和 samtools 1.21" \
+  --base <image-list 里可选的镜像 key> --lock requirements.lock --lock conda.lock
+```
+
+- **wheel 锁定**：每个包写成 `名字==版本 --hash=sha256:…`，可以有多个哈希。
+  `pip-compile --generate-hashes` 和 `uv pip compile --generate-hashes` 的输出可以直接用。
+  不接受 extras、环境标记、URL、路径和 `--index-url` 之类的选项。平台只下载清单里的文件，
+  不解析依赖，每个文件必须匹配清单里的某个哈希，否则报 `WHEEL_LOCK_MISMATCH`。
+- **conda 锁定**：`@EXPLICIT` 格式，例如 `micromamba env export --explicit` 或
+  `conda list --explicit` 的输出。每行是允许渠道里、计算节点平台（或 `noarch`）的包地址，
+  后面带 md5 或 sha256。
+  - 平台会按清单里的确切构建号求解一次，从渠道元数据里查出每个文件的 sha256，并核对 md5。
+  - 求解结果必须恰好是清单里的文件，否则报 `CONDA_LOCK_MISMATCH`。清单不完整、不自洽，
+    或渠道里的文件已经变了，都会得到这个错误。
+  - 之后只用 sha256 下载、校验和安装。
+- 每种清单最多给一份。镜像继承基础镜像的运行时，所以不能再写 `--runtime`。
+- 入库检查和其他形式一样（架构、探测、用途、大小和配额、记录）。
+- **来源身份**：用和 Agent 构建环境相同的配方计算。同一个基础镜像加同样的锁定内容，
+  不管是成员交的还是 Agent 构建的，都是同一个来源身份。
+- 集群上，构建作业和 Agent 的环境构建一样运行，构建出的 SIF 登记到成员自己的 SIF 库。
+
 ### 升级为实验室镜像
 
 成员不能写实验室区，唯一的例外是 `requests/` 投递目录（权限 `3770`：组可写，带 sticky

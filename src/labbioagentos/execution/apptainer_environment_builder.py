@@ -42,11 +42,13 @@ from .apptainer_build import (
 from .conda import (CondaError, CondaPolicy, LockedPackage, download as conda_download, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
 from .environment_builder import _CONDA_FAILURES, probed_conda_packages
-from .wheel_lock import WheelLockError, render_lock
+from .wheel_lock import WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
 from .backend import ProcessOutcome
 from .environments import (
     EnvironmentBuildResult,
     EnvironmentRequestError,
+    PinnedLocks,
+    check_pinned_request,
     normalize_modules,
     normalize_requirements,
 )
@@ -127,9 +129,11 @@ class ApptainerEnvironmentBuilder:
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = (),
+                    pinned: PinnedLocks | None = None) -> EnvironmentBuildResult:
         requirements = normalize_requirements(requirements)
         import_modules = normalize_modules(import_modules, max_count=256)
+        check_pinned_request(pinned, requirements, conda_packages)
         build_root = Path(build_root)
         if (re.fullmatch(r"[0-9a-f]{32}", build_root.name) is None
                 or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None
@@ -139,10 +143,10 @@ class ApptainerEnvironmentBuilder:
             raise EnvironmentRequestError()
         await asyncio.to_thread(remove_stale_downloads, build_root.parent)
         with attempt_lease(build_root):
-            if conda_packages and self.conda is None:  # The service checks supports_conda first.
-                raise EnvironmentRequestError("CONDA_UNAVAILABLE")
+            if (conda_packages or (pinned is not None and pinned.conda)) and self.conda is None:
+                raise EnvironmentRequestError("CONDA_UNAVAILABLE")  # The service checks supports_conda first.
             result = await self._build(base_image, requirements, import_modules, build_root, run_id,
-                                       tuple(conda_packages))
+                                       tuple(conda_packages), pinned)
             # Downloaded packages are not kept; the locks and logs are. After a cancellation the
             # job may still run, so they stay until a later build finds the attempt unheld.
             for path in (build_root / "download" / "wheels", build_root / "conda" / "pkgs",
@@ -152,7 +156,8 @@ class ApptainerEnvironmentBuilder:
 
     async def _build(self, base_image: ApprovedImage, requirements: tuple[str, ...],
                      modules: tuple[str, ...], build_root: Path, run_id: UUID,
-                     conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
+                     conda_packages: tuple[str, ...] = (),
+                     pinned: PinnedLocks | None = None) -> EnvironmentBuildResult:
         def failed(code: str, diagnostics: tuple[dict, ...] = ()) -> EnvironmentBuildResult:
             return EnvironmentBuildResult(failure_code=code, diagnostics=diagnostics, log_id=build_root.name)
 
@@ -163,26 +168,40 @@ class ApptainerEnvironmentBuilder:
         logs, download = build_root / "logs", build_root / "download"
         logs.mkdir(mode=0o700)
         (download / "wheels").mkdir(mode=0o700, parents=True)
-        _write_private(build_root / "requirements.txt", "".join(item + "\n" for item in requirements))
+        pins = pinned.wheels if pinned is not None else ()
+        # A member's lock is re-rendered from parsed values; an Agent request is one line per requirement.
+        _write_private(build_root / "requirements.txt",
+                       render_pins(pins) if pins else "".join(item + "\n" for item in requirements))
 
         wheels = ()
-        if requirements:
-            outcome = await self._download(build_root, base_sif, run_id)
+        if requirements or pins:
+            outcome = await self._download(build_root, base_sif, run_id, pinned=bool(pins))
             if outcome is None:
                 return failed("BUILDER_UNAVAILABLE")
             if outcome.timed_out or outcome.exit_code != 0:
                 return failed(*classify_download(outcome.exit_code, timed_out=outcome.timed_out, log_dir=logs))
-            try:
-                wheels = await asyncio.to_thread(verify_download, download, machine=self.policy.machine)
-            except WheelLockError:
-                return failed("VERIFICATION_FAILED")
+            if pins:  # No resolution report: the download must be exactly the member's lock.
+                try:
+                    wheels = await asyncio.to_thread(lock_wheelhouse, download / "wheels", machine=self.policy.machine)
+                except WheelLockError:
+                    return failed("VERIFICATION_FAILED")
+                try:
+                    check_pinned(wheels, pins)
+                except WheelLockError:
+                    return failed("WHEEL_LOCK_MISMATCH")
+            else:
+                try:
+                    wheels = await asyncio.to_thread(verify_download, download, machine=self.policy.machine)
+                except WheelLockError:
+                    return failed("VERIFICATION_FAILED")
         lock_file = build_root / "lock.txt"
         _write_private(lock_file, render_lock(wheels))
         locked_conda: tuple[LockedPackage, ...] = ()
-        conda_dir = build_root / "conda" if conda_packages else None
+        pinned_conda = pinned.conda if pinned is not None else ()
+        conda_dir = build_root / "conda" if conda_packages or pinned_conda else None
         if conda_dir is not None:
             try:
-                locked_conda = await asyncio.to_thread(self._prepare_conda, conda_packages, conda_dir)
+                locked_conda = await asyncio.to_thread(self._prepare_conda, conda_packages, conda_dir, pinned_conda)
             except CondaError as exc:
                 return failed(exc.code if exc.code in _CONDA_FAILURES else "BUILD_FAILED")
 
@@ -201,7 +220,7 @@ class ApptainerEnvironmentBuilder:
             if outcome.timed_out or outcome.exit_code != 0:
                 return failed(*classify_build(outcome.exit_code, timed_out=outcome.timed_out, log_dir=logs))
             try:
-                inventory = _probe_inventory(logs / PROBE_OUTPUT, modules, conda=bool(conda_packages))
+                inventory = _probe_inventory(logs / PROBE_OUTPUT, modules, conda=conda_dir is not None)
             except ValueError:
                 return failed("VERIFICATION_FAILED")
             if inventory["failed_imports"]:
@@ -220,17 +239,22 @@ class ApptainerEnvironmentBuilder:
             conda_packages=inventory["conda_packages"],
         )
 
-    def _prepare_conda(self, specs: tuple[str, ...], conda_dir: Path) -> tuple[LockedPackage, ...]:
+    def _prepare_conda(self, specs: tuple[str, ...], conda_dir: Path,
+                       pinned: tuple[LockedPackage, ...] = ()) -> tuple[LockedPackage, ...]:
         """Solve and download on the control plane; the job gets micromamba, the files and the lock.
 
-        The micromamba copy on shared storage is checked again by sha256, since the
-        configured file may live on a disk the compute nodes do not see.
+        A member's lock is already exact and is not solved again. The micromamba
+        copy on shared storage is checked again by sha256, since the configured
+        file may live on a disk the compute nodes do not see.
         """
 
         conda_dir.mkdir(mode=0o700)
-        (conda_dir / "solve").mkdir(mode=0o700)
-        locked = conda_solve(self.conda, specs, conda_dir / "solve")
-        shutil.rmtree(conda_dir / "solve")  # The solver's repodata cache is large and not kept.
+        if pinned:
+            locked = pinned
+        else:
+            (conda_dir / "solve").mkdir(mode=0o700)
+            locked = conda_solve(self.conda, specs, conda_dir / "solve")
+            shutil.rmtree(conda_dir / "solve")  # The solver's repodata cache is large and not kept.
         conda_download(locked, conda_dir / "pkgs", proxy_url=self.conda.proxy_url)
         copy = conda_dir / "micromamba"
         shutil.copyfile(verify_micromamba(self.conda), copy)
@@ -239,7 +263,8 @@ class ApptainerEnvironmentBuilder:
         _write_private(conda_dir / "explicit.txt", render_explicit(locked, f"{_BUILD_MOUNT}/conda/pkgs"))
         return locked
 
-    async def _download(self, build_root: Path, base_sif: Path, run_id: UUID) -> ProcessOutcome | None:
+    async def _download(self, build_root: Path, base_sif: Path, run_id: UUID,
+                        pinned: bool = False) -> ProcessOutcome | None:
         """Run the download step; None when the builder cannot run it at all."""
 
         program = build_root / "download.sh"
@@ -253,7 +278,7 @@ class ApptainerEnvironmentBuilder:
             apptainer_binary=policy.apptainer_binary, base_sif=base_sif,
             requirements_file=build_root / "requirements.txt", download_dir=build_root / "download",
             work_root=policy.download_work_root, log_dir=build_root / "logs", cache_dir=policy.cache_dir,
-            index_url=policy.index_url, proxy_url=policy.proxy_url, ca_bundle=policy.ca_bundle,
+            index_url=policy.index_url, proxy_url=policy.proxy_url, ca_bundle=policy.ca_bundle, pinned=pinned,
         ))
         if self.download_runner is not None:
             return await asyncio.to_thread(self.download_runner.run, ("/bin/bash", str(program)),

@@ -23,9 +23,10 @@ from labbioagentos.model_safety import UnsafeModelContentError, validate_model_v
 from .images import ApprovedImage, ApprovedImageRegistry
 from .catalog import ImageCatalog
 from .errors import ImageNotApprovedError
-from .conda import CONDA_RECIPE, CondaError, normalize_conda_specs
+from .conda import CONDA_RECIPE, CondaError, LockedPackage, normalize_conda_specs
 from .identity import SourceIdentity, derived_identity
 from .models import ExecutionRuntime
+from .wheel_lock import PinnedWheel
 
 
 RECIPE_VERSION = "python-wheels-v1"
@@ -50,6 +51,7 @@ _FAILURES = {
     "CONDA_PLATFORM_UNSUPPORTED": "Conda packages are not available for this machine architecture.",
     "CONDA_INSTALL_FAILED": "The locked conda packages could not be installed into the base image.",
     "CONDA_UNAVAILABLE": "The deployment's conda installer failed its integrity check; request Python wheels only.",
+    "WHEEL_LOCK_MISMATCH": "The downloaded wheels are not exactly the locked packages and hashes.",
 }
 
 
@@ -99,6 +101,20 @@ class EnvironmentBuildResult:
     conda_packages: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PinnedLocks:
+    """A member's exact lock (DECIDED-C15-E2): nothing is resolved, every file is checked."""
+
+    wheels: tuple[PinnedWheel, ...] = ()
+    conda: tuple[LockedPackage, ...] = ()
+
+
+def check_pinned_request(pinned: PinnedLocks | None, requirements: tuple, conda_packages: tuple) -> None:
+    """A build is either an Agent request or a member's lock, never both, and never empty."""
+    if pinned is not None and (requirements or conda_packages or not (pinned.wheels or pinned.conda)):
+        raise EnvironmentRequestError()
+
+
 class EnvironmentBuilder(Protocol):
     """Builds one environment image from an approved base; one implementation per runtime.
 
@@ -108,7 +124,8 @@ class EnvironmentBuilder(Protocol):
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = (),
+                    pinned: PinnedLocks | None = None) -> EnvironmentBuildResult:
         ...
 
 

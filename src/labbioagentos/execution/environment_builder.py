@@ -24,9 +24,9 @@ from uuid import UUID
 
 from .conda import (CONDA_ENV_PREFIX, CondaError, CondaPolicy, download as conda_download, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
-from .wheel_lock import WheelLockError, lock_wheelhouse, render_lock
-from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError,
-                           EnvironmentRequestError, normalize_modules, normalize_requirements)
+from .wheel_lock import PinnedWheel, WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
+from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError, EnvironmentRequestError,
+                           PinnedLocks, check_pinned_request, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
 
 
@@ -74,6 +74,8 @@ def probed_conda_packages(inventory: dict, *, requested: bool) -> dict[str, str]
 def diagnose_pip_log(text: str) -> str:
     """Map pip output to a model-safe failure code; unrecognized output is BUILD_FAILED."""
     patterns = (
+        # pip --require-hashes: a file differs from every hash of a member's lock.
+        ("WHEEL_LOCK_MISMATCH", ("DO NOT MATCH THE HASHES",)),
         ("PIP_NO_MATCH", ("No matching distribution found", "Could not find a version that satisfies")),
         ("PIP_RESOLUTION_CONFLICT", ("ResolutionImpossible", "conflicting dependencies")),
         ("PYTHON_VERSION_INCOMPATIBLE", ("requires a different Python", "Requires-Python")),
@@ -128,16 +130,18 @@ class DockerEnvironmentBuilder:
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
-                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
+                    run_id: UUID | None = None, conda_packages: tuple[str, ...] = (),
+                    pinned: PinnedLocks | None = None) -> EnvironmentBuildResult:
         # Docker builds run on the control-plane host and submit no job, so run_id is unused.
         requirements, import_modules = normalize_requirements(requirements), normalize_modules(import_modules, max_count=256)
+        check_pinned_request(pinned, requirements, conda_packages)
         stop = threading.Event()
 
         def work():
             self._attempt_state.stop = stop
             try:
                 return self._build(base_image, requirements, import_modules, build_root, request_hash,
-                                   tuple(conda_packages))
+                                   tuple(conda_packages), pinned)
             finally:
                 del self._attempt_state.stop
                 # Downloads and the solver's repodata cache are not kept; the locks and logs are.
@@ -294,11 +298,16 @@ class DockerEnvironmentBuilder:
             if error is not None or code != 0:
                 return
 
-    def _download(self, base_id: str, requirements: tuple[str, ...], build_root: Path, deadline: float):
-        """Download wheels in a labelled, data-free container into a host directory."""
+    def _download(self, base_id: str, requirements: tuple[str, ...], build_root: Path, deadline: float,
+                  pins: tuple[PinnedWheel, ...] = ()):
+        """Download wheels in a labelled, data-free container into a host directory.
+
+        With a member's pins, exactly the pinned files are fetched: no dependency
+        resolution, and pip refuses any file whose hash the lock does not list.
+        """
         wheels, requested = build_root / "wheels", build_root / "requirements.txt"
         wheels.mkdir(mode=0o700)
-        requested.write_text("\n".join(requirements) + "\n", encoding="utf-8")
+        requested.write_text(render_pins(pins) if pins else "\n".join(requirements) + "\n", encoding="utf-8")
         name = "labbio-env-download-" + build_root.name
         argv = ["docker", "run", "--rm", "--pull", "never", "--name", name,
                 "--label", "labbio.environment.build=" + build_root.name,
@@ -312,7 +321,8 @@ class DockerEnvironmentBuilder:
                  "--mount", f"type=bind,source={requested},target=/labbio/requirements.txt,readonly",
                  "--entrypoint", "python", base_id, "-I", "-m", "pip", "download",
                  "--disable-pip-version-check", "--no-input", "--progress-bar", "off", "--no-cache-dir",
-                 "--only-binary=:all:", "--dest", "/labbio/wheels", "-r", "/labbio/requirements.txt"]
+                 "--only-binary=:all:", "--dest", "/labbio/wheels", "-r", "/labbio/requirements.txt",
+                 *(("--no-deps", "--require-hashes") if pins else ())]
         log = build_root / "download.log"
         code, error = self._run(argv, log, deadline)
         if self._stop_requested() and error is None:
@@ -328,7 +338,7 @@ class DockerEnvironmentBuilder:
                                           log_id=build_root.name)
         return wheels
 
-    def _build(self, base_image, requirements, modules, build_root, request_hash, conda_packages=()):
+    def _build(self, base_image, requirements, modules, build_root, request_hash, conda_packages=(), pinned=None):
         build_root = Path(build_root)
         if (re.fullmatch(r"[0-9a-f]{32}", build_root.name) is None
                 or re.fullmatch(r"[0-9a-f]{64}", request_hash) is None
@@ -367,12 +377,16 @@ class DockerEnvironmentBuilder:
         context = build_root / "context"
         context.mkdir(mode=0o700)
         recipe, locked_conda = "", ()
-        if conda_packages:
+        pins = pinned.wheels if pinned is not None else ()
+        with_conda = bool(conda_packages or (pinned is not None and pinned.conda))
+        if with_conda:
             if self.conda is None:
                 return failed("BUILDER_UNAVAILABLE")
             try:
                 (build_root / "conda").mkdir(mode=0o700)
-                locked_conda = conda_solve(self.conda, conda_packages, build_root / "conda")
+                # A member's lock is already exact; only an Agent request is solved.
+                locked_conda = (pinned.conda if pinned is not None
+                                else conda_solve(self.conda, conda_packages, build_root / "conda"))
                 conda_download(locked_conda, context / "conda-pkgs", proxy_url=self.conda.proxy_url)
                 shutil.copy2(verify_micromamba(self.conda), context / "micromamba")
             except CondaError as exc:
@@ -388,20 +402,25 @@ class DockerEnvironmentBuilder:
                        f"-p {CONDA_ENV_PREFIX} --offline --file /labbio/explicit.txt && rm -rf /tmp/labbio-mamba\n")
         recipe += (f"FROM {base_id}\nUSER root\n"
                    f"LABEL labbio.environment.build={build_root.name}\n")
-        if conda_packages:
+        if with_conda:
             # Appended, so the image's own python stays the PYTHON entry point.
             recipe += (f"COPY --from=labbio-conda {CONDA_ENV_PREFIX} {CONDA_ENV_PREFIX}\n"
                        f"ENV PATH=$PATH:{CONDA_ENV_PREFIX}/bin\n")
         locked: tuple = ()
         machine = self.conda.machine if self.conda is not None else platform.machine()
-        if requirements:
-            downloaded = self._download(base_id, requirements, build_root, deadline)
+        if requirements or pins:
+            downloaded = self._download(base_id, requirements, build_root, deadline, pins)
             if isinstance(downloaded, EnvironmentBuildResult):
                 return downloaded
             try:
                 locked = lock_wheelhouse(downloaded, machine=machine)
             except WheelLockError:
                 return failed("VERIFICATION_FAILED")
+            if pins:
+                try:
+                    check_pinned(locked, pins)
+                except WheelLockError:
+                    return failed("WHEEL_LOCK_MISMATCH")
             shutil.copytree(downloaded, context / "wheels")
             (context / "lock.txt").write_text(render_lock(locked), encoding="utf-8")
             # Exactly the locked files, offline: never re-resolved inside the image.
@@ -425,7 +444,7 @@ class DockerEnvironmentBuilder:
             if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
                 interrupted_daemon(error)
             self._cleanup(build_root)
-            if conda_packages:
+            if with_conda:
                 self._remove_stage_images(build_root, keep=None)
             text = self._tail(build_log)
             failure_code = error or self._diagnose(text)
@@ -435,7 +454,7 @@ class DockerEnvironmentBuilder:
         image_id = image_file.read_text().strip()
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
             return failed("VERIFICATION_FAILED")
-        if conda_packages:
+        if with_conda:
             self._remove_stage_images(build_root, keep=image_id)
         if self._stop_requested():
             interrupted_daemon("BUILD_CANCELLED", image_id=image_id)
@@ -473,7 +492,7 @@ class DockerEnvironmentBuilder:
                                     for wheel in locked),
                 machine=machine if locked or locked_conda else None,
                 locked_conda=tuple(lock_entries(locked_conda)),
-                conda_packages=probed_conda_packages(inventory, requested=bool(conda_packages)),
+                conda_packages=probed_conda_packages(inventory, requested=with_conda),
             )
         except (ValueError, KeyError, TypeError):
             return failed("VERIFICATION_FAILED")

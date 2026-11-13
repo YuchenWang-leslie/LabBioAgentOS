@@ -202,6 +202,10 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   solver's repodata cache is not kept, so each conda build fetches the channel
   metadata again. On a cluster, the offline install in the build job has been
   tested only with a fake Apptainer and a Docker simulation of the job step.
+- A member's conda lock is checked by solving exactly its builds against the
+  current channel metadata. A lock naming a file the channel no longer serves,
+  or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
+  the member still has the file.
 
 ## Persistence and concurrency
 

@@ -120,6 +120,10 @@ def verify_micromamba(policy: CondaPolicy) -> Path:
 
 def solve(policy: CondaPolicy, specs: tuple[str, ...], work: Path) -> tuple[LockedPackage, ...]:
     """Resolve on the host, with no user configuration, against the allowed channels only."""
+    return lock_from_solution(_solve_payload(policy, specs, work), policy)
+
+
+def _solve_payload(policy: CondaPolicy, specs: tuple[str, ...], work: Path) -> dict:
     micromamba = verify_micromamba(policy)
     environment = {"PATH": "/usr/bin:/bin", "HOME": str(work)}
     if policy.proxy_url:
@@ -140,7 +144,75 @@ def solve(policy: CondaPolicy, specs: tuple[str, ...], work: Path) -> tuple[Lock
         payload = None
     if completed.returncode != 0 or not isinstance(payload, dict) or payload.get("success") is not True:
         raise CondaError("CONDA_NO_SOLUTION")
-    return lock_from_solution(payload, policy)
+    return payload
+
+
+@dataclass(frozen=True)
+class ExplicitEntry:
+    """One line of a member's explicit lock: a package file in an allowed channel and its hash."""
+
+    url: str
+    name: str
+    version: str
+    build: str
+    md5: str | None
+    sha256: str | None
+
+
+_EXPLICIT_HASH = re.compile(r"(?:md5:)?(?P<md5>[0-9a-f]{32})|(?:sha256:)?(?P<sha256>[0-9a-f]{64})")
+_PACKAGE_NAME = re.compile(r"[a-z0-9_][a-z0-9._-]{0,127}")
+_PACKAGE_VERSION = re.compile(r"[A-Za-z0-9_.+!]{1,64}")
+_PACKAGE_BUILD = re.compile(r"[A-Za-z0-9_.+]{1,64}")
+MAX_EXPLICIT_BYTES = 4_194_304
+
+
+def parse_explicit(text: str, policy: CondaPolicy) -> tuple[ExplicitEntry, ...]:
+    """An @EXPLICIT lock as conda and micromamba export it, with an md5 or sha256 per file.
+
+    Every URL must be a package file of an allowed channel for the compute nodes'
+    platform or noarch; there are no options, local paths or other hosts.
+    """
+
+    if len(text) > MAX_EXPLICIT_BYTES or "\x00" in text:
+        raise CondaError("CONDA_LOCK_FILE_INVALID")
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    if not lines or lines[0] != "@EXPLICIT" or not 2 <= len(lines) <= MAX_CONDA_PACKAGES + 1:
+        raise CondaError("CONDA_LOCK_FILE_INVALID")
+    entries: dict[str, ExplicitEntry] = {}
+    for line in lines[1:]:
+        url, _, digest = line.partition("#")
+        match = _EXPLICIT_HASH.fullmatch(digest)
+        if match is None or not _within_channel(url, policy):
+            raise CondaError("CONDA_LOCK_FILE_INVALID")
+        stem = re.sub(r"\.(?:conda|tar\.bz2)$", "", url.rsplit("/", 1)[1])
+        parts = stem.rsplit("-", 2)
+        if (len(parts) != 3 or _PACKAGE_NAME.fullmatch(parts[0]) is None
+                or _PACKAGE_VERSION.fullmatch(parts[1]) is None or _PACKAGE_BUILD.fullmatch(parts[2]) is None
+                or parts[0] in entries):
+            raise CondaError("CONDA_LOCK_FILE_INVALID")
+        entries[parts[0]] = ExplicitEntry(url=url, name=parts[0], version=parts[1], build=parts[2],
+                                          md5=match["md5"], sha256=match["sha256"])
+    return tuple(sorted(entries.values(), key=lambda item: item.name))
+
+
+def lock_explicit(policy: CondaPolicy, entries: tuple[ExplicitEntry, ...], work: Path) -> tuple[LockedPackage, ...]:
+    """Solve exactly the listed builds; the solution must be the listed files with their hashes.
+
+    The channel metadata supplies each file's sha256, so an md5-only export is
+    locked by sha256 too. A lock that is incomplete, inconsistent or changed
+    upstream fails here, before anything is downloaded.
+    """
+
+    payload = _solve_payload(policy, tuple(f"{item.name}=={item.version}={item.build}" for item in entries), work)
+    locked = {package.url: package for package in lock_from_solution(payload, policy)}
+    md5s = {item.get("url"): item.get("md5") for item in payload["actions"]["LINK"]}
+    if set(locked) != {item.url for item in entries}:
+        raise CondaError("CONDA_LOCK_MISMATCH")
+    for item in entries:
+        if ((item.sha256 is not None and item.sha256 != locked[item.url].sha256)
+                or (item.md5 is not None and item.md5 != md5s.get(item.url))):
+            raise CondaError("CONDA_LOCK_MISMATCH")
+    return tuple(sorted(locked.values(), key=lambda package: package.name))
 
 
 def lock_from_solution(payload: dict, policy: CondaPolicy) -> tuple[LockedPackage, ...]:
@@ -213,7 +285,7 @@ def lock_entries(locked: tuple[LockedPackage, ...]) -> list[dict]:
 
 
 __all__ = [
-    "CONDA_ENV_PREFIX", "CONDA_RECIPE", "CondaError", "CondaPolicy", "LockedPackage", "download",
-    "lock_entries", "lock_from_solution", "normalize_conda_specs", "render_explicit", "solve",
-    "validate_channels", "verify_micromamba",
+    "CONDA_ENV_PREFIX", "CONDA_RECIPE", "CondaError", "CondaPolicy", "ExplicitEntry", "LockedPackage", "download",
+    "lock_entries", "lock_explicit", "lock_from_solution", "normalize_conda_specs", "parse_explicit",
+    "render_explicit", "solve", "validate_channels", "verify_micromamba",
 ]
