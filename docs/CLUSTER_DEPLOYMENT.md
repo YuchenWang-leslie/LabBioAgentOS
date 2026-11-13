@@ -196,9 +196,14 @@ max_queue_seconds = 86400      # longer queues are cancelled and reported as a t
 completion_grace_seconds = 60  # shared-filesystem lag allowed for the exit record
 extra_directives = []          # single plain lines; never export or login-env flags
 
-[environment]                  # optional: model-requested Python environments (wheels only)
+[environment]                  # optional: model-requested environments (Python wheels, conda packages)
 root = "/shared/lab/labbio/environments"   # shared filesystem
 # build_proxy = "http://proxy.site:3128"   # download step only; no credentials
+
+# [environment.conda]          # optional: conda packages in derived environments
+# micromamba = "/shared/lab/labbio/tools/micromamba"   # official release; not writable
+# micromamba_sha256 = "<64 hex>"
+# channels = ["conda-forge", "bioconda"]               # never the Anaconda defaults
 
 [environment.cluster]          # required with [environment] under Apptainer
 machine = "x86_64"             # required: CPU architecture of compute nodes and base SIFs
@@ -273,6 +278,23 @@ When the runtime model asks for an environment, the build runs in three parts:
    by its sha256 and the lock list is kept in the environment record as
    provenance. The model sees only the image key and the verified package
    inventory.
+
+With `[environment.conda]`, conda packages are added as follows:
+
+- **Solve and download (login node).** The platform's micromamba, checked by
+  sha256, solves for the compute nodes' `machine` against the allowed channels
+  only, without any user configuration. Each package is downloaded and checked
+  against its sha256. micromamba is copied to the attempt directory on shared
+  storage and the copy is checked again.
+- **Install (build job, no network).** Before the wheels, the job binds
+  micromamba, the packages and the explicit lock read-only into the sandbox
+  and installs them offline into `/opt/labbio-env`. The installer checks every
+  hash again. The job then writes `/.singularity.d/env/96-labbio-conda.sh`
+  from inside the container. The script appends `/opt/labbio-env/bin` to
+  PATH, so the image's own `python` stays the PYTHON entry point.
+- **Check.** The import check confirms that the directory is on the packed
+  image's PATH. The base image needs glibc, because micromamba cannot run on
+  musl images such as Alpine.
 
 Build and download jobs are recorded in the job ledger under the run that
 requested them, so the run's crash cleanup covers them.
@@ -352,5 +374,5 @@ LabBio refuses to start or to execute when:
   Clean the Apptainer cache and tmp directories per site policy. The SIF store
   grows through `image-register` and through environment builds, one SIF per
   distinct environment; keep it on storage that is not purged. Downloaded
-  wheels are deleted after each build; the pip cache directory grows and can
-  be cleared at any time.
+  wheels and conda packages, and the conda solver's repodata cache, are deleted
+  after each build; the pip cache directory grows and can be cleared at any time.

@@ -85,6 +85,15 @@ def host(value):
     return value
 
 command = [host(value) for value in args[index + 1:]]
+if command[0].endswith("/micromamba"):  # C15: the offline conda install into the sandbox.
+    step("conda")
+    state = json.loads((image / "state.json").read_text())
+    for line in open(command[command.index("--file") + 1]):
+        if line.startswith("file://"):
+            name, version, _ = line.split("#")[0].rsplit("/", 1)[1].rsplit("-", 2)
+            state.setdefault("conda", {{}})[name] = version
+    (image / "state.json").write_text(json.dumps(state))
+    sys.exit(0)
 if "-m" in command:
     action = command[command.index("-m") + 2]
     if action == "install" and "--dry-run" in command:
@@ -111,15 +120,23 @@ if "-m" in command:
         step("check")
     sys.exit(0)
 code = command[command.index("-c") + 1]
+if "singularity.d" in code:
+    step("conda-path")
+    state = json.loads((image / "state.json").read_text())
+    state["conda_on_path"] = config.get("path_script", True)
+    (image / "state.json").write_text(json.dumps(state))
+    sys.exit(0)
 if "TemporaryFile" in code:
     step("writable")
     sys.exit(0)
 if "name_pattern" in code:
     sys.exit(subprocess.call([sys.executable, "-I", *command[command.index("-c"):]]))
 step("probe")
-packages = json.loads(image.read_text())["packages"]
+state = json.loads(image.read_text())
+packages = state["packages"]
 importable = {{name.replace("-", "_") for name in packages}}
-print(json.dumps({{"installed_packages": packages,
+print(json.dumps({{"installed_packages": packages, "conda_packages": state.get("conda", {{}}),
+                  "conda_on_path": state.get("conda_on_path", False),
                   "failed_imports": [module for module in json.loads(command[-1]) if module not in importable]}}))
 """
 
@@ -150,7 +167,7 @@ def cluster(tmp_path):
     def configure(**settings):
         (fake.parent / "fake.json").write_text(json.dumps({"log": str(log), **settings}))
 
-    def service(*, scheduler=None, download="login", timeout=60.0, **policy_options):
+    def service(*, scheduler=None, download="login", timeout=60.0, conda=None, **policy_options):
         scheduler = scheduler or FakeSlurm(tmp_path)
         launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_scheduler_policy(),
                                      workspace_root=state.jobs, command_runner=scheduler)
@@ -163,7 +180,8 @@ def cluster(tmp_path):
         placement = ({"download_runner": DownloadRunner(max_file_bytes=64 << 20, cpu_seconds=60)}
                      if download == "login" else {"download_launcher": launcher})
         builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
-                                              workspace_root=state.jobs, job_ledger=ledger, **placement)
+                                              workspace_root=state.jobs, job_ledger=ledger, conda=conda,
+                                              **placement)
         state.scheduler, state.launcher = scheduler, launcher
         return EnvironmentService(root=tmp_path / "environments", image_registry=ApprovedImageRegistry((base,)),
                                   builder=builder, owner_user_id="user-one")

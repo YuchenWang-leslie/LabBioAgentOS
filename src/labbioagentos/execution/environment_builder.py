@@ -30,7 +30,7 @@ from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedEr
 from .images import ApprovedImage
 
 
-_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, sys
+_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, os, sys
 modules = json.loads(sys.argv[1])
 failed = []
 with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
@@ -48,12 +48,27 @@ with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log),
             conda[record['name']] = record['version']
         except Exception:
             pass
-print(json.dumps({'installed_packages': packages, 'conda_packages': conda, 'failed_imports': failed}, sort_keys=True))
+conda_on_path = '/opt/labbio-env/bin' in os.environ.get('PATH', '').split(os.pathsep)
+print(json.dumps({'installed_packages': packages, 'conda_packages': conda, 'conda_on_path': conda_on_path,
+                  'failed_imports': failed}, sort_keys=True))
 """
 
 
 _CONDA_FAILURES = {"CONDA_NO_SOLUTION", "CONDA_LOCK_INVALID", "CONDA_PLATFORM_UNSUPPORTED", "CONDA_UNAVAILABLE",
                    "NETWORK_FAILURE", "VERIFICATION_FAILED", "BUILD_TIMEOUT"}
+
+
+def probed_conda_packages(inventory: dict, *, requested: bool) -> dict[str, str]:
+    """Plain conda name/version pairs from a probe; a requested environment must be on PATH."""
+    if requested and inventory.get("conda_on_path") is not True:
+        raise ValueError("The conda environment is not on the image PATH")
+    packages = inventory.get("conda_packages", {})
+    if not isinstance(packages, dict):
+        raise ValueError("The probed conda inventory is invalid")
+    return {name: version for name, version in packages.items()
+            if isinstance(name, str) and isinstance(version, str)
+            and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}", name)
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}", version)}
 
 
 def diagnose_pip_log(text: str) -> str:
@@ -125,6 +140,14 @@ class DockerEnvironmentBuilder:
                                    tuple(conda_packages))
             finally:
                 del self._attempt_state.stop
+                # Downloads and the solver's repodata cache are not kept; the locks and logs are.
+                root = Path(build_root)
+                for path in (root / "wheels", root / "conda", root / "context" / "wheels",
+                             root / "context" / "conda-pkgs", root / "context" / "micromamba"):
+                    if path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path, ignore_errors=True)
+                    elif path.is_file():
+                        path.unlink()
 
         worker = asyncio.create_task(asyncio.to_thread(work))
         try:
@@ -244,6 +267,33 @@ class DockerEnvironmentBuilder:
         if list_owned(build_root / "cleanup-confirm.log"):
             raise EnvironmentBuildUnconfirmedError("CLEANUP_CONFIRM_FAILED")
 
+    def _remove_stage_images(self, build_root: Path, *, keep: str | None) -> None:
+        """Remove the conda stage's images, which the classic builder keeps; best effort.
+
+        Each round lists this attempt's labelled images that have no children and
+        removes all but the environment image. Docker may keep a removed image's
+        untagged parent, which then has no children and is listed in the next
+        round. The final image's parents always have a child, so they stay. A
+        failure leaves only disk use, recorded in the logs.
+        """
+        for round_number in range(16):
+            listing = build_root / f"stage-images-{round_number}.log"
+            code, error = self._run_cleanup(
+                ["docker", "image", "ls", "-q", "--no-trunc", "--filter",
+                 "label=labbio.environment.build=" + build_root.name, "--filter", "dangling=true"], listing)
+            if error is not None or code != 0 or listing.stat().st_size > 65_536:
+                return
+            identifiers = listing.read_text().split()
+            if any(re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None for value in identifiers):
+                return
+            stale = [value for value in dict.fromkeys(identifiers) if value != keep]
+            if not stale:
+                return
+            code, error = self._run_cleanup(["docker", "image", "rm", *stale],
+                                            build_root / f"stage-images-rm-{round_number}.log")
+            if error is not None or code != 0:
+                return
+
     def _download(self, base_id: str, requirements: tuple[str, ...], build_root: Path, deadline: float):
         """Download wheels in a labelled, data-free container into a host directory."""
         wheels, requested = build_root / "wheels", build_root / "requirements.txt"
@@ -329,7 +379,9 @@ class DockerEnvironmentBuilder:
                 return failed(exc.code if exc.code in _CONDA_FAILURES else "BUILD_FAILED")
             (context / "explicit.txt").write_text(render_explicit(locked_conda, "/labbio/conda-pkgs"))
             # Installed offline in a separate stage; only the finished environment is copied on.
-            recipe += (f"FROM {base_id} AS labbio-conda\nUSER root\n"
+            # Labelled like the final stage, so its images can be found and removed afterwards.
+            recipe += (f"FROM {base_id} AS labbio-conda\nLABEL labbio.environment.build={build_root.name}\n"
+                       "USER root\n"
                        "COPY micromamba /labbio/micromamba\nCOPY conda-pkgs /labbio/conda-pkgs\n"
                        "COPY explicit.txt /labbio/explicit.txt\n"
                        "RUN /labbio/micromamba create -y -q --no-rc -r /tmp/labbio-mamba "
@@ -373,6 +425,8 @@ class DockerEnvironmentBuilder:
             if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
                 interrupted_daemon(error)
             self._cleanup(build_root)
+            if conda_packages:
+                self._remove_stage_images(build_root, keep=None)
             text = self._tail(build_log)
             failure_code = error or self._diagnose(text)
             return failed(failure_code, self._diagnostics(text, failure_code))
@@ -381,6 +435,8 @@ class DockerEnvironmentBuilder:
         image_id = image_file.read_text().strip()
         if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
             return failed("VERIFICATION_FAILED")
+        if conda_packages:
+            self._remove_stage_images(build_root, keep=image_id)
         if self._stop_requested():
             interrupted_daemon("BUILD_CANCELLED", image_id=image_id)
         probe_name = "labbio-env-check-" + build_root.name
@@ -417,10 +473,7 @@ class DockerEnvironmentBuilder:
                                     for wheel in locked),
                 machine=machine if locked or locked_conda else None,
                 locked_conda=tuple(lock_entries(locked_conda)),
-                conda_packages={name: version for name, version in inventory.get("conda_packages", {}).items()
-                                if isinstance(name, str) and isinstance(version, str)
-                                and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,127}", name)
-                                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.!+_-]{0,127}", version)},
+                conda_packages=probed_conda_packages(inventory, requested=bool(conda_packages)),
             )
         except (ValueError, KeyError, TypeError):
             return failed("VERIFICATION_FAILED")

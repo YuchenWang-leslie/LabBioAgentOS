@@ -198,6 +198,10 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   and a personal image of the same manifest are one Docker image.
 - Image admission pulls on the host where the command runs, which on a cluster
   is the login node; only the Apptainer conversion runs in a job.
+- Conda environments are solved on the host where the command runs. The
+  solver's repodata cache is not kept, so each conda build fetches the channel
+  metadata again. On a cluster, the offline install in the build job has been
+  tested only with a fake Apptainer and a Docker simulation of the job step.
 
 ## Persistence and concurrency
 

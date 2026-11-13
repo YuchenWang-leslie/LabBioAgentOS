@@ -140,9 +140,13 @@ if args[1] == "build":
         stage = "sandbox"
     else:
         stage = "pack-check" if args[2].endswith("pack-check.sif") else "pack"
+elif "/.labbio-build/conda/micromamba" in args:
+    stage = "conda"
 else:
     if "-m" in args:
         stage = args[args.index("-m") + 2]
+    elif "singularity.d" in args[args.index("-c") + 1]:
+        stage = "conda-path"
     else:
         stage = "writable" if "TemporaryFile" in args[args.index("-c") + 1] else "probe"
 if fail == stage:
@@ -194,8 +198,12 @@ def _stage(call):
     if call[1] == "build":
         return "sandbox" if call[2] == "--sandbox" else (
             "pack-check" if call[2].endswith("pack-check.sif") else "pack")
+    if "/.labbio-build/conda/micromamba" in call:
+        return "conda"
     if "-m" in call:
         return call[call.index("-m") + 2]
+    if "singularity.d" in call[call.index("-c") + 1]:
+        return "conda-path"
     return "writable" if "TemporaryFile" in call[call.index("-c") + 1] else "probe"
 
 
@@ -296,4 +304,98 @@ def test_program_refuses_unsafe_import_modules():
             apptainer_binary=Path("/a"), base_sif=Path("/b"), wheel_dir=Path("/c"), lock_file=Path("/d"),
             output_sif=Path("/e"), build_dir=Path("/f"), log_dir=Path("/g"),
             import_modules=("os; import socket",),
+        )
+
+
+# --- C15 step 7b: locked conda packages in the build job ---
+
+
+@pytest.fixture
+def conda_build(build, tmp_path):
+    start, calls, paths, lock_file, program, log = build
+    conda_dir = tmp_path / "conda"
+    (conda_dir / "pkgs").mkdir(parents=True)
+    (conda_dir / "micromamba").write_text("micromamba")
+    (conda_dir / "explicit.txt").write_text("@EXPLICIT\n")
+    program.write_text(render_build_program(
+        apptainer_binary=tmp_path / "bin" / "apptainer", base_sif=tmp_path / "base.sif",
+        wheel_dir=paths["wheels"], lock_file=lock_file, output_sif=paths["out"] / "environment.sif",
+        build_dir=paths["node-local"], log_dir=paths["logs"], import_modules=("examplepkg",),
+        conda_dir=conda_dir,
+    ))
+    return start, calls, paths, conda_dir
+
+
+def test_conda_packages_are_installed_offline_before_the_wheels(conda_build):
+    start, calls, paths, conda_dir = conda_build
+
+    assert start().wait(timeout=60) == 0
+
+    assert [_stage(call) for call in calls()] == [
+        "sandbox", "writable", "pack-check", "conda", "conda-path", "install", "check", "pack", "probe"]
+    conda = next(call for call in calls() if _stage(call) == "conda")
+    assert "--writable" in conda
+    index = conda.index(ISOLATION_ARGUMENTS[0])
+    assert tuple(conda[index:index + len(ISOLATION_ARGUMENTS)]) == ISOLATION_ARGUMENTS  # No network.
+    assert [value for flag, value in zip(conda, conda[1:]) if flag == "--bind"] == [
+        f"{conda_dir / name}:/.labbio-build/conda/{name}:ro" for name in ("micromamba", "explicit.txt", "pkgs")]
+    command = conda[conda.index("/.labbio-build/conda/micromamba"):]
+    assert command[1:] == ["create", "-y", "-q", "--no-rc", "-r", "/.labbio-build/root", "-p", "/opt/labbio-env",
+                           "--offline", "--file", "/.labbio-build/conda/explicit.txt"]
+    assert "--writable" in next(call for call in calls() if _stage(call) == "conda-path")
+    assert list(paths["node-local"].iterdir()) == []
+
+
+def test_the_path_script_appends_the_conda_environment(conda_build, tmp_path):
+    start, calls, _, _ = conda_build
+    assert start().wait(timeout=60) == 0
+    call = next(call for call in calls() if _stage(call) == "conda-path")
+    code = call[call.index("-c") + 1]
+    root = tmp_path / "container"
+    # The script names only container paths; run it against a stand-in root.
+    subprocess.run([sys.executable, "-I", "-c", code.replace("/.singularity.d", str(root / ".singularity.d"))],
+                   check=True)
+    script = root / ".singularity.d" / "env" / apptainer_build.CONDA_PATH_SCRIPT
+    output = subprocess.run(["/bin/bash", "-c", f'PATH=/usr/bin:/bin; . {script}; printf %s "$PATH"'],
+                            capture_output=True, text=True, check=True).stdout
+    assert output == "/usr/bin:/bin:/opt/labbio-env/bin"  # Appended: the image's python stays first.
+    with pytest.raises(subprocess.CalledProcessError):  # Never overwrites a file the image ships.
+        subprocess.run([sys.executable, "-I", "-c", code.replace("/.singularity.d", str(root / ".singularity.d"))],
+                       check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("stage", ["conda", "conda-path"])
+def test_a_failed_conda_step_has_its_own_status(conda_build, stage):
+    start, calls, paths, _ = conda_build
+
+    assert start(stage).wait(timeout=60) == BuildExit.CONDA_INSTALL_FAILED
+    assert _stage(calls()[-1]) == stage
+    assert not (paths["out"] / "environment.sif").exists()
+    assert list(paths["node-local"].iterdir()) == []
+
+
+def test_an_image_entry_at_the_build_mount_stops_the_conda_step(conda_build, tmp_path):
+    start, calls, paths, _ = conda_build
+    fake = tmp_path / "bin" / "apptainer"
+    # The image already has /.labbio-build: the fresh mount point cannot be made.
+    fake.write_text(fake.read_text().replace(
+        'os.makedirs(os.path.join(args[3], "usr", "lib"))',
+        'os.makedirs(os.path.join(args[3], ".labbio-build"))'))
+
+    assert start().wait(timeout=60) == BuildExit.CONDA_INSTALL_FAILED
+    assert "conda" not in [_stage(call) for call in calls()]
+
+
+def test_without_conda_no_conda_step_or_path_script_is_rendered(build):
+    _, _, _, _, program, _ = build
+    text = program.read_text()
+    assert "micromamba" not in text and "singularity.d" not in text
+
+
+def test_program_refuses_an_unsafe_conda_directory():
+    with pytest.raises(ValueError):
+        render_build_program(
+            apptainer_binary=Path("/a"), base_sif=Path("/b"), wheel_dir=Path("/c"), lock_file=Path("/d"),
+            output_sif=Path("/e"), build_dir=Path("/f"), log_dir=Path("/g"), import_modules=(),
+            conda_dir=Path("/shared/a:b"),
         )

@@ -1,8 +1,10 @@
 """Cluster environment builds under Apptainer (DECIDED-C13-8).
 
 Wheels are resolved and downloaded inside the base SIF, on the login node or
-as a job, and pinned by sha256. A network-disabled scheduler job installs
-exactly the locked wheels, checks them, packs a SIF and runs the import probe.
+as a job, and pinned by sha256. Conda packages are solved and downloaded by the
+control plane with the platform's micromamba, as for Docker (DECIDED-C15-E1).
+A network-disabled scheduler job installs exactly the locked packages, checks
+them, packs a SIF and runs the import probe.
 The control plane registers the SIF and returns the lock list as provenance.
 Every job is recorded in the job ledger under the requesting run.
 """
@@ -10,6 +12,7 @@ Every job is recorded in the job ledger under the requesting run.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
 import re
@@ -22,6 +25,7 @@ from uuid import UUID, uuid4
 
 from .apptainer import SifStore, SifStoreError
 from .apptainer_build import (
+    _BUILD_MOUNT,
     PROBE_OUTPUT,
     DownloadRunner,
     _check_path,
@@ -35,6 +39,9 @@ from .apptainer_build import (
     render_download_program,
     verify_download,
 )
+from .conda import (CondaError, CondaPolicy, LockedPackage, download as conda_download, lock_entries,
+                    render_explicit, solve as conda_solve, verify_micromamba)
+from .environment_builder import _CONDA_FAILURES, probed_conda_packages
 from .wheel_lock import WheelLockError, render_lock
 from .backend import ProcessOutcome
 from .environments import (
@@ -102,13 +109,21 @@ class ApptainerEnvironmentBuilder:
         job_ledger: JobLedger,
         download_runner: DownloadRunner | None = None,
         download_launcher: JobLauncher | None = None,
+        conda: CondaPolicy | None = None,
     ):
         if (download_runner is None) == (download_launcher is None):
             raise ValueError("Configure exactly one download placement: the login node or a job")
+        if conda is not None and conda.machine != policy.machine:
+            raise ValueError("Conda packages must be solved for the compute nodes' machine")
+        self.conda = conda
         self.workspace_root = Path(workspace_root)
         self.sif_store, self.policy, self.job_ledger = sif_store, policy, job_ledger
         self.build_launcher, self.download_launcher = build_launcher, download_launcher
         self.download_runner = download_runner
+
+    @property
+    def supports_conda(self) -> bool:
+        return self.conda is not None
 
     async def build(self, *, base_image: ApprovedImage, requirements: tuple[str, ...],
                     import_modules: tuple[str, ...], build_root: Path, request_hash: str,
@@ -124,15 +139,20 @@ class ApptainerEnvironmentBuilder:
             raise EnvironmentRequestError()
         await asyncio.to_thread(remove_stale_downloads, build_root.parent)
         with attempt_lease(build_root):
-            if conda_packages:  # The service checks supports_conda first; this is a second guard.
+            if conda_packages and self.conda is None:  # The service checks supports_conda first.
                 raise EnvironmentRequestError("CONDA_UNAVAILABLE")
-            result = await self._build(base_image, requirements, import_modules, build_root, run_id)
-            # Downloaded wheels are not kept; the lock list and logs are.
-            shutil.rmtree(build_root / "download" / "wheels", ignore_errors=True)
+            result = await self._build(base_image, requirements, import_modules, build_root, run_id,
+                                       tuple(conda_packages))
+            # Downloaded packages are not kept; the locks and logs are. After a cancellation the
+            # job may still run, so they stay until a later build finds the attempt unheld.
+            for path in (build_root / "download" / "wheels", build_root / "conda" / "pkgs",
+                         build_root / "conda" / "solve"):
+                shutil.rmtree(path, ignore_errors=True)
             return result
 
     async def _build(self, base_image: ApprovedImage, requirements: tuple[str, ...],
-                     modules: tuple[str, ...], build_root: Path, run_id: UUID) -> EnvironmentBuildResult:
+                     modules: tuple[str, ...], build_root: Path, run_id: UUID,
+                     conda_packages: tuple[str, ...] = ()) -> EnvironmentBuildResult:
         def failed(code: str, diagnostics: tuple[dict, ...] = ()) -> EnvironmentBuildResult:
             return EnvironmentBuildResult(failure_code=code, diagnostics=diagnostics, log_id=build_root.name)
 
@@ -158,6 +178,13 @@ class ApptainerEnvironmentBuilder:
                 return failed("VERIFICATION_FAILED")
         lock_file = build_root / "lock.txt"
         _write_private(lock_file, render_lock(wheels))
+        locked_conda: tuple[LockedPackage, ...] = ()
+        conda_dir = build_root / "conda" if conda_packages else None
+        if conda_dir is not None:
+            try:
+                locked_conda = await asyncio.to_thread(self._prepare_conda, conda_packages, conda_dir)
+            except CondaError as exc:
+                return failed(exc.code if exc.code in _CONDA_FAILURES else "BUILD_FAILED")
 
         with _job_workspace(self.workspace_root) as workspace:
             output_sif = workspace / "out" / "environment.sif"
@@ -166,7 +193,7 @@ class ApptainerEnvironmentBuilder:
             _write_private(program, render_build_program(
                 apptainer_binary=self.policy.apptainer_binary, base_sif=base_sif,
                 wheel_dir=download / "wheels", lock_file=lock_file, output_sif=output_sif,
-                build_dir=self.policy.build_dir, log_dir=logs, import_modules=modules,
+                build_dir=self.policy.build_dir, log_dir=logs, import_modules=modules, conda_dir=conda_dir,
             ))
             outcome = await self._job(self.build_launcher, workspace, program, self.policy.resources, run_id)
             if outcome is None:
@@ -174,7 +201,7 @@ class ApptainerEnvironmentBuilder:
             if outcome.timed_out or outcome.exit_code != 0:
                 return failed(*classify_build(outcome.exit_code, timed_out=outcome.timed_out, log_dir=logs))
             try:
-                inventory = _probe_inventory(logs / PROBE_OUTPUT, modules)
+                inventory = _probe_inventory(logs / PROBE_OUTPUT, modules, conda=bool(conda_packages))
             except ValueError:
                 return failed("VERIFICATION_FAILED")
             if inventory["failed_imports"]:
@@ -189,8 +216,28 @@ class ApptainerEnvironmentBuilder:
             available_python_modules=modules, log_id=build_root.name,
             locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                 for wheel in wheels),
-            machine=self.policy.machine,
+            machine=self.policy.machine, locked_conda=tuple(lock_entries(locked_conda)),
+            conda_packages=inventory["conda_packages"],
         )
+
+    def _prepare_conda(self, specs: tuple[str, ...], conda_dir: Path) -> tuple[LockedPackage, ...]:
+        """Solve and download on the control plane; the job gets micromamba, the files and the lock.
+
+        The micromamba copy on shared storage is checked again by sha256, since the
+        configured file may live on a disk the compute nodes do not see.
+        """
+
+        conda_dir.mkdir(mode=0o700)
+        (conda_dir / "solve").mkdir(mode=0o700)
+        locked = conda_solve(self.conda, specs, conda_dir / "solve")
+        shutil.rmtree(conda_dir / "solve")  # The solver's repodata cache is large and not kept.
+        conda_download(locked, conda_dir / "pkgs", proxy_url=self.conda.proxy_url)
+        copy = conda_dir / "micromamba"
+        shutil.copyfile(verify_micromamba(self.conda), copy)
+        copy.chmod(0o500)
+        verify_micromamba(dataclasses.replace(self.conda, micromamba=copy))
+        _write_private(conda_dir / "explicit.txt", render_explicit(locked, f"{_BUILD_MOUNT}/conda/pkgs"))
+        return locked
 
     async def _download(self, build_root: Path, base_sif: Path, run_id: UUID) -> ProcessOutcome | None:
         """Run the download step; None when the builder cannot run it at all."""
@@ -261,7 +308,7 @@ def _job_workspace(root: Path) -> Iterator[Path]:
     shutil.rmtree(workspace, ignore_errors=True)
 
 
-def _probe_inventory(path: Path, modules: tuple[str, ...]) -> dict:
+def _probe_inventory(path: Path, modules: tuple[str, ...], *, conda: bool = False) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_PROBE_BYTES:
         raise ValueError("The import probe output is unavailable")
     try:
@@ -272,7 +319,8 @@ def _probe_inventory(path: Path, modules: tuple[str, ...]) -> dict:
     if (not isinstance(failed, list) or any(module not in modules for module in failed)
             or not isinstance(packages, dict)):
         raise ValueError("The import probe output is invalid")
-    return {"failed_imports": failed, "installed_packages": packages}
+    return {"failed_imports": failed, "installed_packages": packages,
+            "conda_packages": probed_conda_packages(inventory, requested=conda)}
 
 
 def _write_private(path: Path, text: str) -> None:

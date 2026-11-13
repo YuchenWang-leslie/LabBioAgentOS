@@ -983,8 +983,11 @@ def _image_catalog(settings: LocalSettings):
     )
 
 
-def _conda_policy(settings: LocalSettings):
-    """The conda builder policy, or None when this deployment configures no conda."""
+def _conda_policy(settings: LocalSettings, machine: str | None = None):
+    """The conda builder policy, or None when this deployment configures no conda.
+
+    Docker builds solve for this host; cluster builds for the compute nodes' machine.
+    """
     conda = settings.environment.conda if settings.environment else None
     if conda is None:
         return None
@@ -993,7 +996,7 @@ def _conda_policy(settings: LocalSettings):
     from .execution.conda import CondaPolicy
 
     return CondaPolicy(micromamba=conda.micromamba, micromamba_sha256=conda.micromamba_sha256,
-                       channels=conda.channels, machine=host_platform.machine(),
+                       channels=conda.channels, machine=machine or host_platform.machine(),
                        proxy_url=settings.environment.build_proxy)
 
 
@@ -1064,6 +1067,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
             builder=ApptainerEnvironmentBuilder(
                 sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
                 workspace_root=jobs_root, job_ledger=job_ledger, **placement,
+                conda=_conda_policy(settings, cluster.machine),
             ),
             owner_user_id=settings.principal.user_id, catalog=catalog,
         )

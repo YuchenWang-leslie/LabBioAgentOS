@@ -45,9 +45,9 @@ def backend(tmp_path, monkeypatch):
         code, error, output = boundary.responses.get(path.name, (0, None, ""))
         path.write_text(output, encoding="utf-8")
         if path.name == "build.log" and code == 0 and error is None:
-            (root / "image-id.txt").write_text(IMAGE_ID + "\n", encoding="utf-8")
+            (path.parent / "image-id.txt").write_text(IMAGE_ID + "\n", encoding="utf-8")
         if path.name == "download.log" and code == 0 and error is None:
-            (root / "wheels" / WHEEL).write_bytes(b"wheel bytes")
+            (path.parent / "wheels" / WHEEL).write_bytes(b"wheel bytes")  # The attempt being built.
         return code, error
 
     monkeypatch.setattr(boundary.builder, "_run", run)
@@ -79,7 +79,9 @@ async def test_fixed_wheel_recipe_uses_inspected_identity_and_no_data_mounts(bac
     assert result.locked_wheels == ({"name": "examplepkg", "version": "2.0", "sha256": sha},)
     assert result.machine
     context = backend.root / "context"
-    assert {path.name for path in context.iterdir()} == {"Dockerfile", "lock.txt", "wheels"}
+    # The downloaded wheels and their context copy are not kept after the build; the lock is.
+    assert {path.name for path in context.iterdir()} == {"Dockerfile", "lock.txt"}
+    assert not (backend.root / "wheels").exists()
     assert (context / "lock.txt").read_text() == f"examplepkg==2.0 --hash=sha256:{sha}\n"
     recipe = (context / "Dockerfile").read_text()
     assert recipe.startswith(f"FROM {BASE_ID}\n")

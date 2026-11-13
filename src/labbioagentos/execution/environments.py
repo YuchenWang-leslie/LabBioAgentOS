@@ -48,6 +48,8 @@ _FAILURES = {
     "CONDA_NO_SOLUTION": "The conda packages could not be resolved from the allowed channels.",
     "CONDA_LOCK_INVALID": "The conda resolution named a package outside the allowed channels or without a sha256.",
     "CONDA_PLATFORM_UNSUPPORTED": "Conda packages are not available for this machine architecture.",
+    "CONDA_INSTALL_FAILED": "The locked conda packages could not be installed into the base image.",
+    "CONDA_UNAVAILABLE": "The deployment's conda installer failed its integrity check; request Python wheels only.",
 }
 
 

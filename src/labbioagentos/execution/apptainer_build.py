@@ -26,6 +26,7 @@ from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from .apptainer import ISOLATION_ARGUMENTS, SubprocessApptainerRunner
+from .conda import CONDA_ENV_PREFIX
 # The same import probe and pip diagnosis as the Docker builder.
 from .wheel_lock import MAX_LOCKED_WHEELS, LockedWheel, WheelLockError, lock_wheelhouse
 from .environment_builder import _PROBE, diagnose_pip_log, pip_log_diagnostics
@@ -41,6 +42,8 @@ _UNSAFE_PATH = re.compile(r"[\s\x00-\x1f\x7f:,]")  # ':' and ',' would split a b
 _CHUNK_BYTES = 1_048_576
 # Created in the sandbox only while installing, and removed before packing.
 _BUILD_MOUNT = "/.labbio-build"
+# Apptainer sources /.singularity.d/env/*.sh in order; this one runs after the image's own PATH.
+CONDA_PATH_SCRIPT = "96-labbio-conda.sh"
 _WRITABLE_CHECK = (
     "import sysconfig, tempfile; "
     "tempfile.TemporaryFile(dir=sysconfig.get_paths()['purelib']).close()"
@@ -85,9 +88,7 @@ class BuildExit(IntEnum):
     CHECK_FAILED = 83
     PACK_FAILED = 84
     PROBE_FAILED = 85
-
-
-
+    CONDA_INSTALL_FAILED = 86
 
 
 def prepare_cache_dir(path: Path) -> None:
@@ -273,7 +274,8 @@ def classify_build(exit_status: int | None, *, timed_out: bool, log_dir: Path) -
 
     if timed_out:
         return "BUILD_TIMEOUT", ({"code": "BUILD_TIMEOUT"},)
-    fixed = {BuildExit.UNAVAILABLE: "BUILDER_UNAVAILABLE", BuildExit.PROBE_FAILED: "VERIFICATION_FAILED"}
+    fixed = {BuildExit.UNAVAILABLE: "BUILDER_UNAVAILABLE", BuildExit.PROBE_FAILED: "VERIFICATION_FAILED",
+             BuildExit.CONDA_INSTALL_FAILED: "CONDA_INSTALL_FAILED"}
     if exit_status in fixed:
         code = fixed[BuildExit(exit_status)]
         return code, ({"code": code},)
@@ -337,12 +339,14 @@ def attempt_lease(build_root: Path) -> Iterator[None]:
 
 
 def remove_stale_downloads(attempts_root: Path) -> int:
-    """Delete downloaded wheels that no live attempt holds; logs and receipts stay."""
+    """Delete downloads and solver caches that no live attempt holds; logs and receipts stay."""
 
     removed = 0
     for attempt in sorted(attempts_root.iterdir()):
-        wheels = attempt / "download" / "wheels"
-        if attempt.is_symlink() or wheels.is_symlink() or not wheels.is_dir():
+        downloads = [path for path in (attempt / "download" / "wheels", attempt / "conda" / "pkgs",
+                                       attempt / "conda" / "solve")
+                     if not path.is_symlink() and path.is_dir()]
+        if attempt.is_symlink() or not downloads:
             continue
         try:
             descriptor = os.open(attempt / LEASE_FILE, os.O_RDONLY | os.O_NOFOLLOW)
@@ -354,7 +358,8 @@ def remove_stale_downloads(attempts_root: Path) -> int:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue  # A live process is still using this attempt.
-            shutil.rmtree(wheels)
+            for path in downloads:
+                shutil.rmtree(path)
             removed += 1
         finally:
             if descriptor is not None:
@@ -372,10 +377,18 @@ def render_build_program(
     build_dir: Path,
     log_dir: Path,
     import_modules: tuple[str, ...],
+    conda_dir: Path | None = None,
 ) -> str:
-    """Return the fixed bash program a build job runs; every value is validated and quoted."""
+    """Return the fixed bash program a build job runs; every value is validated and quoted.
 
-    for path in (apptainer_binary, base_sif, wheel_dir, lock_file, output_sif, build_dir, log_dir):
+    With conda_dir (micromamba, explicit.txt and pkgs/ from the control plane),
+    the locked conda packages are installed offline into CONDA_ENV_PREFIX first,
+    and an environment script appends its bin directory to PATH, so the image's
+    own python stays the PYTHON entry point.
+    """
+
+    for path in (apptainer_binary, base_sif, wheel_dir, lock_file, output_sif, build_dir, log_dir,
+                 *((conda_dir,) if conda_dir is not None else ())):
         _check_path(path)
     modules = normalize_modules(import_modules, max_count=256)
     quote = shlex.quote
@@ -416,6 +429,7 @@ def render_build_program(
         f'run "$A" --silent build "$work/pack-check.sif" "$work/pack-check" > {log("pack-check.log")} 2>&1'
         f" || exit {unavailable}",
         f'mount="$sandbox"{_BUILD_MOUNT}',
+        *(_conda_steps(conda_dir, isolated, log) if conda_dir is not None else ()),
         f"if [ -s {quote(str(lock_file))} ]; then",
         f'  mkdir -- "$mount" "$mount/wheels" && : > "$mount/lock.txt" || exit {int(BuildExit.INSTALL_FAILED)}',
         f'  run {isolated} --writable {binds} "$sandbox" {install} > {log("install.log")} 2>&1'
@@ -431,6 +445,35 @@ def render_build_program(
         f"mv -f -- {partial} {quote(str(output_sif))} || exit {int(BuildExit.PACK_FAILED)}",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _conda_steps(conda_dir: Path, isolated: str, log) -> list[str]:
+    """Offline install of the explicit lock inside the sandbox, then the PATH script.
+
+    The mount point is created fresh (an image entry there makes mkdir fail) and
+    removed, with the installer's package cache, before the wheel step. The PATH script
+    is written from inside the container, so a link in the image cannot redirect
+    the write to the host.
+    """
+
+    quote = shlex.quote
+    failed = int(BuildExit.CONDA_INSTALL_FAILED)
+    conda = f"{_BUILD_MOUNT}/conda"
+    binds = " ".join(f"--bind {quote(f'{conda_dir / name}:{conda}/{name}:ro')}"
+                     for name in ("micromamba", "explicit.txt", "pkgs"))
+    install = (f"{conda}/micromamba create -y -q --no-rc -r {_BUILD_MOUNT}/root -p {CONDA_ENV_PREFIX}"
+               f" --offline --file {conda}/explicit.txt")
+    script = ("import os; os.makedirs('/.singularity.d/env', exist_ok=True); "
+              f"open('/.singularity.d/env/{CONDA_PATH_SCRIPT}', 'x').write("
+              f"'export PATH=\"$PATH:{CONDA_ENV_PREFIX}/bin\"\\n')")
+    return [
+        f'mkdir -- "$mount" "$mount/conda" "$mount/conda/pkgs" "$mount/root" && : > "$mount/conda/micromamba"'
+        f' && : > "$mount/conda/explicit.txt" || exit {failed}',
+        f'run {isolated} --writable {binds} "$sandbox" {install} > {log("conda.log")} 2>&1 || exit {failed}',
+        f'chmod -R u+w -- "$mount" && rm -rf -- "$mount" || exit {failed}',
+        f'run {isolated} --writable "$sandbox" python -I -c {quote(script)} > {log("conda-path.log")} 2>&1'
+        f" || exit {failed}",
+    ]
 
 
 # Each step runs in the background so that a cancel, timeout or parent death stops it at once.

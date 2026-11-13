@@ -193,7 +193,16 @@ channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、m
 - 每个包按 sha256 下载校验，再在构建中离线安装到 `/opt/labbio-env`；安装器会再核对一次哈希。
 - 这个环境追加在 PATH 末尾，所以镜像自己的 `python` 仍是 PYTHON 的入口程序，conda 装的
   命令行工具可以直接调用。micromamba 只依赖 glibc，基础镜像不能是 musl（如 Alpine）。
+- 构建后的检查确认 `/opt/labbio-env/bin` 确实在镜像的 PATH 上，否则报 `VERIFICATION_FAILED`。
 - 同样的基础镜像、锁定的 wheel 和 conda 包，得到同一个 DERIVED 来源身份。
+- 下载的包、micromamba 副本和求解器的 repodata 缓存在构建后删除，只保留锁定清单和日志；
+  因此每次求解都会重新获取渠道元数据。Docker 上 conda 安装阶段的中间镜像带同一个构建标签，
+  构建结束后逐轮删除，只留下环境镜像本身。
+- Apptainer 后端同样支持：求解和下载在执行命令的主机（通常是登录节点）上进行，构建作业
+  无网络，在沙箱里离线安装，再写一个 `/.singularity.d/env/96-labbio-conda.sh` 把目录追加
+  到 PATH。micromamba 先复制到共享存储，复制后再核对一次 sha256；求解使用
+  `[environment.cluster] machine` 指定的计算节点架构。安装失败报 `CONDA_INSTALL_FAILED`。
+- micromamba 在构建时未通过完整性检查，报 `CONDA_UNAVAILABLE`。
 
 Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
 `SHELL`，平台不会根据脚本或镜像推断。回执和 trace 都记录实际的运行时，以及它是明确
