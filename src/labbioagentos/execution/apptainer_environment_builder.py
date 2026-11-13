@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from .apptainer import SifStore, SifStoreError
+from .apptainer import SifStore, SifStoreChain, SifStoreError
 from .apptainer_build import (
     _BUILD_MOUNT,
     PROBE_OUTPUT,
@@ -102,7 +102,7 @@ class ApptainerEnvironmentBuilder:
     def __init__(
         self,
         *,
-        sif_store: SifStore,
+        sif_store: SifStore | SifStoreChain,
         policy: ApptainerBuildPolicy,
         build_launcher: JobLauncher,
         workspace_root: Path,

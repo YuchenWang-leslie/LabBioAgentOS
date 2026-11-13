@@ -528,3 +528,45 @@ def test_unheld_attempts_lose_their_conda_downloads_and_solver_cache(tmp_path):
         assert remove_stale_downloads(tmp_path) == 1
     assert sorted(path.name for path in (stale / "conda").iterdir()) == ["explicit.txt"]  # The lock stays.
     assert sorted(path.name for path in (held / "conda").iterdir()) == ["explicit.txt", "pkgs", "solve"]
+
+
+# --- Cluster builds start from any store in the chain (found in 7b-2) ---
+
+
+@pytest.mark.asyncio
+async def test_a_cluster_build_may_start_from_a_lab_or_personal_sif(cluster, tmp_path):
+    from uuid import uuid4
+
+    from labbioagentos.execution.apptainer import SifStore, SifStoreChain
+
+    configured, personal = cluster.sif_store, SifStore(tmp_path / "personal-sif")
+    source = tmp_path / "personal.sif"
+    source.write_text(json.dumps({"packages": {"basepkg": "1.0"}}))
+    base = cluster.base.model_copy(update={"key": "mine", "reference": personal.register(source)})
+    service = cluster.service()
+    service.builder.sif_store = SifStoreChain((configured, personal))
+    service.image_registry = ApprovedImageRegistry((base,))
+
+    receipt = await service.build_environment("mine", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4())
+
+    assert receipt["status"] == "SUCCEEDED", receipt
+    reference = service.image_registry.resolve(receipt["image_key"]).resolved_reference
+    assert configured.verify(reference)  # The build itself is registered in the configured store.
+
+
+def test_cluster_wiring_verifies_bases_through_the_store_chain(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    from labbioagentos import local_config
+    from labbioagentos.execution.job_ledger import JobLedger
+    from test_apptainer_configuration import _write
+
+    chain = object()
+    monkeypatch.setattr(local_config, "sif_stores", lambda settings: chain)
+    settings = local_config.load_settings(_write(
+        tmp_path, launcher="", enforcement="systemd-cgroups",
+        extra='[environment]\nroot = "envs"\n[environment.local_apptainer]\nmachine = "x86_64"\n'))
+    run = tmp_path / "run"
+    with closing(JobLedger(run / "jobs.sqlite")) as ledger:
+        wiring = local_config._environment_wiring(settings, run, ledger, local_config._image_catalog(settings))
+        assert wiring["environment_service_factory"](ApprovedImageRegistry(())).builder.sif_store is chain

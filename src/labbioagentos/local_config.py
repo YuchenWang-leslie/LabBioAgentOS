@@ -1020,7 +1020,6 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
 
         return {"environment_service_factory": docker_service}
 
-    from .execution.apptainer import SifStore
     from .execution.apptainer_build import DownloadRunner
     from .execution.apptainer_environment_builder import ApptainerBuildPolicy, ApptainerEnvironmentBuilder
     from .execution.launchers import SchedulerLauncher
@@ -1065,7 +1064,8 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
         return EnvironmentService(
             root=environment.root, image_registry=registry,
             builder=ApptainerEnvironmentBuilder(
-                sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
+                # Bases may be lab or personal SIFs; builds are registered in the configured store.
+                sif_store=sif_stores(settings), policy=policy, build_launcher=build_launcher,
                 workspace_root=jobs_root, job_ledger=job_ledger, **placement,
                 conda=_conda_policy(settings, cluster.machine),
             ),
