@@ -1000,11 +1000,13 @@ def _conda_policy(settings: LocalSettings, machine: str | None = None):
                        proxy_url=settings.environment.build_proxy)
 
 
-def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog, *, sif_store=None) -> dict:
+def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog, *, sif_store=None,
+                        job_purpose=None) -> dict:
     """Environment builds: Docker on the control-plane host, or cluster builds in jobs.
 
     sif_store replaces the default chain, for example so that a member's lock
-    build registers its SIF in the member's own store.
+    build registers its SIF in the member's own store; job_purpose then records
+    its jobs as admission jobs.
     """
     from .execution.environments import EnvironmentService
 
@@ -1072,6 +1074,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 sif_store=sif_store or sif_stores(settings), policy=policy, build_launcher=build_launcher,
                 workspace_root=jobs_root, job_ledger=job_ledger, **placement,
                 conda=_conda_policy(settings, cluster.machine),
+                **({"job_purpose": job_purpose} if job_purpose is not None else {}),
             ),
             owner_user_id=settings.principal.user_id, catalog=catalog,
         )

@@ -213,6 +213,7 @@ async def test_the_docker_recipe_installs_offline_in_a_separate_stage_and_append
     recipe = (root / "context" / "Dockerfile").read_text()
     assert recipe.startswith(f"FROM {BASE_ID} AS labbio-conda\nLABEL labbio.environment.build={root.name}\n")
     assert "--offline --file /labbio/explicit.txt" in recipe
+    assert f"FROM {BASE_ID}\nLABEL labbio.environment.build={root.name}\nUSER root\n" in recipe  # Labelled first.
     assert "COPY --from=labbio-conda /opt/labbio-env /opt/labbio-env\nENV PATH=$PATH:/opt/labbio-env/bin\n" in recipe
     assert context_files["micromamba-bytes"] == policy.micromamba.read_bytes()
     assert {"conda-pkgs", "explicit.txt", "Dockerfile"} <= set(context_files)

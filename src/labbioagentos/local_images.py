@@ -1,4 +1,4 @@
-"""Operator commands for a member's own images: image-admit and image-list (C15 step 5a)."""
+"""Operator commands for a member's own images: admission, listing, crash cleanup and promotion (C15)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ import platform as host_platform
 import shutil
 import stat
 import subprocess
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,9 +22,11 @@ from .execution.admission import (
     DockerRealizer,
     ImageAdmission,
     LockedBuild,
+    Realizer,
     load_registry_credentials,
     probe_with,
 )
+from .execution.admission_attempts import AdmissionAttempt, AdmissionAttempts
 from .execution.catalog import GpuSupport, ImageScope, ImageState
 from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
@@ -29,6 +34,7 @@ from .execution.conda import CondaError, lock_explicit, parse_explicit
 from .execution.environments import (EnvironmentBuildUnconfirmedError, EnvironmentRequestError, PinnedLocks,
                                      _identity_recipe)
 from .execution.errors import ImageNotApprovedError
+from .execution.launchers.base import JobLauncherError
 from .execution.images import ApprovedImage, ApprovedImageRegistry
 from .execution.wheel_lock import MAX_LOCK_BYTES, WheelLockError, parse_wheel_lock, render_pins
 from .local_config import (LocalSettings, _cluster_execution, _conda_policy, _environment_wiring, _image_catalog,
@@ -45,8 +51,8 @@ from .local_promotion import (
     withdraw,
 )
 
-IMAGE_COMMANDS = {"image-admit", "image-list", "image-promote-request", "image-promote-withdraw",
-                  "image-promote-list", "image-promote-approve", "image-promote-reject"}
+IMAGE_COMMANDS = {"image-admit", "image-list", "image-reconcile", "image-promote-request",
+                  "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject"}
 # env-: environments the Agent builds. lab-: lab images, so a promotion can never take
 # a key a member already uses, which would make that member's catalog fail closed.
 _RESERVED_PREFIXES = ("env-", "lab-")
@@ -67,6 +73,8 @@ def add_image_commands(commands) -> None:
     admit.add_argument("--lock", type=Path, action="append",
                        help="With --base: a hashed wheel lock or an @EXPLICIT conda lock; repeat for both")
     commands.add_parser("image-list", help="List the images you can select, with their state")
+    commands.add_parser("image-reconcile",
+                        help="Clean up image admissions whose process is gone; nothing is resubmitted")
     request = commands.add_parser("image-promote-request", help="Ask for one of your images to become a lab image")
     request.add_argument("--key", required=True)
     request.add_argument("--file", type=Path, help="The OCI archive or SIF, when the source is not an OCI reference")
@@ -88,42 +96,109 @@ def _machine(settings: LocalSettings) -> str:
     return build.machine if build else host_platform.machine()
 
 
-def _realizer_and_probe(settings: LocalSettings, member_root: Path, *, sif_store=None):
+@dataclass(frozen=True)
+class _AdmissionJobs:
+    """One admission command's wiring: its attempts, and the realizer, probe and lock builder they use."""
+
+    attempts: AdmissionAttempts
+    realizer: Callable[[AdmissionAttempt], Realizer]
+    probe: Callable
+    builder: object | None
+
+
+@contextmanager
+def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=None,
+                    lock_builds: bool = False) -> Iterator[_AdmissionJobs]:
+    """Every job an admission starts is recorded in the member's job ledger (DECIDED-C15-E2).
+
+    The ledger and the job roots live in the member's `jobs/` directory, and
+    the attempts in `admissions/`. Cleanup of lost attempts resolves an open
+    job with the launcher of the job root that holds its workspace.
+    """
+    attempts_root = member_root / "admissions"
     if settings.execution.backend == "docker":
         from .execution.docker import DockerCommandBuilder, SubprocessDockerRunner
+        from .execution.environment_builder import remove_build_leftovers
 
-        return DockerRealizer(), probe_with(DockerCommandBuilder(), SubprocessDockerRunner())
-    from .execution.apptainer import SifStore
-    from .execution.launchers import JobSpec, TERMINAL_STATES
+        def leftovers(attempt: str) -> bool:
+            return remove_build_leftovers(attempt, keep=lambda: _admitted_references(settings))
 
-    wiring = _cluster_execution(settings, member_root / "jobs")
-    launcher, apptainer = wiring["job_launcher"], settings.execution.apptainer
-    limits = settings.execution.resources
+        yield _AdmissionJobs(
+            attempts=AdmissionAttempts(attempts_root, discard_leftovers=leftovers),
+            realizer=lambda _attempt: DockerRealizer(),
+            probe=probe_with(DockerCommandBuilder(), SubprocessDockerRunner()),
+            builder=_docker_lock_builder(settings) if lock_builds else None,
+        )
+        return
+    from .execution.apptainer import SifStore, SifStoreChain
+    from .execution.job_ledger import JobPurpose, run_recorded_job
+    from .execution.launchers import JobSpec
 
-    def build(layout: Path, output: Path) -> None:
-        # Conversion needs no network: the layout already holds every verified blob.
-        spec = JobSpec(execution_id=uuid4(), argv=(apptainer.binary, "build", str(output), f"oci:{layout}"),
-                       timeout_seconds=limits.timeout_seconds,
-                       resources=RequestedResources(cpus=limits.cpus, memory_mb=limits.memory_mb,
-                                                    pids_limit=limits.pids_limit,
-                                                    timeout_seconds=limits.timeout_seconds),
-                       workspace_root=layout.parent)
-
-        async def run() -> int | None:
-            handle = await launcher.submit(spec)
-            state = await launcher.wait(handle)
-            if state not in TERMINAL_STATES:
-                return None
-            return (await launcher.collect(handle)).exit_code
-
-        if asyncio.run(run()) != 0 or not output.is_file():
-            raise AdmissionError("REALIZATION_FAILED")
-
+    jobs = member_root / "jobs"
+    jobs.mkdir(mode=0o700, exist_ok=True)
+    wiring = _cluster_execution(settings, jobs)
+    ledger, launcher = wiring["job_ledger"], wiring["job_launcher"]
     try:
-        realizer = ApptainerRealizer(sif_store=sif_store or SifStore(member_root / "sif"), build=build)
-        return realizer, probe_with(wiring["command_builder"], wiring["process_runner"])
+        conversions = jobs / "executions"
+        launchers = {conversions: launcher}
+        builder = None
+        if settings.environment is not None:
+            # A lock build registers its SIF in the member's own store; its jobs are admission jobs.
+            chain = SifStoreChain((SifStore(member_root / "sif"), *sif_stores(settings).stores))
+            environment = _environment_wiring(settings, jobs, ledger, _image_catalog(settings), sif_store=chain,
+                                              job_purpose=JobPurpose.ADMISSION)
+            launchers[jobs / "environment-jobs"] = environment["environment_job_launcher"]
+            if lock_builds:
+                builder = environment["environment_service_factory"](ApprovedImageRegistry(())).builder
+        apptainer, limits = settings.execution.apptainer, settings.execution.resources
+
+        def realizer(attempt: AdmissionAttempt) -> Realizer:
+            def build(layout: Path, output: Path) -> None:
+                # Conversion needs no network: the layout already holds every verified blob.
+                execution_id = uuid4()
+                workspace = conversions / str(execution_id)
+                workspace.mkdir(mode=0o700, parents=True)
+                spec = JobSpec(execution_id=execution_id,
+                               argv=(apptainer.binary, "build", str(output), f"oci:{layout}"),
+                               timeout_seconds=limits.timeout_seconds,
+                               resources=RequestedResources(cpus=limits.cpus, memory_mb=limits.memory_mb,
+                                                            pids_limit=limits.pids_limit,
+                                                            timeout_seconds=limits.timeout_seconds),
+                               workspace_root=workspace)
+                try:
+                    outcome = asyncio.run(run_recorded_job(ledger, launcher, spec, run_id=attempt.id,
+                                                           purpose=JobPurpose.ADMISSION))
+                except JobLauncherError:
+                    # The intent stays open; cleanup asks the launcher whether the job exists.
+                    raise AdmissionError("REALIZATION_FAILED") from None
+                # Interrupted, the job may still run: its workspace then stays for crash cleanup.
+                shutil.rmtree(workspace, ignore_errors=True)
+                if outcome is None or outcome.exit_code != 0 or not output.is_file():
+                    raise AdmissionError("REALIZATION_FAILED")
+
+            return ApptainerRealizer(sif_store=sif_store or SifStore(member_root / "sif"), build=build)
+
+        yield _AdmissionJobs(
+            attempts=AdmissionAttempts(attempts_root, ledger=ledger, launchers=launchers),
+            realizer=realizer, probe=probe_with(wiring["command_builder"], wiring["process_runner"]),
+            builder=builder,
+        )
     finally:
-        wiring["job_ledger"].close()
+        ledger.close()
+
+
+def _admitted_references(settings: LocalSettings) -> set[str]:
+    """Every realization an admitted record uses, read now; crash cleanup never removes one."""
+    catalog = _image_catalog(settings)
+    return {realization.resolved_image
+            for store in (catalog.lab, catalog.personal) if store is not None
+            for record in store.records().values() for realization in record.realizations}
+
+
+def _reconciled(attempts) -> list[dict]:
+    return [{"attempt": item.attempt_id.hex, "removed": item.removed,
+             "jobs": [{"job_id": job.job_id, "launcher": job.launcher, "action": job.action.value}
+                      for job in item.jobs]} for item in attempts]
 
 
 def image_admit(settings: LocalSettings, args) -> dict:
@@ -135,45 +210,57 @@ def image_admit(settings: LocalSettings, args) -> dict:
     member_root = private_member_root(settings.lab.member_root)
     catalog = _image_catalog(settings)
     credentials = load_registry_credentials(member_root / "registries.json")
-    realizer, probe = _realizer_and_probe(settings, member_root)
-    admission = ImageAdmission(
-        store=catalog.personal, scope=ImageScope.PERSONAL, owner_user_id=settings.principal.user_id,
-        admitted_by=settings.principal.user_id, realizer=realizer, probe=probe,
-        machine=_machine(settings), staging_root=member_root / "staging",
-        limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
-                               quota_bytes=policy.member_quota_bytes,
-                               allowed_registries=policy.allowed_registries),
-        registry_client=lambda: OciRegistryClient(credentials=credentials),
-        existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
-    )
-    if getattr(args, "base", None) is not None:
+    locked = getattr(args, "base", None) is not None
+    if locked:
         if not args.lock:
             raise AdmissionError("LOCK_REQUIRED")
         if args.runtime:
             raise AdmissionError("RUNTIMES_INHERITED")
         base = _base_image(settings, catalog, args.base)
-        builder = _lock_builder(settings, member_root)
+        if settings.environment is None:
+            raise AdmissionError("LOCK_BUILDS_UNAVAILABLE")
         texts = [_read_lock(path) for path in args.lock]
-        try:
-            record = admission.admit_locked(
-                key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu), base=base,
-                build=lambda image: build_locked(builder, image, texts, member_root / "staging" / "lock-builds",
-                                                 backend=settings.execution.backend))
-        finally:
-            if getattr(builder, "job_ledger", None) is not None:
-                builder.job_ledger.close()
-    else:
-        if getattr(args, "lock", None):
-            raise AdmissionError("LOCK_REQUIRED")
-        runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
-        record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
-                                 oci=args.oci, archive=args.archive, sif=args.sif, runtimes=runtimes)
+    elif getattr(args, "lock", None):
+        raise AdmissionError("LOCK_REQUIRED")
+    with _admission_jobs(settings, member_root, lock_builds=locked) as jobs:
+        reconciled = asyncio.run(jobs.attempts.reconcile())
+        with jobs.attempts.attempt() as attempt:
+            admission = ImageAdmission(
+                store=catalog.personal, scope=ImageScope.PERSONAL, owner_user_id=settings.principal.user_id,
+                admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe,
+                machine=_machine(settings), staging_root=attempt.root,
+                limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
+                                       quota_bytes=policy.member_quota_bytes,
+                                       allowed_registries=policy.allowed_registries),
+                registry_client=lambda: OciRegistryClient(credentials=credentials),
+                existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
+            )
+            if locked:
+                record = admission.admit_locked(
+                    key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu), base=base,
+                    build=lambda image: build_locked(jobs.builder, image, texts, attempt,
+                                                     backend=settings.execution.backend))
+            else:
+                runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
+                record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
+                                         oci=args.oci, archive=args.archive, sif=args.sif, runtimes=runtimes)
     return {"event": "image_admitted", "key": record.key, "scope": record.scope.value,
             "source": record.source.canonical, "size_bytes": record.size_bytes,
             "runtimes": sorted(runtime.value for runtime in record.entry_points),
             "inventory_origin": record.inventory.origin.value,
             "inventory_count": len(record.inventory.packages),
-            "inventory_invalid": record.inventory.invalid_count}
+            "inventory_invalid": record.inventory.invalid_count,
+            "reconciled": _reconciled(reconciled)}
+
+
+def image_reconcile(settings: LocalSettings) -> dict:
+    """Clean up admissions whose process is gone: stop their jobs and delete their files."""
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    member_root = private_member_root(settings.lab.member_root)
+    with _admission_jobs(settings, member_root) as jobs:
+        reconciled = asyncio.run(jobs.attempts.reconcile())
+    return {"event": "image_attempts_reconciled", "attempts": _reconciled(reconciled)}
 
 
 def _base_image(settings: LocalSettings, catalog, key: str) -> ApprovedImage:
@@ -198,30 +285,22 @@ def _read_lock(path: Path) -> str:
         raise AdmissionError("WHEEL_LOCK_FILE_INVALID") from None
 
 
-def _lock_builder(settings: LocalSettings, member_root: Path):
-    """The deployment's environment builder; a cluster build registers its SIF in the member's store."""
-    if settings.environment is None:
-        raise AdmissionError("LOCK_BUILDS_UNAVAILABLE")
-    if settings.execution.backend == "docker":
-        from .execution.environment_builder import DockerEnvironmentBuilder
+def _docker_lock_builder(settings: LocalSettings):
+    from .execution.environment_builder import DockerEnvironmentBuilder
 
-        environment = settings.environment
-        return DockerEnvironmentBuilder(proxy_url=environment.build_proxy,
-                                        timeout_seconds=environment.build_timeout_seconds,
-                                        cpus=settings.execution.resources.cpus, conda=_conda_policy(settings))
-    from .execution.apptainer import SifStore, SifStoreChain
-    from .execution.job_ledger import JobLedger
-
-    jobs = member_root / "jobs"
-    jobs.mkdir(mode=0o700, exist_ok=True)
-    chain = SifStoreChain((SifStore(member_root / "sif"), *sif_stores(settings).stores))
-    wiring = _environment_wiring(settings, jobs, JobLedger(jobs / "jobs.sqlite"), _image_catalog(settings),
-                                 sif_store=chain)
-    return wiring["environment_service_factory"](ApprovedImageRegistry(())).builder
+    environment = settings.environment
+    return DockerEnvironmentBuilder(proxy_url=environment.build_proxy,
+                                    timeout_seconds=environment.build_timeout_seconds,
+                                    cpus=settings.execution.resources.cpus, conda=_conda_policy(settings))
 
 
-def build_locked(builder, base: ApprovedImage, texts: list[str], attempts_root: Path, *, backend: str) -> LockedBuild:
-    """Parse the member's locks, build exactly them on the base, and report what was built."""
+def build_locked(builder, base: ApprovedImage, texts: list[str], attempt: AdmissionAttempt, *,
+                 backend: str) -> LockedBuild:
+    """Parse the member's locks, build exactly them on the base, and report what was built.
+
+    The build works in the attempt's directory, under the attempt's name, so
+    its jobs and Docker labels belong to the attempt and crash cleanup finds them.
+    """
     wheel_texts = [text for text in texts if not _is_explicit(text)]
     conda_texts = [text for text in texts if _is_explicit(text)]
     if len(wheel_texts) > 1 or len(conda_texts) > 1:
@@ -230,8 +309,7 @@ def build_locked(builder, base: ApprovedImage, texts: list[str], attempts_root: 
         pins = parse_wheel_lock(wheel_texts[0]) if wheel_texts else ()
     except WheelLockError:
         raise AdmissionError("WHEEL_LOCK_FILE_INVALID") from None
-    attempts_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    root = attempts_root / uuid4().hex
+    root = attempt.root / attempt.id.hex
     root.mkdir(mode=0o700)
     conda = ()
     if conda_texts:
@@ -251,7 +329,7 @@ def build_locked(builder, base: ApprovedImage, texts: list[str], attempts_root: 
     try:
         result = asyncio.run(builder.build(
             base_image=base, requirements=(), import_modules=(), build_root=root,
-            request_hash=hashlib.sha256(request.encode()).hexdigest(), run_id=uuid4(), pinned=pinned))
+            request_hash=hashlib.sha256(request.encode()).hexdigest(), run_id=attempt.id, pinned=pinned))
     except EnvironmentRequestError as exc:
         raise AdmissionError(exc.code) from None
     except EnvironmentBuildUnconfirmedError:
@@ -326,22 +404,25 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
         # with the member's record as the expected source and inventory.
         member_root = private_member_root(settings.lab.member_root)
         policy, record = area.policy(), request.record
-        realizer, probe = _realizer_and_probe(settings, member_root, sif_store=area.sif_store())
         lab_keys = set(area.catalog.records()) | {image.key for image in settings.execution.images}
-        admission = ImageAdmission(
-            store=area.catalog, scope=ImageScope.LAB, owner_user_id=None,
-            admitted_by=settings.principal.user_id, realizer=realizer, probe=probe,
-            machine=_machine(settings), staging_root=member_root / "staging",
-            limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes, quota_bytes=policy.lab_quota_bytes,
-                                   allowed_registries=policy.allowed_registries),
-            registry_client=lambda: OciRegistryClient(
-                credentials=load_registry_credentials(member_root / "registries.json")),
-            existing_keys=lambda: lab_keys,
-        )
         form = ({"oci": f"{record.repository}@{record.source.digest}"} if record.repository else
                 {"sif": payload} if record.source.kind is SourceKind.SIF else {"archive": payload})
-        admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
-                        runtimes=tuple(record.entry_points), expected=record, **form)
+        with _admission_jobs(settings, member_root, sif_store=area.sif_store()) as jobs:
+            asyncio.run(jobs.attempts.reconcile())
+            with jobs.attempts.attempt() as attempt:
+                admission = ImageAdmission(
+                    store=area.catalog, scope=ImageScope.LAB, owner_user_id=None,
+                    admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe,
+                    machine=_machine(settings), staging_root=attempt.root,
+                    limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
+                                           quota_bytes=policy.lab_quota_bytes,
+                                           allowed_registries=policy.allowed_registries),
+                    registry_client=lambda: OciRegistryClient(
+                        credentials=load_registry_credentials(member_root / "registries.json")),
+                    existing_keys=lambda: lab_keys,
+                )
+                admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
+                                runtimes=tuple(record.entry_points), expected=record, **form)
 
     decision = decide(area, args.request, outcome=outcome, reason=args.reason, admit=admit,
                       lab_key=getattr(args, "key", None))
@@ -353,6 +434,7 @@ def run_image_command(settings: LocalSettings, args) -> dict:
     handlers = {
         "image-admit": lambda: image_admit(settings, args),
         "image-list": lambda: image_list(settings),
+        "image-reconcile": lambda: image_reconcile(settings),
         "image-promote-request": lambda: promote_request(settings, args),
         "image-promote-withdraw": lambda: promote_withdraw(settings, args),
         "image-promote-list": lambda: promote_list(settings),

@@ -346,13 +346,19 @@ class ImageAdmission:
                 size_bytes=size, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
             )
             self.store.add_record(record)
-            return record
+        except Exception:
+            if realized is not None:
+                self.realizer.discard(realized)
+            shutil.rmtree(staging)
+            raise
         except BaseException:
+            # Interrupted: a conversion job may still write into the staging directory, so
+            # it stays for the attempt's crash cleanup (DECIDED-C13-4).
             if realized is not None:
                 self.realizer.discard(realized)
             raise
-        finally:
-            shutil.rmtree(staging)
+        shutil.rmtree(staging)
+        return record
 
     def admit_locked(self, *, key: str, purpose: str, gpu: GpuSupport, base: ApprovedImage,
                      build: Callable[[ApprovedImage], LockedBuild],

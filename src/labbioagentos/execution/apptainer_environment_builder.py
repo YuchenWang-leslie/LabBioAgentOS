@@ -52,9 +52,8 @@ from .environments import (
     normalize_modules,
     normalize_requirements,
 )
-from .errors import ContainerStartError
 from .images import ApprovedImage
-from .job_ledger import JobLedger, JobPurpose
+from .job_ledger import JobLedger, JobPurpose, run_recorded_job
 from .launchers.base import JobLauncher, JobSpec
 from .models import RequestedResources
 
@@ -112,6 +111,7 @@ class ApptainerEnvironmentBuilder:
         download_runner: DownloadRunner | None = None,
         download_launcher: JobLauncher | None = None,
         conda: CondaPolicy | None = None,
+        job_purpose: JobPurpose = JobPurpose.ENVIRONMENT_BUILD,
     ):
         if (download_runner is None) == (download_launcher is None):
             raise ValueError("Configure exactly one download placement: the login node or a job")
@@ -122,6 +122,7 @@ class ApptainerEnvironmentBuilder:
         self.sif_store, self.policy, self.job_ledger = sif_store, policy, job_ledger
         self.build_launcher, self.download_launcher = build_launcher, download_launcher
         self.download_runner = download_runner
+        self.job_purpose = JobPurpose(job_purpose)  # ADMISSION when a member's lock is built.
 
     @property
     def supports_conda(self) -> bool:
@@ -292,31 +293,10 @@ class ApptainerEnvironmentBuilder:
                    resources: RequestedResources, run_id: UUID) -> ProcessOutcome | None:
         """Submit, wait for and collect one ledger-recorded job; None if the scheduler refused it."""
 
-        job_id = UUID(workspace.name)
-        self.job_ledger.record_intent(run_id=run_id, execution_id=job_id, launcher=launcher.kind,
-                                      workspace_root=workspace, purpose=JobPurpose.ENVIRONMENT_BUILD)
-        try:
-            handle = await launcher.submit(JobSpec(
-                execution_id=job_id, argv=("/bin/bash", str(program)),
-                timeout_seconds=resources.timeout_seconds, resources=resources,
-                workspace_root=workspace,
-            ))
-        except ContainerStartError:
-            self.job_ledger.record_not_submitted(job_id)
-            return None
-        self.job_ledger.record_submitted(job_id, handle.job_id)
-        try:
-            await launcher.wait(handle)
-        except asyncio.CancelledError:
-            # Cancelling the coroutine does not stop a service or a scheduler job.
-            await asyncio.shield(launcher.cancel(handle))
-            raise
-        try:
-            outcome = await launcher.collect(handle)
-        except ContainerStartError:  # The job ended without an exit status.
-            outcome = ProcessOutcome(exit_code=None, stdout=b"", stderr=b"", duration_seconds=0.0)
-        self.job_ledger.record_collected(job_id)
-        return outcome
+        return await run_recorded_job(self.job_ledger, launcher, JobSpec(
+            execution_id=UUID(workspace.name), argv=("/bin/bash", str(program)),
+            timeout_seconds=resources.timeout_seconds, resources=resources, workspace_root=workspace,
+        ), run_id=run_id, purpose=self.job_purpose)
 
 
 @contextmanager

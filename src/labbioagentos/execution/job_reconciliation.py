@@ -5,14 +5,15 @@ finished one is reported and its files are deleted, nothing is resubmitted,
 and the run itself stays BLOCKED. The caller must hold the run writer lease,
 which proves the process that launched the jobs is gone. Environment build
 jobs belong to the run that requested them (DECIDED-C13-8) and are cleaned
-up the same way by the launcher that owns them.
+up the same way by the launcher that owns them. Image admission jobs belong
+to their admission attempt (DECIDED-C15-E2).
 """
 
 from __future__ import annotations
 
 import asyncio
 import shutil
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -58,9 +59,34 @@ async def reconcile_orphan_jobs(
     for entry in ledger.open_jobs(run_id):
         if entry.purpose is JobPurpose.EXECUTION:
             owner, paths = launcher, cleanup_paths
-        else:
+        elif entry.purpose is JobPurpose.ENVIRONMENT_BUILD:
             owner, paths = environment_launcher, (lambda _execution_id: ())
+        else:  # Another kind of job is never resolved by a launcher that does not own it.
+            owner, paths = None, (lambda _execution_id: ())
         action, job_id = await _reconcile(entry, ledger, owner, paths, settle_seconds)
+        results.append(ReconciledJob(entry.execution_id, job_id, entry.launcher, action))
+    return tuple(results)
+
+
+async def reconcile_admission_jobs(
+    *,
+    ledger: JobLedger,
+    run_id: UUID,
+    launchers: Mapping[Path, JobLauncher],
+    settle_seconds: float = 120.0,
+) -> tuple[ReconciledJob, ...]:
+    """Resolve every open job of one image admission attempt; never submit anything.
+
+    `run_id` is the attempt. Its conversion and lock build jobs run under
+    different launchers, so each job is resolved by the launcher whose job
+    root holds its workspace. The caller must hold the attempt's lease, which
+    proves the process that launched the jobs is gone.
+    """
+
+    results = []
+    for entry in ledger.open_jobs(run_id):
+        owner = launchers.get(entry.workspace_root.parent) if entry.purpose is JobPurpose.ADMISSION else None
+        action, job_id = await _reconcile(entry, ledger, owner, lambda _execution_id: (), settle_seconds)
         results.append(ReconciledJob(entry.execution_id, job_id, entry.launcher, action))
     return tuple(results)
 

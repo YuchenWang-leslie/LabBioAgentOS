@@ -84,7 +84,8 @@ async def test_fixed_wheel_recipe_uses_inspected_identity_and_no_data_mounts(bac
     assert not (backend.root / "wheels").exists()
     assert (context / "lock.txt").read_text() == f"examplepkg==2.0 --hash=sha256:{sha}\n"
     recipe = (context / "Dockerfile").read_text()
-    assert recipe.startswith(f"FROM {BASE_ID}\n")
+    # Every image the build makes carries the attempt's label, so crash cleanup can find it.
+    assert recipe.startswith(f"FROM {BASE_ID}\nLABEL labbio.environment.build={backend.root.name}\n")
     assert backend.base.resolved_reference not in recipe
     assert "pip download" not in recipe
     assert "--no-index --no-deps --require-hashes --find-links=/opt/labbio-environment/wheels" in recipe

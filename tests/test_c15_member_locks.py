@@ -419,17 +419,19 @@ def test_lock_builds_need_an_environment_builder(member, tmp_path, capsys):
 
 
 def test_lock_kinds_are_told_apart_and_each_given_once(tmp_path):
+    from labbioagentos.execution.admission_attempts import AdmissionAttempt
     from labbioagentos.local_images import build_locked
 
+    attempt = AdmissionAttempt(uuid4(), tmp_path)
     wheel = f"six==1.16.0 --hash=sha256:{A}\n"
     with pytest.raises(AdmissionError) as raised:
-        build_locked(object(), _base(), [wheel, wheel], tmp_path, backend="docker")
+        build_locked(object(), _base(), [wheel, wheel], attempt, backend="docker")
     assert raised.value.code == "LOCK_KIND_REPEATED"
     with pytest.raises(AdmissionError) as raised:
-        build_locked(object(), _base(), ["six>=1\n"], tmp_path, backend="docker")
+        build_locked(object(), _base(), ["six>=1\n"], attempt, backend="docker")
     assert raised.value.code == "WHEEL_LOCK_FILE_INVALID"
     with pytest.raises(AdmissionError) as raised:  # A builder without micromamba cannot take a conda lock.
-        build_locked(object(), _base(), [_explicit(f"{BASE}samtools-1.21-h_0.conda#{MD5}")], tmp_path,
+        build_locked(object(), _base(), [_explicit(f"{BASE}samtools-1.21-h_0.conda#{MD5}")], attempt,
                      backend="docker")
     assert raised.value.code == "CONDA_UNAVAILABLE"
 

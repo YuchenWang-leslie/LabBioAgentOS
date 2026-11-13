@@ -186,6 +186,12 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
 
 ## Lab area and images
 
+- If an Apptainer admission process dies after its SIF is registered but
+  before its record is written, the SIF stays in the member's or the lab's
+  SIF store without a record. Crash cleanup stops the admission's jobs and
+  deletes its attempt, but files in a SIF store are never deleted
+  automatically (DECIDED-C15-H).
+
 - Members may write the lab area's `requests/` drop directory, so a member can
   fill the shared filesystem with request payloads. LabBio limits each member
   to a few pending requests and checks sizes when an administrator approves,

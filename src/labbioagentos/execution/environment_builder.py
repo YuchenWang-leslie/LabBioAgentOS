@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -104,6 +105,61 @@ def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
         diagnostics.append({"code": "PIP_RESOLUTION_CONFLICT", "package": match.group(1),
                             "version": match.group(2), "dependency": dependency})
     return tuple(diagnostics[:8]) or ({"code": code},)
+
+
+BUILD_LABEL = "labbio.environment.build"
+
+
+def remove_build_leftovers(build_id: str, *, keep: Callable[[], set[str]], run: Callable = subprocess.run) -> bool:
+    """Remove a lost build attempt's labelled containers and images; True once none is left.
+
+    Used by crash cleanup, when the process that built is gone. Containers are
+    removed first, so no image is in use. Each round lists the attempt's
+    untagged images that have no child. An image named by `keep()`, for
+    example one an admitted record uses, is never removed, and nor are its
+    parents, which always have a child. Docker may keep a removed image's
+    untagged parent, which the next round lists. Any failure returns False, and the caller keeps the attempt to try
+    again later.
+    """
+    if re.fullmatch(r"[0-9a-f]{32}", build_id) is None:
+        raise ValueError("Not a build attempt")
+    selector = f"label={BUILD_LABEL}={build_id}"
+
+    def listed(argv: list[str], pattern: str) -> list[str] | None:
+        try:
+            result = run(argv, capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        values = result.stdout.split() if result.returncode == 0 else None
+        if values is None or any(re.fullmatch(pattern, value) is None for value in values):
+            return None
+        return list(dict.fromkeys(values))
+
+    containers = listed(["docker", "ps", "-aq", "--no-trunc", "--filter", selector], r"[0-9a-f]{64}")
+    if containers is None:
+        return False
+    if containers:
+        try:
+            run(["docker", "rm", "--force", *containers], capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if listed(["docker", "ps", "-aq", "--no-trunc", "--filter", selector], r"[0-9a-f]{64}") != []:
+            return False
+    for _round in range(16):
+        # Build images are untagged, and `docker image ls` lists untagged images only as dangling ones.
+        images = listed(["docker", "image", "ls", "-q", "--no-trunc", "--filter", selector,
+                         "--filter", "dangling=true"], r"sha256:[0-9a-f]{64}")
+        if images is None:
+            return False
+        kept = keep()
+        stale = [value for value in images if value not in kept]
+        if not stale:
+            return True
+        try:
+            run(["docker", "image", "rm", *stale], capture_output=True, text=True, timeout=120, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return False
 
 
 class DockerEnvironmentBuilder:
@@ -400,8 +456,9 @@ class DockerEnvironmentBuilder:
                        "COPY explicit.txt /labbio/explicit.txt\n"
                        "RUN /labbio/micromamba create -y -q --no-rc -r /tmp/labbio-mamba "
                        f"-p {CONDA_ENV_PREFIX} --offline --file /labbio/explicit.txt && rm -rf /tmp/labbio-mamba\n")
-        recipe += (f"FROM {base_id}\nUSER root\n"
-                   f"LABEL labbio.environment.build={build_root.name}\n")
+        # The label comes first, so every image of the build carries it and crash cleanup finds them all.
+        recipe += (f"FROM {base_id}\nLABEL labbio.environment.build={build_root.name}\n"
+                   "USER root\n")
         if with_conda:
             # Appended, so the image's own python stays the PYTHON entry point.
             recipe += (f"COPY --from=labbio-conda {CONDA_ENV_PREFIX} {CONDA_ENV_PREFIX}\n"

@@ -366,6 +366,15 @@ LabBio refuses to start or to execute when:
   an operator must check the scheduler. Reconciliation never resubmits, and
   the run remains blocked for review. Wheels left by an interrupted build are
   deleted by the next build.
+- **Crash during an image admission.** Admission jobs, the conversion of an
+  OCI image to a SIF and the download and build jobs of a lock build, are
+  recorded with purpose `ADMISSION` in the member's own ledger,
+  `<member_root>/jobs/jobs.sqlite`. Each admission holds a lease on its
+  attempt directory under `<member_root>/admissions/`. The next `image-admit`
+  or `image-promote-approve`, or `labbio image-reconcile`, resolves the jobs
+  of every attempt whose lease is free in the same way, then deletes the
+  attempt. An attempt whose cancellation is not yet confirmed is kept and
+  retried.
 - **Queue time.** The control plane waits for each job inside a single tool
   call. Runtime progress timers do not cut off that wait, but the login-node
   process must stay alive for the whole queue and run time. Prefer partitions
