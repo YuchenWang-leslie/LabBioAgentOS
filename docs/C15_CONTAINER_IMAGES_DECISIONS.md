@@ -451,6 +451,35 @@ This covers image storage and lifecycle (gap memo Q10).
    - An administrator may configure a registry host allowlist for
      admissions. By default there is no restriction.
 
+### Refinement
+
+Refined by MOHAN CUI on 2026-11-16.
+
+- Lab image references: the lab area gains a `usage/` drop directory with
+  the same permissions as `requests/` (group-writable, sticky). The first
+  time a member's run uses a lab image, it writes a marker naming the image
+  key and the run. Deleting a lab image checks these markers and the
+  holding account's own references. A forged marker can only block a
+  deletion; a member who removes their own marker only harms the
+  reproducibility of their own runs. Both are listed as known limitations.
+- References that block deletion are live ones: runs that can still be
+  continued or revised, Gold Skill versions in use, and derived
+  environments built on the image that are not deleted. Terminal runs do
+  not block: their trace still resolves the identity, because records are
+  kept, and revising such a run first restores the image.
+- Only a DEPRECATED or REVOKED image can be deleted. Deletion appends a
+  "realization deleted" event to the record, so the platform never tries to
+  run the missing file and reports that a restore is needed instead.
+- `image-restore` re-realizes a deleted image for every source: an OCI
+  reference is pulled again by digest, an archive or SIF is delivered
+  again, a lock-built image is rebuilt from its locks on its base, and an
+  Agent-built environment is rebuilt from its stored request. The result
+  must have the same source identity and inventory, and is attached as a
+  new realization.
+- Step 9 is split: 9a state commands and the usage report; 9b reference
+  checks and deletion; 9c restore; 9d cleanup of Agent environment builds
+  lost on Docker.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:
