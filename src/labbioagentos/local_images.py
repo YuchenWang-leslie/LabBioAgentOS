@@ -42,11 +42,14 @@ from .local_config import (LocalSettings, _cluster_execution, _conda_policy, _en
 from .execution.identity import SourceKind
 from .local_lab import LabArea, private_member_root
 from .local_promotion import (
+    LockKind,
     PromotionError,
     PromotionOutcome,
     decide,
     file_request,
+    lock_built,
     pending,
+    request_locks,
     request_summary,
     withdraw,
 )
@@ -78,6 +81,9 @@ def add_image_commands(commands) -> None:
     request = commands.add_parser("image-promote-request", help="Ask for one of your images to become a lab image")
     request.add_argument("--key", required=True)
     request.add_argument("--file", type=Path, help="The OCI archive or SIF, when the source is not an OCI reference")
+    request.add_argument("--base", help="For an image built from locks: the lab image it was built on")
+    request.add_argument("--lock", type=Path, action="append",
+                         help="For an image built from locks: the same lock files; repeat for both")
     withdraw = commands.add_parser("image-promote-withdraw", help="Withdraw one of your promotion requests")
     withdraw.add_argument("--request", required=True)
     commands.add_parser("image-promote-list", help="Administrator: list pending promotion requests")
@@ -143,8 +149,9 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
         launchers = {conversions: launcher}
         builder = None
         if settings.environment is not None:
-            # A lock build registers its SIF in the member's own store; its jobs are admission jobs.
-            chain = SifStoreChain((SifStore(member_root / "sif"), *sif_stores(settings).stores))
+            # A lock build registers its SIF in the admission's store (the member's own, or the lab's
+            # for a promotion) and finds its base anywhere; its jobs are admission jobs.
+            chain = SifStoreChain((sif_store or SifStore(member_root / "sif"), *sif_stores(settings).stores))
             environment = _environment_wiring(settings, jobs, ledger, _image_catalog(settings), sif_store=chain,
                                               job_purpose=JobPurpose.ADMISSION)
             launchers[jobs / "environment-jobs"] = environment["environment_job_launcher"]
@@ -263,8 +270,12 @@ def image_reconcile(settings: LocalSettings) -> dict:
     return {"event": "image_attempts_reconciled", "attempts": _reconciled(reconciled)}
 
 
-def _base_image(settings: LocalSettings, catalog, key: str) -> ApprovedImage:
-    """An image this member may select now: configured, lab or their own, and not deprecated."""
+def _base_image(settings: LocalSettings, catalog, key: str, *, lab_only: bool = False) -> ApprovedImage:
+    """An image this account may select now: configured, lab or their own, and not deprecated.
+
+    A lab image can only be built from a lab image (configured or admitted to the
+    lab), so that every lab member can use its base.
+    """
     images = {image.key: image for image in (*settings.execution.approved_images(), *catalog.admitted_images())}
     if key not in images:
         raise AdmissionError("BASE_NOT_FOUND")
@@ -272,6 +283,8 @@ def _base_image(settings: LocalSettings, catalog, key: str) -> ApprovedImage:
         catalog.require_selectable(key, used_by_run=False)
     except ImageNotApprovedError:
         raise AdmissionError("BASE_NOT_FOUND") from None
+    if lab_only and catalog.scope(key) is not ImageScope.LAB:
+        raise AdmissionError("BASE_NOT_LAB")
     return images[key]
 
 
@@ -294,6 +307,17 @@ def _docker_lock_builder(settings: LocalSettings):
                                     cpus=settings.execution.resources.cpus, conda=_conda_policy(settings))
 
 
+def classify_locks(texts: list[str]) -> dict[LockKind, str]:
+    """At most one wheel lock and one @EXPLICIT conda lock, by content."""
+    kinds: dict[LockKind, str] = {}
+    for text in texts:
+        kind = LockKind.CONDA if _is_explicit(text) else LockKind.WHEEL
+        if kind in kinds:
+            raise AdmissionError("LOCK_KIND_REPEATED")
+        kinds[kind] = text
+    return kinds
+
+
 def build_locked(builder, base: ApprovedImage, texts: list[str], attempt: AdmissionAttempt, *,
                  backend: str) -> LockedBuild:
     """Parse the member's locks, build exactly them on the base, and report what was built.
@@ -301,10 +325,9 @@ def build_locked(builder, base: ApprovedImage, texts: list[str], attempt: Admiss
     The build works in the attempt's directory, under the attempt's name, so
     its jobs and Docker labels belong to the attempt and crash cleanup finds them.
     """
-    wheel_texts = [text for text in texts if not _is_explicit(text)]
-    conda_texts = [text for text in texts if _is_explicit(text)]
-    if len(wheel_texts) > 1 or len(conda_texts) > 1:
-        raise AdmissionError("LOCK_KIND_REPEATED")
+    kinds = classify_locks(texts)
+    wheel_texts = [kinds[LockKind.WHEEL]] if LockKind.WHEEL in kinds else []
+    conda_texts = [kinds[LockKind.CONDA]] if LockKind.CONDA in kinds else []
     try:
         pins = parse_wheel_lock(wheel_texts[0]) if wheel_texts else ()
     except WheelLockError:
@@ -377,11 +400,24 @@ def promote_request(settings: LocalSettings, args) -> dict:
     record = catalog.personal.records().get(args.key)
     if record is None:
         raise PromotionError("IMAGE_NOT_PERSONAL")
+    base, lock_files, locks = getattr(args, "base", None), getattr(args, "lock", None) or [], {}
+    if not lock_built(record) and (base is not None or lock_files):
+        raise PromotionError("LOCK_NOT_ALLOWED")
+    if base is not None and lock_files:
+        # Checked now, so the member hears about a wrong base or lock before an administrator does.
+        _base_image(settings, catalog, base, lab_only=True)
+        locks = classify_locks([_read_lock(path) for path in lock_files])
+        if LockKind.WHEEL in locks:
+            try:
+                parse_wheel_lock(locks[LockKind.WHEEL])
+            except WheelLockError:
+                raise AdmissionError("WHEEL_LOCK_FILE_INVALID") from None
     request = file_request(area, requester=settings.principal.user_id, record=record,
                            state=catalog.state(args.key), payload=args.file,
-                           max_image_bytes=area.policy().max_image_bytes)
+                           max_image_bytes=area.policy().max_image_bytes, base=base, locks=locks)
     return {"event": "promotion_requested", "request_id": request.request_id, "key": args.key,
-            "payload": request.payload}
+            "payload": request.payload, "base": request.base,
+            "locks": sorted(lock.kind.value for lock in request.locks)}
 
 
 def promote_withdraw(settings: LocalSettings, args) -> dict:
@@ -405,9 +441,17 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
         member_root = private_member_root(settings.lab.member_root)
         policy, record = area.policy(), request.record
         lab_keys = set(area.catalog.records()) | {image.key for image in settings.execution.images}
-        form = ({"oci": f"{record.repository}@{record.source.digest}"} if record.repository else
-                {"sif": payload} if record.source.kind is SourceKind.SIF else {"archive": payload})
-        with _admission_jobs(settings, member_root, sif_store=area.sif_store()) as jobs:
+        if request.locks:
+            # Rebuilt here from the member's locks on the same lab base (DECIDED-C15-E2).
+            texts = list(request_locks(area, request).values())
+            base = _base_image(settings, _image_catalog(settings), request.base, lab_only=True)
+            if settings.environment is None:
+                raise AdmissionError("LOCK_BUILDS_UNAVAILABLE")
+        else:
+            form = ({"oci": f"{record.repository}@{record.source.digest}"} if record.repository else
+                    {"sif": payload} if record.source.kind is SourceKind.SIF else {"archive": payload})
+        with _admission_jobs(settings, member_root, sif_store=area.sif_store(),
+                             lock_builds=bool(request.locks)) as jobs:
             asyncio.run(jobs.attempts.reconcile())
             with jobs.attempts.attempt() as attempt:
                 admission = ImageAdmission(
@@ -421,8 +465,15 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
                         credentials=load_registry_credentials(member_root / "registries.json")),
                     existing_keys=lambda: lab_keys,
                 )
-                admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
-                                runtimes=tuple(record.entry_points), expected=record, **form)
+                if request.locks:
+                    admission.admit_locked(
+                        key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu, base=base,
+                        build=lambda image: build_locked(jobs.builder, image, texts, attempt,
+                                                         backend=settings.execution.backend),
+                        expected=record)
+                else:
+                    admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
+                                    runtimes=tuple(record.entry_points), expected=record, **form)
 
     decision = decide(area, args.request, outcome=outcome, reason=args.reason, admit=admit,
                       lab_key=getattr(args, "key", None))

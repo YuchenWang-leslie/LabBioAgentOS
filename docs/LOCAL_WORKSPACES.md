@@ -230,6 +230,22 @@ labbio image-promote-request  --config <配置> --key <个人镜像> --file imag
 labbio image-promote-withdraw --config <配置> --request <申请 id>           # 撤回自己的申请
 ```
 
+用锁定清单构建的个人镜像不交镜像文件，而是交构建时用的基础镜像和锁定清单：
+
+```bash
+labbio image-promote-request --config <配置> --key six-samtools \
+  --base <实验室镜像 key> --lock requirements.lock --lock conda.lock
+```
+
+- 基础镜像必须是实验室镜像（配置里的镜像或已入库的实验室镜像），否则报 `BASE_NOT_LAB`；
+  以自己的个人镜像为基础构建的镜像不能升级。
+- 必须给和构建时相同的基础镜像和锁定清单。清单放在投递目录里，申请里记录每份清单的
+  sha256；批准时清单的属主或内容和申请不一致，就报 `REQUEST_FORGED`。
+- 管理员批准时，在持有账号下用同样的基础镜像和清单重新构建，并重新跑全部入库检查，
+  要求来源身份和软件清单都和成员的记录完全一致。不一致就不入库，申请保留。构建出的 SIF
+  登记到实验室 SIF 库。持有账号的部署也必须配置 `[environment]`（用到 conda 时还要
+  `[environment.conda]`）。
+
 管理员在持有账号下处理申请：
 
 ```bash
