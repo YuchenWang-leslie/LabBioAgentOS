@@ -228,7 +228,8 @@ class ApptainerEnvironmentBuilder:
                 return failed("IMPORT_CHECK_FAILED", tuple(
                     {"code": "IMPORT_CHECK_FAILED", "module": module} for module in inventory["failed_imports"][:8]))
             try:
-                reference = await asyncio.to_thread(self.sif_store.register, output_sif)
+                reference, created = await asyncio.to_thread(self.sif_store.register_new, output_sif)
+                size = self.sif_store.path_for(reference).stat().st_size
             except (SifStoreError, OSError):
                 return failed("VERIFICATION_FAILED")
         return EnvironmentBuildResult(
@@ -237,8 +238,16 @@ class ApptainerEnvironmentBuilder:
             locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                 for wheel in wheels),
             machine=self.policy.machine, locked_conda=tuple(lock_entries(locked_conda)),
-            conda_packages=inventory["conda_packages"],
+            conda_packages=inventory["conda_packages"], size_bytes=size, created=created,
         )
+
+    def discard(self, result: EnvironmentBuildResult) -> None:
+        """Remove a built SIF that will not be used, when this build stored it; a shared one stays."""
+        if result.image_id is not None and result.created:
+            try:
+                self.sif_store.remove(result.image_id)
+            except (SifStoreError, OSError):
+                pass  # Left in the store; deleting it is never required for correctness.
 
     def _prepare_conda(self, specs: tuple[str, ...], conda_dir: Path,
                        pinned: tuple[LockedPackage, ...] = ()) -> tuple[LockedPackage, ...]:

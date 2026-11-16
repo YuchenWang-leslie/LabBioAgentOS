@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 import fcntl
@@ -35,6 +36,9 @@ _CANONICAL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FAILURES = {
     "BUILD_FAILED": "The container build failed; no environment was registered.",
+    "IMAGE_TOO_LARGE": "The built environment is larger than the lab's per-image limit; it was not registered.",
+    "MEMBER_QUOTA_EXCEEDED": ("The built environment would exceed the user's image quota; it was not registered. "
+                              "The user can free space by deleting unused images."),
     "BUILD_TIMEOUT": "The environment build exceeded its time limit.",
     "BUILD_LOG_LIMIT": "The build exceeded the bounded local log limit.",
     "BUILDER_UNAVAILABLE": "The configured environment builder is unavailable.",
@@ -99,6 +103,8 @@ class EnvironmentBuildResult:
     # Exact conda packages ({"name", "version", "sha256"} with "conda::" names) and the installed set.
     locked_conda: tuple[dict, ...] = ()
     conda_packages: dict[str, str] = field(default_factory=dict)
+    size_bytes: int | None = None  # The built image's size, for the per-image limit and the quota.
+    created: bool = True  # False when the build produced an image that was already stored.
 
 
 @dataclass(frozen=True)
@@ -113,6 +119,19 @@ def check_pinned_request(pinned: PinnedLocks | None, requirements: tuple, conda_
     """A build is either an Agent request or a member's lock, never both, and never empty."""
     if pinned is not None and (requirements or conda_packages or not (pinned.wheels or pinned.conda)):
         raise EnvironmentRequestError()
+
+
+@dataclass(frozen=True)
+class EnvironmentLimits:
+    """The lab's per-image limit and the member's quota (DECIDED-C15-H), read when a build finishes.
+
+    `limits` returns (max_image_bytes, quota_bytes); `admitted_bytes` returns the
+    size of the member's admitted personal images, which share the quota with the
+    environments the Agent builds.
+    """
+
+    limits: Callable[[], tuple[int, int]]
+    admitted_bytes: Callable[[], int]
 
 
 class EnvironmentBuilder(Protocol):
@@ -218,10 +237,29 @@ def _write_private(path: Path, value: dict) -> None:
         stream.write("\n")
 
 
+def recorded_environments(root: Path) -> list[int | None]:
+    """The recorded size of each environment under an environment root; None where none was recorded."""
+    sizes = []
+    records = Path(root) / "records"
+    if records.is_dir() and not records.is_symlink():
+        for path in sorted(records.glob("*.json")):
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_097_152:
+                raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
+            try:
+                size = json.loads(path.read_text(encoding="utf-8")).get("size_bytes")
+            except (OSError, UnicodeError, ValueError, AttributeError):
+                raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+            if size is not None and (type(size) is not int or size < 0):
+                raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
+            sizes.append(size)
+    return sizes
+
+
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
-                 owner_user_id: str, *, catalog: ImageCatalog | None = None):
-        self.catalog = catalog
+                 owner_user_id: str, *, catalog: ImageCatalog | None = None,
+                 limits: EnvironmentLimits | None = None):
+        self.catalog, self.limits = catalog, limits
         self.root = Path(root).expanduser().absolute()
         self.image_registry, self.builder, self.owner_user_id = image_registry, builder, owner_user_id
         if (not owner_user_id or len(owner_user_id) > 128 or
@@ -293,6 +331,20 @@ class EnvironmentService:
             return record, image
         except (KeyError, TypeError, ValueError, CondaError):
             raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+
+    def environment_bytes(self) -> int:
+        """The recorded size of every environment built for this member; older records have none."""
+        return sum(record.get("size_bytes") or 0 for record in self._records.values())
+
+    def _limit_failure(self, size: int | None) -> str | None:
+        max_image_bytes, quota_bytes = self.limits.limits()
+        if not isinstance(size, int) or size < 0:
+            return "VERIFICATION_FAILED"  # A build that cannot say its size cannot be counted.
+        if size > max_image_bytes:
+            return "IMAGE_TOO_LARGE"
+        if self.limits.admitted_bytes() + self.environment_bytes() + size > quota_bytes:
+            return "MEMBER_QUOTA_EXCEEDED"
+        return None
 
     def _check_unconfirmed_attempt(self, request_hash: str) -> None:
         for attempt in self.attempts_root.iterdir():
@@ -486,6 +538,13 @@ class EnvironmentService:
                             raise ValueError()
                 except (ValueError, TypeError, KeyError, InvalidVersion):
                     result = EnvironmentBuildResult(failure_code="VERIFICATION_FAILED", log_id=attempt.name)
+            if result.failure_code is None and self.limits is not None:
+                code = self._limit_failure(result.size_bytes)
+                if code is not None:
+                    discard = getattr(self.builder, "discard", None)
+                    if discard is not None:
+                        await asyncio.to_thread(discard, result)
+                    result = EnvironmentBuildResult(failure_code=code, log_id=attempt.name)
             if result.failure_code is not None:
                 code = result.failure_code if result.failure_code in _FAILURES else "BUILD_FAILED"
                 diagnostics = []
@@ -527,6 +586,7 @@ class EnvironmentService:
                 "machine": result.machine if source is not None else None,
                 "requested_requirements": requirements, "requested_import_modules": modules,
                 "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels,
+                "size_bytes": result.size_bytes,
                 **({"requested_conda": list(conda), "locked_conda": locked_conda} if conda else {})}
             try:
                 _write_private(path, record)

@@ -78,6 +78,10 @@ class SifStore:
 
     def register(self, source: str | Path) -> str:
         """Copy one SIF into the store and return its immutable reference."""
+        return self.register_new(source)[0]
+
+    def register_new(self, source: str | Path) -> tuple[str, bool]:
+        """Register a SIF; also say whether this call created the file (False: it was already stored)."""
 
         if self.owner != os.getuid():
             raise SifStoreError("Only the store's holder may register into it")
@@ -108,7 +112,7 @@ class SifStore:
             target = self._file(reference)
             if target.exists() or target.is_symlink():
                 self.verify(reference)  # Idempotent only for an intact identical file.
-                return reference
+                return reference, False
             os.chmod(temporary, 0o440 if self.shared else 0o444)
             os.rename(temporary, target)
             directory = os.open(self.root, os.O_RDONLY)
@@ -116,10 +120,23 @@ class SifStore:
                 os.fsync(directory)
             finally:
                 os.close(directory)
-            return reference
+            return reference, True
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    def remove(self, reference: str) -> None:
+        """Delete one stored SIF; only the store's holder may, and only a file the store would serve."""
+
+        if self.owner != os.getuid():
+            raise SifStoreError("Only the store's holder may remove from it")
+        path = self.path_for(reference)
+        path.unlink()
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def path_for(self, reference: str) -> Path:
         """Return the stored file for a reference, refusing anything mutable or aliased."""
@@ -171,6 +188,12 @@ class SifStoreChain:
 
     def register(self, source: str | Path) -> str:
         return self.stores[0].register(source)
+
+    def register_new(self, source: str | Path) -> tuple[str, bool]:
+        return self.stores[0].register_new(source)
+
+    def remove(self, reference: str) -> None:
+        self._holder(reference).remove(reference)
 
     def path_for(self, reference: str) -> Path:
         return self._holder(reference).path_for(reference)

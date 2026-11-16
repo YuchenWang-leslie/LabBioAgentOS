@@ -33,7 +33,7 @@ from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
 from .execution.conda import CondaError, lock_explicit, parse_explicit
 from .execution.environments import (EnvironmentBuildUnconfirmedError, EnvironmentRequestError, PinnedLocks,
-                                     _identity_recipe)
+                                     _identity_recipe, recorded_environments)
 from .execution.errors import ImageNotApprovedError
 from .execution.launchers.base import JobLauncherError
 from .execution.images import ApprovedImage, ApprovedImageRegistry
@@ -252,6 +252,7 @@ def image_admit(settings: LocalSettings, args) -> dict:
                                        allowed_registries=policy.allowed_registries),
                 registry_client=lambda: OciRegistryClient(credentials=credentials),
                 existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
+                other_used_bytes=lambda: sum(size or 0 for size in _environment_sizes(settings)),
             )
             if locked:
                 record = admission.admit_locked(
@@ -529,14 +530,22 @@ def image_usage(settings: LocalSettings) -> dict:
         raise AdmissionError("ADMISSION_REQUIRES_LAB")
     policy, catalog = LabArea(settings.lab.root).policy(), _image_catalog(settings)
 
-    def usage(records) -> dict:
-        sizes = [record.size_bytes for record in records]
+    def usage(sizes) -> dict:
         return {"images": len(sizes), "used_bytes": sum(size for size in sizes if size is not None),
                 "unknown_size": sum(size is None for size in sizes)}
 
+    admitted = [record.size_bytes for record in catalog.personal.records().values()]
+    environments = _environment_sizes(settings)
+    member = usage(admitted + environments)
     return {"event": "image_usage", "max_image_bytes": policy.max_image_bytes,
-            "member": {**usage(catalog.personal.records().values()), "quota_bytes": policy.member_quota_bytes},
-            "lab": {**usage(catalog.lab.records().values()), "quota_bytes": policy.lab_quota_bytes}}
+            "member": {**member, "agent_environments": len(environments), "quota_bytes": policy.member_quota_bytes},
+            "lab": {**usage([record.size_bytes for record in catalog.lab.records().values()]),
+                    "quota_bytes": policy.lab_quota_bytes}}
+
+
+def _environment_sizes(settings: LocalSettings) -> list[int | None]:
+    """The member's Agent-built environments share the personal quota (DECIDED-C15-H)."""
+    return recorded_environments(settings.environment.root) if settings.environment is not None else []
 
 
 def run_image_command(settings: LocalSettings, args) -> dict:

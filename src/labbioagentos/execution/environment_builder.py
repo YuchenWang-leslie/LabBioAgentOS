@@ -327,6 +327,15 @@ class DockerEnvironmentBuilder:
         if list_owned(build_root / "cleanup-confirm.log"):
             raise EnvironmentBuildUnconfirmedError("CLEANUP_CONFIRM_FAILED")
 
+    def discard(self, result: EnvironmentBuildResult) -> None:
+        """Remove a built image that will not be used; best effort, never a prune."""
+        if result.image_id is not None and result.created and re.fullmatch(r"sha256:[0-9a-f]{64}", result.image_id):
+            try:
+                subprocess.run(["docker", "image", "rm", result.image_id], capture_output=True, timeout=120,
+                               check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass  # Its label lets a later cleanup find it.
+
     def _remove_stage_images(self, build_root: Path, *, keep: str | None) -> None:
         """Remove the conda stage's images, which the classic builder keeps; best effort.
 
@@ -542,6 +551,12 @@ class DockerEnvironmentBuilder:
                                                            for module in failed_modules[:8]))
             if self._stop_requested():
                 interrupted_daemon("BUILD_CANCELLED", probe_name=probe_name, image_id=image_id)
+            size_log = build_root / "image-size.log"
+            code, error = self._run(["docker", "image", "inspect", "--format", "{{.Size}}", image_id],
+                                    size_log, deadline)
+            size = size_log.read_text().strip() if error is None and code == 0 and size_log.is_file() else ""
+            if not size.isdigit():
+                raise ValueError()
             return EnvironmentBuildResult(
                 image_id=image_id, installed_packages=inventory["installed_packages"],
                 available_python_modules=modules, log_id=build_root.name,
@@ -550,6 +565,7 @@ class DockerEnvironmentBuilder:
                 machine=machine if locked or locked_conda else None,
                 locked_conda=tuple(lock_entries(locked_conda)),
                 conda_packages=probed_conda_packages(inventory, requested=with_conda),
+                size_bytes=int(size),
             )
         except (ValueError, KeyError, TypeError):
             return failed("VERIFICATION_FAILED")

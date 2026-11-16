@@ -212,6 +212,8 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   current channel metadata. A lock naming a file the channel no longer serves,
   or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
   the member still has the file.
+- Environments the Agent built before C15 have no recorded size, so they do
+  not count against the member's quota until they are rebuilt.
 
 ## GPUs
 

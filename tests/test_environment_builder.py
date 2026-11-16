@@ -37,6 +37,7 @@ def backend(tmp_path, monkeypatch):
             "verification.log": (0, None, json.dumps({
                 "installed_packages": {"examplepkg": "2.0"}, "failed_imports": [],
             })),
+            "image-size.log": (0, None, "123456789\n"),  # C15: the built image's size.
         },
     )
 
@@ -91,8 +92,11 @@ async def test_fixed_wheel_recipe_uses_inspected_identity_and_no_data_mounts(bac
     assert "--no-index --no-deps --require-hashes --find-links=/opt/labbio-environment/wheels" in recipe
     assert recipe.endswith("RUN python -m pip check\n")
     assert not any(line.startswith(("ADD ", "ENV ", "ARG ")) for line in recipe.splitlines())
-    inspect, download, docker_build, probe = backend.calls
+    inspect, download, docker_build, probe, size = backend.calls
     assert inspect == ["docker", "image", "inspect", "--format", "{{.Id}}", backend.base.resolved_reference]
+    # C15: the built image's size, for the per-image limit and the quota.
+    assert size == ["docker", "image", "inspect", "--format", "{{.Size}}", IMAGE_ID]
+    assert result.size_bytes == 123456789 and result.created
     # The download container sees only its wheel directory and the request, never data.
     mounts = [download[index + 1] for index, item in enumerate(download) if item == "--mount"]
     assert mounts == [f"type=bind,source={backend.root / 'wheels'},target=/labbio/wheels",

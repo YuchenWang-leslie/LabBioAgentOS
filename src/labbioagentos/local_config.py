@@ -1017,6 +1017,21 @@ def _conda_policy(settings: LocalSettings, machine: str | None = None):
                        proxy_url=settings.environment.build_proxy)
 
 
+def _environment_limits(settings: LocalSettings, catalog):
+    """With a lab, Agent-built environments count against the member's quota (DECIDED-C15-H)."""
+    if settings.lab is None:
+        return None
+    from .execution.environments import EnvironmentLimits
+    from .local_lab import LabArea
+
+    def limits() -> tuple[int, int]:
+        policy = LabArea(settings.lab.root).policy()  # Read when the build ends: the policy may change.
+        return policy.max_image_bytes, policy.member_quota_bytes
+
+    return EnvironmentLimits(limits=limits, admitted_bytes=lambda: sum(
+        record.size_bytes or 0 for record in catalog.personal.records().values()))
+
+
 def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog, *, sif_store=None,
                         job_purpose=None) -> dict:
     """Environment builds: Docker on the control-plane host, or cluster builds in jobs.
@@ -1039,6 +1054,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                     cpus=settings.execution.resources.cpus, conda=_conda_policy(settings),
                 ),
                 owner_user_id=settings.principal.user_id, catalog=catalog,
+                limits=_environment_limits(settings, catalog),
             )
 
         return {"environment_service_factory": docker_service}
@@ -1093,7 +1109,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 conda=_conda_policy(settings, cluster.machine),
                 **({"job_purpose": job_purpose} if job_purpose is not None else {}),
             ),
-            owner_user_id=settings.principal.user_id, catalog=catalog,
+            owner_user_id=settings.principal.user_id, catalog=catalog, limits=_environment_limits(settings, catalog),
         )
 
     # Crash cleanup reaches build and download jobs through the launcher of their shared root.

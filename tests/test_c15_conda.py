@@ -186,7 +186,7 @@ async def test_the_docker_recipe_installs_offline_in_a_separate_stage_and_append
     monkeypatch.setattr(module, "conda_download",
                         lambda packages, destination, **_: destination.mkdir() or (destination / "x.conda").write_bytes(b"x"))
     calls = []
-    responses = {"base-inspect.log": BASE_ID + "\n", "verification.log": json.dumps({
+    responses = {"base-inspect.log": BASE_ID + "\n", "image-size.log": "1000\n", "verification.log": json.dumps({
         "installed_packages": {}, "conda_packages": {"samtools": "1.21", "_openmp_mutex": "4.5"},
         "conda_on_path": on_path, "failed_imports": []}),
         # The classic builder keeps the conda stage's last image beside the final one.

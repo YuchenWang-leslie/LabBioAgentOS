@@ -204,6 +204,11 @@ channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、m
   `[environment.cluster] machine` 指定的计算节点架构。安装失败报 `CONDA_INSTALL_FAILED`。
 - micromamba 在构建时未通过完整性检查，报 `CONDA_UNAVAILABLE`。
 
+配置了实验室区（`[lab]`）时，Agent 构建的环境算在成员自己的镜像配额里，和入库的个人镜像
+共用（DECIDED-C15-H）。构建完成后会检查镜像大小：超过单个镜像上限报 `IMAGE_TOO_LARGE`，
+超过个人配额报 `MEMBER_QUOTA_EXCEEDED`。两种情况下，构建出的镜像都会被删除，不会登记。
+环境记录里会记下镜像大小；C15 以前的记录没有大小，不计入用量。
+
 Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
 `SHELL`，平台不会根据脚本或镜像推断。回执和 trace 都记录实际的运行时，以及它是明确
 给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）。

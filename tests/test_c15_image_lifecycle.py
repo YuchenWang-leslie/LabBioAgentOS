@@ -143,6 +143,8 @@ def test_usage_reports_the_members_and_the_labs_images_against_their_limits(lab,
     defaults = LabPolicy()
     assert code == 0 and output == {
         "event": "image_usage", "max_image_bytes": defaults.max_image_bytes,
-        "member": {"images": 2, "used_bytes": 1000, "unknown_size": 1, "quota_bytes": defaults.member_quota_bytes},
+        # Two admitted images and one Agent-built environment recorded before sizes were kept.
+        "member": {"images": 3, "used_bytes": 1000, "unknown_size": 2, "agent_environments": 1,
+                   "quota_bytes": defaults.member_quota_bytes},
         "lab": {"images": 1, "used_bytes": 5000, "unknown_size": 0, "quota_bytes": defaults.lab_quota_bytes},
     }

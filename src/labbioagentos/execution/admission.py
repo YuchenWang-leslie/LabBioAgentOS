@@ -336,10 +336,15 @@ class ImageAdmission:
                  admitted_by: str, realizer: Realizer, probe: Callable[[ApprovedImage, ExecutionRuntime], bytes],
                  machine: str,
                  limits: AdmissionLimits, staging_root: Path, registry_client: Callable[[], OciRegistryClient],
-                 existing_keys: Callable[[], set[str]]):
+                 existing_keys: Callable[[], set[str]], other_used_bytes: Callable[[], int] = lambda: 0):
         self.store, self.scope, self.owner_user_id, self.admitted_by = store, scope, owner_user_id, admitted_by
+        # Images that share the quota without being in this store: a member's Agent-built environments.
+        self.other_used_bytes = other_used_bytes
         self.realizer, self.probe, self.machine, self.limits = realizer, probe, machine, limits
         self.staging_root, self.registry_client, self.existing_keys = staging_root, registry_client, existing_keys
+
+    def _used_bytes(self) -> int:
+        return sum(record.size_bytes or 0 for record in self.store.records().values()) + self.other_used_bytes()
 
     def admit(self, *, key: str, purpose: str, gpu: GpuSupport, oci: str | None = None,
               archive: Path | None = None, sif: Path | None = None,
@@ -361,7 +366,7 @@ class ImageAdmission:
         realized = None
         try:
             acquired, size, delivery = self._acquire(staging, oci, archive, sif)
-            used = sum(record.size_bytes or 0 for record in self.store.records().values())
+            used = self._used_bytes()
             if used + size > self.limits.quota_bytes:
                 raise AdmissionError("MEMBER_QUOTA_EXCEEDED" if self.scope is ImageScope.PERSONAL
                                      else "LAB_QUOTA_EXCEEDED")  # Checked before anything is built.
@@ -435,7 +440,7 @@ class ImageAdmission:
         try:
             if built.size_bytes > self.limits.max_image_bytes:
                 raise AdmissionError("IMAGE_TOO_LARGE")
-            used = sum(record.size_bytes or 0 for record in self.store.records().values())
+            used = self._used_bytes()
             if used + built.size_bytes > self.limits.quota_bytes:
                 raise AdmissionError("MEMBER_QUOTA_EXCEEDED" if self.scope is ImageScope.PERSONAL
                                      else "LAB_QUOTA_EXCEEDED")
