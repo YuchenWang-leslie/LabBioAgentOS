@@ -205,6 +205,28 @@ labbio image-admit --config <配置> --key six-samtools --purpose "six 和 samto
   不管是成员交的还是 Agent 构建的，都是同一个来源身份。
 - 集群上，构建作业和 Agent 的环境构建一样运行，构建出的 SIF 登记到成员自己的 SIF 库。
 
+### 镜像状态和用量
+
+镜像有三种状态（DECIDED-C15-H）：
+
+- `ACTIVE`：可以选用；
+- `DEPRECATED`：不再显示给 Agent，新的运行不能选用；已经用过它的运行继续或修订时仍可使用；
+- `REVOKED`：拒绝任何执行，例如发现安全问题后。撤销不能恢复。
+
+```bash
+labbio image-deprecate --config <配置> --key <镜像> --reason "..."
+labbio image-activate  --config <配置> --key <镜像> --reason "..."   # 弃用的恢复为可用
+labbio image-revoke    --config <配置> --key <镜像> --reason "..."
+labbio image-usage     --config <配置>
+```
+
+- 个人镜像（包括 Agent 为自己构建的 `env-` 环境）由本人改状态；实验室镜像（配置里的镜像
+  和已入库的实验室镜像）只能由管理员在持有账号下改。
+- 原因是一行文字，最多 500 字。每次变更都追加一条记录，写明谁、何时、为什么。
+- 不允许的变更报 `STATE_CHANGE_INVALID`：撤销后再改，或改成当前的状态。
+- `image-usage` 列出自己的镜像和实验室镜像各占多少空间、多少个镜像大小未知，以及单个镜像
+  上限、个人配额和实验室配额。
+
 ### 中断的入库与清理
 
 每次入库（包括管理员批准升级）都在成员私有区的 `admissions/<id>/` 里进行，进程从开始到

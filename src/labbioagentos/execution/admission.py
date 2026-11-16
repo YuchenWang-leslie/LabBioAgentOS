@@ -116,6 +116,10 @@ ADMISSION_HINTS = {
     "IMAGE_KEY_RESERVED": "Keys starting with env- belong to Agent-built environments and lab- to lab images.",
     "IMAGE_KEY_TAKEN": "Choose a key that no configured, lab or personal image uses.",
     "PURPOSE_INVALID": "Give a one-line purpose without paths, URLs or image references.",
+    "IMAGE_KEY_UNKNOWN": "No configured, lab, personal or Agent-built image has this key; see image-list.",
+    "STATE_CHANGE_INVALID": ("This change is not allowed: a revoked image stays revoked, and an image cannot "
+                             "change to the state it already has."),
+    "REASON_INVALID": "Give a one-line reason of at most 500 characters.",
     "CUDA_RUNTIME_MISSING": ("An image declared --gpu SUPPORTED or REQUIRED must contain a CUDA runtime library "
                              "(libcudart); admit it with --gpu NONE or use a CUDA image."),
     "FORM_UNSUPPORTED_ON_BACKEND": "A SIF file runs only under Apptainer; give an OCI reference or archive.",

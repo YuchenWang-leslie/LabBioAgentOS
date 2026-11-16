@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import platform as host_platform
+import re
 import shutil
 import stat
 import subprocess
@@ -27,7 +28,7 @@ from .execution.admission import (
     probe_with,
 )
 from .execution.admission_attempts import AdmissionAttempt, AdmissionAttempts
-from .execution.catalog import GpuSupport, ImageScope, ImageState
+from .execution.catalog import CatalogError, GpuSupport, ImageScope, ImageState
 from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
 from .execution.conda import CondaError, lock_explicit, parse_explicit
@@ -55,7 +56,10 @@ from .local_promotion import (
 )
 
 IMAGE_COMMANDS = {"image-admit", "image-list", "image-reconcile", "image-promote-request",
-                  "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject"}
+                  "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject",
+                  "image-deprecate", "image-activate", "image-revoke", "image-usage"}
+_STATE_COMMANDS = {"image-deprecate": ImageState.DEPRECATED, "image-activate": ImageState.ACTIVE,
+                   "image-revoke": ImageState.REVOKED}
 # env-: environments the Agent builds. lab-: lab images, so a promotion can never take
 # a key a member already uses, which would make that member's catalog fail closed.
 _RESERVED_PREFIXES = ("env-", "lab-")
@@ -91,6 +95,13 @@ def add_image_commands(commands) -> None:
     approve.add_argument("--request", required=True)
     approve.add_argument("--key", required=True, help="The lab image key; it starts with lab-")
     approve.add_argument("--reason", required=True)
+    for name, text in (("image-deprecate", "Hide an image from new use; runs that already use it continue"),
+                       ("image-activate", "Make a deprecated image selectable again"),
+                       ("image-revoke", "Refuse every execution of an image; this cannot be undone")):
+        change = commands.add_parser(name, help=text + " (your own images; lab images: administrator)")
+        change.add_argument("--key", required=True)
+        change.add_argument("--reason", required=True)
+    commands.add_parser("image-usage", help="Report image disk use against the lab's quotas")
     reject = commands.add_parser("image-promote-reject", help="Administrator: reject a promotion request")
     reject.add_argument("--request", required=True)
     reject.add_argument("--reason", required=True)
@@ -481,6 +492,53 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
             "requester": decision.requester, "lab_key": decision.lab_key}
 
 
+def image_state(settings: LocalSettings, args) -> dict:
+    """Change an image's state (DECIDED-C15-H): the owner for a personal image, a LAB_ADMIN for a lab one."""
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    reason = args.reason.strip()
+    if not reason or len(reason) > 500 or any(character in reason for character in "\r\n\0"):
+        raise AdmissionError("REASON_INVALID")
+    catalog, key = _image_catalog(settings), args.key
+    if key not in catalog.held_keys() and not _agent_environment(settings, key):
+        raise AdmissionError("IMAGE_KEY_UNKNOWN")
+    scope = catalog.scope(key)
+    actor = settings.principal.user_id
+    if scope is ImageScope.LAB:
+        actor = _lab(settings).require_admin().user_id  # Only the holding account writes the lab catalog.
+    before, after = catalog.state(key), _STATE_COMMANDS[args.command]
+    try:
+        catalog.set_state(key, after, actor=actor, reason=reason)
+    except CatalogError:
+        raise AdmissionError("STATE_CHANGE_INVALID") from None
+    return {"event": "image_state_changed", "key": key, "scope": scope.value, "from": before.value,
+            "to": after.value}
+
+
+def _agent_environment(settings: LocalSettings, key: str) -> bool:
+    """An environment the Agent built for this member: personal, recorded under its request hash."""
+    if settings.environment is None or re.fullmatch(r"env-[0-9a-f]{64}", key) is None:
+        return False
+    record = settings.environment.root / "records" / (key.removeprefix("env-") + ".json")
+    return record.is_file() and not record.is_symlink()
+
+
+def image_usage(settings: LocalSettings) -> dict:
+    """Disk use against the lab's limits: the member's own images and the lab's images."""
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    policy, catalog = LabArea(settings.lab.root).policy(), _image_catalog(settings)
+
+    def usage(records) -> dict:
+        sizes = [record.size_bytes for record in records]
+        return {"images": len(sizes), "used_bytes": sum(size for size in sizes if size is not None),
+                "unknown_size": sum(size is None for size in sizes)}
+
+    return {"event": "image_usage", "max_image_bytes": policy.max_image_bytes,
+            "member": {**usage(catalog.personal.records().values()), "quota_bytes": policy.member_quota_bytes},
+            "lab": {**usage(catalog.lab.records().values()), "quota_bytes": policy.lab_quota_bytes}}
+
+
 def run_image_command(settings: LocalSettings, args) -> dict:
     handlers = {
         "image-admit": lambda: image_admit(settings, args),
@@ -491,5 +549,7 @@ def run_image_command(settings: LocalSettings, args) -> dict:
         "image-promote-list": lambda: promote_list(settings),
         "image-promote-approve": lambda: promote_decide(settings, args, PromotionOutcome.APPROVED),
         "image-promote-reject": lambda: promote_decide(settings, args, PromotionOutcome.REJECTED),
+        **{name: (lambda: image_state(settings, args)) for name in _STATE_COMMANDS},
+        "image-usage": lambda: image_usage(settings),
     }
     return handlers[args.command]()
