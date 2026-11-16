@@ -311,6 +311,33 @@ C15 gives full NVIDIA GPU support (option F1), resolving C15-G4.
 - Validation: Slurm + Apptainer on the test cluster's GPU partition, and
   local Docker on the WSL development machine (NVIDIA GPU).
 
+### Refinement
+
+Refined by MOHAN CUI on 2026-11-16.
+
+- An execution that requests GPUs needs an image marked SUPPORTED or
+  REQUIRED, and an image marked REQUIRED needs at least one GPU. A request
+  that does not fit is rejected with a fixed, model-visible error code.
+- The member still declares the GPU flag. An image declared SUPPORTED or
+  REQUIRED must contain a CUDA runtime library (libcudart in a system
+  library directory, a conda environment or a pip `nvidia/*/lib`
+  directory), or admission fails with `CUDA_RUNTIME_MISSING`. The check
+  needs no GPU, so it also runs on a login node.
+- The built-in Slurm template requests GPUs with `--gpus={gpus}`; a site
+  template may use `--gres=gpu:{gpus}` instead. `[launcher] gpu_partition`
+  is used for jobs that request GPUs and defaults to the ordinary
+  partition. `--gres`, `--gpus`, `-G` and `--gpus-per-*` become forbidden
+  extra directives. PBS and LSF get equivalent directives with fake-output
+  tests only.
+- With `max_gpus > 0`, Docker startup runs `nvidia-smi -L` in a container
+  with `--gpus` and refuses to start if that fails; it never falls back to
+  CPU. Each execution names its devices explicitly
+  (`--gpus device=<UUIDs of the first N GPUs>`), and trace records their
+  UUIDs and models.
+- Local Apptainer under systemd does not support GPUs: `--nv` exposes every
+  device and only a soft `CUDA_VISIBLE_DEVICES` limit would remain.
+  Configuring `max_gpus > 0` with that placement is refused at load.
+
 ## DECIDED-C15-G - One isolation baseline
 
 Decided by MOHAN CUI, 2026-11-11.

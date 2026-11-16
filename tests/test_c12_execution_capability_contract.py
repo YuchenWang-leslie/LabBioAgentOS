@@ -210,7 +210,9 @@ async def test_le6_resources_nested_contract_is_visible(execution_boundary):
         "memory_mb",
         "pids_limit",
         "timeout_seconds",
+        "gpus",  # C15: whole GPUs, bounded by execution_capability.resource_limits.
     }
+    assert resources["properties"]["gpus"]["minimum"] == 0
 
 
 @pytest.mark.asyncio

@@ -213,6 +213,16 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
   the member still has the file.
 
+## GPUs
+
+- On Docker, each execution is given the first N GPUs of the host's
+  inventory. Docker has no scheduler, so concurrent runs on the same host can
+  share a GPU and its memory.
+- An image's GPU flag is the operator's or member's declaration. GPUs are
+  only offered to images marked SUPPORTED or REQUIRED, but a flag does not
+  prove the image's CUDA build matches the host driver.
+- AMD ROCm and multi-node GPU jobs are not supported.
+
 ## Persistence and concurrency
 
 SQLite state, JSONL trace, Artifact storage, Docker operations, and provider

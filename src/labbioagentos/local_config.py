@@ -37,6 +37,7 @@ from labbioagentos.kernel import (
 )
 from labbioagentos.kernel.contracts import AnthropicEffort, GeminiThinkingLevel, ReasoningEffort
 from labbioagentos.kernel.http_stream import DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT
+from labbioagentos.execution.models import GpuSupport
 
 
 class _SettingsModel(BaseModel):
@@ -278,6 +279,8 @@ class LocalImageSettings(_SettingsModel):
     runtimes: tuple[Literal["PYTHON", "SHELL"], ...] = Field(default=("PYTHON",), min_length=1)
     available_python_modules: tuple[str, ...] = ()
     installed_packages: dict[str, str] = Field(default_factory=dict)
+    # Whether the image can use (SUPPORTED) or needs (REQUIRED) NVIDIA GPUs; the operator vouches for it.
+    gpu: Literal["NONE", "SUPPORTED", "REQUIRED"] = "NONE"
 
     def approved(self) -> ApprovedImage:
         from .execution.admission import DEFAULT_ENTRY_POINTS
@@ -287,7 +290,7 @@ class LocalImageSettings(_SettingsModel):
             entry_points={ExecutionRuntime(name): DEFAULT_ENTRY_POINTS[ExecutionRuntime(name)]
                           for name in dict.fromkeys(self.runtimes)},
             available_python_modules=self.available_python_modules,
-            installed_packages=self.installed_packages,
+            installed_packages=self.installed_packages, gpu=GpuSupport(self.gpu),
         )
 
 
@@ -332,6 +335,9 @@ class LocalExecutionSettings(_SettingsModel):
         if "PYTHON" not in next(image for image in self.images if image.key == self.default_image).runtimes:
             # The backend check and the default capability run a Python probe in it.
             raise ValueError("default_image must support the PYTHON runtime")
+        if next(image for image in self.images if image.key == self.default_image).gpu == "REQUIRED":
+            # The default capability and the backend check run without GPUs.
+            raise ValueError("default_image must not require GPUs")
         self.approved_images()
         if self.backend == "apptainer":
             if self.apptainer is None:
@@ -511,6 +517,9 @@ class LocalSettings(_SettingsModel):
             local = placement[1] == "local"
             if local != (self.execution.apptainer.resource_enforcement == "systemd-cgroups"):
                 raise ValueError("Local Apptainer requires systemd-cgroups; scheduler placement does not")
+            if local and self.execution.resources.gpus > 0:
+                # --nv exposes every device and systemd cannot confine them (DECIDED-C15-F).
+                raise ValueError("Local Apptainer does not support GPUs; set [execution.resources] gpus = 0")
         if self.environment is not None:
             if (placement == ("apptainer", "template")) != (self.environment.cluster is not None):
                 raise ValueError("[environment.cluster] is required only for Scheduler + Apptainer")
@@ -979,6 +988,7 @@ def _image_catalog(settings: LocalSettings):
         owner_user_id=settings.principal.user_id,
         backend=ExecutionBackendName(settings.execution.backend.upper()),
         configured_keys=(image.key for image in settings.execution.images),
+        configured_gpu={image.key: GpuSupport(image.gpu) for image in settings.execution.images},
         lab=lab, personal=personal,
     )
 
@@ -1093,6 +1103,22 @@ def sif_stores(settings: LocalSettings):
         stores.append(LabArea(settings.lab.root).sif_store())
         stores.append(SifStore(private_member_root(settings.lab.member_root) / "sif"))
     return SifStoreChain(tuple(stores))
+
+
+def _docker_gpu_execution(settings: LocalSettings) -> dict:
+    """Docker with GPUs: the inventory is probed before the first execution (DECIDED-C15-F)."""
+    from .execution.docker import DockerCommandBuilder
+    from .execution.gpu import DockerGpuInventory
+
+    inventory = DockerGpuInventory(settings.execution.default_approved_image().resolved_reference,
+                                   minimum=settings.execution.resources.gpus)
+    return {
+        "command_builder": DockerCommandBuilder(max_output_file_bytes=settings.execution.max_output_file_bytes,
+                                                tmpfs_size_mb=settings.execution.tmpfs_size_mb,
+                                                gpu_inventory=inventory),
+        # Refuses every execution until the GPU runtime answers; never a CPU fallback.
+        "backend_check": inventory.probe,
+    }
 
 
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
@@ -1298,6 +1324,8 @@ def build_application(
         else:
             from .execution.job_ledger import JobLedger
             execution_wiring = {"job_ledger": JobLedger(run_root / "jobs.sqlite")}
+            if settings.execution.resources.gpus > 0:
+                execution_wiring.update(_docker_gpu_execution(settings))
         cleanup.callback(execution_wiring["job_ledger"].close)
         image_catalog = _image_catalog(settings)
         environment_wiring = {}
@@ -1321,13 +1349,16 @@ def build_application(
             execution_policy=ExecutionPolicy(
                 allow_network=False, max_cpus=resources.cpus, max_memory_mb=resources.memory_mb,
                 max_pids=resources.pids_limit, max_timeout_seconds=resources.timeout_seconds,
+                max_gpus=resources.gpus,
                 max_output_file_bytes=settings.execution.max_output_file_bytes,
                 max_collected_output_bytes=settings.execution.max_collected_output_bytes,
                 tmpfs_size_mb=settings.execution.tmpfs_size_mb,
                 include_error_context=settings.execution.include_error_context,
             ),
             execution_profile=ApplicationExecutionProfile(
-                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.default_image, resources=resources,
+                # The configured table bounds requests; the default request uses no GPU.
+                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.default_image,
+                resources=resources.model_copy(update={"gpus": 0}),
                 network_required=False, output_contract_ids=(profile.output_contract.contract_id,),
                 minimum_queryable_output_count=1,
             ),

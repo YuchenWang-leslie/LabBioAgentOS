@@ -218,6 +218,32 @@ reference = "sha256:<64 hex>"
 available_python_modules = ["numpy"]
 ```
 
+### GPU
+
+GPU 默认关闭。`[execution.resources]` 里的 `gpus` 是每次执行最多能申请的整块 NVIDIA
+GPU 数，默认 0；Agent 每次执行默认申请 0 块，要用 GPU 必须明确写 `gpus`，平台不会自己加。
+
+```toml
+[execution.resources]
+gpus = 1                # 每次执行最多 1 块；0 表示不用 GPU
+
+[[execution.images]]
+key = "cuda-python"
+reference = "sha256:<64 hex>"
+gpu = "SUPPORTED"       # NONE（默认）、SUPPORTED（能用）或 REQUIRED（必须有）
+```
+
+- 镜像的 `gpu` 标志要和申请对得上：标志是 `NONE` 的镜像只能申请 0 块，标志是 `REQUIRED`
+  的镜像至少申请 1 块；对不上时不开始执行，Agent 收到 `EXECUTION_GPU_IMAGE_MISMATCH`。
+  `default_image` 不能是 `REQUIRED`。Agent 在 `environment_list` 里能看到每个镜像的标志。
+- 超过上限时，和其他资源一样报 `EXECUTION_RESOURCE_LIMIT_EXCEEDED`，`exceeded_fields`
+  里有 `gpus`。
+- **Docker**：配置了 `gpus > 0` 时，第一次执行前会在一个不联网、无数据的容器里用 `--gpus all`
+  运行 `nvidia-smi -L`，确认 GPU 运行时可用、GPU 数量不少于上限。失败时拒绝执行，不会改用
+  CPU。每次执行用 `--gpus device=<UUID>` 明确指定前 N 块 GPU，trace 记录这几块 GPU 的编号、
+  型号和 UUID，以及整机的 GPU 清单。需要 NVIDIA Container Toolkit。
+- 本机 Apptainer（systemd 方式）不支持 GPU，配置 `gpus > 0` 时加载配置就报错。
+
 ## 提交任务
 
 ```bash

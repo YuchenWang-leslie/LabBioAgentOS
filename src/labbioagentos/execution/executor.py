@@ -292,8 +292,13 @@ class ContainerExecutor:
                 "memory_mb": plan.resources.memory_mb,
                 "pids_limit": plan.resources.pids_limit,
                 "timeout_seconds": plan.resources.timeout_seconds,
+                "gpus": plan.resources.gpus,
             },
         }
+        assigned = getattr(self.command_builder, "assigned_gpus", None)
+        if plan.resources.gpus and assigned is not None:
+            # The exact devices this execution was given, as named on its command line.
+            planned["gpu_devices"] = [device.record() for device in assigned(plan)]
         if self.isolation_record is not None:
             planned["isolation"] = self.isolation_record
         self._emit(plan, TraceEventType.EXECUTION_PLANNED, "PLANNED", planned)

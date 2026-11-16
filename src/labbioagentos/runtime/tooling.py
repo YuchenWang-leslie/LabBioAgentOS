@@ -46,6 +46,7 @@ from labbioagentos.execution.errors import (
     ExecutionInputSelectionError,
     ExecutionOutputDeclarationError,
     ExecutionResourceLimitError,
+    ExecutionGpuImageMismatchError,
 )
 from labbioagentos.execution.models import (
     ExecutionImageKey,
@@ -160,6 +161,7 @@ _EXECUTION_VALIDATION_PATH_PARTS = frozenset(
         "memory_mb",
         "pids_limit",
         "timeout_seconds",
+        "gpus",
     }
 )
 
@@ -1443,6 +1445,9 @@ class LabBioRuntimeToolSet:
                 Omitted fields use execution_capability.submission_default_resources,
                 NOT execution_capability.resources (the preflight request) or the
                 maximum. The receipt records this execution's canonical resources.
+                gpus counts whole NVIDIA GPUs (default 0; a limit of 0 means GPUs are
+                disabled). It must be 0 for an image whose gpu support in
+                environment_list is NONE and at least 1 for one that is REQUIRED.
             network_required: Whether the program requires network access.
             review: Brief public pre-execution decision, not hidden reasoning or code.
                 State adopted/adapted guidance, relevant feedback and the intended
@@ -2767,6 +2772,15 @@ class LabBioRuntimeToolSet:
                     "registered_outputs keys from same-run execution receipts. "
                     "Workspace visibility alone does not authorize execution input use."
                 ),
+            )
+        if isinstance(exc, ExecutionGpuImageMismatchError):
+            needs = ("cannot use GPUs; request gpus = 0 or choose an image whose gpu is SUPPORTED or REQUIRED"
+                     if exc.image_gpu == "NONE" else "requires at least one GPU; request gpus of 1 or more")
+            return ToolError(
+                error_code="EXECUTION_GPU_IMAGE_MISMATCH",
+                safe_message=(f"No execution started. The request asked for {exc.requested_gpus} GPU(s), and the "
+                              f"selected image (gpu {exc.image_gpu}) {needs}. environment_list shows each "
+                              "image's gpu support."),
             )
         if isinstance(exc, ExecutionResourceLimitError):
             return ToolError(

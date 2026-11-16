@@ -26,6 +26,14 @@ from labbioagentos.contracts import WorkflowStage
 from .identity import SourceIdentity
 
 
+class GpuSupport(StrEnum):
+    """Whether an image can use, or needs, NVIDIA GPUs (DECIDED-C15-F)."""
+
+    NONE = "NONE"
+    SUPPORTED = "SUPPORTED"
+    REQUIRED = "REQUIRED"
+
+
 class ExecutionRuntime(StrEnum):
     """Runtime families supported by the deterministic executor contract."""
 
@@ -103,6 +111,8 @@ class RequestedResources(BaseModel):
     memory_mb: int = Field(default=512, ge=16)
     pids_limit: int = Field(default=128, ge=1)
     timeout_seconds: float = Field(default=300.0, gt=0)
+    # Whole NVIDIA GPUs; the platform never adds one that was not requested.
+    gpus: int = Field(default=0, ge=0, le=64, strict=True)
 
 
 class ExecutionResourceRejection(BaseModel):
@@ -112,8 +122,8 @@ class ExecutionResourceRejection(BaseModel):
 
     requested: RequestedResources
     limits: RequestedResources
-    exceeded_fields: tuple[Literal["cpus", "memory_mb", "pids_limit", "timeout_seconds"], ...] = Field(
-        min_length=1, max_length=4
+    exceeded_fields: tuple[Literal["cpus", "memory_mb", "pids_limit", "timeout_seconds", "gpus"], ...] = Field(
+        min_length=1, max_length=5
     )
 
 

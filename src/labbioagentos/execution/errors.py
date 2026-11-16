@@ -46,6 +46,15 @@ class ExecutionResourceLimitError(ExecutionPlanRejected):
         self.details = details
 
 
+class ExecutionGpuImageMismatchError(ExecutionPlanRejected):
+    """GPUs were requested for an image without GPU support, or none for an image that needs one."""
+
+    def __init__(self, requested_gpus: int, image_gpu: str):
+        super().__init__("The GPU request does not fit the selected image")
+        self.requested_gpus = requested_gpus
+        self.image_gpu = image_gpu
+
+
 class ExecutionInputSelectionError(ExecutionPlanRejected):
     """Selected inputs exceed the trusted run's advertised input scope."""
 

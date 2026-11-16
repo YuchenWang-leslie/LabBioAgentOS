@@ -9,7 +9,7 @@ that other members read while an administrator writes, so no database is used.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -24,7 +24,7 @@ from .errors import ImageNotApprovedError
 from .identity import SourceIdentity
 from .images import ApprovedImage
 from .inventory import InventoryOrigin, validate_purpose
-from .models import ExecutionImageKey, ExecutionRuntime
+from .models import ExecutionImageKey, ExecutionRuntime, GpuSupport
 
 _RECORD_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\.json")
 
@@ -38,12 +38,6 @@ class ImageState(StrEnum):
     ACTIVE = "ACTIVE"
     DEPRECATED = "DEPRECATED"  # Hidden from models; runs that already used it may continue.
     REVOKED = "REVOKED"  # Never executes again; its record stays for provenance.
-
-
-class GpuSupport(StrEnum):
-    NONE = "NONE"
-    SUPPORTED = "SUPPORTED"
-    REQUIRED = "REQUIRED"
 
 
 class ExecutionBackendName(StrEnum):
@@ -127,7 +121,7 @@ class ImageRecord(_Model):
                                 if self.inventory.origin is InventoryOrigin.PYTHON else {}),
             conda_packages=(dict(self.inventory.packages)
                             if self.inventory.origin is InventoryOrigin.CONDA_META else {}),
-            source=self.source,
+            source=self.source, gpu=self.gpu,
         )
 
 
@@ -195,10 +189,12 @@ class ImageCatalog:
 
     def __init__(self, *, owner_user_id: str, backend: ExecutionBackendName,
                  configured_keys: Iterable[str] = (), lab: CatalogStore | None = None,
+                 configured_gpu: Mapping[str, GpuSupport] | None = None,
                  personal: CatalogStore | None = None):
         self.owner_user_id, self.backend = owner_user_id, backend
         self.lab, self.personal = lab, personal
         self.configured_keys = frozenset(configured_keys)
+        self.configured_gpu = dict(configured_gpu or {})  # Configured images have no record.
         self._lab_records = lab.records() if lab is not None else {}
         self._personal_records = personal.records() if personal is not None else {}
         if any(record.scope is not ImageScope.LAB for record in self._lab_records.values()):
@@ -262,7 +258,7 @@ class ImageCatalog:
         return {
             "scope": "LAB" if scope is ImageScope.LAB else "YOURS",
             "purpose": record.purpose if record else None,
-            "gpu": (record.gpu if record else GpuSupport.NONE).value,
+            "gpu": (record.gpu if record else self.configured_gpu.get(key, GpuSupport.NONE)).value,
             "inventory_origin": record.inventory.origin.value if record else None,
             "size_mb": (round(record.size_bytes / 1_048_576) if record and record.size_bytes is not None
                         else None),

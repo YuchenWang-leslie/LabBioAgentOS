@@ -18,6 +18,7 @@ from labbioagentos.trace import RunTraceRecorder
 from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner, container_script_path
 from .errors import ContainerStartError
 from .executor import ContainerExecutor
+from .gpu import DockerGpuInventory, GpuDevice, GpuUnavailableError
 from .job_ledger import JobLedger
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .launchers import JobLauncher
@@ -250,6 +251,7 @@ class DockerCommandBuilder:
         *,
         max_output_file_bytes: int = 16_777_216,
         tmpfs_size_mb: int = 64,
+        gpu_inventory: DockerGpuInventory | None = None,
     ):
         if not docker_binary or docker_binary.startswith("-"):
             raise ValueError("docker_binary must be a configured executable name")
@@ -260,6 +262,15 @@ class DockerCommandBuilder:
         self.docker_binary = docker_binary
         self.max_output_file_bytes = max_output_file_bytes
         self.tmpfs_size_mb = tmpfs_size_mb
+        self.gpu_inventory = gpu_inventory  # Set only when the policy allows GPUs.
+
+    def assigned_gpus(self, plan: ExecutionPlan) -> tuple[GpuDevice, ...]:
+        """The exact GPUs an execution receives: none unless it asked for some."""
+        if plan.resources.gpus == 0:
+            return ()
+        if self.gpu_inventory is None:
+            raise GpuUnavailableError("GPUs are not available to Docker executions")
+        return self.gpu_inventory.assign(plan.resources.gpus)
 
     def build(
         self,
@@ -270,6 +281,9 @@ class DockerCommandBuilder:
     ) -> tuple[str, ...]:
         network = "bridge" if plan.network_required else "none"
         numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
+        devices = self.assigned_gpus(plan)
+        # Named devices only when GPUs were requested; quoted so a list stays one value.
+        gpu_arguments = ("--gpus", '"device=' + ",".join(device.uuid for device in devices) + '"') if devices else ()
         argv = [
             self.docker_binary,
             "run",
@@ -292,6 +306,7 @@ class DockerCommandBuilder:
             f"{plan.resources.memory_mb}m",
             "--pids-limit",
             str(plan.resources.pids_limit),
+            *gpu_arguments,
             "--ulimit",
             f"fsize={self.max_output_file_bytes}:{self.max_output_file_bytes}",
             "--read-only",

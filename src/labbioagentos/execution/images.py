@@ -13,9 +13,10 @@ from pydantic import (
     model_validator,
 )
 
-from .errors import ExecutionPlanRejected, ExecutionResourceLimitError, ImageNotApprovedError
+from .errors import (ExecutionGpuImageMismatchError, ExecutionPlanRejected, ExecutionResourceLimitError,
+                     ImageNotApprovedError)
 from .identity import SourceIdentity, legacy_identity
-from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, RequestedResources
+from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, GpuSupport, RequestedResources
 
 
 class ApprovedImage(BaseModel):
@@ -53,6 +54,7 @@ class ApprovedImage(BaseModel):
         default_factory=dict, max_length=4096,
         description="Verified conda packages of the derived environment, on PATH after the image's own.",
     )
+    gpu: GpuSupport = Field(default=GpuSupport.NONE, description="Whether the image can use, or needs, GPUs.")
 
     @model_validator(mode="before")
     @classmethod
@@ -77,6 +79,8 @@ class ApprovedImage(BaseModel):
             }
         if isinstance(data.get("available_python_modules"), list):
             data["available_python_modules"] = tuple(data["available_python_modules"])
+        if isinstance(data.get("gpu"), str):
+            data["gpu"] = GpuSupport(data["gpu"])
         return data
 
     @field_validator("entry_points")
@@ -202,6 +206,7 @@ class ExecutionPolicy(BaseModel):
     max_memory_mb: int = Field(default=8192, ge=16)
     max_pids: int = Field(default=512, ge=1)
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
+    max_gpus: int = Field(default=0, ge=0, le=64)  # 0 disables GPUs (DECIDED-C15-F).
     max_output_file_bytes: int = Field(default=16_777_216, ge=1)
     max_collected_output_bytes: int = Field(default=67_108_864, ge=1)
     tmpfs_size_mb: int = Field(default=64, ge=1)
@@ -223,7 +228,7 @@ class ExecutionPolicy(BaseModel):
     @property
     def resource_limits(self) -> RequestedResources:
         return RequestedResources(cpus=self.max_cpus, memory_mb=self.max_memory_mb,
-            pids_limit=self.max_pids, timeout_seconds=self.max_timeout_seconds)
+            pids_limit=self.max_pids, timeout_seconds=self.max_timeout_seconds, gpus=self.max_gpus)
 
     def validate_request(
         self,
@@ -241,6 +246,10 @@ class ExecutionPolicy(BaseModel):
         if exceeded:
             raise ExecutionResourceLimitError(ExecutionResourceRejection(
                 requested=requested, limits=limits, exceeded_fields=exceeded))
+        # GPUs only for an image that can use them; an image that needs them always gets one.
+        if (requested.gpus > 0 and image.gpu is GpuSupport.NONE) or (
+                requested.gpus == 0 and image.gpu is GpuSupport.REQUIRED):
+            raise ExecutionGpuImageMismatchError(requested.gpus, image.gpu.value)
         if network_required and has_local_inputs:
             raise ExecutionPlanRejected(
                 "Network is prohibited when local input Artifacts are mounted"

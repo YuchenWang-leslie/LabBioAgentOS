@@ -575,7 +575,7 @@ class RevisionValidationIssue(BaseModel):
     field: Literal[
         "request", "execution_id", "expected_script_hash", "edits", "edits.old", "edits.new",
         "image_key", "requested_outputs", "resources", "resources.cpus", "resources.memory_mb",
-        "resources.pids_limit", "resources.timeout_seconds",
+        "resources.pids_limit", "resources.timeout_seconds", "resources.gpus",
         "input_artifact_ids", "parameters",
     ]
     item_index: int | None = Field(default=None, ge=0)
