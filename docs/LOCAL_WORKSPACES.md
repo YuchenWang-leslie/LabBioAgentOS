@@ -160,6 +160,15 @@ labbio image-list  --config <配置>
 - 入库检查：CPU 架构必须和计算节点一致（在 Mac 上构建时请加 `--platform linux/amd64`）；
   在不联网、不挂载数据的容器里探测入口程序和软件清单；用途说明是一行文字，不能含路径、
   URL 或镜像引用；检查大小和配额；记录是谁、何时、从哪个来源入库的。
+- `--gpu` 声明镜像能否用 GPU：`NONE`（默认）、`SUPPORTED` 或 `REQUIRED`。声明了
+  `SUPPORTED` 或 `REQUIRED` 时，探测必须在镜像里找到 CUDA 运行库 `libcudart`，否则报
+  `CUDA_RUNTIME_MISSING`。查找范围：
+  - 系统库目录和 CUDA 工具包目录（如 `/usr/local/cuda*/lib64`）；
+  - conda 环境的 `lib`；
+  - pip 安装的 `nvidia/*/lib`（如 `nvidia-cuda-runtime-cu12`）和类似的 wheel 目录。
+
+  检查不需要 GPU，在登录节点上也能做。这个标志会显示给 Agent，执行时 GPU 申请必须和它
+  对得上；锁定构建和升级为实验室镜像时也做同样的检查。
 - 来源身份：同一个镜像不管用 OCI 地址还是归档交来，都是同一个 manifest digest，因此
   算同一个环境。
 - `env-` 开头的 key 留给 Agent 构建的环境。

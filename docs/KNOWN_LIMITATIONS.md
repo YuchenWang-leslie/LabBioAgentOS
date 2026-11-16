@@ -218,9 +218,10 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
 - On Docker, each execution is given the first N GPUs of the host's
   inventory. Docker has no scheduler, so concurrent runs on the same host can
   share a GPU and its memory.
-- An image's GPU flag is the operator's or member's declaration. GPUs are
-  only offered to images marked SUPPORTED or REQUIRED, but a flag does not
-  prove the image's CUDA build matches the host driver.
+- An image's GPU flag is the operator's or member's declaration. Admission
+  checks that an image declared for GPUs contains a CUDA runtime library, but
+  not that its CUDA version suits the hosts' drivers, and configured images
+  are not checked at all.
 - AMD ROCm and multi-node GPU jobs are not supported.
 - Under a scheduler, only the scheduler confines a job to its allocated GPUs
   (for example Slurm `ConstrainDevices=yes`); `--nv` itself exposes every GPU

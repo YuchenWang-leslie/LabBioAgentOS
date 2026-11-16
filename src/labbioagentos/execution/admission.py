@@ -10,6 +10,7 @@ task; the Agent selects among admitted images later.
 from __future__ import annotations
 
 import hashlib
+import re
 import json
 import os
 import shutil
@@ -37,9 +38,26 @@ from .inventory import InventoryOrigin, validate_inventory, validate_purpose
 from .models import ExecutionRuntime
 from .oci import AcquiredImage, OciError, OciReference, OciRegistryClient, RegistryCredential, layout_archive, read_archive
 
+_CONDA_PREFIXES = ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/opt/micromamba", "/opt/labbio-env")
+# Where a CUDA runtime library lives: system and CUDA toolkit library directories, conda
+# environments, and pip wheels such as nvidia-cuda-runtime (DECIDED-C15-F). Fixed patterns only.
+_CUDART = "libcudart*.so*"
+CUDA_RUNTIME_GLOBS = (
+    *(f"{directory}/{_CUDART}" for directory in (
+        "/lib", "/lib64", "/lib/*-linux-gnu", "/usr/lib", "/usr/lib64", "/usr/lib/*-linux-gnu", "/usr/local/lib",
+        "/usr/local/cuda*/lib64", "/usr/local/cuda*/targets/*/lib")),
+    *(f"{prefix}/{part}/{_CUDART}" for prefix in _CONDA_PREFIXES for part in ("lib", "envs/*/lib")),
+    *(f"{root}/{packages}/{part}/{_CUDART}"
+      for root in ("/usr", *_CONDA_PREFIXES)
+      for packages in ("lib/python3*/site-packages", "lib/python3*/dist-packages", "lib/python3/dist-packages")
+      for part in ("nvidia/*/lib", "*/lib")),
+)
+MAX_CUDA_RUNTIME_NAMES = 32
+_CUDA_RUNTIME_NAME = re.compile(r"libcudart[A-Za-z0-9._-]{0,64}\.so[0-9.]{0,32}")
+
 # Runs inside the image with no network and no data: the interpreter's own view.
 PROBE_PROGRAM = r"""
-import glob, json, platform
+import glob, json, os, platform, sys
 from importlib import metadata
 python = {}
 for dist in metadata.distributions():
@@ -47,7 +65,7 @@ for dist in metadata.distributions():
     if isinstance(name, str):
         python[name] = dist.version
 conda = {}
-for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/opt/micromamba", "/opt/labbio-env"):
+for prefix in PREFIXES:
     for path in sorted(glob.glob(prefix + "/conda-meta/*.json"))[:4096]:
         try:
             with open(path) as stream:
@@ -55,13 +73,24 @@ for prefix in ("/opt/conda", "/usr/local", "/opt/miniconda3", "/opt/mamba", "/op
             conda[record["name"]] = record["version"]
         except Exception:
             pass
-print(json.dumps({"machine": platform.machine(), "python": python, "conda": conda}))
-""".strip()
+cudart = set()
+patterns = list(GLOBS) + [entry + "/" + part + "/libcudart*.so*" for entry in sys.path if entry.startswith("/")
+                          for part in ("nvidia/*/lib", "*/lib")]
+for pattern in patterns:
+    cudart.update(os.path.basename(path) for path in glob.glob(pattern))
+print(json.dumps({"machine": platform.machine(), "python": python, "conda": conda,
+                  "cuda_runtime": sorted(cudart)[:MAX]}))
+""".strip().replace("PREFIXES", repr(_CONDA_PREFIXES)).replace("GLOBS", repr(CUDA_RUNTIME_GLOBS)).replace(
+    "MAX", str(MAX_CUDA_RUNTIME_NAMES))
 # For images without Python: the CPU architecture, then conda-meta file names, which
-# conda writes as <name>-<version>-<build>.json.
+# conda writes as <name>-<version>-<build>.json, then "labbio-cudart <name>" for each CUDA
+# runtime library found. An unmatched pattern stays literal and fails the -e test.
 SHELL_PROBE_PROGRAM = (
-    "uname -m; for prefix in /opt/conda /usr/local /opt/miniconda3 /opt/mamba /opt/micromamba /opt/labbio-env; do "
-    'ls "$prefix/conda-meta" 2>/dev/null | grep "\\.json$" | head -n 4096; done'
+    "uname -m; for prefix in " + " ".join(_CONDA_PREFIXES) + "; do "
+    'ls "$prefix/conda-meta" 2>/dev/null | grep "\\.json$" | head -n 4096; done; '
+    "for path in " + " ".join(CUDA_RUNTIME_GLOBS) + "; do "
+    '[ -e "$path" ] && echo "labbio-cudart ${path##*/}"; done | sort -u | head -n '
+    + str(MAX_CUDA_RUNTIME_NAMES)
 )
 DEFAULT_ENTRY_POINTS = {ExecutionRuntime.PYTHON: ("python",), ExecutionRuntime.SHELL: ("sh",)}
 _MAX_PROBE_BYTES = 2_097_152
@@ -87,6 +116,8 @@ ADMISSION_HINTS = {
     "IMAGE_KEY_RESERVED": "Keys starting with env- belong to Agent-built environments and lab- to lab images.",
     "IMAGE_KEY_TAKEN": "Choose a key that no configured, lab or personal image uses.",
     "PURPOSE_INVALID": "Give a one-line purpose without paths, URLs or image references.",
+    "CUDA_RUNTIME_MISSING": ("An image declared --gpu SUPPORTED or REQUIRED must contain a CUDA runtime library "
+                             "(libcudart); admit it with --gpu NONE or use a CUDA image."),
     "FORM_UNSUPPORTED_ON_BACKEND": "A SIF file runs only under Apptainer; give an OCI reference or archive.",
     "REFERENCE_NOT_PINNED": "Give the image as host/name@sha256:<64 hex>; tags are not accepted.",
     "REGISTRY_NOT_ALLOWED": "The lab policy does not allow admissions from this registry.",
@@ -222,6 +253,7 @@ class LockedBuild:
 class ProbeResult:
     machine: str
     inventory: InventorySnapshot
+    cuda_runtime: tuple[str, ...] = ()  # CUDA runtime library names found in the image.
 
 
 def parse_shell_probe(stdout: bytes) -> ProbeResult:
@@ -235,8 +267,14 @@ def parse_shell_probe(stdout: bytes) -> ProbeResult:
     machine = lines[0].strip()
     if not machine or not machine.isascii() or len(machine) > 32 or " " in machine:
         raise AdmissionError("PROBE_OUTPUT_INVALID")
-    packages, invalid = {}, 0
+    packages, invalid, cudart = {}, 0, []
     for line in (line.strip() for line in lines[1:]):
+        if line.startswith("labbio-cudart "):  # Conda-meta names never contain a space.
+            name = line.removeprefix("labbio-cudart ")
+            if _CUDA_RUNTIME_NAME.fullmatch(name) is None or len(cudart) >= MAX_CUDA_RUNTIME_NAMES:
+                raise AdmissionError("PROBE_OUTPUT_INVALID")
+            cudart.append(name)
+            continue
         parts = line.removesuffix(".json").rsplit("-", 2) if line.endswith(".json") else []
         if len(parts) != 3:
             invalid += bool(line)
@@ -246,7 +284,7 @@ def parse_shell_probe(stdout: bytes) -> ProbeResult:
     validated = validate_inventory(packages if packages else None, origin)
     return ProbeResult(machine, InventorySnapshot(origin=validated.origin, packages=validated.packages,
                                                   invalid_count=validated.invalid_count + invalid,
-                                                  truncated=validated.truncated))
+                                                  truncated=validated.truncated), tuple(cudart))
 
 
 def parse_probe(stdout: bytes) -> ProbeResult:
@@ -261,6 +299,10 @@ def parse_probe(stdout: bytes) -> ProbeResult:
     except (ValueError, KeyError, IndexError, UnicodeError, TypeError):
         raise AdmissionError("PROBE_OUTPUT_INVALID") from None
     conda, python = payload.get("conda") or {}, payload.get("python") or {}
+    cudart = payload.get("cuda_runtime") or []
+    if (not isinstance(cudart, list) or len(cudart) > MAX_CUDA_RUNTIME_NAMES
+            or any(not isinstance(name, str) or _CUDA_RUNTIME_NAME.fullmatch(name) is None for name in cudart)):
+        raise AdmissionError("PROBE_OUTPUT_INVALID")
     origin, raw = ((InventoryOrigin.CONDA_META, conda) if conda else
                    (InventoryOrigin.PYTHON, python) if python else (InventoryOrigin.UNKNOWN, None))
     try:
@@ -269,7 +311,13 @@ def parse_probe(stdout: bytes) -> ProbeResult:
         raise AdmissionError("PROBE_OUTPUT_INVALID") from None
     return ProbeResult(machine, InventorySnapshot(origin=validated.origin, packages=validated.packages,
                                                   invalid_count=validated.invalid_count,
-                                                  truncated=validated.truncated))
+                                                  truncated=validated.truncated), tuple(cudart))
+
+
+def _require_cuda_runtime(gpu: GpuSupport, results) -> None:
+    """An image declared able to use GPUs must contain a CUDA runtime library; no GPU is needed to look."""
+    if gpu is not GpuSupport.NONE and not any(item.cuda_runtime for item in results):
+        raise AdmissionError("CUDA_RUNTIME_MISSING")
 
 
 class ImageAdmission:
@@ -329,6 +377,7 @@ class ImageAdmission:
                 self.probe(approved, runtime)) for runtime in runtimes}
             if any(item.machine != self.machine for item in results.values()):
                 raise AdmissionError("ARCHITECTURE_MISMATCH")
+            _require_cuda_runtime(gpu, results.values())
             result = results.get(ExecutionRuntime.PYTHON) or results[ExecutionRuntime.SHELL]
             if expected is not None and (result.inventory != expected.inventory
                                          or entry_points != expected.entry_points):
@@ -397,6 +446,7 @@ class ImageAdmission:
                 self.probe(approved, runtime)) for runtime in entry_points}
             if any(item.machine != self.machine for item in results.values()):
                 raise AdmissionError("ARCHITECTURE_MISMATCH")
+            _require_cuda_runtime(gpu, results.values())
             result = results.get(ExecutionRuntime.PYTHON) or results[ExecutionRuntime.SHELL]
             if expected is not None and (result.inventory != expected.inventory
                                          or entry_points != expected.entry_points):
