@@ -53,6 +53,28 @@ def parse_gpu_list(text: str) -> tuple[GpuDevice, ...]:
     return tuple(sorted(devices, key=lambda device: device.index))
 
 
+_VISIBLE_DEVICES = re.compile(r"[A-Za-z0-9,:/-]{0,512}")
+
+
+def parse_gpu_allocation(text: str) -> dict:
+    """The record a scheduler job writes: the device list it was given, then `nvidia-smi -L`.
+
+    Values that do not have the expected form are reported as invalid, never passed on.
+    """
+    lines = text.splitlines()
+    first = lines[0] if lines else ""
+    visible = first.removeprefix("CUDA_VISIBLE_DEVICES=") if first.startswith("CUDA_VISIBLE_DEVICES=") else None
+    record: dict = {"cuda_visible_devices": visible if visible is not None and _VISIBLE_DEVICES.fullmatch(visible)
+                    else None}
+    try:
+        devices = parse_gpu_list("\n".join(lines[1:])) if visible is not None else None
+    except ValueError:
+        devices = None
+    record["devices"] = None if devices is None else [device.record() for device in devices]
+    record["valid"] = record["cuda_visible_devices"] is not None and devices is not None
+    return record
+
+
 class DockerGpuInventory:
     """The host's GPUs as Docker sees them, learned once by a probe container."""
 

@@ -452,6 +452,7 @@ class LocalLauncherSettings(_SettingsModel):
     partition: str | None = None
     account: str | None = None
     qos: str | None = None
+    gpu_partition: str | None = None  # Jobs that request GPUs; defaults to partition.
     walltime_margin_seconds: int = Field(default=600, ge=0, le=86_400, strict=True)
     poll_interval_seconds: float = Field(default=30.0, gt=0, le=3_600)
     max_queue_seconds: float = Field(default=86_400.0, gt=0, le=30 * 86_400)
@@ -460,7 +461,7 @@ class LocalLauncherSettings(_SettingsModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> "LocalLauncherSettings":
-        scheduler_fields = (self.template, self.partition, self.account, self.qos)
+        scheduler_fields = (self.template, self.partition, self.account, self.qos, self.gpu_partition)
         if self.kind == "template" and self.template is None:
             raise ValueError("kind = 'template' requires a scheduler template")
         if self.kind == "local" and (any(scheduler_fields) or self.extra_directives):
@@ -620,6 +621,11 @@ def load_settings(path: Path) -> LocalSettings:
             "root": absolute(settings.lab.root), "member_root": absolute(settings.lab.member_root),
         }) if settings.lab else None,
     })
+    if settings.launcher is not None and settings.launcher.kind == "template":
+        scheduler_policy(settings)  # Partitions are checked as executions will use them.
+        template = settings.launcher.scheduler_template()
+        if settings.execution.resources.gpus > 0 and "gpus" not in template.directives:
+            raise ValueError("GPUs are allowed, but the scheduler template has no gpus directive")
     if settings.environment is not None and settings.environment.cluster is not None:
         # Partitions and directives are checked as the build and download jobs will use them.
         environment_scheduler_policy(settings)
@@ -923,6 +929,7 @@ def scheduler_policy(settings: LocalSettings):
     return SchedulerPolicy(
         max_output_file_bytes=settings.execution.max_output_file_bytes,
         partition=launcher.partition, account=launcher.account, qos=launcher.qos,
+        gpu_partition=launcher.gpu_partition,
         walltime_margin_seconds=launcher.walltime_margin_seconds,
         poll_interval_seconds=launcher.poll_interval_seconds,
         max_queue_seconds=launcher.max_queue_seconds,

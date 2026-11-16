@@ -222,6 +222,11 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   only offered to images marked SUPPORTED or REQUIRED, but a flag does not
   prove the image's CUDA build matches the host driver.
 - AMD ROCm and multi-node GPU jobs are not supported.
+- Under a scheduler, only the scheduler confines a job to its allocated GPUs
+  (for example Slurm `ConstrainDevices=yes`); `--nv` itself exposes every GPU
+  on the node. Whether `--nv` works together with LabBio's isolation options
+  has not yet been verified on a GPU node. The PBS and LSF GPU directives are
+  tested only against fake scheduler output.
 
 ## Persistence and concurrency
 

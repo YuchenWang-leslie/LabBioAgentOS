@@ -240,6 +240,9 @@ class ApptainerCommandBuilder:
             "--pwd",
             "/workspace",
         ]
+        if plan.resources.gpus:
+            # Only when GPUs were requested; the scheduler's allocation limits which ones.
+            argv.append("--nv")
         if self.resource_enforcement == "apptainer-cgroups":
             argv.extend([
                 "--cpus",

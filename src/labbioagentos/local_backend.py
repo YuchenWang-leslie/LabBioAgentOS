@@ -148,11 +148,14 @@ def check_backend(
     else:
         scheduler = scheduler_check(
             settings.launcher.scheduler_template(), scheduler_policy(settings), apptainer.scratch_root,
+            gpus=settings.execution.resources.gpus > 0,
         )
         if not all(scheduler["clients"].values()):
             configuration_failures.append("scheduler_client")
         if scheduler["test_submission"] == "REJECTED":
             configuration_failures.append("scheduler_submission")
+        if scheduler.get("gpu_test_submission") == "REJECTED":
+            configuration_failures.append("scheduler_gpu_submission")
     if settings.environment is not None:
         report["environment"] = (
             {"download_placement": "local-systemd", "build_capabilities": "CHECKED_BY_EACH_BUILD_JOB",

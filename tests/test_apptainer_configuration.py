@@ -251,7 +251,7 @@ def test_backend_check_report(tmp_path, enforcement, capabilities, passed, failu
     assert calls[0]["scratch_root"] == tmp_path / "scratch"
 
 
-def _healthy_scheduler(template, policy, work_root):
+def _healthy_scheduler(template, policy, work_root, *, gpus=False):
     return {"template": template.name, "test_submission": "ACCEPTED",
             "clients": {"sbatch": True, "squeue": True, "scancel": True}}
 
@@ -267,7 +267,7 @@ def test_backend_check_refuses_an_unusable_scheduler(tmp_path, scheduler, expect
     cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))])
     seen = []
 
-    def scheduler_check(template, policy, work_root):
+    def scheduler_check(template, policy, work_root, *, gpus=False):
         seen.append((template.name, policy.partition, work_root))
         return {"template": template.name, **scheduler}
 

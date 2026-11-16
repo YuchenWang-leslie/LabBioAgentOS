@@ -116,6 +116,7 @@ class ContainerExecutor:
         self.backend_check = backend_check
         self._backend_checked = backend_check is None
         self._execution_lock = asyncio.Lock()
+        self._gpu_allocations: dict = {}
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """Prepare the workspace and return deterministic argv without launching."""
@@ -329,6 +330,17 @@ class ContainerExecutor:
         )
 
     def _finish(
+        self, plan: ExecutionPlan, prepared: _PreparedExecution, outcome: ProcessOutcome,
+    ) -> ExecutionResult:
+        # The GPUs a scheduler job was actually given join its completion or failure record.
+        if outcome.gpu_allocation is not None:
+            self._gpu_allocations[plan.execution_id] = outcome.gpu_allocation
+        try:
+            return self._finish_recorded(plan, prepared, outcome)
+        finally:
+            self._gpu_allocations.pop(plan.execution_id, None)
+
+    def _finish_recorded(
         self, plan: ExecutionPlan, prepared: _PreparedExecution, outcome: ProcessOutcome,
     ) -> ExecutionResult:
         started_at, image, workspace, script_ref = (
@@ -686,6 +698,9 @@ class ContainerExecutor:
     ) -> None:
         if self.trace_recorder is None:
             return
+        allocation = self._gpu_allocations.get(plan.execution_id)
+        if allocation is not None:  # Set only while _finish writes the final record.
+            payload = {**payload, "gpu_allocation": allocation}
         self.trace_recorder.emit(
             plan.run_id,
             event_type,

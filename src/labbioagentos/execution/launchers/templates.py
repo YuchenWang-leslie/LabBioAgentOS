@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 GoneOrState = Literal["PENDING", "RUNNING", "GONE"]
 DirectiveKey = Literal[
-    "job_name", "walltime", "cpus", "memory", "partition", "account", "qos", "log", "error_log",
+    "job_name", "walltime", "cpus", "memory", "gpus", "partition", "account", "qos", "log", "error_log",
 ]
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 _SECRET_NAME = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL")
@@ -42,7 +42,10 @@ class SchedulerTemplate(BaseModel):
     directives: dict[DirectiveKey, str]
     fixed_directives: tuple[str, ...] = ()
     walltime_format: Literal["days-hms", "hms", "hm"]
-    # Extra directives may not start with these flags.
+    # Directives a GPU request replaces, when the scheduler states GPUs inside another
+    # request (PBS puts ngpus in the same select chunk as ncpus and mem).
+    gpu_replaces: tuple[DirectiveKey, ...] = ()
+    # Extra directives may not start with these flags; a trailing * matches any suffix.
     forbidden_extra_flags: tuple[str, ...] = ()
     # Scheduler client variables passed to the command subprocess.
     passthrough_environment: tuple[str, ...] = ()
@@ -75,6 +78,10 @@ class SchedulerTemplate(BaseModel):
         for item in (*self.fixed_directives, *self.directives.values()):
             if any(character in item for character in "\n\r\0"):
                 raise ValueError("Directives must be single lines")
+        if self.gpu_replaces and "gpus" not in self.directives:
+            raise ValueError("gpu_replaces needs a gpus directive")
+        if "gpus" in self.gpu_replaces:
+            raise ValueError("The gpus directive cannot replace itself")
         return self
 
 
@@ -102,6 +109,8 @@ SLURM = SchedulerTemplate(
         "walltime": "--time={walltime}",
         "cpus": "--cpus-per-task={cpus}",
         "memory": "--mem={memory_mb}M",
+        # A site whose Slurm counts GPUs as generic resources uses --gres=gpu:{gpus} instead.
+        "gpus": "--gpus={gpus}",
         "partition": "--partition={partition}",
         "account": "--account={account}",
         "qos": "--qos={qos}",
@@ -115,6 +124,8 @@ SLURM = SchedulerTemplate(
         "--mem-per-cpu", "--mem-per-gpu", "--cpus-per-task", "-c", "--ntasks", "-n",
         "--nodes", "-N", "--output", "-o", "--error", "-e", "--job-name", "-J",
         "--chdir", "-D", "--partition", "-p", "--account", "-A", "--qos", "-q", "--wrap",
+        # GPUs come only from the execution's request (DECIDED-C15-F).
+        "--gres", "--gpus", "-G", "--gpus-per-*", "--cpus-per-gpu",
     ),
     passthrough_environment=("SLURM_CONF",),
 )
@@ -137,12 +148,14 @@ PBS = SchedulerTemplate(
         "job_name": "-N {job_name}",
         "walltime": "-l walltime={walltime}",
         "cpus": "-l select=1:ncpus={cpus}:mem={memory_mb}mb",
+        "gpus": "-l select=1:ncpus={cpus}:mem={memory_mb}mb:ngpus={gpus}",
         "partition": "-q {partition}",
         "account": "-A {account}",
         "log": "-o {log}",
     },
     fixed_directives=("-j oe",),  # No -V: the submitting environment is not exported.
     walltime_format="hms",
+    gpu_replaces=("cpus",),
     forbidden_extra_flags=("-V", "-v", "-l", "-o", "-e", "-j", "-N", "-q", "-A", "-W", "-u"),
     passthrough_environment=("PBS_CONF_FILE",),
 )
@@ -166,6 +179,7 @@ LSF = SchedulerTemplate(
         "walltime": "-W {walltime}",
         "cpus": "-n {cpus}",
         "memory": "-M {memory_mb}MB",
+        "gpus": '-gpu "num={gpus}"',
         "partition": "-q {partition}",
         "account": "-P {account}",
         "log": "-o {log}",
@@ -174,7 +188,7 @@ LSF = SchedulerTemplate(
     fixed_directives=("-env none",),
     walltime_format="hm",
     forbidden_extra_flags=(
-        "-env", "-L", "-W", "-M", "-n", "-o", "-oo", "-e", "-eo", "-J", "-cwd", "-q", "-P",
+        "-env", "-L", "-W", "-M", "-n", "-o", "-oo", "-e", "-eo", "-J", "-cwd", "-q", "-P", "-gpu",
     ),
     passthrough_environment=("LSF_ENVDIR", "LSF_SERVERDIR", "LSF_BINDIR", "LSF_LIBDIR"),
 )

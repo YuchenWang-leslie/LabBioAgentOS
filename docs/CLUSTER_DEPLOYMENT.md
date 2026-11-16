@@ -190,6 +190,7 @@ template = "slurm"             # bundled: slurm, pbs, lsf; or a site template fi
 partition = "regular"
 account = "lab-x"
 # qos = "normal"               # omit when the site has no QoS
+# gpu_partition = "gpu"        # jobs that request GPUs; defaults to partition
 walltime_margin_seconds = 600  # walltime = timeout + 30 s kill grace + margin
 poll_interval_seconds = 30
 max_queue_seconds = 86400      # longer queues are cancelled and reported as a timeout
@@ -305,6 +306,39 @@ A scheduler is described through commands instead of code: submit command,
 job ID pattern, status command, status mapping, cancel command, and the
 directive that disables environment export. Slurm, PBS and LSF templates are
 bundled; other schedulers or site variants use a site template file.
+
+### GPUs
+
+GPUs are off by default. `[execution.resources] gpus` is the most an execution
+may request; the Agent asks for a count explicitly, and an image must be marked
+`SUPPORTED` or `REQUIRED` (`gpu` in `[[execution.images]]`, or the admitted
+record) for a request to be accepted.
+
+- **Directives.** The bundled templates request GPUs with Slurm
+  `--gpus={gpus}`, PBS `-l select=1:ncpus=…:mem=…:ngpus={gpus}` (it replaces
+  the ordinary select line) and LSF `-gpu "num={gpus}"`. A site whose Slurm
+  counts GPUs as generic resources uses a site template with
+  `"gpus" = "--gres=gpu:{gpus}"`. A template without a `gpus` directive cannot
+  be combined with `gpus > 0`; the configuration is refused at load.
+- **Partition.** Jobs that request GPUs go to `[launcher] gpu_partition`, or to
+  `partition` when it is not set. Build and download jobs never request GPUs.
+- **Extra directives.** `--gres`, `--gpus`, `-G`, `--gpus-per-*` and
+  `--cpus-per-gpu` (Slurm) and `-gpu` (LSF) are refused, so GPUs come only from
+  an execution's own request. PBS already refuses every `-l`.
+- **Container.** Apptainer adds `--nv` only when GPUs were requested. The job
+  passes the scheduler's `CUDA_VISIBLE_DEVICES` into the container as
+  `APPTAINERENV_CUDA_VISIBLE_DEVICES` when the scheduler sets it.
+- **Confinement.** `--nv` binds the node's GPU devices into the container. Only
+  the scheduler confines a job to its allocated GPUs (for example Slurm with
+  `ConstrainDevices=yes` in `cgroup.conf`); without that, a job could open
+  every GPU on the node. Check this before enabling GPUs.
+- **Trace.** Before the program starts, the job records on the node, outside
+  the container, its `CUDA_VISIBLE_DEVICES` and the output of `nvidia-smi -L`.
+  The values are checked strictly and added to the execution's completion or
+  failure record as `gpu_allocation`.
+- **backend-check.** With `gpus > 0`, a one-GPU job is also validated with
+  `sbatch --test-only`; a rejection is reported as `scheduler_gpu_submission`.
+- Local Apptainer under systemd does not support GPUs.
 
 ## 6. What jobs receive
 

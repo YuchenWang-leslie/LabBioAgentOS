@@ -31,6 +31,8 @@ class ProcessOutcome:
     duration_seconds: float
     timed_out: bool = False
     output_limit_exceeded: bool = False
+    # What a scheduler job recorded about its GPUs (gpu.parse_gpu_allocation); None without GPUs.
+    gpu_allocation: dict | None = None
 
 
 class ProcessRunner(ABC):
