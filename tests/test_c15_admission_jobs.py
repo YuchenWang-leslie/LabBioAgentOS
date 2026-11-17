@@ -570,7 +570,7 @@ def test_a_lock_build_works_in_its_attempt_and_records_its_jobs_under_it(tmp_pat
         async def build(self, **arguments):
             calls.append(arguments)
             return EnvironmentBuildResult(image_id="sha256:" + "e" * 64, machine="x86_64",
-                                          locked_wheels=(), locked_conda=())
+                                          locked_wheels=(), locked_conda=(), created=False)
 
     (tmp_path / "built.sif").write_bytes(b"sif")
     attempt = AdmissionAttempt(uuid4(), tmp_path / "attempt")
@@ -580,3 +580,4 @@ def test_a_lock_build_works_in_its_attempt_and_records_its_jobs_under_it(tmp_pat
 
     assert calls[0]["run_id"] == attempt.id and calls[0]["build_root"] == attempt.root / attempt.id.hex
     assert built.produced_by == attempt.id.hex and built.size_bytes == 3
+    assert not built.created  # An image that already existed is never discarded on failure.

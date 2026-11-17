@@ -23,6 +23,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .backend import ProcessRunner
+from .apptainer import SifStoreError
 from .catalog import (
     CatalogStore,
     ExecutionBackendName,
@@ -234,10 +235,18 @@ class ApptainerRealizer(Realizer):
 
     def realize_sif(self, sif: Path) -> Realized:
         try:
-            reference = self.sif_store.register(sif)
-        except (OSError, ValueError):
+            reference, created = self.sif_store.register_new(sif)
+        except (OSError, ValueError, SifStoreError):
             raise AdmissionError("REALIZATION_FAILED") from None
-        return Realized(reference, f"sif-register-{uuid4().hex[:12]}")
+        return Realized(reference, f"sif-register-{uuid4().hex[:12]}", created=created)
+
+    def discard(self, realized: Realized) -> None:
+        # Only a file this admission stored; one that was already there may serve other records.
+        if realized.created:
+            try:
+                self.sif_store.remove(realized.reference)
+            except (OSError, ValueError, SifStoreError):
+                pass  # Left in the store; nothing refers to it.
 
 
 @dataclass(frozen=True)

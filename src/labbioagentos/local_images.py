@@ -382,7 +382,7 @@ def build_locked(builder, base: ApprovedImage, texts: list[str], attempt: Admiss
     return LockedBuild(reference=result.image_id, produced_by=root.name,
                        locked=(*result.locked_wheels, *result.locked_conda),
                        recipe=_identity_recipe(("conda",) if conda else ()), machine=result.machine,
-                       size_bytes=size)
+                       size_bytes=size, created=result.created)
 
 
 def _is_explicit(text: str) -> bool:

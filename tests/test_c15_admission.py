@@ -478,3 +478,56 @@ def test_admission_requires_a_lab_and_keeps_env_keys_for_builds(tmp_path, capsys
                  "--oci", f"{HOST}/lab/tools@sha256:" + "a" * 64]
     assert cli.main(arguments) == 1
     assert json.loads(capsys.readouterr().out.strip())["error"] == "ADMISSION_REQUIRES_LAB"
+
+
+# --- C15 step 9b: what a failed Apptainer admission stored is removed ---
+
+
+def test_a_failed_apptainer_admission_removes_the_sif_it_stored(tmp_path):
+    from labbioagentos.execution.models import GpuSupport
+
+    store = SifStore(tmp_path / "sif")
+    realizer = ApptainerRealizer(sif_store=store, build=lambda *_: None)
+    admission, registry, personal = _admission(tmp_path, realizer=realizer)
+    sif = tmp_path / "tools.sif"
+    sif.write_bytes(b"SIF image bytes")
+
+    with pytest.raises(AdmissionError) as raised:  # The probe finds no CUDA runtime.
+        _admit(admission, registry, oci=None, sif=sif, gpu=GpuSupport.SUPPORTED)
+
+    assert raised.value.code == "CUDA_RUNTIME_MISSING" and personal.records() == {}
+    assert list((tmp_path / "sif").iterdir()) == []
+
+
+def test_a_failed_apptainer_admission_keeps_a_sif_that_was_already_stored(tmp_path):
+    from labbioagentos.execution.models import GpuSupport
+
+    store = SifStore(tmp_path / "sif")
+    sif = tmp_path / "tools.sif"
+    sif.write_bytes(b"SIF image bytes")
+    reference = store.register(sif)  # Another record already uses this file.
+    admission, registry, _personal = _admission(
+        tmp_path, realizer=ApptainerRealizer(sif_store=store, build=lambda *_: None))
+
+    with pytest.raises(AdmissionError):
+        _admit(admission, registry, oci=None, sif=sif, gpu=GpuSupport.SUPPORTED)
+
+    assert store.verify(reference)
+
+
+def test_a_store_that_cannot_register_is_a_realization_failure(tmp_path, monkeypatch):
+    from labbioagentos.execution.apptainer import SifStoreError
+
+    store = SifStore(tmp_path / "sif")
+
+    def broken(source):
+        raise SifStoreError("SIF store is unavailable")
+
+    monkeypatch.setattr(store, "register_new", broken)
+    admission, registry, _personal = _admission(
+        tmp_path, realizer=ApptainerRealizer(sif_store=store, build=lambda *_: None))
+    sif = tmp_path / "tools.sif"
+    sif.write_bytes(b"SIF image bytes")
+    with pytest.raises(AdmissionError) as raised:
+        _admit(admission, registry, oci=None, sif=sif)
+    assert raised.value.code == "REALIZATION_FAILED"
