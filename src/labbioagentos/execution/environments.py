@@ -36,6 +36,8 @@ _CANONICAL_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _FAILURES = {
     "BUILD_FAILED": "The container build failed; no environment was registered.",
+    "ENVIRONMENT_DELETED": ("This exact environment was built before, but its image was deleted. The user can "
+                            "restore it with image-restore; it is not rebuilt automatically."),
     "IMAGE_TOO_LARGE": "The built environment is larger than the lab's per-image limit; it was not registered.",
     "MEMBER_QUOTA_EXCEEDED": ("The built environment would exceed the user's image quota; it was not registered. "
                               "The user can free space by deleting unused images."),
@@ -237,14 +239,19 @@ def _write_private(path: Path, value: dict) -> None:
         stream.write("\n")
 
 
-def recorded_environments(root: Path) -> list[int | None]:
-    """The recorded size of each environment under an environment root; None where none was recorded."""
+def recorded_environments(root: Path, *, deleted: Callable[[str], bool] = lambda _key: False) -> list[int | None]:
+    """The recorded size of each environment under an environment root; None where none was recorded.
+
+    An environment whose image was deleted takes no space and is left out.
+    """
     sizes = []
     records = Path(root) / "records"
     if records.is_dir() and not records.is_symlink():
         for path in sorted(records.glob("*.json")):
             if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_097_152:
                 raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
+            if deleted("env-" + path.stem):
+                continue
             try:
                 size = json.loads(path.read_text(encoding="utf-8")).get("size_bytes")
             except (OSError, UnicodeError, ValueError, AttributeError):
@@ -289,8 +296,9 @@ class EnvironmentService:
         self._locks: dict[str, asyncio.Lock] = {}
         for path in sorted(self.records_root.glob("*.json")):
             record, image = self._load_record(path)
-            self.image_registry.register(image)
             self._records[record["request_hash"]] = record
+            if not self._deleted(image.key):  # A deleted environment's file is gone (DECIDED-C15-H).
+                self.image_registry.register(image)
 
     @staticmethod
     def _read_json(path: Path) -> dict:
@@ -337,7 +345,11 @@ class EnvironmentService:
 
     def environment_bytes(self) -> int:
         """The recorded size of every environment built for this member; older records have none."""
-        return sum(record.get("size_bytes") or 0 for record in self._records.values())
+        return sum(record.get("size_bytes") or 0 for record in self._records.values()
+                   if not self._deleted(record["image"]["key"]))
+
+    def _deleted(self, key: str) -> bool:
+        return self.catalog is not None and self.catalog.deleted(key)
 
     def _limit_failure(self, size: int | None) -> str | None:
         max_image_bytes, quota_bytes = self.limits.limits()
@@ -464,6 +476,11 @@ class EnvironmentService:
                 raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
             if path.exists():
                 record, image = self._load_record(path)
+                if self._deleted(image.key):
+                    return {"status": "FAILED", "cache_hit": True, "request_hash": request_hash,
+                            "failure_code": "ENVIRONMENT_DELETED",
+                            "diagnostics": [{"code": "ENVIRONMENT_DELETED",
+                                             "message": _FAILURES["ENVIRONMENT_DELETED"]}]}
                 if self.use_recorder is not None:
                     self.use_recorder(base, image.key, path)  # Recording is idempotent.
                 self.image_registry.register(image)

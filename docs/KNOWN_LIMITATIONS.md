@@ -217,6 +217,13 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   remove their own marker, which only puts their own runs at risk. Markers
   are brought in line with a member's live references when that member runs
   `image-references`, so a stale marker blocks deletion until then.
+- On Docker, a lab image and a member's personal image of the same manifest
+  are one Docker image. Deleting the lab image keeps the file when the lab
+  image was promoted from a member's image, but not when a member admitted
+  the same manifest separately; that member restores it with image-restore.
+- A personal image admitted from a SIF file is deleted on its owner's own
+  confirmation (`--confirm-no-upstream`); only a lab image's deletion needs an
+  administrator.
 - The reference index finds runs that existed before it only under the
   member's result roots; a run directory placed elsewhere with `--output`
   under another root is not found until it executes again.

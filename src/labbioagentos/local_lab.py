@@ -240,6 +240,14 @@ class LabArea:
             if not stat.S_ISDIR(info.st_mode) or not self.held_by_me():
                 raise LabError("LAB_USAGE_MISSING", ("usage",))
             self._create_drop(self.usage_root, shared=bool(info.st_mode & 0o050))
+        realizations = self.catalog.realizations_root
+        if not (realizations.exists() or realizations.is_symlink()) and stat.S_ISDIR(info.st_mode) \
+                and self.held_by_me():
+            # Also older than realization events; members read none until the holder adds it.
+            realizations.mkdir(mode=0o700)
+            if info.st_mode & 0o050:
+                os.chown(realizations, -1, info.st_gid)
+            os.chmod(realizations, stat.S_IMODE(info.st_mode))
         if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o027:
             raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
         if not self.held_by_me() and os.access(self.root, os.W_OK):
@@ -248,6 +256,8 @@ class LabArea:
             # A shared area without setgid gives new files the writer's own group,
             # which members cannot read.
             for directory in self.shared_directories():
+                if directory == self.catalog.realizations_root and not directory.exists():
+                    continue  # Older area, read by a member before its holder added it.
                 mode = os.lstat(directory).st_mode
                 if not mode & stat.S_ISGID or mode & 0o027 or os.lstat(directory).st_gid != info.st_gid:
                     raise LabError("LAB_AREA_PERMISSIONS", ("lab_root",))
@@ -305,7 +315,8 @@ class LabArea:
 
     def shared_directories(self) -> tuple[Path, ...]:
         return (self.root, self.members_root, self.policy_root, self.promotions_root, self.sif_root,
-                self.catalog.root, self.catalog.records_root, self.catalog.events_root)
+                self.catalog.root, self.catalog.records_root, self.catalog.events_root,
+                self.catalog.realizations_root)
 
     def held_by_me(self) -> bool:
         return os.lstat(self.root).st_uid == os.getuid()

@@ -121,6 +121,14 @@ ADMISSION_HINTS = {
     "STATE_CHANGE_INVALID": ("This change is not allowed: a revoked image stays revoked, and an image cannot "
                              "change to the state it already has."),
     "REASON_INVALID": "Give a one-line reason of at most 500 characters.",
+    "IMAGE_CONFIGURED": "A configured image is changed in the configuration, not deleted here.",
+    "IMAGE_ACTIVE": "Deprecate or revoke the image first; an active image cannot be deleted.",
+    "IMAGE_IN_USE": ("Live runs or environments still use this image; run image-delete without --confirm to "
+                     "see them. Members holding lab usage markers release them with image-references."),
+    "SIF_DELETION_UNCONFIRMED": ("This image was admitted from a SIF file, which cannot be pulled again; add "
+                                 "--confirm-no-upstream to delete it."),
+    "IMAGE_ALREADY_DELETED": "This image's file was already deleted; image-restore brings it back.",
+    "IMAGE_FILE_NOT_REMOVED": "The image file could not be removed; nothing was recorded.",
     "CUDA_RUNTIME_MISSING": ("An image declared --gpu SUPPORTED or REQUIRED must contain a CUDA runtime library "
                              "(libcudart); admit it with --gpu NONE or use a CUDA image."),
     "FORM_UNSUPPORTED_ON_BACKEND": "A SIF file runs only under Apptainer; give an OCI reference or archive.",
@@ -345,15 +353,18 @@ class ImageAdmission:
                  admitted_by: str, realizer: Realizer, probe: Callable[[ApprovedImage, ExecutionRuntime], bytes],
                  machine: str,
                  limits: AdmissionLimits, staging_root: Path, registry_client: Callable[[], OciRegistryClient],
-                 existing_keys: Callable[[], set[str]], other_used_bytes: Callable[[], int] = lambda: 0):
+                 existing_keys: Callable[[], set[str]], other_used_bytes: Callable[[], int] = lambda: 0,
+                 deleted: Callable[[str], bool] = lambda _key: False):
         self.store, self.scope, self.owner_user_id, self.admitted_by = store, scope, owner_user_id, admitted_by
         # Images that share the quota without being in this store: a member's Agent-built environments.
         self.other_used_bytes = other_used_bytes
+        self.deleted = deleted  # A record whose file was deleted takes no space (DECIDED-C15-H).
         self.realizer, self.probe, self.machine, self.limits = realizer, probe, machine, limits
         self.staging_root, self.registry_client, self.existing_keys = staging_root, registry_client, existing_keys
 
     def _used_bytes(self) -> int:
-        return sum(record.size_bytes or 0 for record in self.store.records().values()) + self.other_used_bytes()
+        return sum(record.size_bytes or 0 for key, record in self.store.records().items()
+                   if not self.deleted(key)) + self.other_used_bytes()
 
     def admit(self, *, key: str, purpose: str, gpu: GpuSupport, oci: str | None = None,
               archive: Path | None = None, sif: Path | None = None,

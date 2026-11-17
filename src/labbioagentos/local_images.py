@@ -28,7 +28,8 @@ from .execution.admission import (
     probe_with,
 )
 from .execution.admission_attempts import AdmissionAttempt, AdmissionAttempts
-from .execution.catalog import CatalogError, GpuSupport, ImageScope, ImageState
+from .execution.catalog import (CatalogError, ExecutionBackendName, GpuSupport, ImageScope, ImageState,
+                                RealizationAction)
 from .execution.models import ExecutionRuntime, RequestedResources
 from .execution.oci import OciRegistryClient
 from .execution.conda import CondaError, lock_explicit, parse_explicit
@@ -51,6 +52,7 @@ from .local_promotion import (
     file_request,
     lock_built,
     pending,
+    promotion_decisions,
     request_locks,
     request_summary,
     withdraw,
@@ -58,7 +60,8 @@ from .local_promotion import (
 
 IMAGE_COMMANDS = {"image-admit", "image-list", "image-reconcile", "image-promote-request",
                   "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject",
-                  "image-deprecate", "image-activate", "image-revoke", "image-usage", "image-references"}
+                  "image-deprecate", "image-activate", "image-revoke", "image-usage", "image-references",
+                  "image-delete"}
 _STATE_COMMANDS = {"image-deprecate": ImageState.DEPRECATED, "image-activate": ImageState.ACTIVE,
                    "image-revoke": ImageState.REVOKED}
 # env-: environments the Agent builds. lab-: lab images, so a promotion can never take
@@ -103,6 +106,13 @@ def add_image_commands(commands) -> None:
         change.add_argument("--key", required=True)
         change.add_argument("--reason", required=True)
     commands.add_parser("image-usage", help="Report image disk use against the lab's quotas")
+    delete = commands.add_parser("image-delete", help="Show, then with --confirm remove, a retired image's file; "
+                                                      "the record is kept")
+    delete.add_argument("--key", required=True)
+    delete.add_argument("--confirm", action="store_true", help="Remove the file; without it nothing changes")
+    delete.add_argument("--reason", help="Required with --confirm")
+    delete.add_argument("--confirm-no-upstream", action="store_true",
+                        help="Also required for an image admitted from a SIF file, which cannot be pulled again")
     commands.add_parser("image-references",
                         help="List the images your live runs and environments use; release lab images you no "
                              "longer use")
@@ -257,6 +267,7 @@ def image_admit(settings: LocalSettings, args) -> dict:
                 registry_client=lambda: OciRegistryClient(credentials=credentials),
                 existing_keys=lambda: catalog.held_keys() | set(catalog.personal.records()),
                 other_used_bytes=lambda: sum(size or 0 for size in _environment_sizes(settings)),
+                deleted=lambda key: _image_catalog(settings).deleted(key),
             )
             if locked:
                 record = admission.admit_locked(
@@ -480,6 +491,7 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
                     registry_client=lambda: OciRegistryClient(
                         credentials=load_registry_credentials(member_root / "registries.json")),
                     existing_keys=lambda: lab_keys,
+                    deleted=lambda key: _image_catalog(settings).deleted(key),
                 )
                 if request.locks:
                     admission.admit_locked(
@@ -538,18 +550,21 @@ def image_usage(settings: LocalSettings) -> dict:
         return {"images": len(sizes), "used_bytes": sum(size for size in sizes if size is not None),
                 "unknown_size": sum(size is None for size in sizes)}
 
-    admitted = [record.size_bytes for record in catalog.personal.records().values()]
+    admitted = [record.size_bytes for key, record in catalog.personal.records().items() if not catalog.deleted(key)]
     environments = _environment_sizes(settings)
     member = usage(admitted + environments)
     return {"event": "image_usage", "max_image_bytes": policy.max_image_bytes,
             "member": {**member, "agent_environments": len(environments), "quota_bytes": policy.member_quota_bytes},
-            "lab": {**usage([record.size_bytes for record in catalog.lab.records().values()]),
+            "lab": {**usage([record.size_bytes for key, record in catalog.lab.records().items()
+                             if not catalog.deleted(key)]),
                     "quota_bytes": policy.lab_quota_bytes}}
 
 
 def _environment_sizes(settings: LocalSettings) -> list[int | None]:
     """The member's Agent-built environments share the personal quota (DECIDED-C15-H)."""
-    return recorded_environments(settings.environment.root) if settings.environment is not None else []
+    if settings.environment is None:
+        return []
+    return recorded_environments(settings.environment.root, deleted=_image_catalog(settings).deleted)
 
 
 def image_references(settings: LocalSettings) -> dict:
@@ -586,6 +601,137 @@ def sync_lab_markers(settings: LocalSettings, catalog, live) -> tuple[int, int]:
     return len(needed - set(present)), len(set(present) - needed)
 
 
+def image_delete(settings: LocalSettings, args) -> dict:
+    """Remove a deprecated or revoked image's file once nothing live uses it (DECIDED-C15-H).
+
+    The record stays, so every identity in trace and Gold provenance still
+    resolves; a "realization deleted" event keeps the platform from running
+    the missing file. Without --confirm this only reports what would happen.
+    """
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    catalog, key, area = _image_catalog(settings), args.key, LabArea(settings.lab.root)
+    if key in catalog.configured_keys:
+        raise AdmissionError("IMAGE_CONFIGURED")
+    record, environment = catalog.record(key), _environment_record(settings, key)
+    if record is None and environment is None:
+        raise AdmissionError("IMAGE_KEY_UNKNOWN")
+    scope = catalog.scope(key)
+    actor = area.require_admin().user_id if scope is ImageScope.LAB else settings.principal.user_id
+    state = catalog.state(key)
+    if state is ImageState.ACTIVE:
+        raise AdmissionError("IMAGE_ACTIVE")
+    image = (record.approved_image(catalog.backend, resolved_image=catalog.realization(key)) if record is not None
+             else environment)
+    source = image.source.canonical if image is not None and image.source is not None else None
+    blocking = [{"kind": reference.kind.value, "holder": reference.holder, "live": why}
+                for reference, why in member_index(settings).live(key, source)]
+    if scope is ImageScope.LAB:
+        blocking += [{"kind": "LAB_MEMBER", "user_id": marker.user_id, "holder": marker.holder,
+                      "verified": marker.verified} for marker in area.usage_markers() if marker.key == key]
+    sif_source = record is not None and record.source.kind is SourceKind.SIF
+    file = None if image is None or catalog.deleted(key) else image.reference
+    keep = file is not None and _shared(settings, catalog, area, key, scope, file)
+    plan = {"key": key, "scope": scope.value, "state": state.value, "backend": catalog.backend.value,
+            "file": "ALREADY_DELETED" if file is None else ("KEEP_SHARED" if keep else "REMOVE"),
+            "blocking": blocking, "gold": _gold_references(settings, key, source),
+            "needs_no_upstream_confirmation": sif_source}
+    if not args.confirm:
+        return {"event": "image_delete_plan", **plan}
+    if blocking:
+        raise AdmissionError("IMAGE_IN_USE")
+    if sif_source and not args.confirm_no_upstream:
+        raise AdmissionError("SIF_DELETION_UNCONFIRMED")
+    reason = (args.reason or "").strip()
+    if not reason or len(reason) > 500 or any(character in reason for character in "\r\n\0"):
+        raise AdmissionError("REASON_INVALID")
+    if file is None:
+        raise AdmissionError("IMAGE_ALREADY_DELETED")
+    if not keep:
+        _remove_file(settings, area, scope, environment is not None, file)
+    catalog.record_realization(key, resolved_image=file, action=RealizationAction.DELETED, actor=actor,
+                               reason=reason)
+    return {"event": "image_deleted", **plan}
+
+
+def _environment_record(settings: LocalSettings, key: str) -> ApprovedImage | None:
+    """An Agent-built environment's image, from its record."""
+    if not _agent_environment(settings, key):
+        return None
+    path = settings.environment.root / "records" / (key.removeprefix("env-") + ".json")
+    try:
+        return ApprovedImage.model_validate_json(json.dumps(json.loads(path.read_text(encoding="utf-8"))["image"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        raise AdmissionError("IMAGE_KEY_UNKNOWN") from None
+
+
+def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, file: str) -> bool:
+    """Another live record runs from the same file; it must stay."""
+    others = set()
+    for other in catalog.held_keys() - {key}:
+        other_record = catalog.record(other)
+        if other_record is not None and not catalog.deleted(other):
+            image = other_record.approved_image(catalog.backend, resolved_image=catalog.realization(other))
+            if image is not None:
+                others.add(image.reference)
+    others.update(image.reference for image in settings.execution.approved_images())
+    if settings.environment is not None:
+        for path in sorted((settings.environment.root / "records").glob("*.json")):
+            other = _environment_record(settings, "env-" + path.stem)
+            if other is not None and other.key != key and not catalog.deleted(other.key):
+                others.add(other.reference)
+    if file in others:
+        return True
+    # On Docker, a lab image promoted from a member's image is that member's Docker image too,
+    # and the holder cannot see the member's catalog: the file stays.
+    return (scope is ImageScope.LAB and catalog.backend is ExecutionBackendName.DOCKER
+            and any(decision.lab_key == key and decision.outcome is PromotionOutcome.APPROVED
+                    for decision in promotion_decisions(area)))
+
+
+def _remove_file(settings: LocalSettings, area: LabArea, scope, environment: bool, file: str) -> None:
+    if settings.execution.backend == "docker":
+        removed = subprocess.run(["docker", "image", "rm", file], capture_output=True, text=True, timeout=300,
+                                 check=False)
+        if removed.returncode != 0 and "No such image" not in removed.stderr:
+            raise AdmissionError("IMAGE_FILE_NOT_REMOVED")
+        return
+    from .execution.apptainer import SifStore, SifStoreChain, SifStoreError
+
+    member_root = private_member_root(settings.lab.member_root)
+    store = (area.sif_store() if scope is ImageScope.LAB else
+             SifStoreChain((SifStore(member_root / "sif"), *sif_stores(settings).stores)) if not environment
+             else sif_stores(settings))
+    try:
+        store.path_for(file)
+    except SifStoreError:
+        return  # Already gone.
+    try:
+        store.remove(file)
+    except (SifStoreError, OSError):
+        raise AdmissionError("IMAGE_FILE_NOT_REMOVED") from None
+
+
+def _gold_references(settings: LocalSettings, key: str, source: str | None) -> list[dict]:
+    """The member's Gold versions whose evidence used this image; they do not block deletion."""
+    if settings.gold_root is None or not (settings.gold_root / "skills.sqlite").is_file():
+        return []
+    from .local_gold import _personal_store, build_personal_gold_service, close_personal_gold
+    from .local_gold_library import _owned_skills
+
+    service = build_personal_gold_service(settings.gold_root, settings.principal.user_id)
+    try:
+        store, found = _personal_store(service), []
+        for skill in _owned_skills(service, settings.principal):
+            refs = store.get_source_bundle(skill.source_bundle_id).execution_refs
+            if any(ref.image_key == key or (source is not None and ref.image_source_identity == source)
+                   for ref in refs):
+                found.append({"skill_id": str(skill.skill_id), "version": skill.version, "name": skill.name})
+        return found
+    finally:
+        close_personal_gold(service)
+
+
 def run_image_command(settings: LocalSettings, args) -> dict:
     handlers = {
         "image-admit": lambda: image_admit(settings, args),
@@ -599,5 +745,6 @@ def run_image_command(settings: LocalSettings, args) -> dict:
         **{name: (lambda: image_state(settings, args)) for name in _STATE_COMMANDS},
         "image-usage": lambda: image_usage(settings),
         "image-references": lambda: image_references(settings),
+        "image-delete": lambda: image_delete(settings, args),
     }
     return handlers[args.command]()

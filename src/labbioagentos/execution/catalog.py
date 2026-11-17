@@ -108,13 +108,18 @@ class ImageRecord(_Model):
             raise ValueError("One realization per backend")
         return self
 
-    def approved_image(self, backend: ExecutionBackendName) -> ApprovedImage | None:
-        """The execution view on one backend; None when this backend has no realization."""
+    def approved_image(self, backend: ExecutionBackendName, *, resolved_image: str | None = None
+                       ) -> ApprovedImage | None:
+        """The execution view on one backend; None when this backend has no realization.
+
+        resolved_image replaces the recorded file, for a realization restored after deletion.
+        """
         realization = next((item for item in self.realizations if item.backend is backend), None)
-        if realization is None:
+        if realization is None and resolved_image is None:
             return None
         return ApprovedImage(
-            key=self.key, reference=realization.resolved_image, entry_points=dict(self.entry_points),
+            key=self.key, reference=resolved_image or realization.resolved_image,
+            entry_points=dict(self.entry_points),
             available_python_modules=self.available_python_modules,
             # Conda metadata and Python distributions are different namespaces.
             installed_packages=(dict(self.inventory.packages)
@@ -133,6 +138,24 @@ class ImageEvent(_Model):
     at: datetime
 
 
+class RealizationAction(StrEnum):
+    DELETED = "DELETED"  # The file was removed; the record stays (DECIDED-C15-H).
+    RESTORED = "RESTORED"  # A new realization of the same source identity.
+
+
+class RealizationEvent(_Model):
+    """A change to one backend's realization of a record, which itself is never rewritten."""
+
+    key: ExecutionImageKey
+    backend: ExecutionBackendName
+    resolved_image: StrictStr = Field(min_length=1, max_length=512)
+    action: RealizationAction
+    produced_by: StrictStr | None = Field(default=None, max_length=256)  # How a restored file was made.
+    actor: StrictStr = Field(min_length=1, max_length=128)
+    reason: StrictStr = Field(min_length=1, max_length=500)
+    at: datetime
+
+
 class CatalogStore:
     """One directory of image records and state events; files are only ever added."""
 
@@ -140,11 +163,20 @@ class CatalogStore:
         self.root = Path(root)
         self.records_root = self.root / "records"
         self.events_root = self.root / "events"
+        self.realizations_root = self.root / "realizations"
 
     def initialize(self) -> "CatalogStore":
-        for directory in (self.root, self.records_root, self.events_root):
+        for directory in (self.root, self.records_root, self.events_root, self.realizations_root):
             directory.mkdir(mode=0o700, exist_ok=True)
         return self
+
+    def add_realization_event(self, event: RealizationEvent) -> None:
+        self._guard(add_file, self.realizations_root / event_name(event.at), "event",
+                    event.model_dump(mode="json"))
+
+    def realization_events(self) -> list[RealizationEvent]:
+        """Oldest first; an area created before realization events has none."""
+        return self._guard(read_events, self.realizations_root, RealizationEvent)
 
     def add_record(self, record: ImageRecord) -> None:
         if record.key in self.records():
@@ -205,6 +237,12 @@ class ImageCatalog:
         if lab_keys & set(self._personal_records) or self.configured_keys & set(self._lab_records):
             raise CatalogError("An image key is held twice")
         self._states = {**self._replay(lab), **self._replay(personal)}
+        # The file each (key, backend) runs from now; None once deleted and not restored.
+        self._realizations: dict[tuple[str, ExecutionBackendName], str | None] = {}
+        for store in (lab, personal):
+            for event in store.realization_events() if store is not None else ():
+                self._realizations[(event.key, event.backend)] = (
+                    None if event.action is RealizationAction.DELETED else event.resolved_image)
 
     @staticmethod
     def _replay(store: CatalogStore | None) -> dict[str, ImageState]:
@@ -231,13 +269,36 @@ class ImageCatalog:
         return self._lab_records.get(key) or self._personal_records.get(key)
 
     def admitted_images(self) -> tuple[ApprovedImage, ...]:
-        """Executable admitted images on this backend; revoked ones are never registered."""
+        """Executable admitted images on this backend; revoked or deleted ones are never registered."""
         images = []
         for key, record in sorted({**self._lab_records, **self._personal_records}.items()):
-            image = record.approved_image(self.backend)
-            if image is not None and self.state(key) is not ImageState.REVOKED:
+            image = record.approved_image(self.backend, resolved_image=self.realization(key))
+            if image is not None and self.state(key) is not ImageState.REVOKED and not self.deleted(key):
                 images.append(image)
         return tuple(images)
+
+    def realization(self, key: str) -> str | None:
+        """A restored file replaces the record's; None means the record's own realization."""
+        return self._realizations.get((key, self.backend))
+
+    def deleted(self, key: str) -> bool:
+        """The realization on this backend was deleted and has not been restored."""
+        return (key, self.backend) in self._realizations and self._realizations[(key, self.backend)] is None
+
+    def record_realization(self, key: str, *, resolved_image: str, action: RealizationAction, actor: str,
+                           reason: str, produced_by: str | None = None) -> None:
+        """Append a realization change to the store that owns the key (records stay as written)."""
+        store = self.lab if self.scope(key) is ImageScope.LAB else self.personal
+        if store is None:
+            raise CatalogError("No catalog store owns this image")
+        if store is self.lab:
+            store.realizations_root.mkdir(exist_ok=True)  # Only the lab's holder writes here.
+        else:
+            store.realizations_root.mkdir(mode=0o700, exist_ok=True)
+        store.add_realization_event(RealizationEvent(
+            key=key, backend=self.backend, resolved_image=resolved_image, action=action, produced_by=produced_by,
+            actor=actor, reason=reason, at=next_event_time(store.realizations_root)))
+        self._realizations[(key, self.backend)] = None if action is RealizationAction.DELETED else resolved_image
 
     def visible(self, key: str) -> bool:
         """Shown to the model: only ACTIVE images."""

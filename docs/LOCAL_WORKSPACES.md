@@ -260,6 +260,30 @@ labbio image-references --config <配置>
 在这个版本之前建立的实验室区没有 `usage/`：持有账号下次运行任何 labbio 命令时会自动加上；
 在那之前，成员启动时会报 `LAB_USAGE_MISSING`。
 
+### 删除镜像文件
+
+```bash
+labbio image-delete --config <配置> --key <镜像>                    # 只显示会发生什么
+labbio image-delete --config <配置> --key <镜像> --confirm --reason "..."
+```
+
+删除只删镜像文件，记录永久保留，所以 trace 和 Gold 来源里的镜像身份永远查得到（DECIDED-C15-H）。
+
+- 只能删已经弃用或撤销的镜像，否则报 `IMAGE_ACTIVE`；配置里的镜像不能在这里删
+  （`IMAGE_CONFIGURED`），要改配置。个人镜像（包括 Agent 构建的 `env-` 环境）由本人删，
+  实验室镜像只能由管理员在持有账号下删。
+- 不带 `--confirm` 时只列出：文件会删除（`REMOVE`）、因为别的记录还在用而保留
+  （`KEEP_SHARED`），还是早已删除（`ALREADY_DELETED`）；挡住删除的活引用；引用了它的
+  Gold 版本（不挡删除，只供参考）。
+- 有活引用时报 `IMAGE_IN_USE`。实验室镜像还要看 `usage/` 里所有成员的标记；
+  请持有标记的成员运行一次 `image-references`。
+- 从 SIF 文件入库的镜像没有上游来源，删了不能重新拉取，还要加 `--confirm-no-upstream`。
+- Docker 只用 `docker image rm <id>`，从不 prune；Apptainer 从存放它的 SIF 库里删除。
+- 删除后，记录上追加一条"实现已删除"事件：平台不再登记这个镜像，它也不再计入用量和配额。
+  Agent 再次请求同一个已删除的环境时，得到 `ENVIRONMENT_DELETED`，不会自动重建。
+- 在 Docker 上，从成员镜像升级来的实验室镜像和那个成员的个人镜像是同一个 Docker 镜像，
+  管理员看不到成员的目录，所以删除时只记事件，保留文件。
+
 ### 中断的入库与清理
 
 每次入库（包括管理员批准升级）都在成员私有区的 `admissions/<id>/` 里进行，进程从开始到

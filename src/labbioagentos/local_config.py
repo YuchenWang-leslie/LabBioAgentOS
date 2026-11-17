@@ -1047,7 +1047,7 @@ def _environment_limits(settings: LocalSettings, catalog):
         return policy.max_image_bytes, policy.member_quota_bytes
 
     return EnvironmentLimits(limits=limits, admitted_bytes=lambda: sum(
-        record.size_bytes or 0 for record in catalog.personal.records().values()))
+        record.size_bytes or 0 for key, record in catalog.personal.records().items() if not catalog.deleted(key)))
 
 
 def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog, *, sif_store=None,

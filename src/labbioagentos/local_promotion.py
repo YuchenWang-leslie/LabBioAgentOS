@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
-from .append_only import AppendOnlyError, add_file, event_name, next_event_time, read_file
+from .append_only import AppendOnlyError, add_file, event_name, next_event_time, read_events, read_file
 from .execution.admission import AdmissionError
 from .execution.catalog import ImageRecord, ImageScope, ImageState
 from .execution.wheel_lock import MAX_LOCK_BYTES
@@ -289,6 +289,14 @@ def decide(area: LabArea, request_id: str, *, outcome: PromotionOutcome, reason:
     _remove_locks(area, request_id)
     request_path.unlink(missing_ok=True)
     return decision
+
+
+def promotion_decisions(area: LabArea) -> list[PromotionDecision]:
+    """Every recorded decision, oldest first."""
+    try:
+        return read_events(area.promotions_root, PromotionDecision)
+    except AppendOnlyError:
+        raise PromotionError("REQUEST_UNREADABLE") from None
 
 
 def request_summary(request: PromotionRequest | None, request_id: str, problem: str | None) -> dict:
