@@ -258,8 +258,11 @@ def recorded_environments(root: Path) -> list[int | None]:
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
                  owner_user_id: str, *, catalog: ImageCatalog | None = None,
-                 limits: EnvironmentLimits | None = None):
+                 limits: EnvironmentLimits | None = None,
+                 use_recorder: Callable[[ApprovedImage, str, Path], None] | None = None):
         self.catalog, self.limits = catalog, limits
+        # Records that an environment (its key and record file) is built on a base image.
+        self.use_recorder = use_recorder
         self.root = Path(root).expanduser().absolute()
         self.image_registry, self.builder, self.owner_user_id = image_registry, builder, owner_user_id
         if (not owner_user_id or len(owner_user_id) > 128 or
@@ -461,6 +464,8 @@ class EnvironmentService:
                 raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
             if path.exists():
                 record, image = self._load_record(path)
+                if self.use_recorder is not None:
+                    self.use_recorder(base, image.key, path)  # Recording is idempotent.
                 self.image_registry.register(image)
                 self._records[request_hash] = record
                 return {"status": "SUCCEEDED", "cache_hit": True, "request_hash": request_hash,
@@ -596,6 +601,8 @@ class EnvironmentService:
                 unknown = EnvironmentBuildUnconfirmedError("CACHE_RECORD_PERSISTENCE_FAILED", image.reference)
                 record_unconfirmed(unknown)
                 raise unknown from exc
+            if self.use_recorder is not None:
+                self.use_recorder(base, image.key, path)
             try:
                 self.image_registry.register(image)
                 self._records[request_hash] = record

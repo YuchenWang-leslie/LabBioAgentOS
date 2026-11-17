@@ -41,6 +41,7 @@ from .execution.wheel_lock import MAX_LOCK_BYTES, WheelLockError, parse_wheel_lo
 from .local_config import (LocalSettings, _cluster_execution, _conda_policy, _environment_wiring, _image_catalog,
                            sif_stores)
 from .execution.identity import SourceKind
+from .local_image_references import liveness, member_index
 from .local_lab import LabArea, private_member_root
 from .local_promotion import (
     LockKind,
@@ -57,7 +58,7 @@ from .local_promotion import (
 
 IMAGE_COMMANDS = {"image-admit", "image-list", "image-reconcile", "image-promote-request",
                   "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject",
-                  "image-deprecate", "image-activate", "image-revoke", "image-usage"}
+                  "image-deprecate", "image-activate", "image-revoke", "image-usage", "image-references"}
 _STATE_COMMANDS = {"image-deprecate": ImageState.DEPRECATED, "image-activate": ImageState.ACTIVE,
                    "image-revoke": ImageState.REVOKED}
 # env-: environments the Agent builds. lab-: lab images, so a promotion can never take
@@ -102,6 +103,9 @@ def add_image_commands(commands) -> None:
         change.add_argument("--key", required=True)
         change.add_argument("--reason", required=True)
     commands.add_parser("image-usage", help="Report image disk use against the lab's quotas")
+    commands.add_parser("image-references",
+                        help="List the images your live runs and environments use; release lab images you no "
+                             "longer use")
     reject = commands.add_parser("image-promote-reject", help="Administrator: reject a promotion request")
     reject.add_argument("--request", required=True)
     reject.add_argument("--reason", required=True)
@@ -548,6 +552,40 @@ def _environment_sizes(settings: LocalSettings) -> list[int | None]:
     return recorded_environments(settings.environment.root) if settings.environment is not None else []
 
 
+def image_references(settings: LocalSettings) -> dict:
+    """The member's live references, and the lab's usage markers brought in line with them."""
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    index, catalog = member_index(settings), _image_catalog(settings)
+    live = [(reference, why) for reference in index.references() if (why := liveness(reference)) is not None]
+    added, removed = sync_lab_markers(settings, catalog, live)
+    return {"event": "image_references",
+            "references": [{"kind": reference.kind.value, "image_key": reference.image_key,
+                            "image_source": reference.image_source, "holder": reference.holder, "live": why}
+                           for reference, why in live],
+            "lab_markers": {"added": added, "removed": removed}}
+
+
+def sync_lab_markers(settings: LocalSettings, catalog, live) -> tuple[int, int]:
+    """Mark every lab image a live reference uses; remove this member's markers nothing live needs."""
+    area = LabArea(settings.lab.root)
+    by_source = {image.source_identity.canonical: image.key for image in settings.execution.approved_images()}
+    by_source.update({record.source.canonical: key for key, record in catalog.lab.records().items()})
+    needed = set()
+    for reference, _why in live:
+        key = reference.image_key or by_source.get(reference.image_source)
+        if key is not None and catalog.scope(key) is ImageScope.LAB:
+            needed.add((key, reference.holder))
+    user_id = settings.principal.user_id
+    present = {(marker.key, marker.holder): marker for marker in area.usage_markers()
+               if marker.mine and marker.user_id == user_id}
+    for key, holder in needed - set(present):
+        area.mark_usage(key, user_id, holder)
+    for name in set(present) - needed:
+        present[name].path.unlink(missing_ok=True)
+    return len(needed - set(present)), len(set(present) - needed)
+
+
 def run_image_command(settings: LocalSettings, args) -> dict:
     handlers = {
         "image-admit": lambda: image_admit(settings, args),
@@ -560,5 +598,6 @@ def run_image_command(settings: LocalSettings, args) -> dict:
         "image-promote-reject": lambda: promote_decide(settings, args, PromotionOutcome.REJECTED),
         **{name: (lambda: image_state(settings, args)) for name in _STATE_COMMANDS},
         "image-usage": lambda: image_usage(settings),
+        "image-references": lambda: image_references(settings),
     }
     return handlers[args.command]()

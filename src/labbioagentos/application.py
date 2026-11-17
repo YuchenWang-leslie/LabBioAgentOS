@@ -589,6 +589,8 @@ class ApplicationRuntimeConfiguration:
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
     # Scope and state of images; admitted images join the registry (DECIDED-C15-H).
     image_catalog: ImageCatalog | None = None
+    # Records each image a run uses, so that deleting an image finds its live references.
+    image_use_recorder: Callable[[str, UUID], None] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
@@ -795,6 +797,7 @@ class LabBioApplication:
             allow_generated_file_read=configuration.exposure_policy.allow_generated_file_read,
             job_ledger=configuration.job_ledger,
             image_catalog=catalog,
+            image_use_recorder=configuration.image_use_recorder,
         )
         self.execution_preflight = ExecutionPreflightService(
             artifact_store=self.artifact_store,

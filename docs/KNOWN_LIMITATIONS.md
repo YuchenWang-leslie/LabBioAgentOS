@@ -212,6 +212,14 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   current channel metadata. A lock naming a file the channel no longer serves,
   or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
   the member still has the file.
+- A lab image's references from members are seen only through the `usage/`
+  markers. A member can forge a marker, which only blocks a deletion, or
+  remove their own marker, which only puts their own runs at risk. Markers
+  are brought in line with a member's live references when that member runs
+  `image-references`, so a stale marker blocks deletion until then.
+- The reference index finds runs that existed before it only under the
+  member's result roots; a run directory placed elsewhere with `--output`
+  under another root is not found until it executes again.
 - Environments the Agent built before C15 have no recorded size, so they do
   not count against the member's quota until they are rebuilt.
 

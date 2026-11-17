@@ -1017,6 +1017,24 @@ def _conda_policy(settings: LocalSettings, machine: str | None = None):
                        proxy_url=settings.environment.build_proxy)
 
 
+def _use_recorder(settings: LocalSettings, catalog):
+    """With a lab, every image use is recorded in the member's reference index (DECIDED-C15-H)."""
+    from .local_image_references import UseRecorder, member_index
+
+    index = member_index(settings)
+    return None if index is None else UseRecorder(settings, catalog, index)
+
+
+def _run_use_recorder(settings: LocalSettings, catalog, run_root: Path):
+    recorder = _use_recorder(settings, catalog)
+    return None if recorder is None else (lambda key, run_id: recorder.run(key, run_id, run_root))
+
+
+def _environment_use_recorder(settings: LocalSettings, catalog):
+    recorder = _use_recorder(settings, catalog)
+    return None if recorder is None else recorder.environment
+
+
 def _environment_limits(settings: LocalSettings, catalog):
     """With a lab, Agent-built environments count against the member's quota (DECIDED-C15-H)."""
     if settings.lab is None:
@@ -1055,6 +1073,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 ),
                 owner_user_id=settings.principal.user_id, catalog=catalog,
                 limits=_environment_limits(settings, catalog),
+                use_recorder=_environment_use_recorder(settings, catalog),
             )
 
         return {"environment_service_factory": docker_service}
@@ -1109,7 +1128,9 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 conda=_conda_policy(settings, cluster.machine),
                 **({"job_purpose": job_purpose} if job_purpose is not None else {}),
             ),
-            owner_user_id=settings.principal.user_id, catalog=catalog, limits=_environment_limits(settings, catalog),
+            owner_user_id=settings.principal.user_id, catalog=catalog,
+            limits=_environment_limits(settings, catalog),
+            use_recorder=_environment_use_recorder(settings, catalog),
         )
 
     # Crash cleanup reaches build and download jobs through the launcher of their shared root.
@@ -1365,6 +1386,7 @@ def build_application(
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,
             approved_images=settings.execution.approved_images(), image_catalog=image_catalog,
+            image_use_recorder=_run_use_recorder(settings, image_catalog, run_root),
             output_contracts=(profile.output_contract,),
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,

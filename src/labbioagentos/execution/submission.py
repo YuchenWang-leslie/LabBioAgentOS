@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -95,8 +96,11 @@ class ExecutionSubmissionService:
         allow_generated_file_read: bool = False,
         job_ledger: JobLedger | None = None,
         image_catalog: ImageCatalog | None = None,
+        image_use_recorder: Callable[[str, UUID], None] | None = None,
     ):
         self.image_catalog = image_catalog
+        # Records each image a run uses before it executes, so deleting it finds the run.
+        self.image_use_recorder = image_use_recorder
         self.artifact_store = artifact_store
         self.access_service = access_service
         self.executor = executor
@@ -187,6 +191,8 @@ class ExecutionSubmissionService:
             project_id=workspace.project_id,
             lab_id=workspace.lab_id,
         )
+        if self.image_use_recorder is not None:
+            self.image_use_recorder(plan.image_key, run_id)  # Fails closed: no record, no execution.
         self._emit(
             run_id,
             stage_id,
