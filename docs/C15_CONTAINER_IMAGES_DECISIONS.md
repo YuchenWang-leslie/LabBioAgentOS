@@ -498,6 +498,11 @@ that Gold Skill versions have no retired state:
   identity are kept; and a new run that reuses the Gold cannot select a
   deprecated or revoked image anyway, so it would restore the image first.
   Deletion lists the Gold versions that reference the image.
+- The account separation stays as decided in DECIDED-C15-B (MOHAN CUI,
+  2026-11-18): the holding account sees and manages the lab area only, and
+  never a member's private area. Deleting a personal image admitted from a
+  SIF file is therefore confirmed by its owner (`--confirm-no-upstream`);
+  only a lab image's deletion needs a LAB_ADMIN.
 
 ## Not decided here
 
