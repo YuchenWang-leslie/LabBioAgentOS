@@ -480,6 +480,25 @@ Refined by MOHAN CUI on 2026-11-16.
   checks and deletion; 9c restore; 9d cleanup of Agent environment builds
   lost on Docker.
 
+Refined again by MOHAN CUI on 2026-11-18, after the code showed that a
+member's runs cannot all be found at deletion time (managed workspaces see
+one project at a time, and some run directories are never registered) and
+that Gold Skill versions have no retired state:
+
+- References are found through an append-only reference index in the
+  member's own area, written at the moment of use: an execution submission
+  and a derived-environment build each record the image, the run and the
+  run directory. Deletion then checks whether each reference is still live
+  (the run is not terminal; the environment record still exists). When the
+  index is first created, the registered runs that can be found are added
+  to it. A member's live references to lab images are kept in step with the
+  lab area's `usage/` markers.
+- Gold Skill versions that reference an image do not block its deletion.
+  Gold is procedural guidance, never executed; the image's record and
+  identity are kept; and a new run that reuses the Gold cannot select a
+  deprecated or revoked image anyway, so it would restore the image first.
+  Deletion lists the Gold versions that reference the image.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:
