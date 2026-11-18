@@ -298,7 +298,7 @@ class EnvironmentService:
             record, image = self._load_record(path)
             self._records[record["request_hash"]] = record
             if not self._deleted(image.key):  # A deleted environment's file is gone (DECIDED-C15-H).
-                self.image_registry.register(image)
+                self.image_registry.register(self._current(image))
 
     @staticmethod
     def _read_json(path: Path) -> dict:
@@ -350,6 +350,11 @@ class EnvironmentService:
 
     def _deleted(self, key: str) -> bool:
         return self.catalog is not None and self.catalog.deleted(key)
+
+    def _current(self, image: ApprovedImage) -> ApprovedImage:
+        """The file the environment runs from now: a restored one replaces the recorded one."""
+        restored = self.catalog.realization(image.key) if self.catalog is not None else None
+        return image.with_reference(restored) if restored else image
 
     def _limit_failure(self, size: int | None) -> str | None:
         max_image_bytes, quota_bytes = self.limits.limits()
@@ -483,6 +488,7 @@ class EnvironmentService:
                                              "message": _FAILURES["ENVIRONMENT_DELETED"]}]}
                 if self.use_recorder is not None:
                     self.use_recorder(base, image.key, path)  # Recording is idempotent.
+                image = self._current(image)
                 self.image_registry.register(image)
                 self._records[request_hash] = record
                 return {"status": "SUCCEEDED", "cache_hit": True, "request_hash": request_hash,

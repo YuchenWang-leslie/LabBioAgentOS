@@ -61,7 +61,7 @@ from .local_promotion import (
 IMAGE_COMMANDS = {"image-admit", "image-list", "image-reconcile", "image-promote-request",
                   "image-promote-withdraw", "image-promote-list", "image-promote-approve", "image-promote-reject",
                   "image-deprecate", "image-activate", "image-revoke", "image-usage", "image-references",
-                  "image-delete"}
+                  "image-delete", "image-restore"}
 _STATE_COMMANDS = {"image-deprecate": ImageState.DEPRECATED, "image-activate": ImageState.ACTIVE,
                    "image-revoke": ImageState.REVOKED}
 # env-: environments the Agent builds. lab-: lab images, so a promotion can never take
@@ -113,6 +113,13 @@ def add_image_commands(commands) -> None:
     delete.add_argument("--reason", help="Required with --confirm")
     delete.add_argument("--confirm-no-upstream", action="store_true",
                         help="Also required for an image admitted from a SIF file, which cannot be pulled again")
+    restore = commands.add_parser("image-restore", help="Bring back a deleted image's file; it must be the "
+                                                        "recorded source with the recorded inventory")
+    restore.add_argument("--key", required=True)
+    restore.add_argument("--reason", required=True)
+    delivery = restore.add_mutually_exclusive_group()
+    delivery.add_argument("--archive", type=Path, help="The same OCI archive, when the image cannot be pulled again")
+    delivery.add_argument("--sif", type=Path, help="The same SIF file, for an image admitted from a SIF file")
     commands.add_parser("image-references",
                         help="List the images your live runs and environments use; release lab images you no "
                              "longer use")
@@ -222,9 +229,14 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
 def _admitted_references(settings: LocalSettings) -> set[str]:
     """Every realization an admitted record uses, read now; crash cleanup never removes one."""
     catalog = _image_catalog(settings)
-    return {realization.resolved_image
-            for store in (catalog.lab, catalog.personal) if store is not None
-            for record in store.records().values() for realization in record.realizations}
+    references = set()
+    for store in (catalog.lab, catalog.personal):
+        if store is not None:
+            references.update(realization.resolved_image
+                              for record in store.records().values() for realization in record.realizations)
+            references.update(event.resolved_image for event in store.realization_events()
+                              if event.action is RealizationAction.RESTORED)
+    return references
 
 
 def _reconciled(attempts) -> list[dict]:
@@ -524,6 +536,8 @@ def image_state(settings: LocalSettings, args) -> dict:
     if scope is ImageScope.LAB:
         actor = _lab(settings).require_admin().user_id  # Only the holding account writes the lab catalog.
     before, after = catalog.state(key), _STATE_COMMANDS[args.command]
+    if after is ImageState.ACTIVE and catalog.deleted(key):
+        raise AdmissionError("IMAGE_DELETED")  # Restore first, so an active image always has its file.
     try:
         catalog.set_state(key, after, actor=actor, reason=reason)
     except CatalogError:
@@ -613,7 +627,7 @@ def image_delete(settings: LocalSettings, args) -> dict:
     catalog, key, area = _image_catalog(settings), args.key, LabArea(settings.lab.root)
     if key in catalog.configured_keys:
         raise AdmissionError("IMAGE_CONFIGURED")
-    record, environment = catalog.record(key), _environment_record(settings, key)
+    record, environment = catalog.record(key), _environment_record(settings, key, catalog)
     if record is None and environment is None:
         raise AdmissionError("IMAGE_KEY_UNKNOWN")
     scope = catalog.scope(key)
@@ -654,15 +668,87 @@ def image_delete(settings: LocalSettings, args) -> dict:
     return {"event": "image_deleted", **plan}
 
 
-def _environment_record(settings: LocalSettings, key: str) -> ApprovedImage | None:
-    """An Agent-built environment's image, from its record."""
+def image_restore(settings: LocalSettings, args) -> dict:
+    """Re-realize a deleted image from its recorded source (DECIDED-C15-H, refined 2026-11-18).
+
+    An OCI source is pulled again by its digest, or delivered again as an
+    archive; a SIF is delivered again. The admission checks run as for a new
+    image, and the result must be the recorded source with the recorded
+    runtimes and inventory. A RESTORED event attaches the new file; the image
+    stays in its state, so a new task needs image-activate as well.
+    """
+    if settings.lab is None:
+        raise AdmissionError("ADMISSION_REQUIRES_LAB")
+    catalog, key = _image_catalog(settings), args.key
+    if key in catalog.configured_keys:
+        raise AdmissionError("IMAGE_CONFIGURED")
+    record = catalog.record(key)
+    if record is None and not _agent_environment(settings, key):
+        raise AdmissionError("IMAGE_KEY_UNKNOWN")
+    scope, area = catalog.scope(key), LabArea(settings.lab.root)
+    actor = area.require_admin().user_id if scope is ImageScope.LAB else settings.principal.user_id
+    if catalog.state(key) is ImageState.REVOKED:
+        raise AdmissionError("IMAGE_REVOKED")
+    if not catalog.deleted(key):
+        raise AdmissionError("IMAGE_NOT_DELETED")
+    reason = args.reason.strip()
+    if not reason or len(reason) > 500 or any(character in reason for character in "\r\n\0"):
+        raise AdmissionError("REASON_INVALID")
+    if record is None or lock_built(record):
+        raise AdmissionError("RESTORE_BY_REBUILD_UNAVAILABLE")  # Rebuilt from locks: step 9c-2.
+    archive, sif = getattr(args, "archive", None), getattr(args, "sif", None)
+    if record.source.kind is SourceKind.SIF:
+        if archive is not None:
+            raise AdmissionError("RESTORE_FORM_INVALID")
+        if sif is None:
+            raise AdmissionError("RESTORE_FILE_REQUIRED")
+        form = {"sif": sif}
+    else:
+        if sif is not None:
+            raise AdmissionError("RESTORE_FORM_INVALID")
+        if archive is None and record.repository is None:
+            raise AdmissionError("RESTORE_FILE_REQUIRED")
+        form = {"archive": archive} if archive is not None else {"oci": f"{record.repository}@{record.source.digest}"}
+    policy, member_root = area.policy(), private_member_root(settings.lab.member_root)
+    lab = scope is ImageScope.LAB
+    with _admission_jobs(settings, member_root, **({"sif_store": area.sif_store()} if lab else {})) as jobs:
+        reconciled = asyncio.run(jobs.attempts.reconcile())
+        with jobs.attempts.attempt() as attempt:
+            admission = ImageAdmission(
+                store=area.catalog if lab else catalog.personal, scope=scope,
+                owner_user_id=None if lab else settings.principal.user_id, admitted_by=actor,
+                realizer=jobs.realizer(attempt), probe=jobs.probe, machine=_machine(settings),
+                staging_root=attempt.root,
+                limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
+                                       quota_bytes=policy.lab_quota_bytes if lab else policy.member_quota_bytes,
+                                       allowed_registries=policy.allowed_registries),
+                registry_client=lambda: OciRegistryClient(
+                    credentials=load_registry_credentials(member_root / "registries.json")),
+                existing_keys=set,
+                other_used_bytes=(lambda: 0) if lab else (
+                    lambda: sum(size or 0 for size in _environment_sizes(settings))),
+                deleted=lambda other: _image_catalog(settings).deleted(other),
+            )
+            realization = admission.restore(record, **form, commit=lambda realization: catalog.record_realization(
+                key, resolved_image=realization.resolved_image, action=RealizationAction.RESTORED, actor=actor,
+                reason=reason, produced_by=realization.produced_by))
+    return {"event": "image_restored", "key": key, "scope": scope.value, "state": catalog.state(key).value,
+            "backend": catalog.backend.value, "source": record.source.canonical,
+            "delivery": next(iter(form)), "produced_by": realization.produced_by,
+            "reconciled": _reconciled(reconciled)}
+
+
+def _environment_record(settings: LocalSettings, key: str, catalog=None) -> ApprovedImage | None:
+    """An Agent-built environment's image, from its record; a restored file replaces the recorded one."""
     if not _agent_environment(settings, key):
         return None
     path = settings.environment.root / "records" / (key.removeprefix("env-") + ".json")
     try:
-        return ApprovedImage.model_validate_json(json.dumps(json.loads(path.read_text(encoding="utf-8"))["image"]))
+        image = ApprovedImage.model_validate_json(json.dumps(json.loads(path.read_text(encoding="utf-8"))["image"]))
     except (OSError, ValueError, KeyError, TypeError):
         raise AdmissionError("IMAGE_KEY_UNKNOWN") from None
+    restored = catalog.realization(key) if catalog is not None else None
+    return image.with_reference(restored) if restored else image
 
 
 def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, file: str) -> bool:
@@ -677,7 +763,7 @@ def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, fi
     others.update(image.reference for image in settings.execution.approved_images())
     if settings.environment is not None:
         for path in sorted((settings.environment.root / "records").glob("*.json")):
-            other = _environment_record(settings, "env-" + path.stem)
+            other = _environment_record(settings, "env-" + path.stem, catalog)
             if other is not None and other.key != key and not catalog.deleted(other.key):
                 others.add(other.reference)
     if file in others:
@@ -746,5 +832,6 @@ def run_image_command(settings: LocalSettings, args) -> dict:
         "image-usage": lambda: image_usage(settings),
         "image-references": lambda: image_references(settings),
         "image-delete": lambda: image_delete(settings, args),
+        "image-restore": lambda: image_restore(settings, args),
     }
     return handlers[args.command]()

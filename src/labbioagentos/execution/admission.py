@@ -141,8 +141,17 @@ ADMISSION_HINTS = {
     "IMAGE_TOO_LARGE": "The image exceeds the lab's per-image size limit.",
     "MEMBER_QUOTA_EXCEEDED": "Your personal images would exceed your quota; deprecate or delete some first.",
     "LAB_QUOTA_EXCEEDED": "Lab images would exceed the lab quota.",
-    "SOURCE_MISMATCH": "The delivered image is not the source the request names.",
-    "INVENTORY_MISMATCH": "The re-probed software inventory differs from the member's record.",
+    "SOURCE_MISMATCH": "The delivered image is not the recorded source.",
+    "INVENTORY_MISMATCH": "The re-probed runtimes or software inventory differ from the record.",
+    "IMAGE_NOT_DELETED": "This image's file is not deleted; there is nothing to restore.",
+    "IMAGE_REVOKED": "A revoked image never executes again, so it is not restored; admit a new image instead.",
+    "IMAGE_DELETED": "This image's file was deleted; restore it with image-restore before activating it.",
+    "RESTORE_FILE_REQUIRED": ("This image cannot be pulled again: give the same OCI archive with --archive, or "
+                              "the same SIF file with --sif."),
+    "RESTORE_FORM_INVALID": ("--sif restores only an image admitted from a SIF file, and --archive only one "
+                             "admitted from an OCI reference or archive."),
+    "RESTORE_BY_REBUILD_UNAVAILABLE": ("Lock-built images and Agent-built environments are restored by "
+                                       "rebuilding, which this version does not do yet."),
     "ENTRY_POINT_MISSING": "The image has no python entry point for the PYTHON runtime.",
     "PROBE_FAILED": ("The offline probe failed: the image may lack the entry point of a declared runtime "
                      "(python for PYTHON, sh for SHELL), or it could not start without network and data."),
@@ -381,6 +390,51 @@ class ImageAdmission:
             raise AdmissionError("PURPOSE_INVALID") from None
         if key in self.existing_keys():
             raise AdmissionError("IMAGE_KEY_TAKEN")
+        admitted: list[ImageRecord] = []
+
+        def record_for(source: SourceIdentity, realization: Realization, inventory: InventorySnapshot,
+                       size: int) -> None:
+            repository = None
+            if oci is not None:  # Already parsed successfully by the acquisition.
+                parsed = OciReference.parse(oci)
+                repository = f"{parsed.host}/{parsed.name}"
+            record = ImageRecord(
+                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
+                repository=repository, realizations=(realization,), entry_points=entry_points,
+                inventory=inventory, purpose=purpose, gpu=gpu, size_bytes=size, admitted_by=self.admitted_by,
+                admitted_at=datetime.now(timezone.utc),
+            )
+            self.store.add_record(record)
+            admitted.append(record)
+
+        self._admit_source(key=key, oci=oci, archive=archive, sif=sif, entry_points=entry_points, gpu=gpu,
+                           expected=expected, delivery_prefix="", commit=record_for)
+        return admitted[0]
+
+    def restore(self, record: ImageRecord, *, oci: str | None = None, archive: Path | None = None,
+                sif: Path | None = None, commit: Callable[[Realization], None]) -> Realization:
+        """Re-realize a record whose file was deleted (DECIDED-C15-H, refined 2026-11-18).
+
+        The delivered source must be the record's, and the re-probed runtimes and
+        inventory must equal the record's; the record itself is never rewritten.
+        `commit` appends the RESTORED event; when it fails, the new file is discarded.
+        """
+        if sum(value is not None for value in (oci, archive, sif)) != 1:
+            raise AdmissionError("FORM_REQUIRED")
+        restored: list[Realization] = []
+
+        def keep(_source, realization: Realization, _inventory, _size) -> None:
+            commit(realization)
+            restored.append(realization)
+
+        self._admit_source(key=record.key, oci=oci, archive=archive, sif=sif,
+                           entry_points=dict(record.entry_points),
+                           gpu=record.gpu, expected=record, delivery_prefix="restore-", commit=keep)
+        return restored[0]
+
+    def _admit_source(self, *, key: str, oci, archive, sif, entry_points: dict, gpu: GpuSupport,
+                      expected: ImageRecord | None, delivery_prefix: str, commit: Callable) -> None:
+        """Acquire, check the quota, realize, probe and compare; commit, or discard what was realized."""
         staging = self.staging_root / f"admission-{uuid4().hex}"
         staging.mkdir(parents=True, mode=0o700)
         realized = None
@@ -403,7 +457,7 @@ class ImageAdmission:
                                      source=source)
             # Every declared entry point must start; Python, when declared, reports the inventory.
             results = {runtime: (parse_probe if runtime is ExecutionRuntime.PYTHON else parse_shell_probe)(
-                self.probe(approved, runtime)) for runtime in runtimes}
+                self.probe(approved, runtime)) for runtime in entry_points}
             if any(item.machine != self.machine for item in results.values()):
                 raise AdmissionError("ARCHITECTURE_MISMATCH")
             _require_cuda_runtime(gpu, results.values())
@@ -411,19 +465,9 @@ class ImageAdmission:
             if expected is not None and (result.inventory != expected.inventory
                                          or entry_points != expected.entry_points):
                 raise AdmissionError("INVENTORY_MISMATCH")
-            repository = None
-            if oci is not None:
-                parsed = OciReference.parse(oci)
-                repository = f"{parsed.host}/{parsed.name}"
-            record = ImageRecord(
-                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
-                repository=repository,
-                realizations=(Realization(backend=self.realizer.backend, resolved_image=realized.reference,
-                                          produced_by=f"{delivery}:{realized.produced_by}"),),
-                entry_points=entry_points, inventory=result.inventory, purpose=purpose, gpu=gpu,
-                size_bytes=size, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
-            )
-            self.store.add_record(record)
+            commit(source, Realization(backend=self.realizer.backend, resolved_image=realized.reference,
+                                       produced_by=f"{delivery_prefix}{delivery}:{realized.produced_by}"),
+                   result.inventory, size)
         except Exception:
             if realized is not None:
                 self.realizer.discard(realized)
@@ -436,7 +480,6 @@ class ImageAdmission:
                 self.realizer.discard(realized)
             raise
         shutil.rmtree(staging)
-        return record
 
     def admit_locked(self, *, key: str, purpose: str, gpu: GpuSupport, base: ApprovedImage,
                      build: Callable[[ApprovedImage], LockedBuild],

@@ -155,6 +155,10 @@ class ApprovedImage(BaseModel):
         """Without a recorded source, the realization is the only identity there is."""
         return self.source if self.source is not None else legacy_identity(self.resolved_reference)
 
+    def with_reference(self, reference: str) -> "ApprovedImage":
+        """The same image run from another file of the same source, for example a restored one."""
+        return type(self).model_validate({**self.model_dump(), "reference": reference, "digest": None})
+
 
 class ApprovedImageRegistry:
     """In-memory trusted image-key registry; it never pulls or builds images."""

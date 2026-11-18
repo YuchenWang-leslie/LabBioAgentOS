@@ -284,6 +284,36 @@ labbio image-delete --config <配置> --key <镜像> --confirm --reason "..."
 - 在 Docker 上，从成员镜像升级来的实验室镜像和那个成员的个人镜像是同一个 Docker 镜像，
   管理员看不到成员的目录，所以删除时只记事件，保留文件。
 
+### 恢复镜像文件
+
+```bash
+labbio image-restore --config <配置> --key <镜像> --reason "..."                 # 按 digest 重新拉取
+labbio image-restore --config <配置> --key <镜像> --reason "..." --archive <归档>  # 重新交付同一个 OCI 归档
+labbio image-restore --config <配置> --key <镜像> --reason "..." --sif <文件>      # 重新交付同一个 SIF
+```
+
+恢复把已删除的镜像文件重新做出来，挂到原来的记录上（DECIDED-C15-H）。
+
+- 从 OCI 引用入库的镜像按记录里的仓库和 digest 重新拉取；仓库不可用时，也可以用
+  `--archive` 交付同一个镜像的归档（同一个清单就是同一个来源）。从归档入库的镜像必须给
+  `--archive`，从 SIF 入库的必须给 `--sif`，否则报 `RESTORE_FILE_REQUIRED`；给错形式报
+  `RESTORE_FORM_INVALID`。
+- 入库的各项检查照常进行：单个镜像大小上限、成员或实验室配额、架构、离线探测。交付的来源
+  必须是记录里的来源（`SOURCE_MISMATCH`），探测出的运行时和软件清单必须和记录一致
+  （`INVENTORY_MISMATCH`），否则什么都不记、新文件删除。
+- 只能恢复已删除的镜像（`IMAGE_NOT_DELETED`）；撤销的镜像不再执行，不能恢复
+  （`IMAGE_REVOKED`）。恢复后镜像仍是 DEPRECATED：已经用过它的运行可以继续或修订；新任务
+  要用，还要 `image-activate`。已删除的镜像不能直接激活（`IMAGE_DELETED`），要先恢复。
+- 个人镜像由本人恢复；实验室镜像由管理员在持有账号下恢复，归档或 SIF 文件由管理员提供，
+  恢复后的 SIF 放进实验室的 SIF 库。
+- 恢复成功后，记录上追加一条"实现已恢复"事件，平台从此用新文件运行；以后再删除，删的也是
+  这个新文件。在 Apptainer 上，同一个 OCI 来源转换出的 SIF 文件可能和原来的不完全相同
+  （SIF 打包不可复现，D4），但来源和软件清单相同。
+- 用锁定清单构建的镜像和 Agent 构建的 `env-` 环境要重新构建才能恢复，当前版本还不支持
+  （`RESTORE_BY_REBUILD_UNAVAILABLE`）。
+- Docker 29 用 containerd 存储时，`docker save` 会把镜像附带的 SBOM 和 provenance 清单也写进
+  归档；入库和恢复都会忽略这些附属清单，只取镜像本身。
+
 ### 中断的入库与清理
 
 每次入库（包括管理员批准升级）都在成员私有区的 `admissions/<id>/` 里进行，进程从开始到
