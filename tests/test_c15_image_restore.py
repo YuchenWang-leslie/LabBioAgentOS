@@ -308,7 +308,7 @@ def test_a_restore_needs_a_reason(restoring, capsys, reason):
     assert lab.pulled == [] and _deleted(lab, "mine")
 
 
-def test_lock_built_images_and_agent_environments_wait_for_rebuilds(restoring, capsys):
+def test_rebuilt_images_are_not_delivered_again(restoring, capsys):
     from labbioagentos.local_config import _image_catalog, load_settings
 
     lab = restoring
@@ -323,11 +323,11 @@ def test_lock_built_images_and_agent_environments_wait_for_rebuilds(restoring, c
     records = settings.environment.root / "records"
     records.mkdir(parents=True, exist_ok=True)
     (records / ("8" * 64 + ".json")).write_text("{}")
-    for key in ("locked", environment):
+    for key, error in (("locked", "RESTORE_LOCKS_REQUIRED"), (environment, "RESTORE_BY_REBUILD_UNAVAILABLE")):
         catalog.set_state(key, catalog.state(key).DEPRECATED, actor="admin", reason="Retired.")
         catalog.record_realization(key, resolved_image=RESTORED, action=RealizationAction.DELETED,
                                    actor="admin", reason="Freeing space.")
-        assert _restore_cli(capsys, lab, key)[1]["error"] == "RESTORE_BY_REBUILD_UNAVAILABLE"
+        assert _restore_cli(capsys, lab, key)[1]["error"] == error
     assert lab.pulled == []
 
 

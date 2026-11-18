@@ -120,6 +120,10 @@ def add_image_commands(commands) -> None:
     delivery = restore.add_mutually_exclusive_group()
     delivery.add_argument("--archive", type=Path, help="The same OCI archive, when the image cannot be pulled again")
     delivery.add_argument("--sif", type=Path, help="The same SIF file, for an image admitted from a SIF file")
+    delivery.add_argument("--base", help="For an image built from locks: the image to rebuild on, instead of "
+                                         "the kept one")
+    restore.add_argument("--lock", type=Path, action="append",
+                         help="With --base: the lock files again, instead of the kept ones; repeat for both")
     commands.add_parser("image-references",
                         help="List the images your live runs and environments use; release lab images you no "
                              "longer use")
@@ -285,7 +289,10 @@ def image_admit(settings: LocalSettings, args) -> dict:
                 record = admission.admit_locked(
                     key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu), base=base,
                     build=lambda image: build_locked(jobs.builder, image, texts, attempt,
-                                                     backend=settings.execution.backend))
+                                                     backend=settings.execution.backend),
+                    keep_locks=lambda source: catalog.personal.keep_locks(
+                        source=source, base_key=args.base, base_source=base.source_identity,
+                        texts=_lock_texts(classify_locks(texts)), private=True))
             else:
                 runtimes = tuple(ExecutionRuntime(name) for name in dict.fromkeys(args.runtime or ["PYTHON"]))
                 record = admission.admit(key=args.key, purpose=args.purpose, gpu=GpuSupport(args.gpu),
@@ -355,6 +362,10 @@ def classify_locks(texts: list[str]) -> dict[LockKind, str]:
             raise AdmissionError("LOCK_KIND_REPEATED")
         kinds[kind] = text
     return kinds
+
+
+def _lock_texts(kinds: dict[LockKind, str]) -> dict[str, str]:
+    return {kind.value.lower(): text for kind, text in kinds.items()}
 
 
 def build_locked(builder, base: ApprovedImage, texts: list[str], attempt: AdmissionAttempt, *,
@@ -506,11 +517,15 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
                     deleted=lambda key: _image_catalog(settings).deleted(key),
                 )
                 if request.locks:
+                    # The request's locks move to the lab area, so the lab image can be rebuilt.
                     admission.admit_locked(
                         key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu, base=base,
                         build=lambda image: build_locked(jobs.builder, image, texts, attempt,
                                                          backend=settings.execution.backend),
-                        expected=record)
+                        expected=record,
+                        keep_locks=lambda source: area.catalog.keep_locks(
+                            source=source, base_key=request.base, base_source=base.source_identity,
+                            texts=_lock_texts(classify_locks(texts)), private=False))
                 else:
                     admission.admit(key=lab_key, purpose=record.purpose or record.key, gpu=record.gpu,
                                     runtimes=tuple(record.entry_points), expected=record, **form)
@@ -694,8 +709,12 @@ def image_restore(settings: LocalSettings, args) -> dict:
     reason = args.reason.strip()
     if not reason or len(reason) > 500 or any(character in reason for character in "\r\n\0"):
         raise AdmissionError("REASON_INVALID")
-    if record is None or lock_built(record):
-        raise AdmissionError("RESTORE_BY_REBUILD_UNAVAILABLE")  # Rebuilt from locks: step 9c-2.
+    if record is None:
+        raise AdmissionError("RESTORE_BY_REBUILD_UNAVAILABLE")  # Agent environments: step 9c-2b.
+    if lock_built(record):
+        return _restore_locked(settings, catalog, area, record, args, actor=actor, reason=reason)
+    if getattr(args, "base", None) is not None or getattr(args, "lock", None):
+        raise AdmissionError("LOCK_NOT_ALLOWED")
     archive, sif = getattr(args, "archive", None), getattr(args, "sif", None)
     if record.source.kind is SourceKind.SIF:
         if archive is not None:
@@ -736,6 +755,81 @@ def image_restore(settings: LocalSettings, args) -> dict:
             "backend": catalog.backend.value, "source": record.source.canonical,
             "delivery": next(iter(form)), "produced_by": realization.produced_by,
             "reconciled": _reconciled(reconciled)}
+
+
+def _restore_locked(settings: LocalSettings, catalog, area: LabArea, record, args, *, actor: str,
+                    reason: str) -> dict:
+    """Rebuild a lock-built image from its kept locks, or from locks given again, on its base."""
+    lab = catalog.scope(record.key) is ImageScope.LAB
+    store = area.catalog if lab else catalog.personal
+    base_key, lock_files = getattr(args, "base", None), getattr(args, "lock", None) or []
+    if getattr(args, "archive", None) is not None or getattr(args, "sif", None) is not None:
+        raise AdmissionError("RESTORE_FORM_INVALID")
+    if (base_key is None) != (not lock_files):
+        raise AdmissionError("LOCK_REQUIRED")
+    if base_key is not None:
+        kinds, given = classify_locks([_read_lock(path) for path in lock_files]), True
+    else:
+        try:
+            kept = store.kept_locks(record.source)
+        except CatalogError:
+            raise AdmissionError("KEPT_LOCKS_INVALID") from None
+        if kept is None:
+            raise AdmissionError("RESTORE_LOCKS_REQUIRED")
+        base_key, given = kept[0].base_key, False
+        kinds = {LockKind(kind.upper()): text for kind, text in kept[1].items()}
+    base = _restore_base(settings, catalog, base_key, lab_only=lab)
+    if settings.environment is None:
+        raise AdmissionError("LOCK_BUILDS_UNAVAILABLE")
+    texts = list(kinds.values())
+    policy, member_root = area.policy(), private_member_root(settings.lab.member_root)
+
+    def commit(realization) -> None:
+        if given:  # Locks given again are kept too, so the next restore needs none.
+            store.keep_locks(source=record.source, base_key=base_key, base_source=base.source_identity,
+                             texts=_lock_texts(kinds), private=not lab)
+        catalog.record_realization(record.key, resolved_image=realization.resolved_image,
+                                   action=RealizationAction.RESTORED, actor=actor, reason=reason,
+                                   produced_by=realization.produced_by)
+
+    with _admission_jobs(settings, member_root, lock_builds=True,
+                         **({"sif_store": area.sif_store()} if lab else {})) as jobs:
+        reconciled = asyncio.run(jobs.attempts.reconcile())
+        with jobs.attempts.attempt() as attempt:
+            admission = ImageAdmission(
+                store=store, scope=catalog.scope(record.key), owner_user_id=None if lab else record.owner_user_id,
+                admitted_by=actor, realizer=jobs.realizer(attempt), probe=jobs.probe, machine=_machine(settings),
+                staging_root=attempt.root,
+                limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
+                                       quota_bytes=policy.lab_quota_bytes if lab else policy.member_quota_bytes,
+                                       allowed_registries=policy.allowed_registries),
+                registry_client=lambda: None, existing_keys=set,
+                other_used_bytes=(lambda: 0) if lab else (
+                    lambda: sum(size or 0 for size in _environment_sizes(settings))),
+                deleted=lambda other: _image_catalog(settings).deleted(other),
+            )
+            realization = admission.restore_locked(
+                record, base=base, commit=commit,
+                build=lambda image: build_locked(jobs.builder, image, texts, attempt,
+                                                 backend=settings.execution.backend))
+    return {"event": "image_restored", "key": record.key, "scope": catalog.scope(record.key).value,
+            "state": catalog.state(record.key).value, "backend": catalog.backend.value,
+            "source": record.source.canonical, "delivery": "locks_given" if given else "locks_kept",
+            "base": base_key, "produced_by": realization.produced_by, "reconciled": _reconciled(reconciled)}
+
+
+def _restore_base(settings: LocalSettings, catalog, key: str, *, lab_only: bool) -> ApprovedImage:
+    """The base a restore rebuilds on: deprecated is fine, revoked or deleted is not (DECIDED-C15-H)."""
+    if catalog.state(key) is ImageState.REVOKED:
+        raise AdmissionError("BASE_REVOKED")
+    if catalog.deleted(key):
+        raise AdmissionError("BASE_DELETED")
+    if lab_only and catalog.scope(key) is not ImageScope.LAB:
+        raise AdmissionError("BASE_NOT_LAB")
+    images = {image.key: image for image in (*settings.execution.approved_images(), *catalog.admitted_images())}
+    if key not in images:
+        raise AdmissionError("BASE_NOT_FOUND")  # Unknown, or recorded for another backend only.
+    return images[key]
 
 
 def _environment_record(settings: LocalSettings, key: str, catalog=None) -> ApprovedImage | None:

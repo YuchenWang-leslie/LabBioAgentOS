@@ -45,7 +45,7 @@ def next_event_time(directory: Path) -> datetime:
     return max(now, latest + timedelta(microseconds=1))
 
 
-def add_file(path: Path, kind: str, payload: dict) -> None:
+def add_file(path: Path, kind: str, payload: dict, mode: int = 0o640) -> None:
     temporary = path.with_name(f".{uuid4().hex}.tmp")
     body = json.dumps({kind: payload, "digest": digest(payload)}, sort_keys=True).encode("utf-8")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -54,7 +54,7 @@ def add_file(path: Path, kind: str, payload: dict) -> None:
             stream.write(body)
             stream.flush()
             os.fsync(stream.fileno())
-        os.chmod(temporary, 0o640)  # Readable by the directory's group, which may be the lab.
+        os.chmod(temporary, mode)  # By default readable by the directory's group, which may be the lab.
         os.link(temporary, path)  # Fails if the name exists: nothing is ever replaced.
     except FileExistsError:
         raise AppendOnlyError("A file with this name already exists") from None

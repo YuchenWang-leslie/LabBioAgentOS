@@ -150,8 +150,15 @@ ADMISSION_HINTS = {
                               "the same SIF file with --sif."),
     "RESTORE_FORM_INVALID": ("--sif restores only an image admitted from a SIF file, and --archive only one "
                              "admitted from an OCI reference or archive."),
-    "RESTORE_BY_REBUILD_UNAVAILABLE": ("Lock-built images and Agent-built environments are restored by "
-                                       "rebuilding, which this version does not do yet."),
+    "RESTORE_BY_REBUILD_UNAVAILABLE": ("Agent-built environments are restored by rebuilding, which this "
+                                       "version does not do yet."),
+    "RESTORE_LOCKS_REQUIRED": ("No locks were kept for this image (it was admitted before locks were kept): "
+                               "give --base and the same --lock files again."),
+    "KEPT_LOCKS_INVALID": ("The kept locks are unreadable or fail their integrity check; give --base and the "
+                           "same --lock files again."),
+    "LOCK_NOT_ALLOWED": "--base and --lock are only for an image built from lock files.",
+    "BASE_REVOKED": "The base image was revoked, so nothing is rebuilt on it.",
+    "BASE_DELETED": "The base image's file was deleted; restore the base first.",
     "ENTRY_POINT_MISSING": "The image has no python entry point for the PYTHON runtime.",
     "PROBE_FAILED": ("The offline probe failed: the image may lack the entry point of a declared runtime "
                      "(python for PYTHON, sh for SHELL), or it could not start without network and data."),
@@ -159,7 +166,7 @@ ADMISSION_HINTS = {
     "REALIZATION_FAILED": "The image could not be loaded or converted on this backend.",
     "DIGEST_MISMATCH": "Downloaded content does not match its digest.",
     "BASE_NOT_FOUND": "Give --base as the key of an active image you can select (see image-list).",
-    "BASE_NOT_LAB": "A lock-built image can be promoted only when its base is a lab image.",
+    "BASE_NOT_LAB": "A lab image is built only on a lab image, so that every lab member can use its base.",
     "LOCK_REQUIRED": "Give --base together with one or more --lock files.",
     "RUNTIMES_INHERITED": "A lock-built image keeps its base image's runtimes; omit --runtime.",
     "LOCK_BUILDS_UNAVAILABLE": "This deployment has no [environment] builder, so lock files cannot be built.",
@@ -483,13 +490,15 @@ class ImageAdmission:
 
     def admit_locked(self, *, key: str, purpose: str, gpu: GpuSupport, base: ApprovedImage,
                      build: Callable[[ApprovedImage], LockedBuild],
-                     expected: ImageRecord | None = None) -> ImageRecord:
+                     expected: ImageRecord | None = None,
+                     keep_locks: Callable[[SourceIdentity], None] | None = None) -> ImageRecord:
         """Admit an image built from a member's lock on an admitted base (DECIDED-C15-E2).
 
         The source identity is derived from the base's source and the exact
         locked packages, as for an environment the Agent builds, so the same
         lock on the same base is the same image whoever submits it. The image
         keeps the base's runtimes; every admission check still runs.
+        `keep_locks` files the locks under the identity before the record is added.
         """
 
         try:
@@ -498,6 +507,46 @@ class ImageAdmission:
             raise AdmissionError("PURPOSE_INVALID") from None
         if key in self.existing_keys():
             raise AdmissionError("IMAGE_KEY_TAKEN")
+        admitted: list[ImageRecord] = []
+
+        def record_for(source: SourceIdentity, realization: Realization, inventory: InventorySnapshot,
+                       size: int, entry_points: dict) -> None:
+            if keep_locks is not None:
+                keep_locks(source)
+            record = ImageRecord(
+                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
+                realizations=(realization,), entry_points=entry_points, inventory=inventory, purpose=purpose,
+                gpu=gpu, size_bytes=size, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
+            )
+            self.store.add_record(record)
+            admitted.append(record)
+
+        self._admit_build(key=key, gpu=gpu, base=base, build=build, expected=expected, prefix="lock:",
+                          commit=record_for)
+        return admitted[0]
+
+    def restore_locked(self, record: ImageRecord, *, base: ApprovedImage,
+                       build: Callable[[ApprovedImage], LockedBuild],
+                       commit: Callable[[Realization], None]) -> Realization:
+        """Rebuild a deleted lock-built image (DECIDED-C15-H, refined 2026-11-18).
+
+        The rebuilt image must have the record's derived identity, runtimes and
+        inventory; `commit` appends the RESTORED event, and a failure discards the build.
+        """
+        restored: list[Realization] = []
+
+        def keep(_source, realization: Realization, _inventory, _size, _entry_points) -> None:
+            commit(realization)
+            restored.append(realization)
+
+        self._admit_build(key=record.key, gpu=record.gpu, base=base, build=build, expected=record,
+                          prefix="restore-lock:", commit=keep)
+        return restored[0]
+
+    def _admit_build(self, *, key: str, gpu: GpuSupport, base: ApprovedImage,
+                     build: Callable[[ApprovedImage], LockedBuild], expected: ImageRecord | None, prefix: str,
+                     commit: Callable) -> None:
+        """Build, check size, quota, architecture, identity and probe; commit, or discard the build."""
         built = build(base)  # Raises AdmissionError with the build's failure code.
         realized = Realized(built.reference, built.produced_by, created=built.created)
         try:
@@ -523,15 +572,9 @@ class ImageAdmission:
             if expected is not None and (result.inventory != expected.inventory
                                          or entry_points != expected.entry_points):
                 raise AdmissionError("INVENTORY_MISMATCH")
-            record = ImageRecord(
-                key=key, scope=self.scope, owner_user_id=self.owner_user_id, source=source,
-                realizations=(Realization(backend=self.realizer.backend, resolved_image=built.reference,
-                                          produced_by=f"lock:{built.produced_by}"),),
-                entry_points=entry_points, inventory=result.inventory, purpose=purpose, gpu=gpu,
-                size_bytes=built.size_bytes, admitted_by=self.admitted_by, admitted_at=datetime.now(timezone.utc),
-            )
-            self.store.add_record(record)
-            return record
+            commit(source, Realization(backend=self.realizer.backend, resolved_image=built.reference,
+                                       produced_by=f"{prefix}{built.produced_by}"),
+                   result.inventory, built.size_bytes, entry_points)
         except BaseException:
             self.realizer.discard(realized)
             raise

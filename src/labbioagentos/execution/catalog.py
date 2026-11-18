@@ -8,7 +8,10 @@ that other members read while an administrator writes, so no database is used.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import stat
 from collections.abc import Iterable, Mapping
 from datetime import datetime
 from enum import StrEnum
@@ -21,7 +24,7 @@ from labbioagentos.append_only import (
 )
 
 from .errors import ImageNotApprovedError
-from .identity import SourceIdentity
+from .identity import SourceIdentity, SourceKind
 from .images import ApprovedImage
 from .inventory import InventoryOrigin, validate_purpose
 from .models import ExecutionImageKey, ExecutionRuntime, GpuSupport
@@ -156,6 +159,30 @@ class RealizationEvent(_Model):
     at: datetime
 
 
+class KeptLocks(_Model):
+    """The lock files an image was built from, kept so it can be rebuilt (DECIDED-C15-H, 2026-11-18).
+
+    Filed under the derived identity they rebuild; each lock's text sits in its own
+    file beside this one and is checked against its sha256 on every read.
+    """
+
+    source: SourceIdentity
+    base_key: ExecutionImageKey
+    base_source: SourceIdentity
+    wheel_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    conda_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def check_locks(self) -> "KeptLocks":
+        if self.wheel_sha256 is None and self.conda_sha256 is None:
+            raise ValueError("At least one lock is kept")
+        return self
+
+
+_LOCK_KINDS = ("wheel", "conda")
+_MAX_LOCK_FILE_BYTES = 4_194_304
+
+
 class CatalogStore:
     """One directory of image records and state events; files are only ever added."""
 
@@ -164,11 +191,63 @@ class CatalogStore:
         self.records_root = self.root / "records"
         self.events_root = self.root / "events"
         self.realizations_root = self.root / "realizations"
+        self.locks_root = self.root / "locks"
 
     def initialize(self) -> "CatalogStore":
-        for directory in (self.root, self.records_root, self.events_root, self.realizations_root):
+        for directory in (self.root, self.records_root, self.events_root, self.realizations_root,
+                          self.locks_root):
             directory.mkdir(mode=0o700, exist_ok=True)
         return self
+
+    def keep_locks(self, *, source: SourceIdentity, base_key: str, base_source: SourceIdentity,
+                   texts: Mapping[str, str], private: bool) -> None:
+        """File the locks that rebuild `source`; keeping the same locks again changes nothing.
+
+        `texts` maps "wheel" and "conda" to lock texts. Private stores keep 0600 files;
+        the lab's are 0640 for its group. The first locks filed for a source stay.
+        """
+        if not texts or set(texts) - set(_LOCK_KINDS) or source.kind is not SourceKind.DERIVED:
+            raise CatalogError("Locks are kept for a derived identity, by kind")
+        if not self.locks_root.is_dir():
+            if private:
+                self.locks_root.mkdir(mode=0o700)
+            else:
+                raise CatalogError("The lab area has no kept-locks directory yet")
+        name, mode = source.digest.removeprefix("sha256:"), 0o600 if private else 0o640
+        kept = KeptLocks(source=source, base_key=base_key, base_source=base_source,
+                         **{f"{kind}_sha256": hashlib.sha256(text.encode()).hexdigest()
+                            for kind, text in texts.items()})
+        if self.kept_locks(source) is not None:
+            return
+        for kind, text in texts.items():
+            _add_bytes(self.locks_root / f"{name}.{kind}.lock", text.encode(), mode)
+        try:
+            add_file(self.locks_root / f"{name}.json", "locks", kept.model_dump(mode="json"), mode)
+        except AppendOnlyError:
+            if self.kept_locks(source) is None:  # Another writer filed other locks just now.
+                raise CatalogError("Kept locks are unreadable") from None
+
+    def kept_locks(self, source: SourceIdentity) -> tuple[KeptLocks, dict[str, str]] | None:
+        """The kept locks for `source` and their verified texts; None when none were kept."""
+        name = source.digest.removeprefix("sha256:")
+        path = self.locks_root / f"{name}.json"
+        if not (path.exists() or path.is_symlink()):
+            return None
+        kept = self._guard(read_file, path, "locks", KeptLocks)
+        if kept.source != source:
+            raise CatalogError("Kept locks do not match their name")
+        texts = {}
+        for kind in _LOCK_KINDS:
+            expected = getattr(kept, f"{kind}_sha256")
+            if expected is not None:
+                body = _read_bytes(self.locks_root / f"{name}.{kind}.lock")
+                if hashlib.sha256(body).hexdigest() != expected:
+                    raise CatalogError("A kept lock fails its integrity check")
+                try:
+                    texts[kind] = body.decode("utf-8")
+                except UnicodeError:
+                    raise CatalogError("A kept lock is unreadable") from None
+        return kept, texts
 
     def add_realization_event(self, event: RealizationEvent) -> None:
         self._guard(add_file, self.realizations_root / event_name(event.at), "event",
@@ -209,6 +288,35 @@ class CatalogStore:
             raise
         except AppendOnlyError as exc:
             raise CatalogError(str(exc)) from None
+
+
+def _add_bytes(path: Path, body: bytes, mode: int) -> None:
+    """Write a file under its final name only if absent; an identical existing file is fine."""
+    temporary = path.with_name(f".{os.urandom(16).hex()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if _read_bytes(path) != body:
+                raise CatalogError("A different kept lock already has this name") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_bytes(path: Path) -> bytes:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_LOCK_FILE_BYTES:
+            raise ValueError()
+        return path.read_bytes()
+    except (OSError, ValueError):
+        raise CatalogError("A kept lock is unreadable") from None
 
 
 class ImageCatalog:

@@ -309,7 +309,14 @@ labbio image-restore --config <配置> --key <镜像> --reason "..." --sif <文�
 - 恢复成功后，记录上追加一条"实现已恢复"事件，平台从此用新文件运行；以后再删除，删的也是
   这个新文件。在 Apptainer 上，同一个 OCI 来源转换出的 SIF 文件可能和原来的不完全相同
   （SIF 打包不可复现，D4），但来源和软件清单相同。
-- 用锁定清单构建的镜像和 Agent 构建的 `env-` 环境要重新构建才能恢复，当前版本还不支持
+- 用锁定清单构建的镜像按清单在基础镜像上重新构建。入库时会保存基础镜像的 key 和锁定清单：
+  个人镜像存在成员私有区的 `catalog/locks/`（0600），升级为实验室镜像时，请求里的清单转存到
+  实验室区的 `catalog/locks/`（0640）。恢复时默认用保存的清单；保存之前入库的镜像要用
+  `--base <镜像> --lock <清单>` 重新提供（`RESTORE_LOCKS_REQUIRED`），重新提供的清单也会
+  保存下来。重建出的镜像必须有记录里的派生身份。基础镜像弃用了也可以，撤销了
+  （`BASE_REVOKED`）或文件已删除（`BASE_DELETED`）时不行，要先恢复基础镜像；实验室镜像只能
+  建在实验室镜像上（`BASE_NOT_LAB`）。
+- Agent 构建的 `env-` 环境要重新构建才能恢复，当前版本还不支持
   （`RESTORE_BY_REBUILD_UNAVAILABLE`）。
 - Docker 29 用 containerd 存储时，`docker save` 会把镜像附带的 SBOM 和 provenance 清单也写进
   归档；入库和恢复都会忽略这些附属清单，只取镜像本身。
