@@ -606,6 +606,16 @@ After the second cluster round (MOHAN CUI, 2026-11-18):
 - Permissions that conda packages carry themselves (for example 775 on a
   program) are kept: a SIF is read-only, and others can read and run them.
 
+During the C15 acceptance review (MOHAN CUI, 2026-11-19):
+
+- The credential-path check of DECIDED-C15-G2 also covers the registry
+  credentials file, which was not checked before. Its location is
+  `[lab] registry_credentials`, by default `registries.json` in the member's
+  area; it is checked when it exists. In managed mode the member's area lies
+  inside the managed root, so a managed member who needs a private registry
+  keeps the file outside it and configures the path, as for a workspace
+  token.
+
 After the third cluster round (MOHAN CUI, 2026-11-19):
 
 - An Agent environment whose file was deleted no longer holds its base

@@ -172,9 +172,13 @@ labbio image-list  --config <配置>
 - 来源身份：同一个镜像不管用 OCI 地址还是归档交来，都是同一个 manifest digest，因此
   算同一个环境。
 - `env-` 开头的 key 留给 Agent 构建的环境。
-- 私有仓库的凭据放在成员私有区的 `registries.json`（权限必须是 0600），格式为
+- 私有仓库的凭据默认放在成员私有区的 `registries.json`，也可以用 `[lab] registry_credentials`
+  指定别的位置（权限必须是 0600），格式为
   `{"hosts": {"<主机>": {"username": "...", "secret": "..."}}}`。凭据只用于拉取，
-  不进入任何容器、trace 或模型。
+  不进入任何容器、trace 或模型。和模型服务的密钥文件一样，这个文件存在时，不能放在容器
+  可能拿到的任何路径下（数据根、结果根、托管根、SIF 库、scratch、环境根、缓存目录），否则
+  启动时报 `CREDENTIAL_UNDER_BOUND_PATH`。托管模式下成员私有区在托管根目录里，所以要用私有
+  仓库的成员必须把凭据放到托管根目录之外，再配置 `registry_credentials`。
 - 只按 OCI Distribution 标准访问仓库：Docker Hub、quay.io、GHCR、Harbor、Nexus 等
   都走同一套代码，不使用任何厂商的私有接口。
 

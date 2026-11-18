@@ -614,3 +614,27 @@ def test_a_discard_that_cannot_run_never_hides_the_admissions_own_error(tmp_path
                 recipe=_identity_recipe(()), machine="x86_64", size_bytes=10))
     assert raised.value.code == "SOURCE_MISMATCH" and calls[-1][-1] == "sha256:" + "2" * 64
     assert store.records() == {}
+
+
+
+def test_the_admission_command_reads_the_configured_registry_credentials(tmp_path, monkeypatch):
+    from labbioagentos import cli, local_images
+    from test_c15_lab_area import _settings_file
+    from test_c15_promotion import _area
+
+    _area(tmp_path)
+    path = _settings_file(tmp_path)
+    credentials = tmp_path / "secrets" / "registries.json"
+    # Relative, like every other path: resolved against the configuration file's directory.
+    path.write_text(path.read_text().replace('member_root = "member"\n',
+                                             'member_root = "member"\nregistry_credentials = "secrets/registries.json"\n'))
+    read = []
+
+    def load(file):
+        read.append(file)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(local_images, "load_registry_credentials", load)
+    cli.main(["image-admit", "--config", str(path), "--key", "k", "--purpose", "P.",
+              "--oci", "registry.example/a/b@sha256:" + "a" * 64])
+    assert read == [credentials]

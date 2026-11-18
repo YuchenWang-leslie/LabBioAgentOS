@@ -295,7 +295,7 @@ def image_admit(settings: LocalSettings, args) -> dict:
     policy = LabArea(settings.lab.root).policy()
     member_root = private_member_root(settings.lab.member_root)
     catalog = _image_catalog(settings)
-    credentials = load_registry_credentials(member_root / "registries.json")
+    credentials = load_registry_credentials(settings.lab.registry_credentials_file())
     locked = getattr(args, "base", None) is not None
     if locked:
         if not args.lock:
@@ -564,7 +564,7 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
                                            quota_bytes=policy.lab_quota_bytes,
                                            allowed_registries=policy.allowed_registries),
                     registry_client=lambda: OciRegistryClient(
-                        credentials=load_registry_credentials(member_root / "registries.json")),
+                        credentials=load_registry_credentials(settings.lab.registry_credentials_file())),
                     existing_keys=lambda: lab_keys,
                     deleted=lambda key: _image_catalog(settings).deleted(key),
                 )
@@ -804,7 +804,7 @@ def image_restore(settings: LocalSettings, args) -> dict:
                                        quota_bytes=policy.lab_quota_bytes if lab else policy.member_quota_bytes,
                                        allowed_registries=policy.allowed_registries),
                 registry_client=lambda: OciRegistryClient(
-                    credentials=load_registry_credentials(member_root / "registries.json")),
+                    credentials=load_registry_credentials(settings.lab.registry_credentials_file())),
                 existing_keys=set,
                 other_used_bytes=(lambda: 0) if lab else (
                     lambda: sum(size or 0 for size in _environment_sizes(settings))),

@@ -336,3 +336,30 @@ def test_a_plain_purpose_is_accepted():
 def test_an_unsafe_or_unbounded_purpose_is_refused(purpose):
     with pytest.raises(ValueError):
         validate_purpose(purpose)
+
+
+@pytest.mark.parametrize("member_root, configured, exists, refused", [
+    ("results/member", None, True, True),  # The default file under a bound root.
+    ("results/member", None, False, False),  # No file: nothing to protect.
+    ("results/member", "secrets/registries.json", True, False),  # Kept outside, as a managed member must.
+    ("member", None, True, False),
+    ("member", "data/registries.json", True, True),
+])
+def test_a_members_registry_credentials_under_a_bound_root_are_refused(tmp_path, member_root, configured, exists,
+                                                                       refused):
+    """DECIDED-C15-G2 names registry credentials too; found in the C15 acceptance review (MOHAN CUI, 2026-11-19)."""
+    from labbioagentos.local_config import LocalLabSettings
+
+    lab = LocalLabSettings(root=tmp_path / "lab", member_root=tmp_path / member_root,
+                           registry_credentials=tmp_path / configured if configured else None)
+    path = lab.registry_credentials_file()
+    if exists:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    settings = _settings(tmp_path).model_copy(update={"lab": lab})
+    if not refused:
+        check_credentials_outside_bound_paths(settings)
+        return
+    with pytest.raises(ProviderConfigurationError) as raised:
+        check_credentials_outside_bound_paths(settings)
+    assert raised.value.code == "CREDENTIAL_UNDER_BOUND_PATH" and raised.value.fields[0] == "lab.registry_credentials"

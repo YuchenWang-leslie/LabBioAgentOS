@@ -484,6 +484,12 @@ class LocalLabSettings(_SettingsModel):
 
     root: Path
     member_root: Path
+    # Registry credentials for private OCI pulls; default <member_root>/registries.json. Like any
+    # credential file, it must lie outside every path a container can be given (DECIDED-C15-G2).
+    registry_credentials: Path | None = None
+
+    def registry_credentials_file(self) -> Path:
+        return self.registry_credentials or self.member_root / "registries.json"
 
 
 class LocalSettings(_SettingsModel):
@@ -619,6 +625,8 @@ def load_settings(path: Path) -> LocalSettings:
         "launcher": _absolute_launcher(settings.launcher, absolute),
         "lab": settings.lab.model_copy(update={
             "root": absolute(settings.lab.root), "member_root": absolute(settings.lab.member_root),
+            "registry_credentials": (absolute(settings.lab.registry_credentials)
+                                     if settings.lab.registry_credentials else None),
         }) if settings.lab else None,
     })
     if settings.launcher is not None and settings.launcher.kind == "template":
@@ -666,9 +674,17 @@ def _bindable_roots(settings: LocalSettings) -> tuple[tuple[str, Path], ...]:
 def check_credentials_outside_bound_paths(
     settings: LocalSettings, credentials: tuple[tuple[str, Path], ...] = (),
 ) -> None:
-    """Refuse a credential file that a container could read (DECIDED-C15-G)."""
+    """Refuse a credential file that a container could read (DECIDED-C15-G).
 
-    files = (("provider.env_file", settings.provider.env_file), *credentials)
+    With a lab, the member's registry credentials are checked too when the file exists;
+    without it there is nothing to protect, and private registries are simply not reachable.
+    """
+
+    files = [("provider.env_file", settings.provider.env_file), *credentials]
+    if settings.lab is not None:
+        registry = settings.lab.registry_credentials_file()
+        if registry.exists() or registry.is_symlink():
+            files.append(("lab.registry_credentials", registry))
     roots = [(name, root.expanduser().resolve()) for name, root in _bindable_roots(settings)]
     for credential_name, credential in files:
         path = credential.expanduser().resolve()
