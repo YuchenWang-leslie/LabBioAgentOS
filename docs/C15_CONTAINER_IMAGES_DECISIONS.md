@@ -590,6 +590,21 @@ Decided by MOHAN CUI on 2026-11-18, after the step 10 cluster report:
 - After these fixes, a short second cluster round re-checks only what
   changed.
 
+After the second cluster round (MOHAN CUI, 2026-11-18):
+
+- A reference that names an image only by its source identity blocks the
+  deletion of an image with that source only while no other usable file of
+  the same source remains. A reference that names the image key always
+  blocks. The other file can still serve a restore of what depends on the
+  source.
+- A build job checks, before packing, that every file in the conda
+  environment and in the Python site-packages is readable by others, and
+  fails the build otherwise; nothing is registered. Derived and lock-built
+  images built before the umask fix are deleted and restored, which
+  rebuilds them.
+- Permissions that conda packages carry themselves (for example 775 on a
+  program) are kept: a SIF is read-only, and others can read and run them.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:
