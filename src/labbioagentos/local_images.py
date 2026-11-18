@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import platform as host_platform
 import re
 import shutil
@@ -201,8 +202,12 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
                 execution_id = uuid4()
                 workspace = conversions / str(execution_id)
                 workspace.mkdir(mode=0o700, parents=True)
+                # Apptainer's own temporary files live in the job workspace, so its cleanup, also
+                # after a cancellation, removes them; the configured tmp_dir is never needed.
+                (workspace / "tmp").mkdir(mode=0o700)
                 spec = JobSpec(execution_id=execution_id,
-                               argv=(apptainer.binary, "build", str(output), f"oci:{layout}"),
+                               argv=(apptainer.binary, "build", "--tmpdir", str(workspace / "tmp"), str(output),
+                                     f"oci:{layout}"),
                                timeout_seconds=limits.timeout_seconds,
                                resources=RequestedResources(cpus=limits.cpus, memory_mb=limits.memory_mb,
                                                             pids_limit=limits.pids_limit,
@@ -217,7 +222,8 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
                 # Interrupted, the job may still run: its workspace then stays for crash cleanup.
                 shutil.rmtree(workspace, ignore_errors=True)
                 if outcome is None or outcome.exit_code != 0 or not output.is_file():
-                    raise AdmissionError("REALIZATION_FAILED")
+                    raise AdmissionError("REALIZATION_FAILED",
+                                         log=_keep_conversion_log(member_root, execution_id, outcome))
 
             return ApptainerRealizer(sif_store=sif_store or SifStore(member_root / "sif"), build=build)
 
@@ -228,6 +234,26 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
         )
     finally:
         ledger.close()
+
+
+_CONVERSION_LOG_BYTES = 16_384
+
+
+def _keep_conversion_log(member_root: Path, execution_id, outcome) -> Path | None:
+    """The end of a failed conversion job's error output, kept privately for the operator."""
+    if outcome is None:
+        return None
+    logs = member_root / "admission-logs"
+    try:
+        logs.mkdir(mode=0o700, exist_ok=True)
+        path = logs / f"{execution_id}.log"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(f"exit_code={outcome.exit_code} timed_out={outcome.timed_out}\n".encode())
+            stream.write(outcome.stderr[-_CONVERSION_LOG_BYTES:])
+    except OSError:
+        return None  # The failure is still reported; only its diagnostics are missing.
+    return path
 
 
 def _admitted_references(settings: LocalSettings) -> set[str]:
@@ -679,14 +705,17 @@ def image_delete(settings: LocalSettings, args) -> dict:
     image = (record.approved_image(catalog.backend, resolved_image=catalog.realization(key)) if record is not None
              else environment)
     source = image.source.canonical if image is not None and image.source is not None else None
-    blocking = [{"kind": reference.kind.value, "holder": reference.holder, "live": why}
-                for reference, why in member_index(settings).live(key, source)]
+    # One entry per (kind, holder): a run or an environment may have recorded its use more than once.
+    blocking = list({(reference.kind.value, reference.holder): {
+        "kind": reference.kind.value, "holder": reference.holder, "live": why}
+        for reference, why in member_index(settings).live(key, source)}.values())
     if scope is ImageScope.LAB:
         blocking += [{"kind": "LAB_MEMBER", "user_id": marker.user_id, "holder": marker.holder,
                       "verified": marker.verified} for marker in area.usage_markers() if marker.key == key]
     sif_source = record is not None and record.source.kind is SourceKind.SIF
     file = None if image is None or catalog.deleted(key) else image.reference
-    keep = file is not None and _shared(settings, catalog, area, key, scope, file)
+    keep = file is not None and _shared(settings, catalog, area, key, scope, file,
+                                        environment=environment is not None)
     plan = {"key": key, "scope": scope.value, "state": state.value, "backend": catalog.backend.value,
             "file": "ALREADY_DELETED" if file is None else ("KEEP_SHARED" if keep else "REMOVE"),
             "blocking": blocking, "gold": _gold_references(settings, key, source),
@@ -967,22 +996,36 @@ def _environment_record(settings: LocalSettings, key: str, catalog=None) -> Appr
     return image.with_reference(restored) if restored else image
 
 
-def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, file: str) -> bool:
-    """Another live record runs from the same file; it must stay."""
+def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, file: str, *,
+            environment: bool = False) -> bool:
+    """Another live record runs from the same file; it must stay.
+
+    On Apptainer the same sha256 may sit in several SIF stores, and each store's copy is
+    a different file: only a user of the same store shares it (cluster validation).
+    Configured images and Agent environments use the configured store, lab images the
+    lab's, personal images the member's. Docker has one image store.
+    """
+    docker = catalog.backend is ExecutionBackendName.DOCKER
+
+    def store(kind: str) -> str:
+        return "docker" if docker else kind
+
     others = set()
     for other in catalog.held_keys() - {key}:
         other_record = catalog.record(other)
         if other_record is not None and not catalog.deleted(other):
             image = other_record.approved_image(catalog.backend, resolved_image=catalog.realization(other))
             if image is not None:
-                others.add(image.reference)
-    others.update(image.reference for image in settings.execution.approved_images())
+                others.add((store("lab" if catalog.scope(other) is ImageScope.LAB else "personal"),
+                            image.reference))
+    others.update((store("configured"), image.reference) for image in settings.execution.approved_images())
     if settings.environment is not None:
         for path in sorted((settings.environment.root / "records").glob("*.json")):
             other = _environment_record(settings, "env-" + path.stem, catalog)
             if other is not None and other.key != key and not catalog.deleted(other.key):
-                others.add(other.reference)
-    if file in others:
+                others.add((store("configured"), other.reference))
+    mine = store("configured" if environment else "lab" if scope is ImageScope.LAB else "personal")
+    if (mine, file) in others:
         return True
     # On Docker, a lab image promoted from a member's image is that member's Docker image too,
     # and the holder cannot see the member's catalog: the file stays.

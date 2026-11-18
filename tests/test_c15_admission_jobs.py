@@ -36,8 +36,10 @@ from test_scheduler_launcher import _policy
 
 FAKE_APPTAINER = """#!/bin/sh
 [ "$1" = build ] || exit 2
-printf 'converted SIF' > "$2"
-case "$3" in *failing*) exit 1 ;; esac
+[ "$2" = --tmpdir ] && [ -d "$3" ] || exit 3  # Its own temporary directory, inside the job workspace.
+printf '%s\\n' "$3" >> "$(dirname "$0")/tmpdirs"
+printf 'converted SIF' > "$4"
+case "$5" in *failing*) echo 'FATAL: conversion failed' >&2; exit 1 ;; esac
 """
 
 
@@ -243,7 +245,11 @@ async def test_only_trustworthy_attempt_directories_are_touched(tmp_path):
     root = tmp_path / "admissions"
     _, unsafe = _lost_attempt(root, mode=0o640)  # A lease others could open.
     missing = root / uuid4().hex
-    missing.mkdir()  # No lease at all.
+    missing.mkdir()  # No lease at all, but something is in it.
+    (missing / "staging").mkdir()
+    emptied = root / uuid4().hex
+    emptied.mkdir()  # Its deletion could not finish while the lease was open on NFS.
+    (emptied / ".nfs000000000001").write_text("")
     foreign = root / "admission-old"
     foreign.mkdir()
     (root / uuid4().hex).symlink_to(foreign)
@@ -258,7 +264,7 @@ async def test_only_trustworthy_attempt_directories_are_touched(tmp_path):
         os.close(descriptor)
 
     assert [item.removed for item in results] == [True]
-    assert not pending.exists()
+    assert not pending.exists() and not emptied.exists()
     assert unsafe.is_dir() and missing.is_dir() and foreign.is_dir() and held.is_dir()
 
 
@@ -395,6 +401,8 @@ def test_a_cluster_conversion_is_a_recorded_admission_job_under_the_launcher_roo
     assert (run_id, purpose, state) == (str(attempt.id), "ADMISSION", "COLLECTED")
     assert os.path.dirname(workspace) == str(member / "jobs" / "executions") and not os.path.exists(workspace)
     assert len(slurm.calls) == 1 and not attempt.root.exists()
+    # Apptainer's temporary files were in the workspace, so they went with it.
+    assert (tmp_path / "bin" / "tmpdirs").read_text().split() == [os.path.join(workspace, "tmp")]
 
 
 def test_a_failed_conversion_job_is_a_realization_failure(tmp_path, monkeypatch):
@@ -411,6 +419,10 @@ def test_a_failed_conversion_job_is_a_realization_failure(tmp_path, monkeypatch)
             jobs.realizer(attempt)._build(attempt.root / "failing", attempt.root / "image.sif")
     assert raised.value.code == "REALIZATION_FAILED"
     assert [row[2] for row in _rows(member / "jobs" / "jobs.sqlite")] == ["COLLECTED", "COLLECTED"]
+    # The end of the job's error output is kept privately for the operator, and the error names it.
+    log = raised.value.log
+    assert log.parent == member / "admission-logs" and log.stat().st_mode & 0o777 == 0o600
+    assert "FATAL: conversion failed" in log.read_text() and log.read_text().startswith("exit_code=1 ")
 
 
 def test_a_conversion_lost_with_its_process_is_cancelled_by_the_next_admission(tmp_path, monkeypatch):
@@ -582,3 +594,68 @@ def test_a_lock_build_works_in_its_attempt_and_records_its_jobs_under_it(tmp_pat
     assert calls[0]["run_id"] == attempt.id and calls[0]["build_root"] == attempt.root / attempt.id.hex
     assert built.produced_by == attempt.id.hex and built.size_bytes == 3
     assert not built.created  # An image that already existed is never discarded on failure.
+
+
+def test_a_conversion_log_keeps_only_the_end_of_the_error_output(tmp_path):
+    from types import SimpleNamespace
+
+    from labbioagentos.local_images import _CONVERSION_LOG_BYTES, _keep_conversion_log
+
+    execution_id = uuid4()
+    stderr = b"x" * 20_000 + b"THE END"
+    log = _keep_conversion_log(tmp_path, execution_id, SimpleNamespace(exit_code=255, timed_out=False,
+                                                                       stderr=stderr))
+    body = log.read_bytes()
+    assert body.startswith(b"exit_code=255 timed_out=False\n") and body.endswith(b"THE END")
+    assert len(body.split(b"\n", 1)[1]) == _CONVERSION_LOG_BYTES
+    assert _keep_conversion_log(tmp_path, execution_id, SimpleNamespace(
+        exit_code=1, timed_out=False, stderr=b"again")) is None  # Never overwritten.
+    assert _keep_conversion_log(tmp_path, uuid4(), None) is None  # The job never ran.
+
+
+def test_the_command_names_the_kept_log(tmp_path, capsys, monkeypatch):
+    from labbioagentos import cli, local_images
+    from test_c15_lab_area import _settings_file
+    from test_c15_promotion import _area
+
+    _area(tmp_path)
+    path = _settings_file(tmp_path)
+    log = tmp_path / "member" / "admission-logs" / "x.log"
+
+    def fail(_settings, _args):
+        raise AdmissionError("REALIZATION_FAILED", log=log)
+
+    monkeypatch.setattr(local_images, "image_admit", fail)
+    assert cli.main(["image-admit", "--config", str(path), "--key", "k", "--purpose", "P.",
+                     "--oci", "registry.example/a/b@sha256:" + "a" * 64]) == 1
+    output = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert output["error"] == "REALIZATION_FAILED" and output["log"] == str(log)
+
+
+def test_an_attempt_is_deleted_only_after_its_lease_is_closed(tmp_path, monkeypatch):
+    """On NFS an open file cannot be removed: deleting under an open lease leaves the directory."""
+    import shutil
+
+    from labbioagentos.execution import admission_attempts
+
+    held = []
+    real = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        lease = os.path.join(path, ATTEMPT_LEASE)
+        if os.path.exists(lease):
+            descriptor = admission_attempts._take_lease(admission_attempts.Path(lease))
+            held.append(descriptor is None)
+            if descriptor is not None:
+                os.close(descriptor)
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(admission_attempts.shutil, "rmtree", rmtree)
+    attempts = AdmissionAttempts(tmp_path / "admissions")
+    with attempts.attempt():
+        pass
+    with pytest.raises(AdmissionError), attempts.attempt():
+        raise AdmissionError("REALIZATION_FAILED")
+    _lost_attempt(tmp_path / "admissions")
+    assert [item.removed for item in asyncio.run(attempts.reconcile())] == [True]
+    assert held == [False, False, False] and list((tmp_path / "admissions").iterdir()) == []

@@ -100,9 +100,10 @@ _MAX_PROBE_BYTES = 2_097_152
 class AdmissionError(ValueError):
     """A fixed, value-free reason an image was not admitted."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, log: Path | None = None):
         super().__init__(code)
         self.code = code
+        self.log = log  # The operator's own diagnostic file, when one was kept; never shown to a model.
 
     @property
     def hint(self) -> str:
@@ -164,7 +165,8 @@ ADMISSION_HINTS = {
     "PROBE_FAILED": ("The offline probe failed: the image may lack the entry point of a declared runtime "
                      "(python for PYTHON, sh for SHELL), or it could not start without network and data."),
     "RUNTIMES_INVALID": "Declare each runtime the image supports once: PYTHON, SHELL or both.",
-    "REALIZATION_FAILED": "The image could not be loaded or converted on this backend.",
+    "REALIZATION_FAILED": ("The image could not be loaded or converted on this backend. When a log is named, "
+                           "it holds the end of the conversion job's error output."),
     "DIGEST_MISMATCH": "Downloaded content does not match its digest.",
     "BASE_NOT_FOUND": "Give --base as the key of an active image you can select (see image-list).",
     "BASE_NOT_LAB": "A lab image is built only on a lab image, so that every lab member can use its base.",
@@ -241,8 +243,11 @@ class DockerRealizer(Realizer):
         # Only an id this admission newly loaded; one that existed before may serve other
         # records. Never a prune.
         if realized.created:
-            self._run([self.docker_binary, "image", "rm", realized.reference],
-                      capture_output=True, text=True, timeout=120, check=False)
+            try:
+                self._run([self.docker_binary, "image", "rm", realized.reference],
+                          capture_output=True, text=True, timeout=120, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass  # Best effort: the error that caused the discard is the one reported.
 
 
 class ApptainerRealizer(Realizer):

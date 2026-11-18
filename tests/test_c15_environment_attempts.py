@@ -266,6 +266,7 @@ def _cluster_attempt(tmp_path, ledger_path=None, *, leased=True):
     attempt = tmp_path / "attempts" / uuid4().hex
     (attempt / "download" / "wheels").mkdir(parents=True)
     (attempt / "conda" / "pkgs").mkdir(parents=True)
+    (attempt / "conda" / "micromamba").write_bytes(b"copy")
     run_id = uuid4()
     if ledger_path is not None:
         (attempt / "jobs.json").write_text(json.dumps({"ledger": str(ledger_path)}))
@@ -297,6 +298,7 @@ def test_a_cluster_attempt_waits_for_its_runs_build_jobs(cluster_builder, tmp_pa
     ledger.record_not_submitted(job)
     assert builder.abandon(attempt, intent=intent, receipt=None, keep=set()) is True
     assert not (attempt / "download" / "wheels").exists() and not (attempt / "conda" / "pkgs").exists()
+    assert not (attempt / "conda" / "micromamba").exists()
 
 
 def test_a_cluster_attempt_removes_a_sif_it_registered_without_a_record(cluster_builder, tmp_path):
@@ -416,3 +418,24 @@ def test_only_attempt_directories_are_cleaned(tmp_path):
     lost.rename(other)
     builder = Builder()
     assert _service(tmp_path, builder).reconcile_attempts() == [] and builder.abandoned == []
+
+
+def test_a_stale_directory_is_deleted_after_its_lease_is_closed(tmp_path, monkeypatch):
+    from labbioagentos.execution import environments
+
+    service = _service(tmp_path, Builder())
+    staging = tmp_path / "environments" / "attempts" / (".new-" + uuid4().hex)
+    staging.mkdir()
+    (staging / LEASE_FILE).write_text("")
+    (staging / LEASE_FILE).chmod(0o600)
+    old = time.time() - 3600
+    os.utime(staging, (old, old))
+    seen, real = [], environments.shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        seen.append(_held(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(environments.shutil, "rmtree", rmtree)
+    service.reconcile_attempts()
+    assert seen == [False] and not staging.exists()

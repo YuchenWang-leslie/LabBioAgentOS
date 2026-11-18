@@ -415,6 +415,9 @@ def render_build_program(
         'cleanup() { chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"; }',
         "trap cleanup EXIT",
         f'mkdir -- "$work/tmp" "$work/apptainer-tmp" "$work/pack-check" || exit {unavailable}',
+        # Everything below is created inside the image, which every lab member must be able to
+        # read; the host side stays private because $work and the log directory are 0700.
+        "umask 022",
         'export APPTAINER_TMPDIR="$work/apptainer-tmp"',
         'sandbox="$work/sandbox"',
         # Capabilities only the node can confirm, checked before any real work.

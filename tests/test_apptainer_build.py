@@ -128,6 +128,10 @@ import json, os, sys, time
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as stream:
     stream.write(json.dumps(args) + "\\n")
+mask = os.umask(0)
+os.umask(mask)
+with open(os.environ["FAKE_LOG"] + ".umask", "a") as stream:
+    stream.write(oct(mask) + "\\n")
 for flag, value in zip(args, args[1:]):
     if flag == "--bind":
         source = value.split(":")[0]
@@ -227,6 +231,16 @@ def test_build_program_runs_the_fixed_steps_without_network(build):
     assert not (paths["out"] / "environment.sif.partial").exists()
     assert json.loads((paths["logs"] / PROBE_OUTPUT).read_text())["failed_imports"] == []
     assert list(paths["node-local"].iterdir()) == []  # Node-local work removed.
+
+
+def test_what_the_image_receives_is_readable_by_every_member(build):
+    start, calls, _, _, _, log = build
+
+    assert start().wait(timeout=60) == 0
+
+    # Every step that creates files inside the image runs with umask 022 (cluster validation, 2026-11-18).
+    masks = (log.parent / (log.name + ".umask")).read_text().split()
+    assert len(masks) == len(calls()) and set(masks) == {"0o22"}
 
 
 def test_without_locked_wheels_nothing_is_installed(build):

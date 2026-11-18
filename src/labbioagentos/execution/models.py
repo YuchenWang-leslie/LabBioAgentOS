@@ -246,6 +246,13 @@ class ExecutionPlan(BaseModel):
             raise ValueError("requested output paths must be unique")
         return self
 
+    @model_validator(mode="after")
+    def require_named_shell(self) -> "ExecutionPlan":
+        # Only PYTHON is ever a default; SHELL is named or not used (DECIDED-C15-C).
+        if self.runtime is not ExecutionRuntime.PYTHON and self.runtime_source is RuntimeSource.DEFAULT:
+            raise ValueError("A runtime other than PYTHON must be named explicitly")
+        return self
+
 
 RUNTIME_DESCRIPTION = (
     "Runtime family of script_content. Omit it for PYTHON. Name SHELL to run the script "

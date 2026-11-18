@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -581,3 +582,35 @@ def test_a_store_that_cannot_register_is_a_realization_failure(tmp_path, monkeyp
     with pytest.raises(AdmissionError) as raised:
         _admit(admission, registry, oci=None, sif=sif)
     assert raised.value.code == "REALIZATION_FAILED"
+
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError("docker"), subprocess.TimeoutExpired("docker", 120)])
+def test_a_discard_that_cannot_run_never_hides_the_admissions_own_error(tmp_path, error):
+    from labbioagentos.execution.admission import DockerRealizer, LockedBuild
+    from labbioagentos.execution.environments import _identity_recipe
+
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        raise error
+
+    from labbioagentos.execution.identity import SourceIdentity
+    from labbioagentos.execution.images import ApprovedImage
+    from test_c15_promotion import _record
+
+    DockerRealizer(run=run).discard(Realized("sha256:" + "1" * 64, "load-1"))  # No exception.
+    admission, _registry, store = _admission(tmp_path, realizer=DockerRealizer(run=run))
+    base = ApprovedImage(key="py311", reference="sha256:" + "9" * 64, entry_points={"PYTHON": ("python",)})
+    expected = _record(key="six", repository=None,
+                       source=SourceIdentity(kind=SourceKind.DERIVED, digest="sha256:" + "d" * 64))
+    with pytest.raises(AdmissionError) as raised:
+        admission.admit_locked(
+            key="six", purpose="six.", gpu=GpuSupport.NONE, base=base, expected=expected,
+            build=lambda image: LockedBuild(
+                reference="sha256:" + "2" * 64, produced_by="attempt",
+                locked=({"name": "six", "version": "1.16.0", "sha256": "a" * 64},),
+                recipe=_identity_recipe(()), machine="x86_64", size_bytes=10))
+    assert raised.value.code == "SOURCE_MISMATCH" and calls[-1][-1] == "sha256:" + "2" * 64
+    assert store.records() == {}

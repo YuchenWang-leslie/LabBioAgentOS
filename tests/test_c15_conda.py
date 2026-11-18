@@ -417,10 +417,10 @@ async def test_a_cluster_conda_environment_is_installed_in_the_build_job_and_ide
     assert record["machine"] == "x86_64"
     attempt = _attempt(cluster)
     conda = attempt / "conda"
-    # The lock and the checked micromamba copy stay; packages and the repodata cache do not.
+    # The lock stays; packages, the repodata cache and the 19 MB micromamba copy do not.
     assert (conda / "explicit.txt").read_text() == (
         "@EXPLICIT\nfile:///.labbio-build/conda/pkgs/samtools-1.21-h_0.conda#" + "c" * 64 + "\n")
-    assert (conda / "micromamba").read_bytes() == policy.micromamba.read_bytes()
+    assert not (conda / "micromamba").exists() and policy.micromamba.is_file()
     assert not (conda / "pkgs").exists() and not (conda / "solve").exists()
     install = next(call for call in cluster.calls() if "/.labbio-build/conda/micromamba" in call)
     assert "--network" in install and "--writable" in install

@@ -223,9 +223,17 @@ cache_dir = "/shared/lab/labbio/pip-cache"
 # ca_bundle = "/etc/pki/tls/certs/site-ca.pem"
 ```
 
-`tmpfs_size_mb` has no effect under Apptainer: `/tmp` lives in the
-per-execution scratch directory and is bounded only by the per-file size
-limit.
+Under Apptainer, `/tmp` lives in the per-execution scratch directory.
+`tmpfs_size_mb` bounds it: the job checks its size every few seconds and stops
+the execution with `SCRATCH_LIMIT` above this value.
+
+`[execution.apptainer] tmp_dir` is Apptainer's own temporary directory. Apptainer
+creates its cache directory but not this one, so LabBio creates it (mode 0700)
+when it is missing, and `backend-check` reports `apptainer_tmp_dir` when it
+cannot be used. An admission's conversion job keeps its temporary files in its
+own job workspace instead, so they are removed with the workspace, also after a
+cancellation. When a conversion fails, the end of the job's error output is
+kept in the member's `admission-logs/` directory and the error names the file.
 
 ### Provider settings and credentials
 
@@ -318,8 +326,11 @@ record) for a request to be accepted.
   `--gpus={gpus}`, PBS `-l select=1:ncpus=…:mem=…:ngpus={gpus}` (it replaces
   the ordinary select line) and LSF `-gpu "num={gpus}"`. A site whose Slurm
   counts GPUs as generic resources uses a site template with
-  `"gpus" = "--gres=gpu:{gpus}"`. A template without a `gpus` directive cannot
-  be combined with `gpus > 0`; the configuration is refused at load.
+  `"gpus" = "--gres=gpu:{gpus}"`. Some sites refuse `--gpus` outright and
+  require `--gres`; `backend-check` then reports `scheduler_gpu_submission`
+  with the scheduler's message, and the site template resolves it. A template
+  without a `gpus` directive cannot be combined with `gpus > 0`; the
+  configuration is refused at load.
 - **Partition.** Jobs that request GPUs go to `[launcher] gpu_partition`, or to
   `partition` when it is not set. Build and download jobs never request GPUs.
 - **Extra directives.** `--gres`, `--gpus`, `-G`, `--gpus-per-*` and
@@ -331,7 +342,9 @@ record) for a request to be accepted.
 - **Confinement.** `--nv` binds the node's GPU devices into the container. Only
   the scheduler confines a job to its allocated GPUs (for example Slurm with
   `ConstrainDevices=yes` in `cgroup.conf`); without that, a job could open
-  every GPU on the node. Check this before enabling GPUs.
+  every GPU on the node. Check this before enabling GPUs. With it, the
+  container still lists every GPU device node, but only the allocated GPUs can
+  be opened, and `nvidia-smi` shows only those.
 - **Trace.** Before the program starts, the job records on the node, outside
   the container, its `CUDA_VISIBLE_DEVICES` and the output of `nvidia-smi -L`.
   The values are checked strictly and added to the execution's completion or

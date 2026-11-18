@@ -59,6 +59,7 @@ from .models import RequestedResources
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
 JOBS_FILE = "jobs.json"
 _DOWNLOADS = ("download/wheels", "conda/pkgs", "conda/solve")
+_MICROMAMBA_COPY = "conda/micromamba"  # 19 MB per build; the configured program stays (cluster validation).
 _MAX_PROBE_BYTES = 1_048_576
 
 
@@ -96,6 +97,13 @@ class ApptainerBuildPolicy:
             raise ValueError("download_timeout_seconds must be between 1 and 86400")
         if not 256 <= self.download_memory_mb <= 1_048_576:
             raise ValueError("download_memory_mb must be between 256 and 1048576")
+
+
+def _remove_downloads(root: Path) -> None:
+    """Downloaded packages and the micromamba copy; locks, reports and logs stay."""
+    for path in _DOWNLOADS:
+        shutil.rmtree(root / path, ignore_errors=True)
+    (root / _MICROMAMBA_COPY).unlink(missing_ok=True)
 
 
 class ApptainerEnvironmentBuilder:
@@ -155,8 +163,7 @@ class ApptainerEnvironmentBuilder:
                                    tuple(conda_packages), pinned)
         # Downloaded packages are not kept; the locks and logs are. After a cancellation the
         # job may still run, so they stay until a later build finds the attempt unheld.
-        for path in _DOWNLOADS:
-            shutil.rmtree(build_root / path, ignore_errors=True)
+        _remove_downloads(build_root)
         return result
 
     def abandon(self, attempt: Path, *, intent: dict, receipt: dict | None, keep: set[str]) -> bool:
@@ -183,8 +190,7 @@ class ApptainerEnvironmentBuilder:
                 ledger.close()
         elif intent.get("leased") is not True:
             return False
-        for path in _DOWNLOADS:
-            shutil.rmtree(attempt / path, ignore_errors=True)
+        _remove_downloads(attempt)
         image_id = receipt.get("image_id") if receipt else None
         if isinstance(image_id, str) and image_id not in keep:
             try:

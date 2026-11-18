@@ -235,3 +235,17 @@ def test_a_promotion_must_keep_the_member_record_runtimes(tmp_path):
         _admit(second, registry2, key="lab-tools", runtimes=(PYTHON, SHELL), expected=personal)
     assert raised.value.code == "INVENTORY_MISMATCH"
     assert _admit(second, registry2, key="lab-tools", runtimes=(PYTHON,), expected=personal).key == "lab-tools"
+
+
+@pytest.mark.parametrize("source, accepted", [("EXPLICIT", True), ("DEFAULT", False)])
+def test_a_shell_plan_is_always_explicit(source, accepted):
+    from labbioagentos.execution.models import ExecutionPlan
+
+    values = dict(run_id=uuid4(), stage_id=WorkflowStage.EXECUTE, image_key="tools", script_content="echo hi",
+                  runtime=ExecutionRuntime.SHELL, runtime_source=RuntimeSource(source))
+    if accepted:
+        assert ExecutionPlan(**values).runtime_source is RuntimeSource.EXPLICIT
+    else:  # Found in the cluster validation: a plan built directly could claim a default SHELL.
+        with pytest.raises(ValidationError):
+            ExecutionPlan(**values)
+    assert ExecutionPlan(**{**values, "runtime": ExecutionRuntime.PYTHON}).runtime is ExecutionRuntime.PYTHON

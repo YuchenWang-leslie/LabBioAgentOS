@@ -404,7 +404,8 @@ def main(argv: list[str] | None = None) -> int:
         from .execution.admission import AdmissionError
         from .local_promotion import PromotionError
         if isinstance(exc, (AdmissionError, PromotionError)):
-            _emit({"error": exc.code, "detail": exc.hint})
+            log = getattr(exc, "log", None)
+            _emit({"error": exc.code, "detail": exc.hint, **({"log": str(log)} if log is not None else {})})
             return 1
         if isinstance(exc, RunWriterActiveError):
             _emit({"error": "RUN_WRITER_ACTIVE", "detail":

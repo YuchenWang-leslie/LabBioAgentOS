@@ -141,6 +141,10 @@ def check_backend(
     if apptainer.resource_enforcement == "apptainer-cgroups" and not capabilities.cgroup_limits:
         failures.append("cgroup_limits")
     configuration_failures = []
+    from .local_config import prepare_apptainer_tmp_dir
+
+    if not prepare_apptainer_tmp_dir(apptainer.tmp_dir):
+        configuration_failures.append("apptainer_tmp_dir")
     scheduler = None
     if local:
         report["local_resources"] = local_resources

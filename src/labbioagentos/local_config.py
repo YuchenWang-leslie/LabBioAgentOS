@@ -1165,6 +1165,21 @@ def _docker_gpu_execution(settings: LocalSettings) -> dict:
     }
 
 
+def prepare_apptainer_tmp_dir(path: Path | None) -> bool:
+    """Create the configured Apptainer tmp_dir (0700) when it is missing; True when it is usable.
+
+    Apptainer creates its cache directory itself but not its temporary directory, and a
+    job whose APPTAINER_TMPDIR does not exist fails (cluster validation, 2026-11-18).
+    """
+    if path is None:
+        return True
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+
+
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     """Apptainer wiring; placement and capability checks are explicit."""
     from .execution.apptainer import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
@@ -1174,6 +1189,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
+    prepare_apptainer_tmp_dir(apptainer.tmp_dir)  # backend-check reports one that cannot be used.
     image = settings.execution.default_approved_image()
     store = sif_stores(settings)
     runner = SubprocessApptainerRunner(

@@ -570,10 +570,9 @@ class EnvironmentService:
         descriptor = _take_lease(attempt)
         if descriptor is None:
             return
-        try:
-            shutil.rmtree(attempt, ignore_errors=True)
-        finally:
-            os.close(descriptor)
+        # Closed first: on NFS an open lease cannot be removed and would keep the directory.
+        os.close(descriptor)
+        shutil.rmtree(attempt, ignore_errors=True)
 
     def _live_files(self) -> set[str]:
         """Every image this service may run: registered images and every environment record on disk.

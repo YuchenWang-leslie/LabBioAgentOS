@@ -75,6 +75,7 @@ class AdmissionAttempts:
         pending = self.root / (_NEW_PREFIX + attempt_id.hex)
         pending.mkdir(mode=0o700)
         descriptor = os.open(pending / ATTEMPT_LEASE, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        remove = False
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             path = self.root / attempt_id.hex
@@ -82,12 +83,15 @@ class AdmissionAttempts:
             try:
                 yield AdmissionAttempt(attempt_id, path)
             finally:
-                if not self._open_jobs(attempt_id) and self.discard_leftovers(attempt_id.hex):
-                    shutil.rmtree(path, ignore_errors=True)
+                remove = not self._open_jobs(attempt_id) and self.discard_leftovers(attempt_id.hex)
         finally:
+            # Closed before anything is deleted: on NFS an open file cannot be removed (it is
+            # renamed to .nfs*), which would leave the directory behind (cluster validation).
             os.close(descriptor)
             if pending.is_dir() and not pending.is_symlink():  # The rename never happened.
                 shutil.rmtree(pending, ignore_errors=True)
+            if remove:
+                shutil.rmtree(path, ignore_errors=True)
 
     async def reconcile(self) -> tuple[ReconciledAttempt, ...]:
         """Clean up every attempt whose process is gone; attempts in use are not touched."""
@@ -99,15 +103,22 @@ class AdmissionAttempts:
                 name = path.name.removeprefix(_NEW_PREFIX)
                 if path.is_symlink() or not path.is_dir() or _ATTEMPT_NAME.fullmatch(name) is None:
                     continue
+                if name == path.name and _emptied(path):
+                    # Left by a deletion that could not finish while its lease was open (NFS).
+                    shutil.rmtree(path, ignore_errors=True)
+                    continue
                 descriptor = _take_lease(path / ATTEMPT_LEASE)
                 if descriptor is None:
                     continue  # In use, or the lease cannot be trusted: never delete it.
                 try:
                     attempt_id = UUID(hex=name)
                     seen.add(attempt_id)
-                    results.append(await self._resolve(attempt_id, path))
+                    result = await self._resolve(attempt_id, path)
                 finally:
                     os.close(descriptor)
+                if result.removed:
+                    shutil.rmtree(path, ignore_errors=True)  # Only once the lease is closed.
+                results.append(result)
         # An attempt directory exists while its process runs and is deleted only after its
         # jobs are resolved, so open jobs without a directory belong to a lost process.
         for attempt_id in self._open_runs():
@@ -120,18 +131,22 @@ class AdmissionAttempts:
         if self.ledger is not None:
             jobs = await reconcile_admission_jobs(ledger=self.ledger, run_id=attempt_id, launchers=self.launchers,
                                                   settle_seconds=self.settle_seconds)
-        removed = False
-        if not any(job.action in _UNRESOLVED for job in jobs) and self.discard_leftovers(attempt_id.hex):
-            if path is not None:
-                shutil.rmtree(path)
-            removed = True
-        return ReconciledAttempt(attempt_id, jobs, removed)
+        removed = not any(job.action in _UNRESOLVED for job in jobs) and self.discard_leftovers(attempt_id.hex)
+        return ReconciledAttempt(attempt_id, jobs, removed)  # The caller deletes the directory.
 
     def _open_jobs(self, attempt_id: UUID) -> bool:
         return self.ledger is not None and bool(self.ledger.open_jobs(attempt_id))
 
     def _open_runs(self) -> tuple[UUID, ...]:
         return self.ledger.open_runs(JobPurpose.ADMISSION) if self.ledger is not None else ()
+
+
+def _emptied(path: Path) -> bool:
+    """A published attempt with no lease left: nothing but NFS's own .nfs* placeholders, if anything."""
+    try:
+        return all(entry.name.startswith(".nfs") for entry in path.iterdir())
+    except OSError:
+        return False
 
 
 def _take_lease(path: Path) -> int | None:

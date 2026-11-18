@@ -474,3 +474,50 @@ def test_an_image_without_a_build_label_leaves_nothing_else_to_clean(lab, capsys
     monkeypatch.setattr(environment_builder, "remove_build_leftovers", lambda *_a, **_k: pytest.fail("cleaned"))
     _retire(capsys, lab, "mine")
     assert _delete(capsys, lab, "mine")[0] == 0 and _removed(lab) == [PERSONAL_IMAGE]
+
+
+@pytest.mark.parametrize("backend, others, environment, shared", [
+    # The configured store's copy is another file than the member's copy of the same SIF.
+    ("APPTAINER", {"configured": True}, False, False),
+    ("APPTAINER", {"personal": True}, False, True),
+    ("APPTAINER", {"lab": True}, False, False),
+    ("APPTAINER", {"configured": True}, True, True),  # An environment shares the configured store.
+    ("DOCKER", {"configured": True}, False, True),  # Docker has one image store.
+    ("DOCKER", {"lab": True}, False, True),
+])
+def test_a_file_is_shared_only_within_one_store(tmp_path, backend, others, environment, shared):
+    from labbioagentos import local_images
+    from labbioagentos.execution.images import ApprovedImage
+
+    sif = "sha256:" + "5" * 64
+    realization = _record().realizations[0].model_copy(update={
+        "backend": ExecutionBackendName(backend), "resolved_image": sif})
+    personal = CatalogStore(tmp_path / "personal").initialize()
+    lab = CatalogStore(tmp_path / "lab").initialize()
+    if not environment:  # The image being deleted; an environment is not in the catalog.
+        personal.add_record(_record(key="mine").model_copy(update={"realizations": (realization,)}))
+    if others.get("personal"):
+        personal.add_record(_record(key="copy").model_copy(update={"realizations": (realization,)}))
+    if others.get("lab"):
+        lab.add_record(_record(key="lab-copy").model_copy(update={
+            "scope": ImageScope.LAB, "owner_user_id": None, "realizations": (realization,)}))
+    configured = ApprovedImage(key="py-base", reference=sif, entry_points={"PYTHON": ("python",)})
+    catalog = ImageCatalog(owner_user_id="admin", backend=ExecutionBackendName(backend), lab=lab,
+                           personal=personal, configured_keys=("py-base",) if others.get("configured") else ())
+    settings = SimpleNamespace(
+        environment=None,
+        execution=SimpleNamespace(approved_images=lambda: (configured,) if others.get("configured") else ()))
+    key = "env-" + "1" * 64 if environment else "mine"
+    assert local_images._shared(settings, catalog, None, key, ImageScope.PERSONAL, sif,
+                                environment=environment) is shared
+
+
+def test_each_live_use_blocks_once(lab, capsys, monkeypatch):
+    from labbioagentos import local_images
+
+    reference = SimpleNamespace(kind=SimpleNamespace(value="ENVIRONMENT"), holder="env-" + "a" * 64)
+    monkeypatch.setattr(local_images, "member_index", lambda _settings: SimpleNamespace(
+        live=lambda key, source: [(reference, "ENVIRONMENT_RECORDED"), (reference, "ENVIRONMENT_RECORDED")]))
+    _retire(capsys, lab, "mine")
+    plan = _cli(capsys, lab, "image-delete", "--key", "mine")[1]
+    assert plan["blocking"] == [{"kind": "ENVIRONMENT", "holder": "env-" + "a" * 64, "live": "ENVIRONMENT_RECORDED"}]

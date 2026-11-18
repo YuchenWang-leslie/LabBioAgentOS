@@ -87,13 +87,10 @@ def _policy(**overrides) -> SchedulerPolicy:
     )
 
 
-@pytest.fixture
-def cluster(request):
-    base = Path(os.environ["LABBIO_SHARED_DIR"]) / f"slurm-{uuid4().hex[:12]}"
-    base.mkdir(parents=True)
+def _executor(base: Path, reference: str, ledger: JobLedger, **policy):
+    """The executor every test uses; also built in a child process by the lost-control-plane test."""
     binary = os.environ["LABBIO_APPTAINER_BINARY"]
     sif_store = SifStore(base / "sif")
-    reference = sif_store.register(Path(os.environ["LABBIO_APPTAINER_SIF"]))
     runner = SubprocessApptainerRunner(max_output_file_bytes=MAX_FILE_BYTES)
     builder = ApptainerCommandBuilder(sif_store, scratch_root=base / "scratch",
                                       resource_enforcement=ENFORCEMENT, apptainer_binary=binary)
@@ -109,9 +106,7 @@ def cluster(request):
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink)
     store = LocalArtifactStore(base / "artifacts", trace_recorder=recorder)
-    ledger = JobLedger(base / "jobs.sqlite")
-    launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"],
-                                 policy=_policy(**getattr(request, "param", {})),
+    launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_policy(**policy),
                                  workspace_root=base / "executions")
     executor = ContainerExecutor(
         store=store,
@@ -125,6 +120,16 @@ def cluster(request):
         process_runner=runner, command_builder=builder, trace_recorder=recorder,
         launcher=launcher, job_ledger=ledger, backend_check=backend_check,
     )
+    return executor, sink
+
+
+@pytest.fixture
+def cluster(request):
+    base = Path(os.environ["LABBIO_SHARED_DIR"]) / f"slurm-{uuid4().hex[:12]}"
+    base.mkdir(parents=True)
+    reference = SifStore(base / "sif").register(Path(os.environ["LABBIO_APPTAINER_SIF"]))
+    ledger = JobLedger(base / "jobs.sqlite")
+    executor, sink = _executor(base, reference, ledger, **getattr(request, "param", {}))
     yield executor, ledger, sink, base
     ledger.close()
     if os.environ.get("LABBIO_KEEP_TEST_FILES") != "1":
@@ -244,6 +249,11 @@ async def test_timeout_is_enforced_inside_the_job(cluster):
     ({}, "running"),
 ], indirect=["cluster"], ids=["queued", "running"])
 async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster, phase):
+    """The submitting process is killed (SIGKILL), so nothing cancels its job; cleanup must.
+
+    Cancelling the submitting coroutine is not a lost control plane: the executor then
+    cancels the job itself (cluster validation, 2026-11-18).
+    """
     executor, ledger, _, base = cluster
     plan = _plan(
         "import os, time\n"
@@ -252,10 +262,15 @@ async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster, ph
         timeout=1200,
     )
     workspace = base / "executions" / str(plan.execution_id)
-    task = asyncio.create_task(executor.execute_async(plan))
+    hold = "--hold" in executor.launcher.policy.extra_directives
+    reference = SifStore(base / "sif").register(Path(os.environ["LABBIO_APPTAINER_SIF"]))  # Idempotent.
+    child = subprocess.Popen([sys.executable, __file__, "--submit-lost", str(base), reference,
+                              "1" if hold else "0"], stdin=subprocess.PIPE, text=True)
+    child.stdin.write(plan.model_dump_json())
+    child.stdin.close()
     deadline = time.monotonic() + 300
     entry, reached = None, False
-    while time.monotonic() < deadline and not reached:
+    while time.monotonic() < deadline and not reached and child.poll() is None:
         await asyncio.sleep(1)
         entry = ledger.get(plan.execution_id)
         if entry is None or entry.state is not JobLedgerState.SUBMITTED:
@@ -264,10 +279,10 @@ async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster, ph
             reached = _squeue_state(entry.job_id) == "PENDING"
         else:  # The program itself has started inside the container.
             reached = (workspace / "outputs" / "started").exists()
-    task.cancel()  # The control plane is lost; the job stays in Slurm.
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert entry is not None and _squeue_state(entry.job_id)
+    child.kill()  # The control plane is lost; the job stays in Slurm.
+    child.wait()
+    entry = ledger.get(plan.execution_id)
+    assert entry is not None and entry.job_id and _squeue_state(entry.job_id)
 
     restarted_ledger = JobLedger(base / "jobs.sqlite")
     restarted = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_policy(),
@@ -288,6 +303,14 @@ async def test_lost_control_plane_job_is_cancelled_by_reconciliation(cluster, ph
         pytest.skip(f"the job was not observed {phase} within 300s on this partition")
 
 
+def _submit_lost(base: Path, reference: str, hold: bool) -> None:
+    """Child process of the lost-control-plane test: submit the plan read from stdin and wait."""
+    plan = ExecutionPlan.model_validate_json(sys.stdin.read())
+    ledger = JobLedger(base / "jobs.sqlite")
+    executor, _ = _executor(base, reference, ledger, **({"extra_directives": ("--hold",)} if hold else {}))
+    asyncio.run(executor.execute_async(plan))  # Killed by the parent long before it returns.
+
+
 def test_scheduler_preflight_accepts_the_configured_script(cluster):
     _, _, _, base = cluster
 
@@ -295,3 +318,7 @@ def test_scheduler_preflight_accepts_the_configured_script(cluster):
 
     assert all(report["clients"].values()), report
     assert report["test_submission"] == "ACCEPTED", report
+
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--submit-lost"]:
+    _submit_lost(Path(sys.argv[2]), sys.argv[3], sys.argv[4] == "1")
