@@ -243,6 +243,18 @@ def _admitted_references(settings: LocalSettings) -> set[str]:
     return references
 
 
+def _live_files(settings: LocalSettings) -> set[str]:
+    """Every file a record, a restored realization or an Agent environment may still run from."""
+    files = _admitted_references(settings)
+    if settings.environment is not None:
+        catalog = _image_catalog(settings)
+        for path in sorted((settings.environment.root / "records").glob("*.json")):
+            image = _environment_record(settings, "env-" + path.stem, catalog)
+            if image is not None:
+                files.add(image.reference)
+    return files
+
+
 def _reconciled(attempts) -> list[dict]:
     return [{"attempt": item.attempt_id.hex, "removed": item.removed,
              "jobs": [{"job_id": job.job_id, "launcher": job.launcher, "action": job.action.value}
@@ -871,10 +883,21 @@ def _shared(settings: LocalSettings, catalog, area: LabArea, key: str, scope, fi
 
 def _remove_file(settings: LocalSettings, area: LabArea, scope, environment: bool, file: str) -> None:
     if settings.execution.backend == "docker":
+        from .execution.environment_builder import BUILD_LABEL, remove_build_leftovers
+
+        # A platform build (an Agent environment or a lock build) leaves untagged parent images labelled
+        # with its build; Docker does not always remove them with the image, so they go after it.
+        inspected = subprocess.run(["docker", "image", "inspect", "--format",
+                                    f'{{{{index .Config.Labels "{BUILD_LABEL}"}}}}', file],
+                                   capture_output=True, text=True, timeout=60, check=False)
+        build = inspected.stdout.strip()  # Empty when the image is unknown or unlabelled.
         removed = subprocess.run(["docker", "image", "rm", file], capture_output=True, text=True, timeout=300,
                                  check=False)
         if removed.returncode != 0 and "No such image" not in removed.stderr:
             raise AdmissionError("IMAGE_FILE_NOT_REMOVED")
+        if re.fullmatch(r"[0-9a-f]{32}", build):
+            # Best effort: anything left keeps its label, so a later deletion or cleanup can find it.
+            remove_build_leftovers(build, keep=lambda: _live_files(settings), run=subprocess.run)
         return
     from .execution.apptainer import SifStore, SifStoreChain, SifStoreError
 

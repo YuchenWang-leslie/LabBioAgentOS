@@ -155,6 +155,11 @@ def _delete(capsys, lab, key, *extra, reason="Freeing space."):
     return _cli(capsys, lab, "image-delete", "--key", key, "--confirm", "--reason", reason, *extra)
 
 
+def _removed(lab) -> list[str]:
+    """The images `docker image rm` was asked to remove, in order."""
+    return [argv[3] for argv in lab.docker if argv[:3] == ["docker", "image", "rm"]]
+
+
 def _deleted(lab, key):
     from labbioagentos.local_config import _image_catalog, load_settings
 
@@ -174,7 +179,7 @@ def test_a_retired_unused_image_loses_its_file_and_keeps_its_record(lab, capsys)
     _retire(capsys, lab, "mine", "image-revoke")
     code, output = _delete(capsys, lab, "mine")
     assert code == 0 and output["event"] == "image_deleted" and output["file"] == "REMOVE"
-    assert lab.docker == [["docker", "image", "rm", PERSONAL_IMAGE]]
+    assert _removed(lab) == [PERSONAL_IMAGE]
     assert _deleted(lab, "mine")
     (event,) = CatalogStore(lab.tmp / "member" / "catalog").realization_events()
     assert (event.action, event.resolved_image, event.actor, event.reason) == (
@@ -235,7 +240,7 @@ def test_a_member_marker_blocks_deleting_a_lab_image(lab, capsys):
     for marker in lab.area.usage_markers():
         marker.path.unlink()
     assert _delete(capsys, lab, "lab-tools")[0] == 0
-    assert lab.docker == [["docker", "image", "rm", "sha256:" + "6" * 64]]
+    assert _removed(lab) == ["sha256:" + "6" * 64]
     assert CatalogStore(lab.area.catalog.root).realization_events()[0].key == "lab-tools"
 
 
@@ -423,3 +428,49 @@ def test_a_promotion_approval_leaves_out_deleted_lab_images(lab, capsys, monkeyp
     cli.main(["image-promote-approve", "--config", str(lab.path), "--request", request.request_id,
               "--key", "lab-new", "--reason", "Useful."])
     assert seen == [True]
+
+
+def test_a_platform_builds_leftover_parents_go_after_its_image(lab, capsys, monkeypatch):
+    from labbioagentos import local_images
+    from labbioagentos.execution import environment_builder
+
+    build = "f" * 32
+    monkeypatch.setattr(local_images.subprocess, "run", lambda argv, **_kwargs: lab.docker.append(argv) or
+                        SimpleNamespace(returncode=0, stdout=build + "\n" if "inspect" in argv else "", stderr=""))
+    cleaned = []
+
+    def leftovers(build_id, *, keep, run):
+        cleaned.append((build_id, keep(), run))
+        return True
+
+    monkeypatch.setattr(environment_builder, "remove_build_leftovers", leftovers)
+    import asyncio
+
+    from labbioagentos import ApprovedImageRegistry
+    from labbioagentos.execution.environments import EnvironmentService
+    from labbioagentos.local_config import load_settings
+    from test_c15_environment_quota import DIGEST, SizedBuilder
+
+    settings = load_settings(lab.path)
+    registry = ApprovedImageRegistry(settings.execution.approved_images())
+    service = EnvironmentService(settings.environment.root, registry,
+                                 SizedBuilder(), "admin")
+    assert asyncio.run(service.build_environment("python-base", ("examplepkg==2.0",), ()))["status"] == "SUCCEEDED"
+    _retire(capsys, lab, "mine")
+    assert _delete(capsys, lab, "mine")[0] == 0 and _removed(lab) == [PERSONAL_IMAGE]
+    ((build_id, keep, run),) = cleaned
+    assert build_id == build and run is local_images.subprocess.run
+    # Files other records and Agent environments still run from.
+    assert {"sha256:" + "5" * 64, "sha256:" + "6" * 64, DIGEST} <= keep
+
+
+@pytest.mark.parametrize("label", ["", "not-a-build"])
+def test_an_image_without_a_build_label_leaves_nothing_else_to_clean(lab, capsys, monkeypatch, label):
+    from labbioagentos import local_images
+    from labbioagentos.execution import environment_builder
+
+    monkeypatch.setattr(local_images.subprocess, "run", lambda argv, **_kwargs: lab.docker.append(argv) or
+                        SimpleNamespace(returncode=0, stdout=label if "inspect" in argv else "", stderr=""))
+    monkeypatch.setattr(environment_builder, "remove_build_leftovers", lambda *_a, **_k: pytest.fail("cleaned"))
+    _retire(capsys, lab, "mine")
+    assert _delete(capsys, lab, "mine")[0] == 0 and _removed(lab) == [PERSONAL_IMAGE]
