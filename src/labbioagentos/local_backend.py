@@ -1,4 +1,4 @@
-"""Login-node operator commands for the Apptainer backend; no analysis script runs here."""
+"""Operator commands for the explicit Apptainer backend; no analysis script runs here."""
 
 from __future__ import annotations
 
@@ -126,7 +126,7 @@ def check_backend(
     if local:
         from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
-        launcher = SystemdLocalLauncher(runner)
+        launcher = SystemdLocalLauncher(runner, resource_enforcement=apptainer.resource_enforcement)
         local_resources = (local_check or launcher.probe)()
         runner = SystemdProbeRunner(launcher, settings.execution.resources)
     capabilities = probe(

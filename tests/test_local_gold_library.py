@@ -428,7 +428,7 @@ def test_cli_library_commands_authenticate_without_runtime_or_provider(tmp_path,
         "identity": {"user_id": "unused", "project_id": "unused", "lab_id": "unused"},
         "provider": {"env_file": tmp_path / "no-provider.env", "api_key_env": "TEST_KEY",
                      "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-fixture"},
-        "execution": {"image_key": "python", "image_reference": "sha256:" + "1" * 64,
+        "execution": {"backend": "docker", "image_key": "python", "image_reference": "sha256:" + "1" * 64,
                       "resources": {"cpus": 1.0, "memory_mb": 512,
                                     "pids_limit": 32, "timeout_seconds": 30.0}},
     })

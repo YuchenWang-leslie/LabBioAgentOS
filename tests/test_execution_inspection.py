@@ -342,6 +342,11 @@ async def test_successor_inspection_requires_explicit_original_program_and_hash(
     assert page["submitted_program"]["source"] == "# submitted method\npass\n"
     assert page["receipt"] is None  # never invent a historical receipt
     assert page["producer_run_id"] == str(run_id)
+    with pytest.raises(ExecutionSubmissionError):
+        await restarted.revise(receipt.execution_id, receipt.script_hash, (),
+            stage_id=WorkflowStage.EXECUTE, invocation_id=uuid4(),
+            mountable_input_artifact_ids=(imported.artifact_id,), **kwargs)
+    assert len(executor.plans) == 1  # inspection did not make the import a revision base
     Path(imported.storage_locator).write_text("# changed\npass\n")
     with pytest.raises(ExecutionSubmissionError):
         restarted.inspect(receipt.execution_id, imported_source_artifact_ids=(imported.artifact_id,), **kwargs)

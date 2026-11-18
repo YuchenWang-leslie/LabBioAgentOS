@@ -1,4 +1,4 @@
-"""C13: model-visible results never name the backend, scheduler or image store.
+"""C13: raw backend/scheduler details stay private; typed provenance is allowed.
 
 Acceptance criterion 23. The C12 contract tests stay unchanged; this file
 covers the new Apptainer and scheduler paths with error context enabled.
@@ -58,7 +58,12 @@ def test_runtime_lines_never_reach_the_model_but_stay_in_the_raw_log(tmp_path):
     result = executor.execute(_plan())
 
     assert result.status is ExecutionStatus.FAILED
-    view = _model_view(result)
+    model_value = ExecutionReceipt.from_result(result).model_dump(mode="json")
+    assert model_value.pop("execution_provenance") == {
+        "backend": "apptainer", "image_digest": result.resolved_image,
+        "network_control_argv": ["--net", "--network", "none"],
+    }
+    view = json.dumps(model_value).lower()
     for term in FORBIDDEN:
         assert term not in view
     receipt = ExecutionReceipt.from_result(result)

@@ -100,7 +100,7 @@ def test_apptainer_settings_resolve_paths_and_enter_the_runtime_identity(tmp_pat
 
 
 def test_docker_configuration_omits_the_absent_apptainer_section(tmp_path):
-    settings = load_settings(_write(tmp_path, backend="", apptainer=False))
+    settings = load_settings(_write(tmp_path, backend='backend = "docker"', apptainer=False))
     dumped = settings.model_dump(mode="json")["execution"]
     assert dumped["backend"] == "docker" and "apptainer" not in dumped
 
@@ -133,7 +133,7 @@ def test_resource_enforcement_has_no_default(tmp_path):
 
 def test_scheduler_launcher_requires_the_apptainer_backend(tmp_path):
     with pytest.raises(ValidationError):  # Scheduler + Docker.
-        load_settings(_write(tmp_path, backend="", apptainer=False, launcher=LAUNCHER))
+        load_settings(_write(tmp_path, backend='backend = "docker"', apptainer=False, launcher=LAUNCHER))
 
 
 def test_site_template_file_is_resolved_and_validated(tmp_path):
@@ -174,7 +174,7 @@ async def test_scheduler_apptainer_wiring_defers_the_probe_to_the_first_executio
 
 
 def test_docker_placement_retains_its_boundary_with_durable_submission_ledger(tmp_path):
-    settings = load_settings(_write(tmp_path, backend="", apptainer=False))
+    settings = load_settings(_write(tmp_path, backend='backend = "docker"', apptainer=False))
     application = build_application(settings, tmp_path / "run", load_provider=False)
     try:
         executor = application.container_executor
@@ -195,7 +195,7 @@ def test_image_register_prints_the_immutable_reference(tmp_path, capsys):
 
 
 def test_operator_commands_require_the_apptainer_backend(tmp_path, capsys):
-    config = _write(tmp_path, backend="", apptainer=False)
+    config = _write(tmp_path, backend='backend = "docker"', apptainer=False)
     assert cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))]) == 1
     assert cli.main(["backend-check", "--config", str(config)]) == 1
     assert "LOCAL_COMMAND_FAILED" in capsys.readouterr().out

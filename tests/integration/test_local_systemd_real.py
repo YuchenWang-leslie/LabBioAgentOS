@@ -3,11 +3,15 @@
 LABBIO_RUN_LOCAL_SYSTEMD=1 PYTHONPATH=src python -m pytest -q \
     tests/integration/test_local_systemd_real.py
 
-Requires a systemd user manager with CPU, memory and pids controllers delegated.
+Requires a systemd user manager with memory and pids controllers delegated.
+The original quota mode also requires CPU-controller delegation. To exercise
+the integer-core affinity mode without that controller, set
+LABBIO_LOCAL_RESOURCE_ENFORCEMENT=systemd-affinity explicitly.
 These are engineering processes, not substituted scientific analysis programs.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -29,7 +33,10 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def launcher():
-    result = SystemdLocalLauncher(SubprocessApptainerRunner(max_output_file_bytes=1048576))
+    result = SystemdLocalLauncher(
+        SubprocessApptainerRunner(max_output_file_bytes=1048576),
+        resource_enforcement=os.environ.get("LABBIO_LOCAL_RESOURCE_ENFORCEMENT", "systemd-cgroups"),
+    )
     assert result.probe()["status"] == "OK"
     return result
 
@@ -102,7 +109,8 @@ async def test_control_process_death_closes_service_lifetime_pipe(launcher, tmp_
         "from labbioagentos.execution.launchers.systemd import SystemdLocalLauncher\n"
         "from labbioagentos.execution.launchers.base import JobSpec\n"
         "async def main():\n"
-        "    launcher = SystemdLocalLauncher(SubprocessApptainerRunner(max_output_file_bytes=1048576))\n"
+        "    launcher = SystemdLocalLauncher(SubprocessApptainerRunner(max_output_file_bytes=1048576), "
+        f"resource_enforcement={launcher.resource_enforcement!r})\n"
         f"    spec = JobSpec(uuid4(), (sys.executable, '-I', '-c', {_detached_child(path)!r}), "
         f"60, RequestedResources(cpus=1, memory_mb=256, pids_limit=32), Path({str(tmp_path)!r}))\n"
         "    await launcher.submit(spec)\n"
@@ -120,3 +128,30 @@ async def test_control_process_death_closes_service_lifetime_pipe(launcher, tmp_
         if process.poll() is None:
             process.kill()
             process.wait()
+
+
+@pytest.mark.asyncio
+async def test_affinity_mutation_contract_is_inherited_by_threads_and_exec_children(launcher, tmp_path):
+    code = (
+        "import errno, json, os, subprocess, sys, threading\n"
+        "def attempt():\n"
+        "    try:\n"
+        "        os.sched_setaffinity(0, os.sched_getaffinity(0))\n"
+        "        return None\n"
+        "    except OSError as exc:\n"
+        "        return exc.errno\n"
+        "result = {'main': attempt()}\n"
+        "thread = threading.Thread(target=lambda: result.update(thread=attempt()))\n"
+        "thread.start(); thread.join()\n"
+        "child = 'import os; os.sched_setaffinity(0, os.sched_getaffinity(0))'\n"
+        "process = subprocess.run([sys.executable, '-I', '-c', child], capture_output=True)\n"
+        "result['child_denied'] = process.returncode != 0 and b'PermissionError' in process.stderr\n"
+        "print(json.dumps(result))\n"
+    )
+    handle = await launcher.submit(_spec(tmp_path, code))
+    await launcher.wait(handle)
+    outcome = await launcher.collect(handle)
+    assert outcome.exit_code == 0
+    denied = launcher.resource_enforcement == "systemd-affinity"
+    assert json.loads(outcome.stdout) == {"main": 1 if denied else None,
+                                        "thread": 1 if denied else None, "child_denied": denied}

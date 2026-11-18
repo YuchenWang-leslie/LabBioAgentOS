@@ -21,12 +21,17 @@ from pydantic import (
 )
 
 
+DEFAULT_MAX_REQUEST_BYTES = 1_048_576
+MAX_TOOL_ARGUMENT_CHARS = 64_000
+MAX_TOOL_IDENTIFIER_CHARS = 128
+
+
 Identifier = Annotated[
     StrictStr,
     StringConstraints(
         strip_whitespace=True,
         min_length=1,
-        max_length=128,
+        max_length=MAX_TOOL_IDENTIFIER_CHARS,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$",
     ),
 ]
@@ -34,9 +39,10 @@ BoundedText = Annotated[
     StrictStr,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000),
 ]
+MAX_PUBLIC_CONTENT_CHARS = 64_000
 PublicContent = Annotated[
     StrictStr,
-    StringConstraints(min_length=1, max_length=64_000),
+    StringConstraints(min_length=1, max_length=MAX_PUBLIC_CONTENT_CHARS),
 ]
 _IDENTIFIER = TypeAdapter(Identifier)
 
@@ -112,9 +118,12 @@ class KernelEventKind(StrEnum):
     STATE_TRANSITION = "STATE_TRANSITION"
     TASK_UPDATED = "TASK_UPDATED"
     MODEL_TURN_OBSERVED = "MODEL_TURN_OBSERVED"
+    MODEL_OUTPUT_REJECTED = "MODEL_OUTPUT_REJECTED"
     MODEL_USAGE_UNREPORTED = "MODEL_USAGE_UNREPORTED"
     MODEL_USAGE_ON_FAILURE = "MODEL_USAGE_ON_FAILURE"
     MODEL_REQUEST_PREPARED = "MODEL_REQUEST_PREPARED"
+    MODEL_TRANSPORT_PROGRESS = "MODEL_TRANSPORT_PROGRESS"
+    CONTEXT_ROLLED_OVER = "CONTEXT_ROLLED_OVER"
     PROVIDER_RETRY_OBSERVED = "PROVIDER_RETRY_OBSERVED"
     TOOL_BATCH_VALIDATED = "TOOL_BATCH_VALIDATED"
     TOOL_CALL_STARTED = "TOOL_CALL_STARTED"
@@ -191,7 +200,24 @@ class ToolCall(KernelModel):
 
     call_id: Identifier
     name: Identifier
-    arguments_json: StrictStr | None = Field(default=None, max_length=64_000)
+    arguments_json: StrictStr | None = Field(default=None, max_length=MAX_TOOL_ARGUMENT_CHARS)
+
+
+class ToolCallCapacityIssue(KernelModel):
+    """Host-measured capacity facts; never rejected identifiers or argument text."""
+
+    field: Literal["ARGUMENTS_JSON", "CALL_ID", "TOOL_NAME"]
+    call_index: int = Field(ge=0, le=63)
+    actual_chars: int = Field(ge=1)
+    limit_chars: int = Field(ge=1, le=MAX_TOOL_ARGUMENT_CHARS)
+
+    @model_validator(mode="after")
+    def exact_capacity(self):
+        expected = (MAX_TOOL_ARGUMENT_CHARS if self.field == "ARGUMENTS_JSON"
+                    else MAX_TOOL_IDENTIFIER_CHARS)
+        if self.limit_chars != expected or self.actual_chars <= expected:
+            raise ValueError("Capacity issue must exceed its exact channel limit")
+        return self
 
 
 class ToolError(KernelModel):
@@ -411,6 +437,12 @@ class TokenUsage(KernelModel):
         return self
 
 
+class CompletionRejection(KernelModel):
+    """Host admission failure, distinct from an accepted answer's follow-up."""
+
+    feedback: PublicContent
+
+
 class ModelRequest(KernelModel):
     """One bounded provider turn request with exact correlation and binding."""
 
@@ -429,6 +461,31 @@ class ModelRequest(KernelModel):
         names = tuple(tool.name for tool in self.tools)
         if len(names) != len(set(names)):
             raise ValueError("Provider request tool names must be unique")
+        return self
+
+
+class RequestSizeBreakdown(KernelModel):
+    """Exact public JSON byte components and a separate optional wire total.
+
+    Components count encoded values; field names, punctuation, empty declarations
+    and absent-schema placeholders belong to the envelope. Provider projections
+    and private continuity affect only the wire total, never these public parts.
+    """
+
+    public_request_bytes: int = Field(ge=0)
+    public_messages_bytes: int = Field(ge=0)
+    public_tool_declarations_bytes: int = Field(ge=0)
+    public_output_schema_bytes: int = Field(ge=0)
+    public_envelope_bytes: int = Field(ge=0)
+    wire_request_bytes: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def components_match_public_total(self) -> "RequestSizeBreakdown":
+        if self.public_request_bytes != sum((
+            self.public_messages_bytes, self.public_tool_declarations_bytes,
+            self.public_output_schema_bytes, self.public_envelope_bytes,
+        )):
+            raise ValueError("Public request byte components must sum to their total")
         return self
 
 
@@ -514,6 +571,7 @@ class AgentLoopResult(KernelModel):
         "STRUCTURED_OUTPUT_ACCEPTED",
         "RUNTIME_STOPPED",
         "PROVIDER_TURN_LIMIT",
+        "COMPLETION_NO_PROGRESS",
         "PROVIDER_USAGE_LIMIT",
         "PROVIDER_TRANSPORT_STOP",
         "PROVIDER_PROTOCOL_STOP",
@@ -563,6 +621,7 @@ class AgentProfile(KernelModel):
     spec: AgentSpec
     description: BoundedText
     instructions: PublicContent
+    max_output_tokens: int = Field(default=8_192, ge=1, le=131_072)
 
 
 class SpecialistSummary(KernelModel):
@@ -885,6 +944,7 @@ class KernelEvent(KernelModel):
     tool_name: Identifier | None = None
     validation_type: Identifier | None = None
     validation_fields: tuple[Identifier, ...] = Field(default=(), max_length=16)
+    provider_finish_reason: FinishReason | None = None
     numeric_facts: dict[Identifier, int | float | None] = Field(
         default_factory=dict, max_length=32
     )

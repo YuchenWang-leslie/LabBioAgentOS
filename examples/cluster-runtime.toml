@@ -29,8 +29,8 @@ image_key = "scientific-python"
 # Output of `labbio image-register --sif <file>`: the SIF file's sha256.
 image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 available_python_modules = []
-max_output_file_bytes = 8589934592       # Enforced on the host with RLIMIT_FSIZE.
-max_collected_output_bytes = 34359738368
+max_output_file_bytes = 134217728        # Enforced on the host with RLIMIT_FSIZE.
+max_collected_output_bytes = 536870912
 # tmpfs_size_mb has no effect under Apptainer: /tmp lives in the per-execution
 # scratch directory and is bounded only by the per-file size limit.
 

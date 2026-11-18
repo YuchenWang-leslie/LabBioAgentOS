@@ -25,6 +25,7 @@ from labbioagentos.model_safety import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .errors import ExecutionOutputDeclarationError, OutputCollectionError
+from .images import DEFAULT_COLLECTED_OUTPUT_BYTES, DEFAULT_OUTPUT_FILE_BYTES
 from .models import (
     ExecutionFailureClass,
     ExecutionIssue,
@@ -32,17 +33,20 @@ from .models import (
     OutputArtifactSpec,
     OutputContractFailureCode,
     OutputDeclassificationMode,
+    OutputValidationDetails,
     StructuredOutputContract,
 )
 
 
 class _OutputContractValidationError(ValueError):
     def __init__(self, code: OutputContractFailureCode, *, record_index: int | None = None,
-                 observed_records: int | None = None, max_records: int | None = None):
+                 observed_records: int | None = None, max_records: int | None = None,
+                 validation: OutputValidationDetails | None = None):
         super().__init__(code.value)
         self.code = code
         self.record_index = record_index
         self.observed_records, self.max_records = observed_records, max_records
+        self.validation = validation
 
 
 def _reject_json_constant(value: str) -> None:
@@ -64,6 +68,7 @@ class ArtifactRegistrationDecision:
     record_index: int | None = None
     observed_records: int | None = None
     max_records: int | None = None
+    validation: OutputValidationDetails | None = None
     artifact_schema: ArtifactSchema | None = None
     schema_id: str | None = None
     release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
@@ -165,6 +170,7 @@ class ArtifactRegistrationPolicy:
                 failure_code=exc.code,
                 record_index=exc.record_index,
                 observed_records=exc.observed_records, max_records=exc.max_records,
+                validation=exc.validation,
                 schema_id=contract.schema_id,
             )
         except OSError:
@@ -248,9 +254,12 @@ class ArtifactRegistrationPolicy:
             raise _OutputContractValidationError(
                 OutputContractFailureCode.FILE_TOO_LARGE
             )
+        text = path.read_text(encoding="utf-8")
+        if not text:
+            raise _OutputContractValidationError(OutputContractFailureCode.EMPTY_DOCUMENT)
         try:
             document = json.loads(
-                path.read_text(encoding="utf-8"),
+                text,
                 parse_constant=_reject_json_constant,
             )
         except json.JSONDecodeError as exc:
@@ -289,18 +298,20 @@ class ArtifactRegistrationPolicy:
                 raise _OutputContractValidationError(
                     OutputContractFailureCode.UNDECLARED_RECORD_FIELDS, record_index=record_index,
                 )
-            for value in record.values():
-                if isinstance(value, (dict, list)):
-                    raise _OutputContractValidationError(
-                        OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
-                    )
+            for field, value in record.items():
+                # Keys are host-declared at this point; unbounded/nonidentifier
+                # names are omitted rather than breaking the diagnostic contract.
+                field_name = field if len(field) <= 128 and field.isascii() and field.isidentifier() else None
                 if not isinstance(value, (str, int, float, bool, type(None))):
                     raise _OutputContractValidationError(
                         OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
+                        validation=OutputValidationDetails(code="SCALAR_REQUIRED", field_name=field_name),
                     )
                 if isinstance(value, str) and len(value) > contract.max_scalar_string_length:
                     raise _OutputContractValidationError(
                         OutputContractFailureCode.INVALID_DOCUMENT, record_index=record_index,
+                        validation=OutputValidationDetails(code="STRING_TOO_LONG", field_name=field_name,
+                            max_length=contract.max_scalar_string_length),
                     )
         return document
 
@@ -314,6 +325,7 @@ class ArtifactRegistrationPolicy:
         record_index: int | None = None,
         observed_records: int | None = None,
         max_records: int | None = None,
+        validation: OutputValidationDetails | None = None,
         schema_id: str | None = None,
     ) -> ArtifactRegistrationDecision:
         return ArtifactRegistrationDecision(
@@ -326,6 +338,7 @@ class ArtifactRegistrationPolicy:
             failure_code=failure_code,
             record_index=record_index,
             observed_records=observed_records, max_records=max_records,
+            validation=validation,
             schema_id=schema_id,
         )
 
@@ -339,12 +352,14 @@ class OutputCollector:
         registration_policy: ArtifactRegistrationPolicy,
         *,
         trace_recorder: RunTraceRecorder | None = None,
-        max_output_file_bytes: int = 16_777_216,
-        max_collected_output_bytes: int = 67_108_864,
+        max_output_file_bytes: int | None = None,
+        max_collected_output_bytes: int = DEFAULT_COLLECTED_OUTPUT_BYTES,
     ):
         self.store = store
         self.registration_policy = registration_policy
         self.trace_recorder = trace_recorder
+        if max_output_file_bytes is None:
+            max_output_file_bytes = min(DEFAULT_OUTPUT_FILE_BYTES, max_collected_output_bytes)
         if max_output_file_bytes < 1 or max_collected_output_bytes < 1:
             raise ValueError("Output collection byte limits must be positive")
         if max_output_file_bytes > max_collected_output_bytes:
@@ -468,6 +483,7 @@ class OutputCollector:
                     output_index=output_index,
                     record_index=decision.record_index,
                     observed_records=decision.observed_records, max_records=decision.max_records,
+                    validation=decision.validation,
                     message=decision.reason,
                 )
             self._emit(

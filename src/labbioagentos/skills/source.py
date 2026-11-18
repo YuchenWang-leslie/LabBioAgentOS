@@ -54,9 +54,17 @@ class SkillSourceProjector:
         self.artifact_store = artifact_store
 
     @staticmethod
+    def model_view(source: SkillCurationSourceView, **filters) -> dict:
+        """An absent optional external task reference carries no procedural meaning."""
+        data = source.model_dump(mode="json", **filters)
+        if source.task_reference is None:
+            data.pop("task_reference", None)
+        return data
+
+    @staticmethod
     def guidance_view(source: SkillCurationSourceView) -> dict:
         """Project procedural context; leave result previews in the review evidence."""
-        return {**source.model_dump(mode="json", exclude={"stage_context", "artifact_evidence_views"}),
+        return {**SkillSourceProjector.model_view(source, exclude={"stage_context", "artifact_evidence_views"}),
                 "reference_plans": [item.model_dump(mode="json") for item in source.stage_context
                                     if item.stage_id is WorkflowStage.PLAN]}
 
@@ -64,8 +72,8 @@ class SkillSourceProjector:
     def review_view(source: SkillCurationSourceView) -> dict:
         """Relevant reference evidence, without duplicate invocation/trace inventories."""
         return {
-            **source.model_dump(mode="json", include={
-                "source_bundle_id", "source_run_id", "task_reference", "execution_refs",
+            **SkillSourceProjector.model_view(source, include={
+                "source_bundle_id", "source_run_id", "task_reference", "source_user_request", "outcome_evidence", "execution_refs",
                 "artifact_descriptors", "artifact_evidence_views",
             }),
             "reference_plans": [item.model_dump(mode="json") for item in source.stage_context
@@ -174,6 +182,8 @@ class SkillSourceProjector:
             source_bundle_id=bundle.bundle_id,
             source_run_id=bundle.source_run_id,
             task_reference=bundle.task_reference,
+            source_user_request=bundle.source_user_request,
+            outcome_evidence=bundle.outcome_evidence,
             final_status=bundle.final_status,
             workflow_stage_path=bundle.workflow_stage_path,
             stage_context=bundle.stage_context,
@@ -284,6 +294,13 @@ class SkillSourceProjector:
             )
             state["status"] = event.status or state["status"]
             if event.event_type is TraceEventType.EXECUTION_PLANNED:
+                # Only the submission event carries this explicit predecessor. A later
+                # backend plan supplies hashes; it cannot erase the submission's link.
+                predecessor = _uuid(event.payload.get("revision_of"))
+                if predecessor is not None:
+                    if state.get("revision_of", predecessor) != predecessor:
+                        raise SkillSourceProjectionError("Execution has conflicting revision predecessors")
+                    state["revision_of"] = predecessor
                 state["planned_event_id"] = event.event_id
                 state["image_key"] = _string(event.payload.get("image_key"))
                 state["resolved_image"] = _string(

@@ -30,6 +30,7 @@ from labbioagentos.governance import (
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .contracts import ArtifactReadReceipt
+from .delivery import build_delivery_manifest
 
 
 def observation_digest(value) -> str:
@@ -105,6 +106,12 @@ class ReportSubmissionService:
         self.trace_recorder = trace_recorder
         self.max_report_chars = max_report_chars
 
+    def prepare_delivery(self, artifact_ids, *, principal, workspace, run_id,
+                         imported_artifact_ids=()):
+        return build_delivery_manifest(self.store, self.access_service, artifact_ids,
+            principal=principal, workspace=workspace, run_id=run_id,
+            imported_artifact_ids=imported_artifact_ids, trace_recorder=self.trace_recorder)
+
     def submit(
         self,
         *,
@@ -118,6 +125,8 @@ class ReportSubmissionService:
         invocation_id: UUID,
         evidence_read_receipts: tuple[ArtifactReadReceipt, ...] | None = None,
         receipt_delivery_invocation_id: UUID | None = None,
+        delivery_artifact_ids: tuple[UUID, ...] | None = None,
+        delivery_imported_artifact_ids: tuple[UUID, ...] = (),
     ) -> ReportReceipt:
         title = title.strip()
         report_text = report_text.strip()
@@ -140,6 +149,11 @@ class ReportSubmissionService:
                 raise AuthorizationDenied("Evidence artifact is outside the bound workspace")
             self.access_service.require_artifact(principal, ref)
         citation_summary = {}
+        delivery_summary = {}
+        if delivery_artifact_ids is not None:
+            delivery_summary['delivery_manifest'] = self.prepare_delivery(
+                delivery_artifact_ids, principal=principal, workspace=workspace,
+                run_id=run_id, imported_artifact_ids=delivery_imported_artifact_ids)
         if evidence_read_receipts is not None:
             delivery_invocation_id = receipt_delivery_invocation_id or invocation_id
             if (len(evidence_read_receipts) > 64
@@ -163,6 +177,7 @@ class ReportSubmissionService:
                     "character_count": len(report_text),
                     "evidence_artifact_ids": [str(item) for item in evidence_artifact_ids],
                     **citation_summary,
+                    **delivery_summary,
                 },
                 stored_content=report_text,
             ),
@@ -189,6 +204,7 @@ class ReportSubmissionService:
                     "report_artifact_id": str(ref.artifact_id),
                     "evidence_artifact_ids": [str(item) for item in evidence_artifact_ids],
                     **citation_summary,
+                    **delivery_summary,
                 },
             )
         return ReportReceipt(report_artifact_id=ref.artifact_id)

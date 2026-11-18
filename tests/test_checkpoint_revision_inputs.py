@@ -11,6 +11,57 @@ from test_runtime_milestone_b import boundary, _toolset  # noqa: F401
 from test_skill_retrieval_grounding import boundary as gold_boundary, _pending_proposal  # noqa: F401
 
 
+@pytest.mark.parametrize('mode', ['base', 'optional', 'data_bearing'])
+@pytest.mark.parametrize('capability', ['execution_submit', 'execution_revise'])
+def test_generated_native_input_guidance_publishes_both_uuid_sources(mode, capability):
+    from labbioagentos import ExecutionRuntime, RequestedResources, RuntimeExecutionCapabilityView
+    from labbioagentos.execution.models import ExecutionReceipt
+    from labbioagentos.runtime.native_tools import build_labbio_tool_registry
+
+    # Check actual published ToolSpecs, including the data-bearing field override.
+    # The reference names must correspond to real public contracts, not a prose alias.
+    checkpoint_field = 'registered_outputs'
+    initial_field = 'mountable_input_artifact_ids'
+    assert checkpoint_field in ExecutionReceipt.model_fields
+    assert initial_field in RuntimeExecutionCapabilityView.model_fields
+    view = None if mode == 'base' else RuntimeExecutionCapabilityView(
+        runtime=ExecutionRuntime.PYTHON, image_key='fixture-image',
+        resources=RequestedResources(), network_required=False,
+        minimum_queryable_output_count=int(mode == 'data_bearing'),
+        mountable_input_artifact_ids=(uuid4(),))
+    spec = next(item for item in build_labbio_tool_registry(object(), view).specs
+                if item.name == capability)
+    for guidance in (spec.description, spec.parameters['properties']['input_artifact_ids']['description']):
+        assert checkpoint_field in guidance
+        assert initial_field in guidance
+        assert 'invocation' in guidance.lower()
+        assert 'scratch' in guidance.lower()
+
+
+def test_mountable_input_view_distinguishes_initial_inputs_from_receipt_checkpoints():
+    from labbioagentos import RuntimeExecutionCapabilityView
+    guidance = RuntimeExecutionCapabilityView.model_json_schema()['properties'][
+        'mountable_input_artifact_ids']['description']
+    assert 'initial' in guidance.lower()
+    assert 'registered_outputs' in guidance
+
+
+def test_native_revision_guidance_identifies_original_scope_and_fresh_rerun():
+    from labbioagentos.runtime.native_tools import build_labbio_tool_registry
+    registry = build_labbio_tool_registry(object())
+    spec = next(item for item in registry.specs if item.name == 'execution_revise')
+    properties = spec.parameters['properties']
+    for field in ('execution_id', 'expected_script_hash', 'edits'):
+        assert field in properties
+        assert field in spec.description
+    assert 'execution_inspect' in registry.names
+    assert 'execution_inspect' in spec.description
+    assert 'same-run' in spec.description
+    assert 'prior-run' in spec.description
+    assert '.py' in spec.description
+    assert 'fresh' in spec.description
+
+
 @pytest.mark.asyncio
 async def test_revision_explicitly_replaces_inputs_and_parameters(inspection, boundary):
     service, executor, run_id = inspection
@@ -178,6 +229,8 @@ async def test_revision_none_inherits_but_empty_overrides_clear(inspection, boun
         input_artifact_ids=[str(checkpoint)], parameters={'mode': 'reuse'}))['data']
     inherited = await tools.execution_revise(selected['execution_id'], selected['script_hash'])
     assert inherited['success']
+    assert inherited['data']['execution_id'] != selected['execution_id']
+    assert executor.plans[-1].script_content == executor.plans[-2].script_content
     assert executor.plans[-1].input_artifact_ids == (checkpoint,)
     assert executor.plans[-1].parameters == {'mode': 'reuse'}
     cleared = await tools.execution_revise(selected['execution_id'], selected['script_hash'],

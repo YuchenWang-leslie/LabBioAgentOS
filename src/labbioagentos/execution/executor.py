@@ -34,8 +34,10 @@ from .models import (
     ExecutionDiagnostic,
     ExecutionErrorContext,
     ExecutionFailureClass,
+    ExecutionHostTermination,
     ExecutionIssue,
     ExecutionPlan,
+    ExecutionProvenance,
     ExecutionResult,
     ExecutionStatus,
     OutputContractFailureCode,
@@ -52,6 +54,7 @@ from .python_diagnostics import (
 )
 from .job_ledger import JobLedger
 from .launchers import JobLauncher, JobSpec, LocalLauncher, TERMINAL_STATES
+from .launchers.base import JobLauncherError
 from .registration import OutputCollector
 from .process_streams import MAX_CAPTURED_STREAM_BYTES
 
@@ -63,6 +66,7 @@ class _PreparedExecution:
     workspace: ExecutionWorkspace
     script_ref: ArtifactRef
     argv: tuple[str, ...]
+    execution_provenance: ExecutionProvenance | None
 
 
 class ContainerExecutor:
@@ -102,7 +106,7 @@ class ContainerExecutor:
                 "minimum_queryable_output_count must be between 0 and 128"
             )
         self.minimum_queryable_output_count = minimum_queryable_output_count
-        # Trusted-trace backend isolation summary; never part of a receipt.
+        # Trusted-trace isolation details; only typed adapter/image identity is public.
         self.isolation_record = None if isolation_record is None else dict(isolation_record)
         # None means the control-plane host, through the current process runner.
         self.launcher = launcher
@@ -159,14 +163,17 @@ class ContainerExecutor:
             stopped = False
             try:
                 try:
-                    handle = await launcher.submit(JobSpec(
+                    submission = asyncio.create_task(launcher.submit(JobSpec(
                         execution_id=plan.execution_id,
                         argv=prepared.argv,
                         timeout_seconds=plan.resources.timeout_seconds,
                         resources=plan.resources,
                         workspace_root=prepared.workspace.root,
                         cleanup_paths=self.command_builder.cleanup_paths(plan.execution_id),
-                    ))
+                    )))
+                    # Cancellation of this waiter cannot cancel an in-flight
+                    # acceptance or erase the handle needed to stop the job.
+                    handle = await asyncio.shield(submission)
                 except ContainerStartError:
                     stopped = True  # The launcher's contract confirms nothing started.
                     if ledger is not None:
@@ -182,11 +189,33 @@ class ContainerExecutor:
             except ContainerStartError as exc:
                 return self._start_failure(plan, prepared, exc)
             except asyncio.CancelledError:
-                if handle is not None:
-                    # Cancelling the wait is not cancelling the underlying job.
-                    await asyncio.shield(launcher.cancel(handle))
-                    state = await asyncio.wait_for(asyncio.shield(launcher.wait(handle)), timeout=15)
-                    stopped = state in TERMINAL_STATES
+                async def confirm_stop():
+                    nonlocal handle
+                    if handle is None:
+                        try:
+                            handle = await submission
+                        except ContainerStartError:
+                            if ledger is not None:
+                                ledger.record_not_submitted(plan.execution_id)
+                            return True
+                        if ledger is not None:
+                            ledger.record_submitted(plan.execution_id, handle.job_id)
+                    await launcher.cancel(handle)
+                    state = await asyncio.wait_for(launcher.wait(handle), timeout=15)
+                    if state not in TERMINAL_STATES:
+                        raise JobLauncherError("Execution stop is unconfirmed")
+                    return True
+
+                cleanup = asyncio.create_task(confirm_stop())
+                while True:
+                    try:
+                        stopped = await asyncio.shield(cleanup)
+                        break
+                    except asyncio.CancelledError:
+                        if cleanup.cancelled():
+                            raise
+                        # Hold the execution lock through repeated user stops.
+                        continue
                 raise
             finally:
                 if stopped:
@@ -289,7 +318,14 @@ class ContainerExecutor:
             "STARTED",
             {"image_key": plan.image_key},
         )
-        return _PreparedExecution(started_at, image, workspace, script_ref, argv)
+        backend = getattr(self.command_builder, "backend", None)
+        network_options = getattr(self.command_builder, "network_control_argv", None)
+        provenance = (ExecutionProvenance(
+            backend=backend,
+            image_digest=image.digest or image.resolved_reference.rsplit("@", 1)[-1],
+            network_control_argv=network_options(plan.network_required) if network_options else None,
+        ) if backend in {"docker", "apptainer"} else None)
+        return _PreparedExecution(started_at, image, workspace, script_ref, argv, provenance)
 
     def _start_failure(
         self, plan: ExecutionPlan, prepared: _PreparedExecution, exc: ContainerStartError,
@@ -301,6 +337,7 @@ class ContainerExecutor:
             prepared.image,
             prepared.workspace,
             prepared.script_ref,
+            execution_provenance=prepared.execution_provenance,
             status=ExecutionStatus.FAILED,
             started_at=prepared.started_at,
             completed_at=completed_at,
@@ -343,10 +380,12 @@ class ContainerExecutor:
                 image,
                 workspace,
                 script_ref,
+                execution_provenance=prepared.execution_provenance,
                 status=ExecutionStatus.FAILED,
                 started_at=started_at,
                 completed_at=completed_at,
                 duration_seconds=outcome.duration_seconds,
+                host_termination=outcome.host_termination,
                 exit_code=outcome.exit_code,
                 error_class=ExecutionFailureClass.ARTIFACT_REGISTRATION_FAILURE,
                 error_message=message,
@@ -372,9 +411,11 @@ class ContainerExecutor:
             self._emit_failure(plan, error_class, message)
             return self._result(
                 plan, image, workspace, script_ref,
+                execution_provenance=prepared.execution_provenance,
                 status=(ExecutionStatus.TIMED_OUT if outcome.timed_out else ExecutionStatus.FAILED),
                 started_at=started_at, completed_at=completed_at,
                 duration_seconds=outcome.duration_seconds,
+                host_termination=outcome.host_termination,
                 stdout_ref=stdout_ref, stderr_ref=stderr_ref,
                 error_class=error_class, error_message=message,
                 issues=(ExecutionIssue(error_class=ExecutionFailureClass.LOG_LIMIT,
@@ -388,15 +429,17 @@ class ContainerExecutor:
                 image,
                 workspace,
                 script_ref,
+                execution_provenance=prepared.execution_provenance,
                 status=ExecutionStatus.TIMED_OUT,
                 started_at=started_at,
                 completed_at=completed_at,
                 duration_seconds=outcome.duration_seconds,
+                host_termination=outcome.host_termination,
                 stdout_ref=stdout_ref,
                 stderr_ref=stderr_ref,
                 error_class=ExecutionFailureClass.TIMEOUT,
                 error_message=message,
-                error_context=(bounded_error_context(model_stderr)
+                error_context=(bounded_error_context(model_stderr, raw_stderr=outcome.stderr)
                     if self.execution_policy.include_error_context else None),
             )
         # A failed program can still leave declared checkpoints. Collect them
@@ -412,7 +455,7 @@ class ContainerExecutor:
             output_refs = exc.output_artifact_refs
             issues = exc.issues
         if outcome.exit_code != 0:
-            message = f"Container process exited with code {outcome.exit_code}."
+            message = f"Execution command exited with code {outcome.exit_code}."
             self._emit_failure(
                 plan,
                 ExecutionFailureClass.NON_ZERO_EXIT,
@@ -424,10 +467,12 @@ class ContainerExecutor:
                 image,
                 workspace,
                 script_ref,
+                execution_provenance=prepared.execution_provenance,
                 status=ExecutionStatus.FAILED,
                 started_at=started_at,
                 completed_at=completed_at,
                 duration_seconds=outcome.duration_seconds,
+                host_termination=outcome.host_termination,
                 exit_code=outcome.exit_code,
                 stdout_ref=stdout_ref,
                 stderr_ref=stderr_ref,
@@ -435,7 +480,7 @@ class ContainerExecutor:
                 error_message=message,
                 output_refs=output_refs,
                 issues=issues,
-                error_context=(bounded_error_context(model_stderr)
+                error_context=(bounded_error_context(model_stderr, raw_stderr=outcome.stderr)
                     if self.execution_policy.include_error_context else None),
                 diagnostics=self._safe_python_diagnostics(
                     model_stderr,
@@ -480,10 +525,12 @@ class ContainerExecutor:
                 image,
                 workspace,
                 script_ref,
+                execution_provenance=prepared.execution_provenance,
                 status=ExecutionStatus.FAILED,
                 started_at=started_at,
                 completed_at=completed_at,
                 duration_seconds=outcome.duration_seconds,
+                host_termination=outcome.host_termination,
                 exit_code=0,
                 stdout_ref=stdout_ref,
                 stderr_ref=stderr_ref,
@@ -512,10 +559,12 @@ class ContainerExecutor:
             image,
             workspace,
             script_ref,
+            execution_provenance=prepared.execution_provenance,
             status=ExecutionStatus.SUCCEEDED,
             started_at=started_at,
             completed_at=completed_at,
             duration_seconds=outcome.duration_seconds,
+            host_termination=outcome.host_termination,
             exit_code=0,
             stdout_ref=stdout_ref,
             stderr_ref=stderr_ref,
@@ -578,6 +627,7 @@ class ContainerExecutor:
         started_at: datetime,
         completed_at: datetime,
         duration_seconds: float,
+        execution_provenance: ExecutionProvenance | None = None,
         exit_code: int | None = None,
         stdout_ref: ArtifactRef | None = None,
         stderr_ref: ArtifactRef | None = None,
@@ -585,6 +635,7 @@ class ContainerExecutor:
         issues: tuple[ExecutionIssue, ...] = (),
         diagnostics: tuple[ExecutionDiagnostic, ...] = (),
         error_context: ExecutionErrorContext | None = None,
+        host_termination: ExecutionHostTermination | None = None,
         error_class: ExecutionFailureClass | None = None,
         error_message: str | None = None,
     ) -> ExecutionResult:
@@ -596,6 +647,7 @@ class ContainerExecutor:
             status=status,
             image_key=plan.image_key,
             resolved_image=image.resolved_reference,
+            execution_provenance=execution_provenance,
             script_hash=workspace.script_hash,
             script_ref=script_ref,
             exit_code=exit_code,
@@ -610,6 +662,7 @@ class ContainerExecutor:
             issues=issues,
             diagnostics=diagnostics,
             error_context=error_context,
+            host_termination=host_termination,
         )
 
     _safe_python_diagnostics = staticmethod(safe_python_diagnostics)

@@ -17,6 +17,7 @@ from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from .contracts import (
     BudgetDelta,
     FinishReason,
+    Identifier,
     ToolCall,
     ToolError,
     ToolResult,
@@ -24,6 +25,7 @@ from .contracts import (
 )
 from .control import BudgetLedger, InterruptToken
 from .errors import (
+    CloseoutRequiredError,
     ToolBatchRejectedError,
     ToolExecutionFailure,
     ToolResultProjectionError,
@@ -33,6 +35,64 @@ from .errors import (
 ToolHandler = Callable[[BaseModel], Awaitable[Any] | Any]
 ResultValidator = Callable[[JsonValue], None]
 _JSON_VALUE_ADAPTER = TypeAdapter(JsonValue)
+_VALIDATION_PATH_ADAPTER = TypeAdapter(Identifier)
+
+
+def safe_validation_path(model, location, *, root_name="request") -> str:
+    """Expose bounded schema field names, never model-supplied object keys."""
+    path, _ = _validation_location(model.model_json_schema(), location, root_name=root_name)
+    return path
+
+
+def _validation_location(root, location, *, root_name="request"):
+    """Return a safe path and its exact public schema (empty if unresolved)."""
+    node = root
+    parts = []
+    for component in location[:8]:
+        while "$ref" in node:
+            node = root.get("$defs", {}).get(node["$ref"].rsplit("/", 1)[-1], {})
+        if isinstance(component, int) and "items" in node:
+            part = str(component)
+            node = node["items"]
+        elif component in node.get("properties", {}):
+            part = component
+            node = node["properties"][component]
+        else:
+            part = "unknown_field"
+            node = {}
+        try:
+            _VALIDATION_PATH_ADAPTER.validate_python(".".join((*parts, part)))
+        except ValidationError:
+            node = {}
+            break
+        parts.append(part)
+        if part == "unknown_field":
+            break
+    return ".".join(parts) or root_name, node if len(parts) == len(location) else {}
+
+
+def _tool_validation_message(error_type, field_schema):
+    if error_type in {"string_too_long", "string_too_short"}:
+        keyword, direction = (("maxLength", "at most") if error_type == "string_too_long"
+                              else ("minLength", "at least"))
+        limit = field_schema.get(keyword)
+        if limit is None:
+            # An optional constrained string declares its limit in the non-null arm.
+            alternatives = [arm for arm in field_schema.get("anyOf", ())
+                            if not isinstance(arm, dict) or arm.get("type") != "null"]
+            if (len(alternatives) == 1 and isinstance(alternatives[0], dict)
+                    and alternatives[0].get("type") == "string"):
+                limit = alternatives[0].get(keyword)
+        if type(limit) is int and limit >= 0:
+            unit = "character" if limit == 1 else "characters"
+            return f"The reported field requires {direction} {limit} {unit}."
+    if error_type in {"model_type", "dict_type"}:
+        return ("The reported field requires a JSON object matching the registered schema; "
+                "omit it if optional instead of sending prose")
+    if error_type == "int_type":
+        return ("The reported field requires an unquoted JSON integer; omit it if optional "
+                "instead of sending a string or other type")
+    return "Tool arguments do not match the registered schema"
 
 
 class _DuplicateKeyError(ValueError):
@@ -301,22 +361,18 @@ class ToolRegistry:
             )
         except ValidationError as exc:
             issues = exc.errors(include_url=False, include_input=False, include_context=False)[:16]
-            fields = tuple(
-                ".".join(str(part) for part in issue["loc"][:8]) or "request"
+            locations = tuple(
+                _validation_location(definition.spec.parameters, issue["loc"])
                 for issue in issues
             )
+            error_type = issues[0]["type"] if issues else None
             raise ToolBatchRejectedError(
                 "INVALID_TOOL_ARGUMENTS",
-                ("The reported field requires a JSON object matching the registered schema; "
-                 "omit it if optional instead of sending prose"
-                 if issues and issues[0]["type"] == "model_type"
-                 else "The reported field requires an unquoted JSON integer; omit it if optional instead of sending a string or other type"
-                 if issues and issues[0]["type"] == "int_type"
-                 else "Tool arguments do not match the registered schema"),
+                _tool_validation_message(error_type, locations[0][1] if locations else {}),
                 call_id=call.call_id,
                 tool_name=call.name,
-                validation_type=issues[0]["type"] if issues else None,
-                validation_fields=fields,
+                validation_type=error_type,
+                validation_fields=tuple(path for path, _ in locations),
             ) from None
         return ParsedToolCall(
             request=call,
@@ -385,6 +441,9 @@ class ToolDispatcher:
         max_calls_per_batch: int = 64,
         batch_observer: Callable[[tuple[ToolResult, ...]], None] | None = None,
         stop_requested: Callable[[], str | None] | None = None,
+        closeout_tools: tuple[str, ...] = (),
+        closeout_reserve: int = 0,
+        stop_handoff: tuple[str, str] | None = None,
     ):
         if max_calls_per_batch < 1 or max_calls_per_batch > 64:
             raise ValueError("max_calls_per_batch must be between 1 and 64")
@@ -394,6 +453,53 @@ class ToolDispatcher:
         self.max_calls_per_batch = max_calls_per_batch
         self.batch_observer = batch_observer
         self.stop_requested = stop_requested
+        if (bool(closeout_tools) != bool(closeout_reserve) or closeout_reserve < 0
+                or closeout_reserve and (budget_ledger is None or closeout_reserve > min(
+                    budget_ledger.limits.tool_calls, budget_ledger.limits.evidence_entries))):
+            raise ValueError('Closeout reserve requires tools and sufficient shared capacity')
+        self.closeout_tools = frozenset(closeout_tools)
+        self.closeout_reserve = closeout_reserve
+        self.closeout_only = False
+        self.stop_handoff = stop_handoff
+        self.stop_handoff_active = False
+
+    def admit_stop_handoff(self, reason: str) -> bool:
+        """Restrict an existing completion reservation to one named handoff tool."""
+        if self.stop_handoff is None:
+            return False
+        designated_reason, tool = self.stop_handoff
+        if reason != designated_reason or tool not in self.closeout_tools or tool not in self.registry.names:
+            return False
+        self.closeout_only = True
+        self.closeout_tools = frozenset({tool})
+        self.stop_handoff_active = True
+        return True
+
+    @property
+    def work_calls_remaining(self) -> int | None:
+        if self.closeout_only:
+            return 0
+        if not self.closeout_reserve:
+            return None
+        return max(0, min(
+            self.budget_ledger.limits.tool_calls - self.budget_ledger.usage.tool_calls,
+            self.budget_ledger.limits.evidence_entries - self.budget_ledger.usage.evidence_entries,
+        ) - self.closeout_reserve)
+
+    @property
+    def available_specs(self):
+        if self.closeout_reserve and min(
+                self.budget_ledger.limits.tool_calls - self.budget_ledger.usage.tool_calls,
+                self.budget_ledger.limits.evidence_entries - self.budget_ledger.usage.evidence_entries) <= 0:
+            return ()
+        return tuple(spec for spec in self.registry.specs
+            if self.work_calls_remaining != 0 or spec.name in self.closeout_tools)
+
+    def validate_capacity(self, calls):
+        if self.work_calls_remaining is not None and sum(
+                call.name not in self.closeout_tools or call.name not in self.registry.names
+                for call in calls) > self.work_calls_remaining:
+            raise CloseoutRequiredError()
 
     @property
     def stop_reason(self) -> str | None:
@@ -405,6 +511,8 @@ class ToolDispatcher:
         *,
         finish_reason: FinishReason,
     ) -> tuple[DispatchOutcome, ...]:
+        calls = tuple(calls)
+        self.validate_capacity(calls)
         parsed = self.registry.validate_batch(
             calls,
             finish_reason=finish_reason,
@@ -421,15 +529,19 @@ class ToolDispatcher:
         on_tool_started: Callable[[ParsedToolCall], None] | None = None,
     ) -> tuple[DispatchOutcome, ...]:
         parsed = tuple(parsed)
+        if reserve_budget:
+            self.validate_capacity(tuple(item.request for item in parsed))
         if reserve_budget and self.budget_ledger is not None:
             self.budget_ledger.reserve(BudgetDelta(tool_calls=len(parsed)))
 
         outcomes: list[DispatchOutcome] = []
         for item in parsed:
             tool_invocation_id = uuid4()
+            stop = self.stop_reason
+            allowed_handoff = self.stop_handoff_active and self.stop_handoff == (stop, item.request.name)
             if (
                 interrupt_token is not None and interrupt_token.requested
-            ) or self.stop_reason is not None:
+            ) or (stop is not None and not allowed_handoff):
                 interrupted = interrupt_token is not None and interrupt_token.requested
                 outcomes.append(DispatchOutcome(
                     result=self._failed_result(

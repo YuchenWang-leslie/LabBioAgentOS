@@ -730,6 +730,11 @@ class LabBioApplication:
         self.execution_capability = (
             RuntimeExecutionCapabilityView.from_trusted_configuration(
                 runtime=profile.runtime,
+                backend=(getattr(configuration.command_builder, "backend", None)
+                         if configuration.command_builder is not None else "docker"),
+                placement={"local": "local", "local-systemd": "local", "scheduler": "scheduler"}.get(
+                    configuration.job_launcher.kind if configuration.job_launcher is not None else "local"
+                ),
                 image_key=profile.image_key,
                 resources=profile.resources,
                 network_required=profile.network_required,
@@ -740,6 +745,12 @@ class LabBioApplication:
                 image_registry=self.image_registry,
                 execution_policy=self.execution_policy,
                 registration_policy=self.registration_policy,
+                allow_generated_file_read=configuration.exposure_policy.allow_generated_file_read,
+                cpu_limit_mode=(
+                    "locked-affinity"
+                    if getattr(configuration.job_launcher, "resource_enforcement", None) == "systemd-affinity"
+                    else None
+                ),
             )
             if profile is not None
             else None

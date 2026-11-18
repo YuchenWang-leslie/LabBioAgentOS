@@ -48,17 +48,19 @@ def test_followup_schema_only_exposes_an_answered_not_exhausted_identity():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["semantic_proposal", "schema_result", "handoff_required"])
+@pytest.mark.parametrize("failure", ["semantic_proposal", "schema_result", "handoff_required", "context_too_large"])
 async def test_invalid_final_result_fails_stably_without_replaying_completed_tools(
     tmp_path, governed_invokers, monkeypatch, failure,
 ):
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         result = _next_result(stage_input.stage_id)
         if stage_input.stage_id is WorkflowStage.EXECUTE:
             if failure == "schema_result":
                 raise RuntimeIntegrationError("MALFORMED_RUNTIME_RESULT", "PRIVATE_ERROR_MESSAGE")
             if failure == "handoff_required":
                 raise RuntimeIntegrationError("HANDOFF_REQUIRED", "PRIVATE_ERROR_MESSAGE")
+            if failure == "context_too_large":
+                raise RuntimeIntegrationError("FINALIZATION_CONTEXT_TOO_LARGE", "PRIVATE_ERROR_MESSAGE")
             return result.model_copy(update={"next_action": _question(followup="This is a first question, not an ID.")})
         return result
 
@@ -86,6 +88,9 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
     if failure == "handoff_required":
         assert result.issue_codes == ("HANDOFF_REQUIRED",)
         assert rejected.failure_code == "HANDOFF_REQUIRED"
+    if failure == "context_too_large":
+        assert result.issue_codes == ("FINALIZATION_CONTEXT_TOO_LARGE",)
+        assert rejected.failure_code == "FINALIZATION_CONTEXT_TOO_LARGE"
     store.close()
     store = SQLiteRunStateStore(path)
     app = LabBioApplication(_capability_configuration(tmp_path, store))
@@ -103,7 +108,7 @@ async def test_invalid_final_result_fails_stably_without_replaying_completed_too
 async def test_missing_required_capability_fails_stably_with_completed_empty_evidence(
     tmp_path, governed_invokers, monkeypatch,
 ):
-    async def no_capability_calls(self, stage_input):
+    async def no_capability_calls(self, stage_input, *, resolve_finalization=None):
         return CapabilityEvidenceBundle(
             run_id=stage_input.run_id,
             stage_id=stage_input.stage_id,
@@ -135,7 +140,7 @@ async def test_recovered_finalization_rejection_preserves_evidence_without_repla
     from test_interruption_reconciliation import _interrupt_after_tools
     app, store, handle, executor = await _interrupt_after_tools(tmp_path, governed_invokers)
 
-    async def invalid(self, stage_input, *, capability_evidence=None):
+    async def invalid(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         return _next_result(stage_input.stage_id).model_copy(update={
             "next_action": _question(followup="First question explanation is not an ID.")})
 

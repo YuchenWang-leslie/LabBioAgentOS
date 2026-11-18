@@ -778,6 +778,28 @@ async def test_invalid_tool_arguments_feedback_names_only_schema_fields():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('unknown_key', ('requirements[]', 'private-secret-key', 'bad\nfield', 'x' * 200))
+async def test_unknown_tool_fields_receive_safe_feedback_and_agent_can_correct(unknown_key):
+    loop, provider, effects = _tool_loop((
+        ModelTurn(tool_calls=(ToolCall(call_id='invalid-field', name='record_value',
+            arguments_json=json.dumps({'value': 'valid', unknown_key: 'PRIVATE_VALUE'})),),
+            finish_reason=FinishReason.TOOL_CALLS),
+        ModelTurn(tool_calls=(ToolCall(call_id='corrected-field', name='record_value',
+            arguments_json='{"value":"valid"}'),), finish_reason=FinishReason.TOOL_CALLS),
+        ModelTurn(content='complete', finish_reason=FinishReason.STOP),
+    ))
+    result = await loop.run(messages=(PublicMessage(role='USER', content='Synthetic correction.'),),
+        deadline_monotonic=10_000_000_000.0)
+    feedback = json.loads(next(m.content for m in provider.requests[1].messages if m.role == 'TOOL'))
+    assert feedback['error']['code'] == 'INVALID_TOOL_ARGUMENTS'
+    assert feedback['error']['validation_type'] == 'extra_forbidden'
+    assert feedback['error']['validation_fields'] == ['unknown_field']
+    assert unknown_key not in json.dumps(feedback) and 'PRIVATE_VALUE' not in json.dumps(feedback)
+    assert effects == [{'value': 'valid', 'nested': None}]
+    assert [r.status for r in result.tool_results] == ['FAILED', 'SUCCEEDED']
+
+
+@pytest.mark.asyncio
 async def test_incomplete_tool_turn_rejects_before_effect_and_can_recover():
     loop, _provider, effects = _tool_loop(
         (
@@ -1252,6 +1274,7 @@ async def test_context_replaces_only_old_completed_batches_with_reread_reference
     loop, provider, _effects = _tool_loop((
         ModelTurn(content="Done.", finish_reason=FinishReason.STOP),
     ))
+    loop.max_request_bytes = 256_000
     _enable_evidence_reader(loop)
     discarded = []
     provider.discard_tool_batch = lambda run_id, invocation_id, calls, **_kwargs: discarded.append(
@@ -1278,19 +1301,23 @@ async def test_context_replaces_only_old_completed_batches_with_reread_reference
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("remaining_tokens,compacted", [(19, True), (899, False)])
-async def test_observed_token_budget_risk_compacts_rereadable_context_below_byte_limit(
-    remaining_tokens, compacted,
+@pytest.mark.parametrize("remaining_tokens,provider_turns,input_tokens,risk", [
+    (19, 8, 100, True), (199, 8, 100, True), (799, 8, 100, True),
+    (800, 8, 100, False), (899, 8, 100, False),
+    (199, 1, 100, False), (199, 8, None, False),
+])
+async def test_observed_token_budget_risk_is_telemetry_below_byte_limit(
+    remaining_tokens, provider_turns, input_tokens, risk,
 ):
-    first_id, first = _observed_batch(1)
+    _first_id, first = _observed_batch(1)
     _last_id, latest = _observed_batch(2)
     loop, provider, _effects = _tool_loop((
         ModelTurn(content="Done.", finish_reason=FinishReason.STOP,
                   usage=TokenUsage(total_tokens=1)),
-    ), tokens=101 + remaining_tokens)
+    ), tokens=101 + remaining_tokens, provider_turns=provider_turns)
     _enable_evidence_reader(loop)
     observed = ModelTurn(content="Prior response.", finish_reason=FinishReason.STOP,
-                         usage=TokenUsage(input_tokens=100, output_tokens=1, total_tokens=101))
+                         usage=TokenUsage(input_tokens=input_tokens, output_tokens=1, total_tokens=101))
     loop.observations.append(loop._observe(observed, 1, 0))
     loop.budget_ledger.record_observed_usage(tokens=101, wall_time_ms=0)
 
@@ -1303,14 +1330,10 @@ async def test_observed_token_budget_risk_compacts_rereadable_context_below_byte
     request = provider.requests[0]
     assert len(request.model_dump_json().encode("utf-8")) < 256_000
     event = next(item for item in loop.events if item.kind == "MODEL_REQUEST_PREPARED")
-    assert event.numeric_facts["compacted_batches"] == int(compacted)
+    assert event.numeric_facts["context_budget_risk"] == int(risk)
+    assert event.numeric_facts["compacted_batches"] == 0
     assert request.messages[-2:] == latest
-    if compacted:
-        marker = json.loads(request.messages[1].content)
-        assert marker["observations"][0]["observation_id"] == first_id
-        assert marker["reread_tool"] == "evidence_read"
-    else:
-        assert request.messages[1:3] == first
+    assert request.messages[1:3] == first
 
 
 @pytest.mark.asyncio
@@ -1361,6 +1384,7 @@ async def test_context_does_not_advertise_unavailable_evidence_reader():
     loop, provider, _effects = _tool_loop((
         ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
     ))
+    loop.max_request_bytes = 256_000
     with pytest.raises(KernelContractError, match="capacity"):
         await loop.run(
             messages=(PublicMessage(role="USER", content="Keep readable evidence."),
@@ -1398,10 +1422,10 @@ async def test_context_replacement_keeps_multi_call_batches_atomic():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("preserve", ("error", "no_reference", "not_archived"))
-async def test_context_capacity_never_drops_unreadable_or_error_batches(preserve):
+@pytest.mark.parametrize("preserve", ("no_reference", "not_archived"))
+async def test_context_capacity_never_drops_unreadable_batches(preserve):
     _reference, batch = _observed_batch(
-        1, failed=preserve == "error", has_reference=preserve != "no_reference",
+        1, has_reference=preserve != "no_reference",
         archived=preserve != "not_archived",
     )
     _new_reference, latest = _observed_batch(2)
@@ -1469,6 +1493,7 @@ async def test_context_capacity_includes_registered_tool_schema():
     loop, provider, _effects = _tool_loop((
         ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
     ))
+    loop.max_request_bytes = 256_000
     class LargeArguments(BaseModel):
         model_config = ConfigDict(
             extra="forbid", strict=True,
@@ -1495,6 +1520,7 @@ async def test_context_capacity_checks_provider_wire_size_without_private_conten
     loop, provider, _effects = _tool_loop((
         ModelTurn(content="Must not run.", finish_reason=FinishReason.STOP),
     ))
+    loop.max_request_bytes = 256_000
     provider.request_size_bytes = lambda _request: 300_000
     with pytest.raises(KernelContractError, match="capacity"):
         await loop.run(

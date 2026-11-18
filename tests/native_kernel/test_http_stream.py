@@ -317,6 +317,7 @@ async def test_retryable_status_is_retried_and_recorded(monkeypatch, status):
 
 @pytest.mark.parametrize("failure,category", [
     (httpx.ConnectError("PRIVATE_CANARY"), "NETWORK"),
+    (httpx.ConnectTimeout("PRIVATE_CANARY"), "NETWORK_CONNECT_TIMEOUT"),
     (httpx.WriteError("PRIVATE_CANARY"), "NETWORK"),
     (httpx.ReadError("PRIVATE_CANARY"), "NETWORK_READ"),
     (httpx.RemoteProtocolError("PRIVATE_CANARY"), "NETWORK_REMOTE_PROTOCOL"),
@@ -348,14 +349,13 @@ async def test_connection_lost_mid_stream_discards_the_attempt(monkeypatch):
 
 @pytest.mark.parametrize("outcome,decode,category", [
     (httpx.ReadTimeout("x"), None, "TIMEOUT"),
-    (httpx.ConnectTimeout("x"), None, "TIMEOUT"),
     (httpx.ProxyError("x"), None, "NETWORK"),
     (lambda: httpx.Response(200, content=b'{"a":1,"a":2}'), None, "INVALID_JSON"),
     (lambda: httpx.Response(200, content=b"[1]"), None, "INVALID_JSON"),
     (lambda: httpx.Response(200, content=b'{"a":NaN}'), None, "INVALID_JSON"),
     (lambda: httpx.Response(200, content=b'{"a":1e999}'), None, "INVALID_JSON"),
     (lambda: httpx.Response(200, content=b"not json"), None, "INVALID_JSON"),
-], ids=["read-timeout", "connect-timeout", "proxy", "duplicate-key", "not-object",
+], ids=["read-timeout", "proxy", "duplicate-key", "not-object",
         "nan", "overflow", "not-json"])
 async def test_final_failures_are_not_retried(monkeypatch, outcome, decode, category):
     provider = Provider(outcome)

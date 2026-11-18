@@ -1,6 +1,7 @@
 """Authorized error text survives execution, tools, inspection and evidence."""
 
 from dataclasses import replace
+import hashlib
 import json
 
 import pytest
@@ -8,7 +9,7 @@ from native_test_provider import LocalProvider
 
 from labbioagentos import ExecutionReceipt, LabBioRuntimeToolSet, WorkflowStage
 from labbioagentos.execution.models import ExecutionFailureClass, ExecutionStatus
-from labbioagentos.execution.error_context import bounded_error_context
+from labbioagentos.execution.error_context import bounded_error_context, redact_process_text
 from test_execution_inspection import inspection  # noqa: F401
 from test_phase6_docker_execution import FakeDockerRunner, _environment, _plan
 from test_runtime_milestone_b import _toolset, boundary  # noqa: F401
@@ -23,6 +24,18 @@ Traceback (most recent call last):
 ValueError: Value passed for key 'embedding' is of incorrect shape.
 Value had shape (50,) while it should have had (16566,).
 '''
+
+
+@pytest.mark.parametrize('label', ['A+/B+', 'A-/B-', 'A+/B-/C+',
+    'CD4+/CD25 T Reg', 'CD4+/CD45RA+/CD25- Naive T'])
+def test_inline_identifier_slashes_are_not_absolute_paths(label):
+    assert redact_process_text(label) == label
+
+
+@pytest.mark.parametrize('path', ['/private/input.csv', '../private/input.csv',
+    r'C:\private\input.csv', r'prefix+C:\private\input.csv', '~/.cache/private.txt'])
+def test_real_paths_still_redacted_at_their_actual_boundaries(path):
+    assert 'private' not in redact_process_text(path)
 
 
 def test_generic_multiline_error_not_a_method_specific_enum():
@@ -82,6 +95,22 @@ def test_policy_controls_real_executor_receipt_not_agent_arguments(tmp_path, ena
         assert "(16566,)" in receipt.error_context.text
 
 
+@pytest.mark.parametrize("timed_out", [False, True])
+def test_filtered_apptainer_context_keeps_original_stderr_identity(tmp_path, timed_out):
+    from apptainer_fixtures import apptainer_environment
+
+    stderr = b"FATAL: runtime setup /private/host/RUNTIME_PRIVATE\n" + TRACE
+    runner = FakeDockerRunner(exit_code=1, stdout=b"", stderr=stderr, timed_out=timed_out)
+    _, executor, _, _, _ = apptainer_environment(tmp_path, runner)
+    executor.execution_policy = executor.execution_policy.model_copy(update={"include_error_context": True})
+    result = executor.execute(_plan())
+    context = result.error_context
+    assert context is not None
+    assert context.stderr_sha256 == hashlib.sha256(stderr).hexdigest()
+    assert "RUNTIME_PRIVATE" not in context.text
+    assert "(16566,)" in context.text and context.redacted
+
+
 @pytest.mark.asyncio
 async def test_context_reaches_model_inspection_and_durable_trace(inspection, boundary, monkeypatch):
     service, executor, run_id = inspection
@@ -129,7 +158,7 @@ def test_local_setting_is_explicit_and_part_of_runtime_identity(tmp_path):
     from labbioagentos import ExecutionPlanDraft
     from pydantic import ValidationError
     settings = LocalExecutionSettings(
-        image_key='python-analysis', image_reference='sha256:' + '1' * 64,
+        backend='docker', image_key='python-analysis', image_reference='sha256:' + '1' * 64,
         resources={})
     assert settings.include_error_context is False
     assert settings.model_copy(update={'include_error_context': True}).model_dump()['include_error_context']

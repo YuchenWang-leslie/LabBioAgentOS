@@ -72,6 +72,9 @@ labbio decide --run-dir /path/to/run \
 审批前必须查看准确 gate、运行、请求与证据。审批只改变该门禁的控制状态，不证明
 科学结论正确，也不授权额外数据或工具。
 
+`decide` 在保存门禁决策后会自动继续运行，直到完成、失败或下一个用户门禁。
+命令返回后先核对结果与持久化状态，再按当前状态选择操作。
+
 ## 个人 Gold
 
 Gold Skill 是成功运行后由 Agent 提议、经审查并由用户批准的程序性上下文，不是
@@ -93,6 +96,25 @@ labbio gold-export [identity arguments]
 
 候选、审查、批准版本和使用记录保存在用户 Gold 根内。批准版本不可原地修改；更新
 产生新版本。目录过滤是精确、稳定、有界的，不是语义搜索或科学质量排序。
+
+### 根据后续任务改进 Gold
+
+以下命令沿用上面的托管身份参数。用实际运行目录、回执及候选标识替换占位符。
+
+```bash
+labbio gold-usage --run-dir /path/to/completed-adaptation [identity arguments]
+labbio gold-propose --run-dir /path/to/completed-adaptation \
+  --from-usage <usage-id> [identity arguments]
+labbio gold-revise --run-dir /path/to/source-run --proposal-id <proposal-id> \
+  --feedback "请区分原运行中观察到的限制和需要下次确认的条件。" [identity arguments]
+labbio gold-review --run-dir /path/to/source-run --proposal-id <new-proposal-id> [identity arguments]
+```
+
+`gold-usage` 列出此运行中获准打开过、且已记录结果的版本。对完成的 ADAPT 使用记录，`gold-propose --from-usage` 先让 Agent 独立核对原始研究问题、研究者已回答的澄清、最终交付报告中的主结果及受控输出。核对记录保留原文引句和符合程度。缺少足以支持判断的证据时可报告证据不足。随后 Agent 读取父版指导及核对记录，再给出 KEEP、UPDATE 或 FORK 和理由。使用审批单独记录。
+
+KEEP 不产生候选。需要指定方向时可加 `--evolution update` 或 `--evolution fork`，仍先核对主结果。候选草案和反馈重拟沿用这次核对。更新沿用技能 ID 并增加版本，分支从新 ID 的第一版开始，保留准确父版。目录会同时显示各分支的现行版本。
+
+用户可对待审批候选运行 `gold-revise`；新稿写入成功后原稿保留且不再能批准。用 `gold-review` 查看 `decision_pending`、人审反馈及相对上一稿或父版的字段变化。检查新候选及其门禁 ID，再照常 `gold-decide`。后续任务取用该版本仍需独立授权。使用记录中的 SUCCEEDED 表示原任务完成，验证经验的迁移效果须检查后续程序和实际结果。
 
 ## 安全边界
 

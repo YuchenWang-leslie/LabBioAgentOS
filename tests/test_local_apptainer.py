@@ -148,7 +148,7 @@ async def test_reconnected_service_is_stopped_without_replaying(tmp_path, monkey
             return b"", 0
         assert arguments[0] == "show" and arguments[1] == f"labbio-{execution_id.hex}.service"
         state = "active" if manager_state["active"] else "inactive"
-        return f"LoadState=loaded\nActiveState={state}".encode(), 0
+        return f"LoadState=loaded\nActiveState={state}\nMainPID=0\nControlGroup=".encode(), 0
 
     monkeypatch.setattr(launcher, "_show", show)
     monkeypatch.setattr(launcher, "_control_sync", control)
@@ -208,7 +208,7 @@ async def test_systemd_submit_cancel_and_collect_contract(tmp_path, monkeypatch)
             loop.call_soon_threadsafe(job.finish)
             return b"", 0
         state = "active" if manager_state["active"] else "inactive"
-        return f"LoadState=loaded\nActiveState={state}".encode(), 0
+        return f"LoadState=loaded\nActiveState={state}\nMainPID=0\nControlGroup=".encode(), 0
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     launcher = SystemdLocalLauncher(SubprocessApptainerRunner(max_output_file_bytes=8192))

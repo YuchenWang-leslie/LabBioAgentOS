@@ -291,7 +291,7 @@ async def test_systemd_client_exit_requires_service_terminal_confirmation(
         if manager["state"] == "manager-unavailable":
             return b"", 1
         loaded = "not-found" if manager["state"] == "not-found" else "loaded"
-        return f"LoadState={loaded}\nActiveState={manager['state']}\n".encode(), 0
+        return f"LoadState={loaded}\nActiveState={manager['state']}\nMainPID=0\nControlGroup=\n".encode(), 0
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     monkeypatch.setattr(launcher, "_control_sync", control, raising=False)
@@ -338,7 +338,7 @@ def test_sync_systemd_probe_uses_the_same_terminal_confirmation(tmp_path, monkey
             manager["active"] = False
             return b"", 0
         state = "active" if manager["active"] else "inactive"
-        return f"LoadState=loaded\nActiveState={state}".encode(), 0
+        return f"LoadState=loaded\nActiveState={state}\nMainPID=0\nControlGroup=".encode(), 0
 
     monkeypatch.setattr("labbioagentos.execution.launchers.systemd.subprocess.Popen", client)
     monkeypatch.setattr(launcher, "_control_sync", control)

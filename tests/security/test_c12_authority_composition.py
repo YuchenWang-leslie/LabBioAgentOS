@@ -382,8 +382,13 @@ def test_capability_attribution_delegation_and_authority_are_host_fixed(tmp_path
     assert sibling.allowed is False
 
     assert CAPABILITY_INFORMATION_AUTHORITY == {
+        "evidence_list": InformationAuthority.CONTROL_STATE,
         "evidence_read": InformationAuthority.MODEL_CONTEXT,
+        "stage_context_read": InformationAuthority.MODEL_CONTEXT,
         "prepare_handoff": InformationAuthority.CONTROL_STATE,
+        "handoff_status": InformationAuthority.CONTROL_STATE,
+        "working_note_write": InformationAuthority.MODEL_CONTEXT,
+        "working_note_read": InformationAuthority.MODEL_CONTEXT,
         "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
         "artifact_aggregate": InformationAuthority.AUTHORITATIVE_EVIDENCE,

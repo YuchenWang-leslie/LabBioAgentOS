@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field, RootModel, create_model
+from pydantic import AfterValidator, BaseModel, Field, RootModel, create_model
 from pydantic_core import PydanticCustomError
 
 from labbioagentos.contracts import WorkflowStage, _RequestUserInputActionProposal
@@ -50,7 +50,9 @@ def skill_assessment_response_format(
     proposal_ids: tuple[str, ...] = (),
     *, required: bool = True,
     resolve_proposal: bool = False,
+    rejected_proposal_ids: tuple[str, ...] = (),
     pending_proposals: tuple[tuple[str, str], ...] = (),
+    bound_action: tuple[str, str | None] | None = None,
 ) -> type[BaseModel]:
     # The provider sees the same current receipt identities as local validation.
     # Keep UUID types for Python/JSON response compatibility; enums constrain wire values.
@@ -60,7 +62,7 @@ def skill_assessment_response_format(
         variants.append(create_model("CurrentSkillReturnedCandidates", __base__=_SkillReturnedCandidates,
             search_capability_invocation_ids=(tuple[search_item, ...], Field(min_length=1, max_length=32))))
     pending_ids = {identity for identity, _ in pending_proposals}
-    ordinary_ids = tuple(identity for identity in proposal_ids if identity not in pending_ids)
+    ordinary_ids = tuple(identity for identity in proposal_ids if identity not in pending_ids and identity not in rejected_proposal_ids)
     if ordinary_ids:
         proposal_item = Annotated[UUID, Field(json_schema_extra={"enum": list(ordinary_ids)})]
         variants.append(create_model("CurrentSkillUseProposed", __base__=_SkillUseProposed,
@@ -84,17 +86,31 @@ def skill_assessment_response_format(
     )
     if not pending_proposals:
         return ordinary
+    gate = bound_action[1] if bound_action and bound_action[0] == "request_user_input" else None
+    if bound_action is not None and gate not in dict(pending_proposals).values():
+        return ordinary
     # Couple the model's use decision and exact approval action in the wire
     # contract, not only in a post-response validator. RootModel serializes the
     # chosen ordinary stage result unchanged; it does not choose an action.
     choices = [ordinary]
     for index, (identity, reference) in enumerate(pending_proposals):
+        if bound_action is not None and reference != gate:
+            continue
+
+        def match_identity(value, expected=identity):
+            if str(value) != expected:
+                raise PydanticCustomError("skill_use_gate_mismatch", "Use the proposal bound to this gate.")
+            return value
+
         assessment = create_model(f"PendingSkillUse{index}", __base__=_SkillUseProposed,
             search_capability_invocation_ids=(tuple[search_item, ...] if search_ids else tuple[UUID, ...],
                 Field(default=(), max_length=32 if search_ids else 0)),
-            proposal_id=(Annotated[UUID, Field(json_schema_extra={"enum": [identity]})], ...))
+            proposal_id=(Annotated[UUID, AfterValidator(match_identity), Field(json_schema_extra={"enum": [identity]})], ...))
         body = create_model(f"PendingSkillPlanBody{index}", __base__=PlanStageBody,
             skill_assessment=(assessment, ...))
+        if bound_action is not None:
+            # This parent already binds the full action, including its exact gate.
+            return create_model("BoundPendingSkillPlanResult", __base__=base_format, body=(body, ...))
         action = create_model(f"PendingSkillApprovalAction{index}", __base__=_RequestUserInputActionProposal,
             domain_reference_id=(Literal[reference], ...))
         choices.append(create_model(f"PendingSkillPlanResult{index}", __base__=base_format,
@@ -166,7 +182,9 @@ def skill_retrieval_control(
             "USE_NOT_PURSUED explicitly records the decision not to pursue that proposal and its reason. "
             "For APPROVED use, the gate decision_reference_id is the authorization_id for skill_view, "
             "not the Skill UUID. Continuing with USE_PROPOSED requires a successful view of that authorization. "
-            "A REJECTED proposal cannot be used. Authorized guidance stays MODEL_CONTEXT, not current evidence. "
+            "A REJECTED proposal cannot be used. Continue independently with USE_NOT_PURSUED for that "
+            "proposal, unless there is a genuinely different use. Do not re-open or relabel a declined use. "
+            "Authorized guidance stays MODEL_CONTEXT, not current evidence. "
             "These facts do not rank candidates or require Skill use."
         ),
     }
@@ -201,7 +219,8 @@ def validate_skill_assessment(
         raise PydanticCustomError("skill_proposal_receipt_not_current",
             "Skill assessment proposal lacks current completed evidence")
     if assessment.status == "USE_NOT_PURSUED":
-        if result.next_action.action.value == "request_user_input" and result.next_action.domain_reference_id == proposal["domain_reference_id"]:
+        if (result.next_action.action.value == "request_user_input"
+                and (result.next_action.domain_reference_id or "").startswith("skill-use:")):
             raise PydanticCustomError("skill_not_pursued_requests_approval",
                 "Not-pursued use cannot simultaneously request its approval")
         return

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict
 
 from .contracts import (
+    DEFAULT_MAX_REQUEST_BYTES,
     AgentInvocation,
     AgentMode,
     AgentProfile,
@@ -23,6 +24,7 @@ from .contracts import (
     KernelIdentity,
     ModelProvider,
     PublicMessage,
+    CompletionRejection,
     SpecialistSummary,
     TaskRecord,
     TaskState,
@@ -237,12 +239,18 @@ class CollaborationRuntime:
         ] | None = None,
         tool_stop_requests: Mapping[str, Callable[[], str | None]] | None = None,
         tool_invocation_starts: Mapping[str, Callable[[KernelIdentity], None]] | None = None,
+        request_consumed: Mapping[str, Callable[[tuple[PublicMessage, ...]], None]] | None = None,
         projector: ModelResultProjector,
         budget_ledger: BudgetLedger,
         interrupt_token: InterruptToken | None = None,
         max_tasks: int = 256,
         no_progress_ms: int = 30_000,
-        max_request_bytes: int = 256_000,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+        event_observer: Callable[[KernelEvent], None] | None = None,
+        closeout_tools: tuple[str, ...] = (),
+        closeout_reserve: int = 0,
+        reserve_completion_capacity: bool = False,
+        stop_handoff: tuple[str, str] | None = None,
     ):
         if (tool_registry is None) == (tool_registries is None):
             raise ValueError(
@@ -274,6 +282,10 @@ class CollaborationRuntime:
             ):
                 raise ValueError("Agent-owned tools must exist in its host registry")
         self.registry = registry
+        self.closeout_tools = closeout_tools
+        self.closeout_reserve = closeout_reserve
+        self.reserve_completion_capacity = reserve_completion_capacity
+        self.stop_handoff = stop_handoff
         self.tool_registries = dict(tool_registries)
         if tool_batch_observers is not None and not set(tool_batch_observers).issubset(
             set(registry.team.member_ids)
@@ -290,12 +302,16 @@ class CollaborationRuntime:
         self.tool_batch_observers = dict(tool_batch_observers or {})
         self.tool_stop_requests = dict(tool_stop_requests or {})
         self.tool_invocation_starts = dict(tool_invocation_starts or {})
+        if request_consumed is not None and not set(request_consumed).issubset(registry.team.member_ids):
+            raise ValueError("Request observers must belong to team members")
+        self.request_consumed = dict(request_consumed or {})
         self.projector = projector
         self.budget_ledger = budget_ledger
         self.interrupt_token = interrupt_token or InterruptToken()
         self.task_board = TaskBoard(max_tasks=max_tasks)
         self.no_progress_ms = no_progress_ms
         self.max_request_bytes = max_request_bytes
+        self.event_observer = event_observer
         self._events: list[KernelEvent] = []
         self._delegations: list[DelegationResult] = []
         self._event_sequence = 0
@@ -306,14 +322,18 @@ class CollaborationRuntime:
     def events(self) -> tuple[KernelEvent, ...]:
         return tuple(self._events)
 
+    @property
+    def delegations(self) -> tuple[DelegationResult, ...]:
+        return tuple(self._delegations)
+
     async def run_leader(
         self,
         *,
         identity: KernelIdentity,
         messages: Iterable[PublicMessage],
         deadline_monotonic: float,
-        max_output_tokens: int = 8_192,
-        completion_feedback: Callable[[str], str | None] | None = None,
+        max_output_tokens: int | None = None,
+        completion_feedback: Callable[[str], str | CompletionRejection | None] | None = None,
     ) -> TeamRunResult:
         if self._started:
             raise RuntimeError("CollaborationRuntime instances are single-use")
@@ -339,7 +359,8 @@ class CollaborationRuntime:
         leader_result = await loop.run(
             messages=leader_messages,
             deadline_monotonic=deadline_monotonic,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=(max_output_tokens if max_output_tokens is not None
+                               else self.registry.profile(leader_id).max_output_tokens),
         )
         return TeamRunResult(
             leader_result=leader_result,
@@ -356,7 +377,8 @@ class CollaborationRuntime:
         identity: KernelIdentity,
         agent_chain: tuple[str, ...],
         deadline_monotonic: float,
-        completion_feedback: Callable[[str], str | None] | None = None,
+        completion_feedback: Callable[[str], str | CompletionRejection | None] | None = None,
+        parent_completion_capacity: dict[str, int] | None = None,
     ) -> AgentLoop:
         profile = self.registry.profile(agent_id)
         begin_invocation = self.tool_invocation_starts.get(agent_id)
@@ -406,6 +428,7 @@ class CollaborationRuntime:
                         if loop.current_deadline_monotonic is not None
                         else deadline_monotonic
                     ),
+                    parent_completion_capacity=loop.completion_capacity,
                 )
 
             local_tools.register(
@@ -423,6 +446,9 @@ class CollaborationRuntime:
                 budget_ledger=self.budget_ledger,
                 batch_observer=self.tool_batch_observers.get(agent_id),
                 stop_requested=self.tool_stop_requests.get(agent_id),
+                closeout_tools=self.closeout_tools,
+                closeout_reserve=self.closeout_reserve,
+                stop_handoff=self.stop_handoff,
             )
             if local_tools.names
             else None
@@ -444,6 +470,9 @@ class CollaborationRuntime:
             event_sink=self._capture_event,
             completion_feedback=completion_feedback,
             max_request_bytes=self.max_request_bytes,
+            request_consumed=self.request_consumed.get(agent_id),
+            reserve_completion_capacity=self.reserve_completion_capacity,
+            parent_completion_capacity=parent_completion_capacity,
         )
         return loop
 
@@ -455,6 +484,7 @@ class CollaborationRuntime:
         agent_chain: tuple[str, ...],
         arguments: _DelegateArguments,
         deadline_monotonic: float,
+        parent_completion_capacity: dict[str, int] | None = None,
     ) -> DelegationResult:
         self.interrupt_token.raise_if_requested()
         target = self.registry.authorize_target(
@@ -527,6 +557,7 @@ class CollaborationRuntime:
             identity=child_identity,
             agent_chain=(*agent_chain, target.agent_id),
             deadline_monotonic=deadline_monotonic,
+            parent_completion_capacity=parent_completion_capacity,
         )
         cancellation = None
         try:
@@ -539,6 +570,7 @@ class CollaborationRuntime:
                     PublicMessage(role="USER", content=arguments.instruction),
                 ),
                 deadline_monotonic=deadline_monotonic,
+                max_output_tokens=self.registry.profile(target.agent_id).max_output_tokens,
             )
             references = tuple(
                 dict.fromkeys(
@@ -648,7 +680,13 @@ class CollaborationRuntime:
 
     def _capture_event(self, event: KernelEvent) -> None:
         self._event_sequence += 1
-        self._events.append(event.model_copy(update={"sequence": self._event_sequence}))
+        captured = event.model_copy(update={"sequence": self._event_sequence})
+        self._events.append(captured)
+        if self.event_observer is not None:
+            try:
+                self.event_observer(captured)
+            except Exception:
+                pass
 
     def _emit(
         self,

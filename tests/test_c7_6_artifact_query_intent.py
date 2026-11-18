@@ -216,7 +216,7 @@ async def test_followup_page_with_omitted_limit_progresses_after_prior_page(quer
 
 
 @pytest.mark.asyncio
-async def test_repeated_top_n_page_requires_cursor_progress_before_runtime_stop(
+async def test_repeated_top_n_page_is_legal_and_retains_its_actual_cursor(
     query_boundary,
 ):
     _, _, ref, toolset = query_boundary
@@ -225,17 +225,15 @@ async def test_repeated_top_n_page_requires_cursor_progress_before_runtime_stop(
 
     repeated = await toolset.artifact_query(str(ref.artifact_id), "TOP_N")
 
-    assert repeated["success"] is False
-    assert repeated["error"]["error_code"] == "PAGINATION_PROGRESS_REQUIRED"
-    constraints = repeated["error"]["query_constraints"]
-    assert constraints["required_followup_offset"] == first["data"]["next_offset"]
-    assert constraints["suggested_next_limit"] == first["data"]["suggested_next_limit"]
+    assert repeated["success"] is True
+    assert repeated["data"]["next_offset"] == first["data"]["next_offset"]
+    assert repeated["data"]["suggested_next_limit"] == first["data"]["suggested_next_limit"]
     assert toolset.stop_reason is None
 
     corrected = await toolset.artifact_query(
         str(ref.artifact_id),
         "TOP_N",
-        offset=constraints["required_followup_offset"],
+        offset=repeated["data"]["next_offset"],
     )
     assert corrected["success"] is True
     assert corrected["data"]["next_offset"] is None

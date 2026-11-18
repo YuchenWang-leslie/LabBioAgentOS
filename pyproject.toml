@@ -20,6 +20,10 @@ dependencies = [
 labbio = "labbioagentos.cli:entrypoint"
 
 [project.optional-dependencies]
+telemetry = [
+    "opentelemetry-api==1.45.1",
+    "opentelemetry-sdk==1.45.1",
+]
 test = [
     "jsonschema>=4,<5",
     "pytest>=8.3.4",
@@ -30,7 +34,7 @@ test = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-labbioagentos = ["resources/*.json"]
+labbioagentos = ["resources/*.json", "resources/*.sh"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

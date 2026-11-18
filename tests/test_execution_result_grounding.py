@@ -16,6 +16,7 @@ from labbioagentos import (
 from labbioagentos.contracts import InformationAuthority
 from labbioagentos.execution.models import ExecutionReceipt, ExecutionStatus
 from labbioagentos.runtime.contracts import CapabilityEvidenceItem, CapabilityEvidenceStatus
+from test_runtime_milestone_b import boundary  # noqa: F401
 
 
 def _input(*, minimum_outputs=0, retry_available=False, mountable_inputs=()):
@@ -48,6 +49,21 @@ def test_execution_receipt_preserves_selected_input_identities():
     receipt = _receipt().model_copy(update={"input_artifact_ids": selected})
 
     assert receipt.model_dump(mode="json")["input_artifact_ids"] == [str(selected[0])]
+
+
+def test_execution_control_preserves_mechanical_issue_codes_not_model_messages():
+    from labbioagentos.runtime.execution_grounding import execution_result_control
+
+    stage = _input()
+    receipt = ExecutionReceipt.model_validate_json(json.dumps({**_receipt().model_dump(mode="json"),
+        "issue_codes": ["OUTPUT_CONTRACT_FAILURE", "NON_ZERO_EXIT"],
+        "issue_detail_codes": ["OUTPUT_NOT_FOUND"]}))
+    control = execution_result_control(stage, _bundle(stage, receipt))
+    facts = control["completed_execution_receipts"][0]
+    assert facts["issue_codes"] == ["OUTPUT_CONTRACT_FAILURE", "NON_ZERO_EXIT"]
+    assert facts["issue_detail_codes"] == ["OUTPUT_NOT_FOUND"]
+    assert facts["execution_id"] != facts["capability_invocation_id"]
+    assert "MODEL_CONTEXT_SENTINEL" not in json.dumps(control)
 
 
 def _bundle(stage_input, *receipts):
@@ -201,3 +217,113 @@ def test_failed_receipt_does_not_satisfy_required_output_even_with_artifact():
 
     with pytest.raises(ValidationError):
         _format(_input(minimum_outputs=1), receipt).model_validate(_payload(receipt))
+
+
+@pytest.mark.parametrize("location", ["references", "issue_references"])
+@pytest.mark.parametrize("identity_kind", ["observation", "artifact", "unknown"])
+@pytest.mark.parametrize("boundary", ["schema", "host"])
+def test_nonexecution_id_cannot_be_claimed_as_execution(location, identity_kind, boundary):
+    from labbioagentos.runtime.contracts import RuntimeStageResult, runtime_stage_result_format
+    from labbioagentos.runtime.execution_grounding import (ExecutionGroundingError,
+        execution_result_control, execution_result_response_format, validate_execution_result)
+
+    stage_input = _input(minimum_outputs=1)
+    receipt = _receipt(ExecutionStatus.SUCCEEDED, outputs=(uuid4(),))
+    bundle = _bundle(stage_input, receipt)
+    control = execution_result_control(stage_input, bundle)
+    identity = {"observation": bundle.items[0].capability_invocation_id,
+                "artifact": receipt.output_artifact_ids[0], "unknown": uuid4()}[identity_kind]
+    payload = _payload(receipt)
+    target = payload if location == "references" else payload["body"]
+    target[location] = [_ref(identity)]
+    if boundary == "schema":
+        response_format = execution_result_response_format(
+            runtime_stage_result_format(stage_input.stage_id, stage_input.workflow_control), control)
+        with pytest.raises(ValidationError):
+            response_format.model_validate_json(json.dumps(payload), strict=True)
+    else:
+        result = RuntimeStageResult.model_validate_json(json.dumps(payload), strict=True)
+        with pytest.raises(ExecutionGroundingError) as raised:
+            validate_execution_result(result, control)
+        assert raised.value.field_path == ("references" if location == "references" else "body.issue_references")
+
+
+@pytest.mark.parametrize("location", ["references", "issue_references"])
+def test_actual_failed_execution_and_nonexecution_links_remain_legal(location):
+    from labbioagentos.runtime.contracts import RuntimeStageResult, runtime_stage_result_format
+    from labbioagentos.runtime.execution_grounding import (execution_result_control,
+        execution_result_response_format, validate_execution_result)
+
+    stage_input = _input(minimum_outputs=1)
+    failed = _receipt()
+    succeeded = _receipt(ExecutionStatus.SUCCEEDED, outputs=(uuid4(),))
+    bundle = _bundle(stage_input, failed, succeeded)
+    control = execution_result_control(stage_input, bundle)
+    payload = _payload(succeeded)
+    target = payload if location == "references" else payload["body"]
+    target[location] = [_ref(failed.execution_id), _ref(succeeded.output_artifact_ids[0], "ARTIFACT"),
+                        _ref(bundle.items[0].capability_invocation_id, "OTHER")]
+    response_format = execution_result_response_format(
+        runtime_stage_result_format(stage_input.stage_id, stage_input.workflow_control), control)
+    result = response_format.model_validate_json(json.dumps(payload), strict=True)
+    validate_execution_result(RuntimeStageResult.model_validate(result.model_dump(mode="python")), control)
+
+
+def test_no_receipt_does_not_allow_an_invented_execution_issue():
+    payload = _payload()
+    payload["body"]["issue_references"] = [_ref(uuid4())]
+    with pytest.raises(ValidationError):
+        _format(_input()).model_validate_json(json.dumps(payload), strict=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeated", [False, True])
+async def test_native_finalizer_corrects_identity_or_stops_without_host_substitution(tmp_path, boundary, repeated):
+    from labbioagentos import RuntimeIntegrationError
+    from labbioagentos.kernel import FinishReason, ModelTurn, TokenUsage
+    from labbioagentos.runtime.assembly import RuntimeStageAssemblySpec
+    from labbioagentos.runtime.native_stage import NativeKernelStageInvoker, NativeRuntimeFactory
+    from test_native_stage_application import WorkflowProvider, _capability_catalog
+    from test_runtime_milestone_b import _toolset
+
+    tools = _toolset(boundary, WorkflowStage.EXECUTE, ("execution_submit",))
+    stage = _input(minimum_outputs=1).model_copy(update={
+        "run_id": tools.binding.run_id, "invocation_id": tools.binding.invocation_id,
+        "workspace": RuntimeWorkspaceIdentifiers(user_id=tools.binding.workspace.user_id,
+            lab_id=tools.binding.workspace.lab_id, project_id=tools.binding.workspace.project_id)})
+    failed = _receipt()
+    succeeded = _receipt(ExecutionStatus.SUCCEEDED, outputs=(uuid4(),))
+    evidence = _bundle(stage, failed, succeeded)
+    wrong = _payload(succeeded)
+    wrong["body"]["issue_references"] = [_ref(evidence.items[0].capability_invocation_id)]
+    corrected = _payload(succeeded)
+    corrected["body"]["issue_references"] = [_ref(failed.execution_id)]
+    outputs = iter([wrong, wrong if repeated else corrected, corrected])
+    calls = []
+
+    class Finalizer(WorkflowProvider):
+        async def generate(self, request):
+            calls.append(request)
+            return ModelTurn(content=json.dumps(next(outputs)), finish_reason=FinishReason.STOP,
+                usage=TokenUsage(input_tokens=1, output_tokens=1, total_tokens=2))
+
+    catalog = _capability_catalog()
+    catalog.capabilities["coordinator-capabilities"] = catalog.capabilities[
+        "coordinator-capabilities"].model_copy(update={"capability_allowlist": stage.allowed_capabilities})
+    invoker = NativeKernelStageInvoker(assembly=RuntimeStageAssemblySpec(stage_id=stage.stage_id,
+        root_profile_key="coordinator", prompt_template_key="runtime-generic",
+        capability_allowlist=stage.allowed_capabilities),
+        factory=NativeRuntimeFactory(catalog, lambda _model: Finalizer(calls)),
+        principal=tools.binding.principal, workspace=tools.binding.workspace, services=tools.services,
+        execution_capability=stage.execution_capability)
+    original = evidence.model_dump_json()
+    if repeated:
+        with pytest.raises(RuntimeIntegrationError) as raised:
+            await invoker.finalize_recovered(stage, evidence)
+        assert raised.value.error_code == "MALFORMED_RUNTIME_RESULT"
+    else:
+        result = await invoker.finalize_recovered(stage, evidence)
+        assert result.body.issue_references[0].reference_id == str(failed.execution_id)
+    assert len(calls) == 2 and all(call.tools == () for call in calls)
+    assert str(evidence.items[0].capability_invocation_id) not in calls[1].messages[-1].content
+    assert evidence.model_dump_json() == original

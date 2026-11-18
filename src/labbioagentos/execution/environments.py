@@ -21,6 +21,7 @@ from packaging.version import InvalidVersion, Version
 from labbioagentos.model_safety import UnsafeModelContentError, validate_model_visible_json
 
 from .images import ApprovedImage, ApprovedImageRegistry
+from .error_context import redact_process_text
 from .errors import ImageNotApprovedError
 from .models import ExecutionRuntime
 
@@ -168,9 +169,12 @@ def _write_private(path: Path, value: dict) -> None:
 
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
-                 owner_user_id: str):
+                 owner_user_id: str, *, include_error_context: bool = False):
         self.root = Path(root).expanduser().absolute()
         self.image_registry, self.builder, self.owner_user_id = image_registry, builder, owner_user_id
+        if type(include_error_context) is not bool:
+            raise TypeError("include_error_context must be a boolean")
+        self.include_error_context = include_error_context
         if (not owner_user_id or len(owner_user_id) > 128 or
                 any(path.is_symlink() for path in (self.root, *self.root.parents))):
             raise EnvironmentRequestError("ENVIRONMENT_SCOPE_INVALID")
@@ -412,13 +416,32 @@ class EnvironmentService:
                                 pass
                     if isinstance(item.get("package"), str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", item["package"]):
                         safe["package"] = canonicalize_name(item["package"])
-                    if isinstance(item.get("version"), str) and len(item["version"]) <= 128:
-                        try:
-                            safe["version"] = str(Version(item["version"]))
-                        except InvalidVersion:
-                            pass
+                    for name in ("version", "installed_version"):
+                        if isinstance(item.get(name), str) and len(item[name]) <= 128:
+                            try:
+                                safe[name] = str(Version(item[name]))
+                            except InvalidVersion:
+                                pass
                     if item.get("module") in verified_modules:
                         safe["module"] = item["module"]
+                        if item["code"] == "IMPORT_CHECK_FAILED":
+                            exception = item.get("exception_type")
+                            if isinstance(exception, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,127}", exception):
+                                safe["exception_type"] = exception
+                                missing = item.get("missing_module")
+                                if (exception == "ModuleNotFoundError" and isinstance(missing, str)
+                                        and len(missing) <= 128 and _MODULE.fullmatch(missing)):
+                                    safe["missing_module"] = missing
+                            message, digest = item.get("message"), item.get("message_sha256")
+                            truncated = item.get("truncated")
+                            if (self.include_error_context and isinstance(message, str) and len(message) <= 2000
+                                    and isinstance(digest, str) and _SHA256.fullmatch(digest)
+                                    and type(truncated) is bool and (truncated or hashlib.sha256(
+                                        message.encode("utf-8", errors="replace")).hexdigest() == digest)):
+                                text = redact_process_text(message)
+                                safe["error_context"] = {"authority": "UNTRUSTED_BUILD_ERROR", "text": text[:1000],
+                                    "message_sha256": digest, "truncated": truncated or len(text) > 1000,
+                                    "redacted": text != message}
                     try:
                         validate_model_visible_json(safe)
                     except UnsafeModelContentError:

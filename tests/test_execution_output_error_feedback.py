@@ -305,3 +305,37 @@ async def test_shape_valid_no_release_mode_is_not_a_model_content_rejection(boun
     assert ref.metadata["contract_valid"] is True
     assert ref.metadata["release_authorized"] is False
     assert "output_contract_failure_code" not in ref.metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("document,expected", [
+    (b"", "EMPTY_DOCUMENT"),
+    (b"   ", "INVALID_DOCUMENT"),
+    (b'{"PRIVATE_KEY":"PRIVATE_VALUE"', "INVALID_DOCUMENT"),
+    (b'{"schema_id":"synthetic.records.v1","records":[]}', None),
+], ids=["empty-file", "whitespace", "nonempty-malformed", "valid-empty-records"])
+async def test_zero_byte_document_distinct_without_changing_release(boundary, tmp_path, document, expected):
+    tools, runner, contract = _execution_tools(boundary, tmp_path, document)
+    result = await _submit(tools, contract)
+    receipt = result["data"]
+    assert result["success"] and receipt["exit_code"] == 0 and len(runner.calls) == 1
+    ref = _output_ref(boundary[5], receipt["execution_id"])
+    assert Path(ref.storage_locator).read_bytes() == document
+    encoded = json.dumps(result)
+    for private in ("PRIVATE_KEY", "PRIVATE_VALUE", "PRIVATE_PROGRAM", "PRIVATE_PROCESS_OUTPUT", "PRIVATE_PROCESS_ERROR"):
+        assert private not in encoded
+    if expected is None:
+        assert receipt["status"] == "SUCCEEDED" and receipt["output_issues"] == []
+        assert ref.exposure_class is ArtifactExposureClass.DERIVED
+    else:
+        assert receipt["status"] == "FAILED" and ref.exposure_class is ArtifactExposureClass.RAW
+        assert not ref.metadata["contract_valid"] and not ref.metadata["release_authorized"]
+        denied = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+        assert not denied["success"]
+        issue = receipt["output_issues"][0]
+        assert issue["output_index"] == 0
+        evidence = tools.evidence_items()[0].safe_result
+        failed = next(event for event in boundary[1].events(tools.binding.run_id)
+                      if event.event_type.value == "EXECUTION_FAILED" and "output_issues" in event.payload)
+        assert evidence["output_issues"] == receipt["output_issues"] == failed.payload["output_issues"]
+        assert issue["detail_code"] == expected

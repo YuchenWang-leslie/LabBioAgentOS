@@ -78,6 +78,12 @@ def runtime_workflow_definition() -> WorkflowDefinition:
             target=WorkflowStage.EXECUTE,
         )
     )
+    transitions.add(
+        WorkflowTransition(
+            source=WorkflowStage.INTERPRET,
+            target=WorkflowStage.VALIDATE,
+        )
+    )
     for source in gate_sources:
         transitions.add(
             WorkflowTransition(source=source, target=WorkflowStage.USER_GATE)

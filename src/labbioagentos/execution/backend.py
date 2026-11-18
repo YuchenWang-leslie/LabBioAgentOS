@@ -9,7 +9,7 @@ from typing import Protocol
 from uuid import UUID
 
 from .images import ApprovedImage
-from .models import ExecutionPlan
+from .models import ExecutionHostTermination, ExecutionPlan
 from .mounts import ExecutionWorkspace, ResolvedMount
 
 # Every backend mounts the submitted script here; diagnostics rely on this path.
@@ -26,6 +26,7 @@ class ProcessOutcome:
     duration_seconds: float
     timed_out: bool = False
     output_limit_exceeded: bool = False
+    host_termination: ExecutionHostTermination | None = None
 
 
 class ProcessRunner(ABC):

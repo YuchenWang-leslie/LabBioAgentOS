@@ -10,7 +10,8 @@ import random
 import re
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import aclosing
+from contextlib import aclosing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import timezone
 from email.utils import parsedate_to_datetime
@@ -38,6 +39,10 @@ STREAM_RETRY_CATEGORIES = frozenset({"STREAM_OVERLOADED", "STREAM_RATE_LIMITED"}
 # and its retry records reach the loop before the loop's own deadline
 # enforcement cancels the call.
 DEADLINE_MARGIN_SECONDS = 0.5
+# Upload inactivity is not model-generation time. A stalled write must leave
+# room for the existing bounded retry instead of consuming the stage deadline.
+REQUEST_CONNECT_TIMEOUT_SECONDS = 60.0
+REQUEST_WRITE_TIMEOUT_SECONDS = 60.0
 
 _LINE_BREAK = re.compile(r"\r\n|\r|\n")
 # DECIDED-C14-8: only gzip is requested, and the transport inflates it itself so
@@ -139,6 +144,109 @@ class HttpStreamResult:
 StreamDecoder = Callable[[AsyncIterator[SseEvent]], Awaitable[Mapping[str, Any]]]
 
 
+_HTTP_PROGRESS = ContextVar("native_http_progress", default=None)
+_TRACE_PHASES = {
+    "connection.connect_tcp": "CONNECT_TCP",
+    "connection.start_tls": "TLS",
+    "proxy.start_tls": "TLS",
+    **{f"{protocol}.{operation}": phase
+       for protocol in ("http11", "http2")
+       for operation, phase in (
+           ("send_request_headers", "SEND_REQUEST_HEADERS"),
+           ("send_request_body", "SEND_REQUEST_BODY"),
+           ("receive_response_headers", "WAIT_RESPONSE_HEADERS"),
+           ("receive_response_body", "READ_RESPONSE_BODY"),
+       )},
+}
+
+
+@contextmanager
+def observe_http_progress(observer):
+    """Bind a safe, request-local observer without modifying provider contracts."""
+    token = _HTTP_PROGRESS.set(observer)
+    try:
+        yield
+    finally:
+        _HTTP_PROGRESS.reset(token)
+
+
+def _emit_http_progress(status, reason, facts):
+    observer = _HTTP_PROGRESS.get()
+    if observer is not None:
+        try:
+            observer(status, reason, facts)
+        except Exception:
+            # New diagnostics must not turn an otherwise valid call into a retry.
+            pass
+
+
+class _RequestProgress:
+    """Only enums and numeric activity; never httpcore's sensitive trace info."""
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.reset(0)
+
+    def reset(self, attempt):
+        self.attempt = attempt
+        self.started = self.clock()
+        self.last_activity = self.started
+        self.last_body_event = self.started
+        self.first_body = self.last_body = None
+        self.response_bytes = self.response_chunks = 0
+        self.response_status = None
+        self.phase = "SERIALIZING_REQUEST"
+
+    def emit(self, status, phase=None, *, activity=False):
+        now = self.clock()
+        if phase is not None:
+            self.phase = phase
+        if activity:
+            self.last_activity = now
+        ms = lambda value: max(0, round((value - self.started) * 1000))
+        _emit_http_progress(status, self.phase, {
+            "attempt_index": self.attempt, "elapsed_ms": ms(now),
+            "response_status": self.response_status,
+            "response_bytes": self.response_bytes, "response_chunks": self.response_chunks,
+            "first_body_elapsed_ms": ms(self.first_body) if self.first_body is not None else None,
+            "last_body_elapsed_ms": ms(self.last_body) if self.last_body is not None else None,
+            "last_activity_elapsed_ms": ms(self.last_activity),
+            "idle_ms": max(0, round((now - self.last_activity) * 1000)),
+        })
+
+    async def trace(self, name, _info):
+        base, _, outcome = name.rpartition(".")
+        phase = _TRACE_PHASES.get(base)
+        if phase is None:
+            return
+        if outcome == "started":
+            self.emit("HTTP_PHASE_STARTED", phase)
+        elif outcome == "complete":
+            self.emit("HTTP_PHASE_COMPLETED", phase, activity=True)
+        elif outcome == "failed":
+            if (self.phase == "COMPLETED" and phase == "READ_RESPONSE_BODY"
+                    and isinstance(_info.get("exception"), GeneratorExit)):
+                # A valid terminal SSE event can leave body iterators suspended.
+                # Their later normal closure is not another attempt outcome.
+                self.emit("HTTP_STREAM_CLOSED")
+            else:
+                # Preserve genuine failures and the I/O phase of cancellation.
+                self.emit("HTTP_PHASE_FAILED")
+
+    def body(self, size):
+        now = self.clock()
+        first = self.first_body is None
+        if first:
+            self.first_body = now
+        self.last_body = self.last_activity = now
+        self.response_bytes += size
+        self.response_chunks += 1
+        if first or now - self.last_body_event >= 5:
+            self.last_body_event = now
+            self.emit("FIRST_RESPONSE_BODY_BYTES" if first else "BODY_PROGRESS",
+                      "READ_RESPONSE_BODY")
+
+
 class HttpStreamTransport:
     """POST with no redirects, a decoded-byte cap, strict JSON and bounded retry."""
 
@@ -172,6 +280,8 @@ class HttpStreamTransport:
         if type(max_response_bytes) is not int or max_response_bytes < 1:
             raise ValueError("max_response_bytes must be a positive integer")
         retries: list[ProviderRetry] = []
+        progress = _RequestProgress(self._clock)
+        progress.emit("HTTP_REQUEST_STARTED")
         try:
             # Serialized once, so every attempt sends identical bytes.
             body = json.dumps(
@@ -180,23 +290,33 @@ class HttpStreamTransport:
             request_headers = httpx.Headers(headers)
             request_headers.setdefault("Content-Type", "application/json")
             request_headers["Accept-Encoding"] = "gzip"
+            progress.emit("REQUEST_SERIALIZED", "CLIENT_SETUP", activity=True)
             async with httpx.AsyncClient(
                 follow_redirects=False, trust_env=self.trust_env
             ) as client:
                 while True:
+                    # A delayed trace callback must retain its original attempt.
+                    progress = _RequestProgress(self._clock)
+                    progress.reset(len(retries) + 1)
+                    progress.emit("ATTEMPT_STARTED", "CONNECTING")
                     try:
                         value = await self._attempt(
                             client, url, request_headers, body,
-                            deadline_monotonic, max_response_bytes, decode_stream,
+                            deadline_monotonic, max_response_bytes, decode_stream, progress,
                         )
+                    except asyncio.CancelledError:
+                        progress.emit("ATTEMPT_CANCELLED")
+                        raise
                     except (
                         KernelDeadlineExceededError,
                         ProviderProtocolError,
                         ProviderTransportError,
                     ) as exc:
+                        progress.emit("ATTEMPT_FAILED")
                         exc.transport_retries = tuple(retries)
                         raise
                     except Exception as exc:
+                        progress.emit("ATTEMPT_FAILED")
                         category, retryable, retry_after = _classify(
                             exc, self._wall_clock()
                         )
@@ -219,6 +339,7 @@ class HttpStreamTransport:
                             category=category, wait_ms=round(wait * 1000),
                             usage_snapshot=getattr(exc, "usage_snapshot", None),
                         ))
+                        progress.emit("HTTP_RETRY_WAIT", "RETRY_WAIT")
                         await self._sleep(wait)
                         if self._clock() >= deadline_monotonic - DEADLINE_MARGIN_SECONDS:
                             # The wait ended too late for another attempt; the
@@ -229,7 +350,12 @@ class HttpStreamTransport:
                                 usage_snapshot=getattr(exc, "usage_snapshot", None),
                             ) from None
                     else:
+                        progress.emit("ATTEMPT_COMPLETED", "COMPLETED", activity=True)
                         return HttpStreamResult(body=value, retries=tuple(retries))
+        except asyncio.CancelledError:
+            if progress.phase in {"SERIALIZING_REQUEST", "CLIENT_SETUP", "RETRY_WAIT"}:
+                progress.emit("HTTP_REQUEST_CANCELLED")
+            raise
         except (
             KernelDeadlineExceededError,
             ProviderProtocolError,
@@ -243,21 +369,27 @@ class HttpStreamTransport:
 
     async def _attempt(
         self, client, url, headers, body, deadline_monotonic, max_response_bytes,
-        decode_stream,
+        decode_stream, progress,
     ) -> Mapping[str, Any]:
         remaining = deadline_monotonic - self._clock()
         if remaining <= DEADLINE_MARGIN_SECONDS:
             raise KernelDeadlineExceededError()
         try:
-            # One total limit for the whole attempt. The per-phase httpx limits
-            # run to the deadline itself, so this one always fires first.
+            # Keep the total/model-read deadline, but bound connection setup and
+            # uploads independently so neither can consume the entire stage.
             async with asyncio.timeout(remaining - DEADLINE_MARGIN_SECONDS) as scope:
                 async with client.stream(
                     "POST", url, content=body, headers=headers,
-                    timeout=httpx.Timeout(remaining),
+                    timeout=httpx.Timeout(
+                        remaining, connect=min(remaining, REQUEST_CONNECT_TIMEOUT_SECONDS),
+                        write=min(remaining, REQUEST_WRITE_TIMEOUT_SECONDS),
+                    ),
+                    extensions={"trace": progress.trace},
                 ) as response:
+                    progress.response_status = response.status_code
+                    progress.emit("RESPONSE_HEADERS_RECEIVED", "READ_RESPONSE_BODY", activity=True)
                     response.raise_for_status()
-                    chunks = _decoded_chunks(response, _ByteBudget(max_response_bytes))
+                    chunks = _decoded_chunks(response, _ByteBudget(max_response_bytes), progress)
                     if decode_stream is None:
                         async with aclosing(chunks):
                             return _json_object(b"".join([
@@ -325,22 +457,31 @@ class _BoundedGzip:
 
 
 async def _decoded_chunks(
-    response: httpx.Response, budget: _ByteBudget
+    response: httpx.Response, budget: _ByteBudget, progress=None,
 ) -> AsyncIterator[bytes]:
     """Yield the decoded body, spending every decoded byte from ``budget``."""
 
     encoding = response.headers.get("content-encoding", "").strip().lower()
     if encoding in {"", "identity"}:
-        async for chunk in response.aiter_raw():
+        async for chunk in _raw_chunks(response, progress):
             yield budget.spend(chunk)
         return
     if encoding not in _GZIP_ENCODINGS:
         raise ProviderTransportError(validation_type="UNSUPPORTED_ENCODING")
     inflater = _BoundedGzip(budget)
-    async for chunk in response.aiter_raw():
+    async for chunk in _raw_chunks(response, progress):
         for piece in inflater.feed(chunk):
             yield piece
     inflater.finish()
+
+
+async def _raw_chunks(response, progress):
+    async for chunk in response.aiter_raw():
+        if progress is not None and chunk:
+            progress.body(len(chunk))
+        yield chunk
+    if progress is not None:
+        progress.emit("BODY_COMPLETE", "DECODE_RESPONSE", activity=True)
 
 
 def _json_object(body: bytes) -> dict[str, Any]:
@@ -418,6 +559,10 @@ def _classify(exc: Exception, wall_now: float) -> tuple[str, bool, float | None]
         return f"HTTP_{status}", False, None
     if isinstance(exc, RetryableStreamError):
         return exc.category, True, None
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "NETWORK_CONNECT_TIMEOUT", True, None
+    if isinstance(exc, httpx.WriteTimeout):
+        return "NETWORK_WRITE_TIMEOUT", True, None
     if isinstance(exc, httpx.TimeoutException):
         return "TIMEOUT", False, None
     if isinstance(exc, httpx.RemoteProtocolError):

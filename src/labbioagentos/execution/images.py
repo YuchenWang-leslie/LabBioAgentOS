@@ -17,6 +17,19 @@ from .errors import ExecutionPlanRejected, ExecutionResourceLimitError, ImageNot
 from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, RequestedResources
 
 
+DEFAULT_OUTPUT_FILE_BYTES = 128 * 1024**2
+DEFAULT_COLLECTED_OUTPUT_BYTES = 512 * 1024**2
+
+
+def cap_implicit_file_limit(values):
+    """An explicitly smaller collection budget also bounds the default file size."""
+    if isinstance(values, dict) and "max_output_file_bytes" not in values:
+        total = values.get("max_collected_output_bytes")
+        if type(total) is int and 0 < total < DEFAULT_OUTPUT_FILE_BYTES:
+            return {**values, "max_output_file_bytes": total}
+    return values
+
+
 class ApprovedImage(BaseModel):
     """Trusted registry entry selected through a model-visible key."""
 
@@ -144,9 +157,11 @@ class ExecutionPolicy(BaseModel):
     max_memory_mb: int = Field(default=8192, ge=16)
     max_pids: int = Field(default=512, ge=1)
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
-    max_output_file_bytes: int = Field(default=16_777_216, ge=1)
-    max_collected_output_bytes: int = Field(default=67_108_864, ge=1)
+    max_output_file_bytes: int = Field(default=DEFAULT_OUTPUT_FILE_BYTES, ge=1)
+    max_collected_output_bytes: int = Field(default=DEFAULT_COLLECTED_OUTPUT_BYTES, ge=1)
     tmpfs_size_mb: int = Field(default=64, ge=1)
+
+    _cap_implicit_file_limit = model_validator(mode="before")(cap_implicit_file_limit)
 
     @model_validator(mode="after")
     def validate_file_limits(self) -> "ExecutionPolicy":

@@ -4,7 +4,7 @@ import json
 from typing import Annotated, Literal
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from labbioagentos.kernel import (
     BudgetLedger,
@@ -17,6 +17,8 @@ from labbioagentos.kernel import (
     ToolExecutionFailure,
     ToolRegistry,
 )
+from labbioagentos.kernel.contracts import ToolError
+from labbioagentos.kernel.tooling import safe_validation_path
 
 
 class NestedArguments(BaseModel):
@@ -32,6 +34,27 @@ class ExampleArguments(BaseModel):
     mode: Literal["ONE", "TWO"]
     nested: NestedArguments
     values: Annotated[tuple[int, ...], Field(min_length=1, max_length=4)]
+
+
+@pytest.mark.parametrize('location,expected', (
+    (('nested', 'count'), 'nested.count'),
+    (('values', 0), 'values.0'),
+    (('nested', 'PRIVATE_SECRET_KEY'), 'nested.unknown_field'),
+    (('requirements[]',), 'unknown_field'),
+))
+def test_safe_validation_path_keeps_declared_fields_and_array_indices(location, expected):
+    path = safe_validation_path(ExampleArguments, location)
+    assert path == expected
+    ToolError(code='INVALID_TOOL_ARGUMENTS', message='Synthetic.', validation_fields=(path,))
+
+
+def test_validation_path_obeys_the_consumer_bound_for_long_declared_names():
+    parent, child = 'p' * 80, 'c' * 80
+    nested = create_model('LongNested', **{child: (int, ...)})
+    model = create_model('LongParent', **{parent: (nested, ...)})
+    path = safe_validation_path(model, (parent, child))
+    assert path == parent
+    ToolError(code='INVALID_TOOL_ARGUMENTS', message='Synthetic.', validation_fields=(path,))
 
 
 def _limits(*, tool_calls: int = 8) -> BudgetLimits:
@@ -57,6 +80,74 @@ def _valid_call(call_id: str = "call-1", name: str = "example") -> ToolCall:
             '"values":[1,2]}'
         ),
     )
+
+
+def test_string_length_rejection_exposes_only_the_public_limit():
+    from labbioagentos.runtime.native_tools import WorkingNoteWriteArguments
+
+    registry = ToolRegistry()
+    registry.register(name="write", description="Fixture", arguments_model=WorkingNoteWriteArguments,
+                      handler=lambda _: None)
+    def validate(text):
+        return registry.validate_batch([ToolCall(call_id="test", name="write",
+            arguments_json=json.dumps({"text": text}, ensure_ascii=False))],
+            finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+
+    assert validate("短") and validate("汉" * 8000)
+    with pytest.raises(ToolBatchRejectedError) as raised:
+        validate("私" * 8001)
+    assert raised.value.validation_fields == ("text",)
+    assert raised.value.validation_type == "string_too_long"
+    assert "at most 8000 characters" in str(raised.value)
+    assert "私" not in str(raised.value) and "8001" not in str(raised.value)
+
+
+@pytest.mark.parametrize(("label", "hint"), [("A", "at least 2 characters"),
+                                              ("PRIVATESECRETXYZ", "at most 12 characters")])
+def test_string_length_hint_resolves_nested_array_field(label, hint):
+    registry = ToolRegistry()
+    model = create_model("NestedStrings", __config__=ConfigDict(extra="forbid"), rows=(list[NestedArguments], ...))
+    registry.register(name="example", description="Fixture", arguments_model=model, handler=lambda _: None)
+    call = ToolCall(call_id="test", name="example",
+        arguments_json=json.dumps({"rows": [{"label": label, "count": 1}]}))
+    with pytest.raises(ToolBatchRejectedError) as raised:
+        registry.validate_batch([call], finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    assert raised.value.validation_fields == ("rows.0.label",)
+    assert hint in str(raised.value) and "PRIVATE" not in str(raised.value)
+
+
+def test_undisclosed_length_constraint_does_not_leak_key_value_or_validator_context():
+    from pydantic import field_validator
+    from pydantic_core import PydanticCustomError
+
+    class PrivateRule(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        text: str
+
+        @field_validator("text")
+        @classmethod
+        def check_length(cls, text):
+            raise PydanticCustomError("string_too_long", "private {value}", {"value": text, "max_length": 9151})
+
+    registry = ToolRegistry()
+    registry.register(name="check", description="Fixture", arguments_model=PrivateRule, handler=lambda _: None)
+    call = ToolCall(call_id="test", name="check", arguments_json='{"text":"PRIVATE_VALUE"}')
+    with pytest.raises(ToolBatchRejectedError) as raised:
+        registry.validate_batch([call], finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    assert raised.value.validation_type == "string_too_long"
+    assert str(raised.value) == "Tool arguments do not match the registered schema"
+
+
+def test_optional_string_uses_the_public_string_branch_limit():
+    model = create_model("OptionalText", __config__=ConfigDict(extra="forbid"),
+                         note=(Annotated[str, Field(max_length=9)] | None, None))
+    registry = ToolRegistry()
+    registry.register(name="example", description="Fixture", arguments_model=model, handler=lambda _: None)
+    call = ToolCall(call_id="test", name="example", arguments_json='{"note":"PRIVATE_NOTE"}')
+    with pytest.raises(ToolBatchRejectedError) as raised:
+        registry.validate_batch([call], finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    assert raised.value.validation_fields == ("note",)
+    assert "at most 9 characters" in str(raised.value) and "PRIVATE" not in str(raised.value)
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,30 @@ from labbioagentos import (
     SkillSearchContext, SkillSourceBundle, SkillUserDecision,
 )
 from labbioagentos.local_gold import build_personal_gold_service, close_personal_gold
+from labbioagentos.skills import SkillSourceProjector
+from labbioagentos.trace import InMemoryTraceSink, RunTraceRecorder, TraceEventType
+
+
+@pytest.mark.parametrize(('terminal', 'status', 'agent_name'), [
+    (TraceEventType.DELEGATION_COMPLETED, 'COMPLETED', 'ReviewerAgent'),
+    (TraceEventType.DELEGATION_FAILED, 'FAILED', 'WorkerAgent'),
+    (TraceEventType.DELEGATION_DENIED, 'DENIED', None),
+])
+def test_successful_run_projection_preserves_delegation_identity(terminal, status, agent_name):
+    recorder = RunTraceRecorder(InMemoryTraceSink())
+    run_id, parent, child = uuid4(), uuid4(), uuid4()
+    edge = dict(invocation_id=child, parent_invocation_id=parent, caller='leader', target='peer')
+    recorder.emit(run_id, TraceEventType.DELEGATION_STARTED, agent_name=agent_name, status='STARTED', **edge)
+    recorder.emit(run_id, terminal, status=status, **edge)
+    recorder.emit(run_id, TraceEventType.RUN_COMPLETED, status='COMPLETED')
+    bundle = SkillSourceProjector().project(recorder.events(run_id), run_id=run_id)
+    assert len(bundle.delegations) == 1
+    item = bundle.delegations[0]
+    assert item.agent_name == agent_name
+    assert (item.invocation_id, item.parent_invocation_id, item.status) == (child, parent, status)
+    assert (item.caller, item.target) == ('leader', 'peer')
+    view_edge = SkillSourceProjector.curation_view(bundle).delegations[0]
+    assert 'agent_name' not in view_edge.model_dump()
 
 
 class FixtureCurator(SkillCuratorPort):

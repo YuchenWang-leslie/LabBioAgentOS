@@ -76,9 +76,10 @@ async def test_provider_receives_selection_reason_then_supplies_own_valid_select
                 if request.turn_index == 2:
                     self.source = previous
                     identity = previous["capability_invocation_id"]
+                    assert "tool_invocation_id" not in outer
                     self.wrong_ids = {
                         "duplicate": [identity, identity],
-                        "outer_tool_id": [outer["tool_invocation_id"]],
+                        "outer_tool_id": [str(loop.tool_results[0].tool_invocation_id)],
                         "artifact_id": [str(ref.artifact_id)],
                         "unknown": [str(uuid4())],
                     }[wrong_kind]

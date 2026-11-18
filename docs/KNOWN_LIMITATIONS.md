@@ -14,6 +14,22 @@ scientific acceptance are still outstanding.
 
 ## Provider behavior
 
+Cumulative phase token limits are checked against reported input and output
+usage. A request can cross the remaining allowance before that usage is known;
+its result is then rejected. This is not a prepaid provider quota. An explicit
+supported `FINALIZE_ONLY` recovery is a separately audited model operation that
+retains completed capabilities and the original limit, and can incur additional
+provider usage. Unreported usage remains unknown.
+
+Low-level HTTP progress callbacks may arrive after a successful turn and retain
+the then-current phase instead of the original HTTP phase. A progress event
+labelled `HTTP_PHASE_FAILED` with reason `COMPLETED` is not sufficient evidence
+of a failed model request. The recorded event does not retain enough information
+to reconstruct its original phase or exception. Match invocation and turn IDs
+and use the provider turn/attempt terminal events for request accounting;
+`scripts/runtime_stress_report.py` uses these terminal outcomes. This telemetry
+limitation does not change model acceptance or scientific execution status.
+
 A deployment selects exactly one provider API format in trusted configuration
 (`[provider] api_format`):
 
@@ -86,7 +102,12 @@ Format-specific limits:
 Rate limits, overloads, server errors and connection failures are retried a
 bounded number of times: twice by default, at most ten. Each retry is
 recorded in the run trace. A retried request can be billed again when the
-failed attempt had already produced output. Each response is capped, after
+failed attempt had already produced output. Request writes have a separate
+60-second timeout, clamped to the remaining deadline; `NETWORK_WRITE_TIMEOUT`
+uses the same retry bound. Model-response reads retain their original deadline;
+read/connect/pool timeouts remain final. Failed-attempt usage stays unknown
+unless supplied by the provider. This bounds a broken upload, not slow model
+generation or the underlying network failure. Each response is capped, after
 decompression, at 8 MiB plus 1 KiB per requested output token. A provider
 failure that outlasts the retry bound fails the stage. The run stays in
 flight and can be resumed only by an operator, with `reconcile` and
@@ -114,12 +135,22 @@ Provider latency can be high and variable. Structured response truncation has
 one bounded correction path using the same frozen evidence; it does not repair
 JSON locally or replay tools. Missing token usage remains unknown.
 
+Native tool calls have a hard limit of 64,000 Unicode characters for the complete
+serialized argument JSON, including escaping and combined fields; backend
+source-field maxima do not override this channel limit. OpenAI-compatible Chat
+can reject a complete over-capacity response before any dispatch and offer one
+Agent-chosen correction within the original budgets. Safe diagnostics identify
+only the field, call index and measured/allowed lengths. This correction is not
+implemented or validated for the other provider wire formats, which retain their
+existing fail-closed behavior; malformed/unsupported protocol is not retried.
+
 Archived, rereadable old tool batches can leave the active model context when
-the observed remaining token budget is below the previous request's input
-tokens, even before the request-byte cap is reached. This is a risk signal,
-not an exact next-request token estimate or guaranteed budget admission;
-unarchived evidence and the newest batch remain visible. A model can still
-exhaust its phase budget before preparing a sufficient evidence handoff.
+the measured public/provider-wire request exceeds the request-byte cap;
+unarchived evidence and the newest batch remain visible. The forecast based on
+observed input tokens and all remaining turn slots is audit telemetry only,
+not an exact next-request estimate or guaranteed budget admission. Keeping a
+fitting working context can still consume the actual phase budget before the
+Agent prepares a sufficient evidence handoff.
 
 Schema-valid output can still be scientifically or semantically poor. Host
 validation enforces authority, structure, lineage, and release policy—not
@@ -181,8 +212,12 @@ between scheduler acceptance and persistence of the returned job ID, orphan
 reconciliation records `UNCONFIRMED` and requires operator inspection; it
 cannot guarantee automatic cancellation. See
 [C13 integration review](C13_APPTAINER_EXECUTION_ACCEPTANCE.md).
-Local Apptainer remains unvalidated on this host because its executable and
-CPU-controller delegation are unavailable; resource limits were not bypassed.
+The earlier quota-mode Local Apptainer probe was blocked by missing runtime
+and CPU-controller prerequisites; retain that historical refusal. The current
+primary `systemd-affinity` mode instead requires enforced integer-core affinity
+and delegated memory/pids, without CPU-controller delegation. See
+[Local Apptainer](LOCAL_APPTAINER.md) for the separate current host checks and
+evidence boundary; these checks do not establish scientific or release acceptance.
 
 ## Persistence and concurrency
 

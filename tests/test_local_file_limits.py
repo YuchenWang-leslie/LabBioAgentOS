@@ -1,6 +1,8 @@
 """Trusted file budgets reach the sandbox and model without widening exposure."""
 
 import json
+from pathlib import Path
+import tomllib
 from uuid import uuid4
 
 import pytest
@@ -12,12 +14,13 @@ from labbioagentos import (
     RuntimeExecutionCapabilityView, WorkflowStage,
 )
 from labbioagentos.local_config import build_application, load_settings, runtime_manifest
+from labbioagentos.execution.registration import OutputCollector
 from test_local_configuration import settings_file
 
 
 DEFAULTS = {
-    "max_output_file_bytes": 16 * 1024 * 1024,
-    "max_collected_output_bytes": 64 * 1024 * 1024,
+    "max_output_file_bytes": 128 * 1024 * 1024,
+    "max_collected_output_bytes": 512 * 1024 * 1024,
     "tmpfs_size_mb": 64,
 }
 LARGER = {
@@ -34,11 +37,28 @@ def _configure(path, values):
     return load_settings(path)
 
 
-def test_old_configuration_keeps_file_budget_defaults(settings_file):
+def test_omitted_file_limits_match_direct_execution_and_packaged_templates(settings_file):
     settings = load_settings(settings_file)
     for name, expected in DEFAULTS.items():
         assert getattr(settings.execution, name) == expected
         assert getattr(ExecutionPolicy(), name) == expected
+    assert DockerCommandBuilder().max_output_file_bytes == DEFAULTS["max_output_file_bytes"]
+    collector = OutputCollector(None, None)
+    assert collector.max_output_file_bytes == DEFAULTS["max_output_file_bytes"]
+    assert collector.max_collected_output_bytes == DEFAULTS["max_collected_output_bytes"]
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    for backend in ("local", "cluster", "docker"):
+        execution = tomllib.loads((examples / f"{backend}-runtime.toml").read_text())["execution"]
+        for name in ("max_output_file_bytes", "max_collected_output_bytes"):
+            assert execution[name] == DEFAULTS[name]
+
+
+def test_explicit_smaller_total_caps_omitted_per_file_limit(settings_file):
+    total = 48 * 1024 * 1024
+    values = {"max_collected_output_bytes": total}
+    for limits in (_configure(settings_file, values).execution, ExecutionPolicy(**values),
+                   OutputCollector(None, None, **values)):
+        assert limits.max_output_file_bytes == limits.max_collected_output_bytes == total
 
 
 @pytest.mark.parametrize("name", DEFAULTS)

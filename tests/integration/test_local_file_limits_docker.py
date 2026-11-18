@@ -87,7 +87,7 @@ def local_docker(tmp_path, request):
             endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
-            image_key="file-limit-python", image_reference=image,
+            backend="docker", image_key="file-limit-python", image_reference=image,
             resources=RequestedResources(cpus=1, memory_mb=256, pids_limit=64, timeout_seconds=30),
             **limits,
         ),

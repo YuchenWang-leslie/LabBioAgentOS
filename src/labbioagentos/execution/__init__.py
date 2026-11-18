@@ -37,6 +37,7 @@ from .errors import (
 from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .models import (
     ExecutionDiagnostic,
+    ExecutionHostTermination,
     ExecutionDiagnosticCode,
     ExecutionFailureClass,
     ExecutionIssue,
@@ -88,6 +89,7 @@ __all__ = [
     "DockerProcessRunner",
     "ExecutionBoundaryError",
     "ExecutionDiagnostic",
+    "ExecutionHostTermination",
     "ExecutionDiagnosticCode",
     "ExecutionFailureClass",
     "ExecutionIssue",

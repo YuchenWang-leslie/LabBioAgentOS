@@ -19,10 +19,10 @@ from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
 from .errors import ContainerStartError
 from .executor import ContainerExecutor
 from .job_ledger import JobLedger
-from .images import ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
+from .images import DEFAULT_OUTPUT_FILE_BYTES, ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .launchers import JobLauncher
 from .launchers.base import JobLauncherError
-from .models import ExecutionPlan
+from .models import DOCKER_BRIDGE_NETWORK_ARGV, DOCKER_OFFLINE_NETWORK_ARGV, ExecutionPlan
 from .mounts import (
     ExecutionWorkspace,
     ExecutionWorkspaceManager,
@@ -238,6 +238,7 @@ class SubprocessDockerRunner(DockerProcessRunner):
 class DockerCommandBuilder:
     """Construct a fixed Docker argv; plans cannot inject Docker options."""
 
+    backend = "docker"
     SCRIPT_TARGET = CONTAINER_SCRIPT_PATH
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
     INPUT_MANIFEST_TARGET = PurePosixPath("/labbio/input-manifest.json")
@@ -248,7 +249,7 @@ class DockerCommandBuilder:
         self,
         docker_binary: str = "docker",
         *,
-        max_output_file_bytes: int = 16_777_216,
+        max_output_file_bytes: int = DEFAULT_OUTPUT_FILE_BYTES,
         tmpfs_size_mb: int = 64,
     ):
         if not docker_binary or docker_binary.startswith("-"):
@@ -261,6 +262,10 @@ class DockerCommandBuilder:
         self.max_output_file_bytes = max_output_file_bytes
         self.tmpfs_size_mb = tmpfs_size_mb
 
+    @staticmethod
+    def network_control_argv(network_required: bool) -> tuple[str, ...]:
+        return DOCKER_BRIDGE_NETWORK_ARGV if network_required else DOCKER_OFFLINE_NETWORK_ARGV
+
     def build(
         self,
         plan: ExecutionPlan,
@@ -268,7 +273,6 @@ class DockerCommandBuilder:
         workspace: ExecutionWorkspace,
         input_mounts: tuple[ResolvedMount, ...],
     ) -> tuple[str, ...]:
-        network = "bridge" if plan.network_required else "none"
         numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
         argv = [
             self.docker_binary,
@@ -284,8 +288,7 @@ class DockerCommandBuilder:
             "no-new-privileges",
             "--user",
             f"{os.getuid()}:{os.getgid()}",
-            "--network",
-            network,
+            *self.network_control_argv(plan.network_required),
             "--cpus",
             format(plan.resources.cpus, "g"),
             "--memory",
@@ -361,7 +364,7 @@ class DockerCommandBuilder:
     ) -> tuple[str, ...]:
         return (
             self.docker_binary, "run", "--rm", "--pull", "never", "--name", "labbio-" + uuid4().hex,
-            "--network", "none", "--read-only", "--cap-drop", "ALL",
+            *DOCKER_OFFLINE_NETWORK_ARGV, "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--user", "65534:65534",
             "--memory", "256m", "--cpus", "1", "--pids-limit", "32",
             "--entrypoint", image.executable[0], image.resolved_reference,

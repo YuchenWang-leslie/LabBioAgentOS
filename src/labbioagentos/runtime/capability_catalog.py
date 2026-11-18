@@ -37,6 +37,7 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
         "file_read",
     ),
     WorkflowStage.EXECUTE: (
+        "artifact_list",
         "artifact_query",
         "report_read",
         "file_read",
@@ -48,6 +49,7 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
         "skill_view",
     ),
     WorkflowStage.VALIDATE: (
+        "artifact_list",
         "artifact_query",
         "artifact_aggregate",
         "report_read",
@@ -56,6 +58,7 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
         "skill_view",
     ),
     WorkflowStage.INTERPRET: (
+        "artifact_list",
         "artifact_query",
         "artifact_aggregate",
         "report_read",
@@ -65,6 +68,7 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
         "skill_view",
     ),
     WorkflowStage.REPORT: (
+        "artifact_list",
         "artifact_query",
         "artifact_aggregate",
         "report_read",
@@ -86,7 +90,8 @@ CAPABILITY_CEILINGS: dict[WorkflowStage, tuple[str, ...]] = {
 # These observation operations do not grant any scientific/execution capability.
 # Profiles must still opt in; this is a stage ceiling, not an automatic grant.
 CAPABILITY_CEILINGS = {
-    stage: (*names, "evidence_read", "prepare_handoff")
+    stage: (*names, "evidence_read", "evidence_list", "stage_context_read", "prepare_handoff", "handoff_status",
+            "working_note_write", "working_note_read")
     for stage, names in CAPABILITY_CEILINGS.items()
 }
 
@@ -98,7 +103,12 @@ ALL_CAPABILITIES = frozenset(
 
 CAPABILITY_INFORMATION_AUTHORITY: dict[str, InformationAuthority] = {
     "evidence_read": InformationAuthority.MODEL_CONTEXT,
+    "evidence_list": InformationAuthority.CONTROL_STATE,
+    "stage_context_read": InformationAuthority.MODEL_CONTEXT,
     "prepare_handoff": InformationAuthority.CONTROL_STATE,
+    "handoff_status": InformationAuthority.CONTROL_STATE,
+    "working_note_write": InformationAuthority.MODEL_CONTEXT,
+    "working_note_read": InformationAuthority.MODEL_CONTEXT,
     "artifact_list": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "artifact_query": InformationAuthority.AUTHORITATIVE_EVIDENCE,
     "artifact_aggregate": InformationAuthority.AUTHORITATIVE_EVIDENCE,

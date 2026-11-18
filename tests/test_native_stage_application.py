@@ -438,7 +438,7 @@ async def test_rejected_native_tool_arguments_are_persisted_without_values(tmp_p
                 )
             if self.calls == 2:
                 feedback = json.loads(request.messages[-1].content)
-                assert feedback["error"]["validation_fields"] == ["unexpected"]
+                assert feedback["error"]["validation_fields"] == ["unknown_field"]
                 assert feedback["error"]["validation_type"] == "extra_forbidden"
                 return ModelTurn(
                     tool_calls=(ToolCall(
@@ -488,9 +488,10 @@ async def test_rejected_native_tool_arguments_are_persisted_without_values(tmp_p
     assert len(rejected) == 1
     assert rejected[0].payload["reason_code"] == "INVALID_TOOL_ARGUMENTS"
     assert rejected[0].payload["tool_name"] == "artifact_list"
-    assert rejected[0].payload["validation_fields"] == ["unexpected"]
+    assert rejected[0].payload["validation_fields"] == ["unknown_field"]
     assert rejected[0].payload["validation_type"] == "extra_forbidden"
     assert "PRIVATE_CANARY" not in json.dumps([event.model_dump(mode="json") for event in events])
+    assert '"unexpected"' not in json.dumps([event.model_dump(mode="json") for event in events])
     assert result.stage_id is WorkflowStage.INTAKE
     assert capability_provider.calls == 3
 

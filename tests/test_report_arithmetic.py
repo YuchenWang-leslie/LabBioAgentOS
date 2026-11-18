@@ -63,7 +63,10 @@ async def test_aggregate_after_delivered_page_does_not_advance_pagination(artifa
     ]) == 1
 
     repeated_page = await tools.artifact_query(identifier, "TOP_N", 1)
-    assert repeated_page["error"]["error_code"] == "PAGINATION_PROGRESS_REQUIRED"
+    assert repeated_page["success"]
+    assert repeated_page["data"]["next_offset"] == 1
+    assert repeated_page["data"]["records"] == page["data"]["records"]
+    assert tools.stop_reason is None
 
 
 @pytest.mark.asyncio

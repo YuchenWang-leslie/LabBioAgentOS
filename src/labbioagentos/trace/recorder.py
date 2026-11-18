@@ -12,7 +12,7 @@ from pydantic import JsonValue
 from labbioagentos.contracts import WorkflowStage
 
 from .models import InstructionRecord, TraceEvent, TraceEventType
-from .sinks import TraceSequenceError, TraceSink
+from .sinks import JsonlTraceSink, TraceSequenceError, TraceSink
 
 
 class RunTraceRecorder:
@@ -46,10 +46,8 @@ class RunTraceRecorder:
         """Append one event; validation or sink failures are never swallowed."""
 
         with self._lock:
-            sequence = self._sequence_for(run_id)
             event_kwargs: dict[str, Any] = {
                 "run_id": run_id,
-                "sequence": sequence,
                 "event_type": event_type,
                 "stage_id": stage_id,
                 "invocation_id": invocation_id,
@@ -65,7 +63,10 @@ class RunTraceRecorder:
             }
             if timestamp is not None:
                 event_kwargs["timestamp"] = timestamp
-            event = TraceEvent(**event_kwargs)
+            if isinstance(self.sink, JsonlTraceSink):
+                return self.sink.append_next(run_id, lambda n: TraceEvent(sequence=n, **event_kwargs))
+            sequence = self._sequence_for(run_id)
+            event = TraceEvent(sequence=sequence, **event_kwargs)
             self.sink.append(event)
             self._next_sequence[run_id] = sequence + 1
             return event

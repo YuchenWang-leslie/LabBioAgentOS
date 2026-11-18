@@ -6,16 +6,22 @@
 
 ## 安装
 
-使用 Python 3.11+ 的独立环境：
+普通用户安装主路径（Python 3.11+，无需 sudo）：
 
 ```bash
-python -m pip install -e '.[test]'
+uv tool install --python 3.11 --from . labbioagentos
 labbio --help
+labbio apptainer-install
 ```
 
 不要把凭据写入仓库。配置文件默认位于
 `~/.config/labbioagent/runtime.toml`，可从
-`examples/local-runtime.toml` 开始。相对路径以配置文件目录为基准。
+`examples/local-runtime.toml` 开始，主路径为 Local＋Apptainer；调度节点使用
+`examples/cluster-runtime.toml`。相对路径以配置文件目录为基准。
+Docker 只作为兼容后端，使用 `examples/docker-runtime.toml` 并显式设置
+`execution.backend = "docker"`，不会因 Apptainer 不可用而自动回退。
+安装器和无管理员模式的宿主条件、整数核限制见
+[USER_INSTALL.md](USER_INSTALL.md)。Slurm 只用于明确选定的集群兼容配置。
 
 ## 配置边界
 
@@ -25,11 +31,18 @@ labbio --help
 - 用户、项目、实验室身份；
 - 模型服务的接口格式、端点、模型、输出预算、重试次数、phase deadline，以及
   仓库外凭据文件中的密钥变量名（见下文"模型服务"）；
-- 已批准的不可变 Docker 镜像、模块清单、资源限额、输出限额和网络策略；
+- 已批准并注册的不可变 SIF、Apptainer 和 launcher 配置、模块清单、资源限额、
+  输出限额和网络策略；显式 Docker 兼容配置则绑定其不可变镜像；
 - 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
 
 任务文字和工具参数不能修改上述权威值。新任务冻结配置与源码内容身份；不匹配
 的旧运行不能由当前源码静默接管。
+
+省略 `execution.backend` 现在表示 Apptainer，仍须提供完整的
+`[execution.apptainer]` 配置并通过执行边界检查；没有 SIF、二进制或 CPU／内存／
+进程树限制时拒绝运行。旧 Docker 配置须显式补上 `backend = "docker"`，
+不能借默认值更改历史运行的后端或绕过 revision 检查。部署条件与验证步骤见
+[LOCAL_APPTAINER.md](LOCAL_APPTAINER.md)。
 
 模型服务默认读取宿主机的代理和证书环境变量。若该服务可直连、而宿主代理链路
 不稳定，可在可信配置的 `[provider]` 中设置 `trust_env = false`；这只影响
@@ -106,6 +119,13 @@ DeepSeek 的 Anthropic 兼容接口关闭思考请用 `thinking_off = "disabled"
 服务时，请设
 `provider_tool_schema_strict = false` 和 `finalization_json_object = true`；本地
 校验在任何模式下都照常执行。
+
+外部 profile 的每个 stage 可配置 `max_finalization_output_tokens`，默认 8192，
+允许 1–131072 的严格整数。阶段收尾发送的输出额度取它与模型显式输出上限的较小值；
+模型未声明上限时使用该阶段配置。调查和代码生成仍使用原模型额度。
+`max_finalization_tokens` 是包含输入与输出的累计预算，尝试次数另受原有限制；
+单次输出额度不会增加这些总预算。容量预检与实际收尾请求使用同一额度，
+profile 和额度写入新运行的 RUNTIME 身份；既有冻结运行不原地修改。
 
 换格式或端点，就是换数据接收方，中转网关能看到全部提示和密钥；见
 [已知限制](KNOWN_LIMITATIONS.md)。
@@ -185,14 +205,14 @@ labbio run \
 
 ```toml
 [execution]
-max_output_file_bytes = 16777216
-max_collected_output_bytes = 67108864
+max_output_file_bytes = 134217728
+max_collected_output_bytes = 536870912
 tmpfs_size_mb = 64
 include_error_context = false
 allow_generated_file_read = false
 ```
 
-单文件和收集合计必须为正数，合计不能小于单文件上限。`tmpfs` 计入容器内存。
+默认单文件上限为 128 MiB，每次执行收集的声明输出合计上限为 512 MiB。只配置更小的合计上限时，默认单文件上限随之降低。显式指定两项时，合计必须覆盖单文件上限。`tmpfs` 计入容器内存。
 这些限制不构成工作目录磁盘配额；大量未声明文件仍需操作侧清理。
 
 声明输出只有在收集、登记、哈希和谱系核对后才成为 Artifact。失败执行可以保留
@@ -236,6 +256,7 @@ my-task/
   executions/
   delivery/
     REPORT.md
+    PROGRAM.py
     outputs/
     history/outputs/
     RESULT.json
@@ -244,6 +265,12 @@ my-task/
 
 最终执行与报告依据持久身份选择，不按文件名或修改时间猜测。CLI 不替 Agent 补写
 报告。工作流完成不等于科学正确。
+
+当选定执行有宿主记录的原始程序绑定时，`PROGRAM.py`是该已登记`execution-script`
+的逐字副本，`RESULT.json.programs`保存Artifact／execution身份、大小和SHA256；
+README链接该原件。导出会核对权限、受控存储位置、阶段／调用身份及原哈希，损坏、
+缺失或冲突时拒绝，不让Agent另写一份程序来代替。原程序仍为本地RAW内容，不因此
+获得远程读取权限或科学正确性认证。旧运行没有原程序绑定时不推断、拼接或选最新文件。
 
 ## 托管模式
 

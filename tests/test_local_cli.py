@@ -14,6 +14,22 @@ from labbioagentos.local_config import LocalSettings, build_application
 _REAL_APPLICATION_RUN = LabBioApplication.run
 
 
+def test_budget_failure_prints_typed_facts_without_exception_text(monkeypatch, tmp_path, capsys):
+    from labbioagentos.kernel import BudgetExceededError
+
+    def fail(_path):
+        error = BudgetExceededError(dimension="tokens", limit=65_536, consumed=40_000, requested=30_000)
+        error.args = ("PRIVATE_EXCEPTION_SENTINEL",)
+        raise error
+
+    monkeypatch.setattr(cli, "load_settings", fail)
+    assert cli.main(["status", "--run-dir", str(tmp_path / "unused")]) == 1
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "LOCAL_COMMAND_FAILED", "error_type": "BudgetExceededError",
+        "budget_failure": {"dimension": "tokens", "limit": 65_536, "consumed": 40_000, "requested": 30_000},
+    }
+
+
 @pytest.fixture
 def local_cli(tmp_path, monkeypatch):
     inputs = tmp_path / "inputs"
@@ -30,6 +46,7 @@ def local_cli(tmp_path, monkeypatch):
             "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
+            "backend": "docker",
             "image_key": "python", "image_reference": "sha256:" + "1" * 64,
             "resources": {"cpus": 1.0, "memory_mb": 512,
                           "pids_limit": 32, "timeout_seconds": 30.0},
@@ -68,6 +85,7 @@ def test_natural_task_and_preferences_are_text_not_authority(local_cli, capsys):
     assert record.context_artifact_ids == ()  # .h5ad did not route to an inspector
     assert observed["provider_modes"] == [True]
     assert (directory / "state.sqlite").is_file()
+    assert json.loads((directory / "RUNTIME.json").read_text())["configuration"]["execution"]["backend"] == "docker"
     request = json.loads((directory / "REQUEST.json").read_text())
     assert request["task"] == task and request["preferences"] == [preference]
     assert request["format"] == "raw"

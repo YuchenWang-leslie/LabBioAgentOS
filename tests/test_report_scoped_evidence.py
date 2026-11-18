@@ -24,10 +24,12 @@ def report_tools(boundary, *, real_service=False):
     projects = InMemoryProjectStore()
     projects.register(Project(project_id=binding.workspace.project_id,
         lab_id=binding.workspace.lab_id, owner_user_id=binding.principal.user_id))
-    service = (ReportSubmissionService(
+    service = ReportSubmissionService(
         original.services.artifact_store,
         AccessService(projects),
-    ) if real_service else SimpleNamespace(submit=submit))
+    )
+    if not real_service:
+        service = SimpleNamespace(submit=submit, prepare_delivery=service.prepare_delivery)
     tools = LabBioRuntimeToolSet(
         replace(binding, stage_id=WorkflowStage.REPORT, invocation_id=uuid4(),
                 capability_allowlist=("artifact_query", "artifact_aggregate",
@@ -137,6 +139,7 @@ async def test_scope_cannot_be_model_forged_and_formats_cannot_mix(artifact_quer
         })
     result = await provider.call_tool("report_submit", {
         "title": "Synthetic", "report_text": "Synthetic",
+        "delivery_artifact_ids": [],
         "evidence_references": references,
     })
     assert result["success"] and len(calls) == 1
@@ -226,7 +229,8 @@ async def test_scoped_reference_limit_is_shared_by_host_and_native_schema(artifa
         {"artifact_id": str(ref.artifact_id), "observation_ids": [str(uuid4())] * 33},
         {"artifact_id": str(ref.artifact_id), "observation_ids": [str(uuid4())] * 32},
     ]
-    payload = {"title": "Synthetic", "report_text": "Synthetic", "evidence_references": references}
+    payload = {"title": "Synthetic", "report_text": "Synthetic", "evidence_references": references,
+               "delivery_artifact_ids": []}
     with pytest.raises(ValidationError):
         await LocalProvider(tools).call_tool("report_submit", payload)
     direct = await tools.report_submit(**payload)

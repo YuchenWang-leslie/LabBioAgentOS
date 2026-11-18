@@ -63,6 +63,7 @@ class OutputContractFailureCode(StrEnum):
     OUTPUT_IO_ERROR = "OUTPUT_IO_ERROR"
     COLLECTION_LIMIT_EXCEEDED = "COLLECTION_LIMIT_EXCEEDED"
     RECORD_LIMIT_EXCEEDED = "RECORD_LIMIT_EXCEEDED"
+    EMPTY_DOCUMENT = "EMPTY_DOCUMENT"
     INVALID_DOCUMENT = "INVALID_DOCUMENT"
     UNDECLARED_RECORD_FIELDS = "UNDECLARED_RECORD_FIELDS"
     MODEL_CONTENT_REJECTED = "MODEL_CONTENT_REJECTED"
@@ -257,6 +258,49 @@ class ExecutionPlanDraft(BaseModel):
         return self
 
 
+class ExecutionSourceRevision(BaseModel):
+    """Agent-authored exact edits to one explicitly imported original program."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source_artifact_id: UUID
+    expected_script_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    edits: tuple[ExecutionSourceEdit, ...] = Field(default=(), max_length=32)
+
+
+class SourceRevisionExecutionDraft(ExecutionPlanDraft):
+    """Fresh execution intent; no historical execution contract is inherited."""
+
+    script_content: None = None
+    source_revision: ExecutionSourceRevision
+    input_artifact_ids: ExecutionInputArtifactIds = Field(...)
+    parameters: dict[str, JsonValue] = Field(...)
+    requested_outputs: ExecutionRequestedOutputs = Field(...)
+    resources: RequestedResources = Field(...)
+
+
+class SourceRevisionOrigin(BaseModel):
+    """Host-verified provenance, never source text, edit text or an old receipt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    source_artifact_id: UUID
+    source_execution_id: UUID
+    source_run_id: UUID | None
+    source_sha256: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
+    edit_count: int = Field(ge=0, le=32)
+
+
+class OutputValidationDetails(BaseModel):
+    """Mechanical field constraints, never output contents or repair suggestions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    code: Literal["SCALAR_REQUIRED", "STRING_TOO_LONG"]
+    field_name: StrictStr | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+    )
+    max_length: int | None = Field(default=None, ge=1, le=65_536)
+
+
 class ExecutionIssue(BaseModel):
     """One bounded technical issue associated with execution or output."""
 
@@ -270,6 +314,7 @@ class ExecutionIssue(BaseModel):
     record_index: int | None = Field(default=None, ge=0, le=9999)
     observed_records: int | None = Field(default=None, ge=0)
     max_records: int | None = Field(default=None, ge=1, le=10_000)
+    validation: OutputValidationDetails | None = None
 
 
 class ExecutionOutputIssue(BaseModel):
@@ -290,11 +335,12 @@ class ExecutionOutputIssue(BaseModel):
     max_records: int | None = Field(
         default=None, ge=1, le=10_000, description="Trusted contract limit for this rejection.",
     )
+    validation: OutputValidationDetails | None = None
 
     @model_serializer(mode="wrap")
     def omit_unknown_record_counts(self, handler):
         data = handler(self)
-        for name in ("observed_records", "max_records"):
+        for name in ("observed_records", "max_records", "validation"):
             if data.get(name) is None:
                 data.pop(name, None)
         return data
@@ -368,6 +414,7 @@ class ExecutionDiagnostic(BaseModel):
     reported_numerical_condition: Literal[
         "ILL_CONDITIONED_FIT", "SINGULAR_MATRIX",
         "DECOMPOSITION_DID_NOT_CONVERGE", "NON_FINITE_INPUT",
+        "EMPTY_ARRAY_SEQUENCE",
     ] | None = Field(
         default=None,
         description=(
@@ -419,6 +466,71 @@ class ExecutionErrorContext(BaseModel):
     stderr_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+APPTAINER_OFFLINE_NETWORK_ARGV = ("--net", "--network", "none")
+DOCKER_OFFLINE_NETWORK_ARGV = ("--network", "none")
+DOCKER_BRIDGE_NETWORK_ARGV = ("--network", "bridge")
+
+
+class ExecutionProvenance(BaseModel):
+    """Host-selected adapter and image for this attempt, not sandbox startup proof.
+
+    The Python/R language runtime and binaries visible inside an image do not
+    identify its host execution backend. Status, exit code and issues remain
+    separate; this identity can also accompany a rejected start.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    backend: Literal["docker", "apptainer"]
+    image_digest: StrictStr = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    network_control_argv: tuple[StrictStr, ...] | None = Field(default=None, description=(
+        "Network options selected by the host command builder for this attempt. "
+        "These do not attest process startup or measured network isolation. Null when unrecorded."))
+
+    @model_validator(mode="after")
+    def validate_network_options(self):
+        allowed = ((APPTAINER_OFFLINE_NETWORK_ARGV,) if self.backend == "apptainer"
+                   else (DOCKER_OFFLINE_NETWORK_ARGV, DOCKER_BRIDGE_NETWORK_ARGV))
+        if self.network_control_argv is not None and self.network_control_argv not in allowed:
+            raise ValueError("Unrecognized network control options for this backend")
+        return self
+
+
+class ExecutionHostTermination(BaseModel):
+    """Manager facts about the owned service main, not the analysis interpreter.
+
+    No raw manager text, unit paths, limit-exceeded inference or OOMD claim.
+    Missing measurements stay unknown. The service main may be a supervisor.
+    Memory peak is manager-reported service/cgroup usage, not interpreter RSS.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    source: Literal["SYSTEMD_SERVICE_MANAGER"] = "SYSTEMD_SERVICE_MANAGER"
+    service_result: Literal[
+        "success", "exit-code", "signal", "core-dump", "timeout",
+        "watchdog", "oom-kill", "resources",
+    ] | None = None
+    service_main_code: Literal["EXITED", "KILLED", "DUMPED"] | None = None
+    service_main_status: int | None = Field(default=None, ge=0, le=255)
+    memory_peak_bytes: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
+    stop_requested_by_launcher: bool = False
+
+    @model_validator(mode="after")
+    def require_observed_manager_facts(self):
+        if all(value is None for value in (
+            self.service_result, self.service_main_code,
+            self.service_main_status, self.memory_peak_bytes,
+        )):
+            raise ValueError("Host termination requires observed manager facts")
+        if self.service_main_status is not None:
+            if self.service_main_code is None:
+                raise ValueError("Service status requires its observed main-process code")
+            if self.service_main_code in {"KILLED", "DUMPED"} and not 1 <= self.service_main_status <= 64:
+                raise ValueError("Service signal status is outside the Linux signal range")
+        return self
+
+
 class ExecutionResult(BaseModel):
     """Model-safe process metadata and references, never unrestricted logs."""
 
@@ -431,6 +543,7 @@ class ExecutionResult(BaseModel):
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1)
     resolved_image: StrictStr = Field(min_length=1)
+    execution_provenance: ExecutionProvenance | None = None
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     script_ref: ArtifactRef
     exit_code: int | None = None
@@ -445,6 +558,7 @@ class ExecutionResult(BaseModel):
     issues: tuple[ExecutionIssue, ...] = ()
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
     error_context: ExecutionErrorContext | None = None
+    host_termination: ExecutionHostTermination | None = None
 
     @field_validator("started_at", "completed_at")
     @classmethod
@@ -462,6 +576,8 @@ class ExecutionReceipt(BaseModel):
     execution_id: UUID
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1, max_length=128)
+    execution_provenance: ExecutionProvenance | None = Field(default=None,
+        description="Host-selected adapter/image for this attempt, not proof of sandbox startup or analysis success. In-image binary discovery does not identify the host backend. Null means unknown in a legacy or custom result.")
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     exit_code: int | None = None
     resources: RequestedResources | None = Field(
@@ -498,6 +614,7 @@ class ExecutionReceipt(BaseModel):
     output_issues: tuple[ExecutionOutputIssue, ...] = Field(default=(), max_length=128)
     diagnostics: tuple[ExecutionDiagnostic, ...] = Field(default=(), max_length=8)
     error_context: ExecutionErrorContext | None = None
+    host_termination: ExecutionHostTermination | None = None
     retryable: bool = False
 
     @classmethod
@@ -534,6 +651,7 @@ class ExecutionReceipt(BaseModel):
             execution_id=result.execution_id,
             status=result.status,
             image_key=result.image_key,
+            execution_provenance=result.execution_provenance,
             script_hash=result.script_hash,
             exit_code=result.exit_code,
             resources=resources,
@@ -567,12 +685,14 @@ class ExecutionReceipt(BaseModel):
                     record_index=issue.record_index,
                     observed_records=issue.observed_records,
                     max_records=issue.max_records,
+                    validation=issue.validation,
                 )
                 for issue in result.issues
                 if issue.output_index is not None
             ),
             diagnostics=result.diagnostics,
             error_context=result.error_context,
+            host_termination=result.host_termination,
             retryable=any(code in retryable_classes for code in codes),
         )
 

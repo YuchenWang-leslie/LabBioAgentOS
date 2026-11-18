@@ -46,7 +46,13 @@ async def test_tool_feedback_includes_actual_provider_budget_and_unknown_tokens(
         "tokens_remaining": remaining,
         "wall_time_ms_remaining": 58_750,
     }
-    assert loop._feedback_result(feedback.content) == result.tool_results[0]
+    parsed = loop._feedback_result(feedback.content)
+    assert parsed.tool_invocation_id is None
+    assert parsed.model_dump(exclude={"tool_invocation_id"}) == result.tool_results[0].model_dump(
+        exclude={"tool_invocation_id"})
+    assert any(event.kind.value == "TOOL_CALL_FINISHED"
+               and event.tool_invocation_id == result.tool_results[0].tool_invocation_id
+               for event in result.events)
     prepared = [event for event in result.events if event.kind.value == "MODEL_REQUEST_PREPARED"]
     assert prepared[1].numeric_facts["public_request_bytes"] == len(
         provider.requests[1].model_dump_json().encode("utf-8")

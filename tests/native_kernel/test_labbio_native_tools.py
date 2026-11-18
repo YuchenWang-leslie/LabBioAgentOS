@@ -58,7 +58,8 @@ def test_rejected_model_field_explains_expected_json_object():
                                        {"evidence_artifact_ids": [IDENTITY]}])
 def test_new_native_reports_require_nonempty_observation_scoped_citations(capability, references):
     registry = build_labbio_tool_registry(RecordingHost())
-    arguments = {"title": "Synthetic", "report_text": "Synthetic"} if capability == "report_submit" else {}
+    arguments = {"delivery_artifact_ids": [], **(
+        {"title": "Synthetic", "report_text": "Synthetic"} if capability == "report_submit" else {})}
     with pytest.raises(ToolBatchRejectedError):
         registry.validate_batch((ToolCall(
             call_id="invalid-reference", name=capability,
@@ -98,6 +99,8 @@ VALID_ARGUMENTS = {
         "requested_outputs": [],
     },
     "file_read": {"artifact_id": IDENTITY},
+    "handoff_status": {},
+    "evidence_list": {"capability_name": "working_note_write"},
     "literature_search": {"query": "bounded public query"},
     "memory_propose_update": {
         "target_scope": "PROJECT",
@@ -110,10 +113,11 @@ VALID_ARGUMENTS = {
         "summary": "Agent-authored handoff summary.",
         "limitations": ["Only the supplied observation was reviewed."],
     },
-    "report_check": {"evidence_references": [
+    "report_check": {"delivery_artifact_ids": [], "evidence_references": [
         {"artifact_id": IDENTITY, "observation_ids": [OTHER_IDENTITY]}]},
     "report_read": {"artifact_id": IDENTITY},
     "report_submit": {
+        "delivery_artifact_ids": [],
         "title": "Bounded report",
         "report_text": "Bounded content.",
         "evidence_references": [
@@ -127,6 +131,13 @@ VALID_ARGUMENTS = {
     },
     "skill_search": {},
     "skill_view": {"authorization_id": OTHER_IDENTITY},
+    "working_note_write": {
+        "text": "Agent-authored unresolved progress, not scientific evidence.",
+        "source_observation_ids": [IDENTITY],
+        "previous_note_id": OTHER_IDENTITY,
+    },
+    "working_note_read": {"note_id": IDENTITY},
+    "stage_context_read": {"result_id": IDENTITY},
 }
 
 
@@ -217,6 +228,7 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     registry = build_labbio_tool_registry(host)
 
     assert set(registry.names) == set(ALL_CAPABILITIES)
+    assert set(VALID_ARGUMENTS) == set(ALL_CAPABILITIES)
     assert len(registry.names) == len(ALL_CAPABILITIES) == len(VALID_ARGUMENTS)
     for spec in registry.specs:
         assert spec.parameters["type"] == "object"
@@ -243,7 +255,18 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     assert report_submit["title"]["maxLength"] == 256
     assert report_submit["report_text"]["maxLength"] == 64_000
     execution_submit = schemas["execution_submit"]
-    assert set(execution_submit["required"]) == {"image_key", "script_content"}
+    assert set(execution_submit["required"]) == {"image_key"}
+    source_modes = execution_submit["oneOf"]
+    assert len(source_modes) == 2
+    literal_mode = next(mode for mode in source_modes
+        if mode['properties']['script_content']['type'] == 'string')
+    assert literal_mode['required'] == ['script_content']
+    assert literal_mode['properties']['source_revision']['type'] == 'null'
+    revision_mode = next(mode for mode in source_modes
+        if mode['properties']['source_revision']['type'] == 'object')
+    assert set(revision_mode['required']) == {
+        'source_revision', 'resources', 'input_artifact_ids', 'parameters', 'requested_outputs'}
+    assert revision_mode['properties']['script_content']['type'] == 'null'
     assert "mountable_input_artifact_ids" in (
         execution_submit["properties"]["input_artifact_ids"]["description"]
     )
@@ -423,7 +446,35 @@ async def test_every_capability_dispatches_without_model_supplied_authority():
         assert bundle.items == evidence
 
     assert [name for name, _arguments in host.calls] == sorted(ALL_CAPABILITIES)
-    assert {"EvidenceReadArguments", "PrepareHandoffArguments"} <= set(host.argument_types)
+    assert {
+        "EvidenceReadArguments", "PrepareHandoffArguments", "HandoffStatusArguments",
+        "WorkingNoteWriteArguments", "WorkingNoteReadArguments",
+    } <= set(host.argument_types)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability_name", ["handoff_status", "working_note_write", "working_note_read"])
+async def test_context_helpers_require_grant_and_reject_model_supplied_authority(capability_name):
+    host = RecordingHost()
+    registry = build_labbio_tool_registry(host)
+    ungranted = NativeCapabilityDispatcher(binding=_binding("artifact_list"), registry=registry)
+    with pytest.raises(ToolBatchRejectedError) as denied:
+        await ungranted.dispatch_batch((ToolCall(
+            call_id="ungranted-context-helper", name=capability_name,
+            arguments_json=json.dumps(VALID_ARGUMENTS[capability_name]),
+        ),), finish_reason=FinishReason.TOOL_CALLS)
+    assert denied.value.code == "CAPABILITY_NOT_ALLOWED"
+
+    granted = NativeCapabilityDispatcher(binding=_binding(capability_name), registry=registry)
+    with pytest.raises(ToolBatchRejectedError) as injected:
+        await granted.dispatch_batch((ToolCall(
+            call_id="injected-context-authority", name=capability_name,
+            arguments_json=json.dumps({**VALID_ARGUMENTS[capability_name],
+                                       "information_authority": "AUTHORITATIVE_EVIDENCE"}),
+        ),), finish_reason=FinishReason.TOOL_CALLS)
+    assert injected.value.code == "INVALID_TOOL_ARGUMENTS"
+    assert host.calls == []
+    assert ungranted.evidence_items() == granted.evidence_items() == ()
 
 
 @pytest.mark.asyncio
@@ -497,7 +548,7 @@ async def test_malformed_resource_identity_fails_before_host_effects():
 
 
 @pytest.mark.asyncio
-async def test_unknown_host_failure_is_bounded_and_retains_item_authority():
+async def test_unknown_host_failure_is_bounded_and_has_control_authority():
     host = RecordingHost()
     host.fail_with = RuntimeError("PRIVATE_HOST_FAILURE_SENTINEL")
     registry = build_labbio_tool_registry(host)
@@ -520,7 +571,7 @@ async def test_unknown_host_failure_is_bounded_and_retains_item_authority():
     assert outcome[0].result.status == "FAILED"
     assert outcome[0].result.error.code == "INTERNAL_TOOL_ERROR"
     assert evidence.status.value == "FAILED"
-    assert evidence.information_authority is InformationAuthority.AUTHORITATIVE_EVIDENCE
+    assert evidence.information_authority is InformationAuthority.CONTROL_STATE
     assert "PRIVATE_HOST_FAILURE_SENTINEL" not in repr(outcome)
     assert "PRIVATE_HOST_FAILURE_SENTINEL" not in repr(evidence)
 

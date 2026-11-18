@@ -79,6 +79,18 @@ memory-only store keyed by kernel run, invocation and public message, so
 reasoning signatures and encrypted reasoning stay valid. The store is cleared
 with the invocation.
 
+Complete public and provider-wire requests share a configurable 1 MiB default
+byte bound; this is not a token-window estimate. Old archived tool batches may
+be replaced by authorized reread references. If opaque continuation still makes
+the latest round trip too large, capability mode can explicitly start a new
+provider context segment within the same Agent invocation. Exact public
+ASSISTANT/TOOL history is carried as labelled, hashed parts, not a host-written
+summary or a live tool dialogue missing its reasoning. The original task,
+permissions, budget and deadline stay fixed; tools are not replayed. Feedback
+is credited only after a returned model turn contains the complete host-created
+snapshot. Irreducible public content still fails admission. This mechanism is
+neither tool-enabled finalization nor durable crash recovery.
+
 Local composition builds the configured adapter from trusted settings
 (`create_provider`). The API key is held in memory and is never placed in the
 process environment. The runtime identity records the endpoint origin, a
@@ -97,10 +109,16 @@ Finalization consumes a frozen evidence bundle and cannot call tools.
 ### Data and execution plane
 
 Raw data remains local. Artifact policy decides which metadata, bounded preview,
-or derived result is visible to a remote model. The active production backend
-is Local + Docker. The source cluster backend adds Scheduler + Apptainer behind
-the same governed execution contract; it has not been
-validated or activated on a cluster under the Native Kernel. Execution receives
+or derived result is visible to a remote model. The source default and primary
+examples select user-installed Local + Apptainer. Slurm/Scheduler and Docker
+remain explicitly selected compatibility options, never automatic fallbacks.
+The existing immutable production release still uses Local + Docker: changing
+source defaults does not activate a new release. The local primary resource
+owner locks integer logical-core affinity with inherited seccomp, and uses
+delegated memory/pids cgroups; it does not require CPU-controller delegation.
+The original fractional-quota mode remains explicit and requires CPU delegation.
+User namespace and resource capabilities are checked, never bypassed by the
+user-level installer. Native cluster acceptance remains separate. Execution receives
 read-only registered inputs, declared writable output locations, resource
 limits, and network policy. Outputs become evidence only after collection,
 registration, hashing, and lineage checks.
@@ -125,7 +143,10 @@ filename or modification time.
 
 ## Current evidence boundary
 
-The deterministic suite currently passes 1382 tests with 10 intentional skips.
+The previously recorded deterministic suite passed 1382 tests with 10 intentional
+skips. Current development regression and the still-open acceptance gates are
+recorded at the top of [the convergence workplan](REAL_E2E_CONVERGENCE_WORKPLAN.md);
+a green suite alone does not establish scientific acceptance or activate a release.
 Generic live model behavior, dynamic collaboration, interruption/recovery,
 Docker execution, and one bounded ordinary-user PBMC3k task through an
 Agent-authored report have been observed. This does not establish independent

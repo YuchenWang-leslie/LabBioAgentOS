@@ -24,6 +24,7 @@ from labbioagentos.execution.apptainer_build import (
     render_build_program,
     render_lock,
 )
+from labbioagentos.execution.models import RequestedResources
 
 ANY_WHEEL = "example_pkg-2.0-py3-none-any.whl"
 LINUX_WHEEL = "fastlib-1.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
@@ -137,9 +138,16 @@ for flag, value in zip(args, args[1:]):
             sys.exit(255)
 fail = os.environ.get("FAKE_FAIL", "")
 if args[1] == "build":
+    if args[2] == "--mksquashfs-args":
+        packing = args[3].split()
+        assert len(packing) == 4 and packing[0] == "-processors" and packing[2] == "-mem"
+        assert int(packing[1]) >= 1 and packing[3].endswith("M") and int(packing[3][:-1]) > 0
+        args = args[:2] + args[4:]
     if args[2] == "--sandbox":
+        assert len(args) == 5
         stage = "sandbox"
     else:
+        assert len(args) == 4 and not args[2].startswith("-")
         stage = "pack-check" if args[2].endswith("pack-check.sif") else "pack"
 else:
     if "-m" in args:
@@ -162,7 +170,7 @@ elif stage == "probe":
 
 
 @pytest.fixture
-def build(tmp_path):
+def build(tmp_path, request):
     fake = tmp_path / "bin" / "apptainer"
     fake.parent.mkdir()
     fake.write_text(FAKE_APPTAINER)
@@ -173,10 +181,12 @@ def build(tmp_path):
     lock_file = tmp_path / "lock.txt"
     lock_file.write_text("examplepkg==2.0 --hash=sha256:" + "a" * 64 + "\n")
     program = tmp_path / "build.sh"
+    packing_options = ({"resources": request.param} if hasattr(request, "param") else {})
     program.write_text(render_build_program(
         apptainer_binary=fake, base_sif=tmp_path / "base.sif", wheel_dir=paths["wheels"],
         lock_file=lock_file, output_sif=paths["out"] / "environment.sif",
         build_dir=paths["node-local"], log_dir=paths["logs"], import_modules=("examplepkg",),
+        **packing_options,
     ))
     log = tmp_path / "apptainer-calls.log"
 
@@ -193,6 +203,8 @@ def build(tmp_path):
 
 def _stage(call):
     if call[1] == "build":
+        if call[2] == "--mksquashfs-args":
+            call = call[:2] + call[4:]
         return "sandbox" if call[2] == "--sandbox" else (
             "pack-check" if call[2].endswith("pack-check.sif") else "pack")
     if "-m" in call:
@@ -220,6 +232,21 @@ def test_build_program_runs_the_fixed_steps_without_network(build):
     assert not (paths["out"] / "environment.sif.partial").exists()
     assert json.loads((paths["logs"] / PROBE_OUTPUT).read_text())["failed_imports"] == []
     assert list(paths["node-local"].iterdir()) == []  # Node-local work removed.
+
+
+@pytest.mark.parametrize("build,expected", [
+    (RequestedResources(cpus=4, memory_mb=4096), "-processors 4 -mem 2048M"),
+    (RequestedResources(cpus=1.5, memory_mb=513), "-processors 1 -mem 256M"),
+    (RequestedResources(cpus=0.5, memory_mb=256), "-processors 1 -mem 128M"),
+], indirect=["build"])
+def test_packing_uses_the_build_budget_not_host_cpu_and_memory(build, expected):
+    start, calls, _, _, _, _ = build
+    assert start().wait(timeout=60) == 0
+    packing = [call for call in calls() if _stage(call) in {"pack-check", "pack"}]
+    assert len(packing) == 2
+    assert all(call[2:4] == ["--mksquashfs-args", expected] for call in packing)
+    sandbox = next(call for call in calls() if _stage(call) == "sandbox")
+    assert "--mksquashfs-args" not in sandbox
 
 
 def test_without_locked_wheels_nothing_is_installed(build):

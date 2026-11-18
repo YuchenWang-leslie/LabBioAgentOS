@@ -18,11 +18,11 @@ from uuid import UUID, uuid4
 from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
 from .errors import ContainerStartError, ExecutionPlanRejected, ImageNotApprovedError
 from .images import ApprovedImage
-from .models import ExecutionPlan
+from .models import APPTAINER_OFFLINE_NETWORK_ARGV, ExecutionPlan
 from .mounts import ExecutionWorkspace, ResolvedMount
 from .process_streams import capture_process
 
-ResourceEnforcement = Literal["scheduler", "apptainer-cgroups", "systemd-cgroups"]
+ResourceEnforcement = Literal["scheduler", "apptainer-cgroups", "systemd-cgroups", "systemd-affinity"]
 
 _SIF_REFERENCE = re.compile(r"sha256:([0-9a-f]{64})")
 _RUNTIME_LOG_LINE = re.compile(rb"(?:FATAL|ERROR|WARNING|INFO|VERBOSE|DEBUG):\s")
@@ -31,16 +31,14 @@ _CHUNK_BYTES = 1_048_576
 
 # Contain host filesystems, PID/IPC, environment and site-configured bind
 # paths; the network namespace holds loopback only.
-ISOLATION_ARGUMENTS = (
+CONTAIN_ARGUMENTS = (
     "--containall",
     "--cleanenv",
     "--no-privs",
     "--no-mount",
     "hostfs,bind-paths,cwd",
-    "--net",
-    "--network",
-    "none",
 )
+ISOLATION_ARGUMENTS = (*CONTAIN_ARGUMENTS, *APPTAINER_OFFLINE_NETWORK_ARGV)
 
 
 class SifStoreError(ImageNotApprovedError):
@@ -146,6 +144,7 @@ class SifStore:
 class ApptainerCommandBuilder:
     """Construct fixed `apptainer exec` argv equivalent to the Docker sandbox contract."""
 
+    backend = "apptainer"
     SCRIPT_TARGET = CONTAINER_SCRIPT_PATH
     PARAMETERS_TARGET = PurePosixPath("/labbio/parameters.json")
     INPUT_MANIFEST_TARGET = PurePosixPath("/labbio/input-manifest.json")
@@ -164,7 +163,7 @@ class ApptainerCommandBuilder:
         if (not apptainer_binary or apptainer_binary.startswith("-")
                 or any(character.isspace() for character in apptainer_binary)):
             raise ValueError("apptainer_binary must be a configured executable name")
-        if resource_enforcement not in ("scheduler", "apptainer-cgroups", "systemd-cgroups"):
+        if resource_enforcement not in ("scheduler", "apptainer-cgroups", "systemd-cgroups", "systemd-affinity"):
             raise ValueError("An explicit resource enforcement owner is required")
         self.sif_store = sif_store
         self.scratch_root = _reject_aliases(Path(scratch_root))
@@ -174,6 +173,12 @@ class ApptainerCommandBuilder:
         self.apptainer_binary = apptainer_binary
         self.verify_sif_on_execute = verify_sif_on_execute
 
+    @staticmethod
+    def network_control_argv(network_required: bool) -> tuple[str, ...]:
+        if network_required:
+            raise ExecutionPlanRejected("Network-enabled execution is unavailable for this backend")
+        return APPTAINER_OFFLINE_NETWORK_ARGV
+
     def build(
         self,
         plan: ExecutionPlan,
@@ -181,8 +186,9 @@ class ApptainerCommandBuilder:
         workspace: ExecutionWorkspace,
         input_mounts: tuple[ResolvedMount, ...],
     ) -> tuple[str, ...]:
-        if plan.network_required:
-            raise ExecutionPlanRejected("Network-enabled execution is unavailable for this backend")
+        network = self.network_control_argv(plan.network_required)
+        if self.resource_enforcement == "systemd-affinity" and not float(plan.resources.cpus).is_integer():
+            raise ExecutionPlanRejected("systemd-affinity requires an integer CPU count")
         sif = self._sif(image)
         (scratch,) = self.cleanup_paths(plan.execution_id)
         scratch.mkdir(mode=0o700)
@@ -191,7 +197,8 @@ class ApptainerCommandBuilder:
             self.apptainer_binary,
             "--silent",  # Runtime INFO/WARNING lines must not reach error context.
             "exec",
-            *ISOLATION_ARGUMENTS,
+            *CONTAIN_ARGUMENTS,
+            *network,
             "--workdir",
             self._bind_path(scratch),
             "--pwd",

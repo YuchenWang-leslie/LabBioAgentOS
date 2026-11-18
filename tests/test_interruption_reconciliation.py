@@ -41,7 +41,7 @@ def _capability_configuration(tmp_path, store, *, observer=None):
 def governed_invokers(monkeypatch):
     calls = {"capability": [], "finalize": []}
 
-    async def capability(self, stage_input):
+    async def capability(self, stage_input, *, resolve_finalization=None):
         calls["capability"].append(stage_input.invocation_id)
         profile = self.factory.catalog.agents[self.assembly.root_profile_key]
         tools = LabBioRuntimeToolSet(
@@ -75,7 +75,7 @@ def governed_invokers(monkeypatch):
             invocation_id=stage_input.invocation_id, items=tools.evidence_items(),
         )
 
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         calls["finalize"].append((stage_input.stage_id, stage_input.invocation_id, capability_evidence))
         return _next_result(stage_input.stage_id)
 
@@ -173,11 +173,12 @@ async def test_repeated_finalization_interruptions_keep_original_capability_chec
     before = store.get(handle.run_id)
     original = NativeKernelStageInvoker._finalize
 
-    async def disconnect(self, stage_input, *, capability_evidence=None):
+    async def disconnect(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         if stage_input.stage_id is WorkflowStage.EXECUTE:
             assert capability_evidence == before.inflight_evidence
             raise _SimulatedProcessLoss
-        return await original(self, stage_input, capability_evidence=capability_evidence)
+        return await original(self, stage_input, capability_evidence=capability_evidence,
+                              resolved_finalization=resolved_finalization)
 
     monkeypatch.setattr(NativeKernelStageInvoker, "_finalize", disconnect)
     with pytest.raises(_SimulatedProcessLoss):

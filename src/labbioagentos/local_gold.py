@@ -10,10 +10,11 @@ from .contracts import RunStatus
 from .run_state import RunRecoveryState
 from .governance import AccessAction, AccessService, AuthorizationDenied, InMemoryProjectStore
 from .skills import (
-    GoldSkillService, SQLiteSkillStore, SkillProposalContext, SkillScope,
+    GoldSkillService, SQLiteSkillStore, SkillCuratorDraft, SkillProcedureDraft, SkillProposalContext, SkillScope,
     SkillSourceProjector, SkillStoreError, SkillUserDecision,
 )
-from .skills.curator import SkillCuratorPort
+from .skills.curator import ApprovedAdaptationView, SkillCurationChange, SkillCuratorPort, SkillEvolutionRecommendation
+from .skills.models import SkillSourceUserRequest
 
 
 class _PersonalSkillStore(SQLiteSkillStore):
@@ -160,27 +161,139 @@ def completed_gold_source_record(application, run_id, principal, workspace):
 
 
 async def propose_from_completed_run(application, run_id, principal, workspace,
-                                     curator: SkillCuratorPort):
+                                     curator: SkillCuratorPort, *, from_usage: UUID | None = None,
+                                     evolution: str | None = None, feedback: str | None = None):
     """New curation over frozen evidence; never attach, execute or rewrite the source run."""
     record = completed_gold_source_record(application, run_id, principal, workspace)
     service = application.configuration.skill_service
-    from .local_gold_source import source_artifact_views, stage_context_from_results
+    if evolution is not None and (from_usage is None or evolution not in {"update", "fork"}):
+        raise ValueError("A Gold update or fork requires an ADAPT usage and a valid evolution kind")
+    parent, use = (service.authorized_adaptation(from_usage, run_id=run_id, project_id=workspace.project_id,
+                                                principal=principal) if from_usage is not None else (None, None))
+    context = _proposal_context(principal, parent, from_usage, (evolution or "update").upper(), feedback)
+    bundle = _curation_bundle(application, run_id, principal, workspace, record)
+    if parent is not None:
+        review = await curator.assess_outcome(service.create_curation_view(bundle.bundle_id))
+        context = context.model_copy(update={"outcome_review": review})
+    change = _change_input(context, parent, use) if parent is not None or feedback is not None else None
+    if change is None:
+        return await service.curate_proposal(bundle.bundle_id, curator, context)
+    return await _curate_change(service, bundle.bundle_id, curator, context, change)
 
+
+def _curation_bundle(application, run_id, principal, workspace, record):
+    from .local_gold_source import source_artifact_views, source_outcome_evidence, stage_context_from_results
+
+    service = application.configuration.skill_service
     events = application.trace_recorder.events(run_id)
     stage_context = stage_context_from_results(record.runtime_results, events, run_id)
-    views = source_artifact_views(application, run_id, principal, workspace)
+    outcome = source_outcome_evidence(application, record, run_id, principal, workspace)
+    views = source_artifact_views(application, run_id, principal, workspace,
+                                  selected_delivery=outcome.selected_delivery)
+    if outcome.selected_report is None and not outcome.answered_clarifications:
+        outcome = None
     if application.configuration.boundary_observer is not None:
         application.configuration.boundary_observer("curation_runtime", {
             "source_run_id": str(run_id), "source_runtime_revision": record.runtime_revision,
             "curation_runtime_revision": application.configuration.runtime_revision,
         })
     service.source_projector = SkillSourceProjector(application.artifact_store)
-    bundle = service.create_source_bundle(
-        events, run_id=run_id, stage_context=stage_context,
-        artifact_evidence_views=views,
+    return service.create_source_bundle(
+        events, run_id=run_id, stage_context=stage_context, artifact_evidence_views=views,
+        source_user_request=SkillSourceUserRequest.from_record(getattr(record, "task_text", None)),
+        outcome_evidence=outcome,
     )
-    return await service.curate_proposal(
-        bundle.bundle_id, curator,
-        SkillProposalContext(scope=SkillScope.PERSONAL, owner_user_id=principal.user_id,
-                             lab_id=principal.lab_id),
+
+
+def _proposal_context(principal, parent, from_usage, kind, feedback):
+    return SkillProposalContext(
+        scope=SkillScope.PERSONAL, owner_user_id=principal.user_id, lab_id=principal.lab_id,
+        parent_skill_id=parent.skill_id if parent else None,
+        parent_version=parent.version if parent else None, source_usage_record_id=from_usage,
+        evolution_kind=kind, review_feedback=feedback,
     )
+
+
+async def propose_evolution_from_usage(application, run_id, principal, workspace, curator: SkillCuratorPort,
+                                       *, from_usage: UUID, feedback: str | None = None):
+    """Let the curator choose whether the completed ADAPT run warrants a pending proposal."""
+    record = completed_gold_source_record(application, run_id, principal, workspace)
+    service = application.configuration.skill_service
+    parent, use = service.authorized_adaptation(from_usage, run_id=run_id, project_id=workspace.project_id,
+                                                principal=principal)
+    change = SkillCurationChange(evolution_kind="AUTO", parent_guidance=_guide_draft(parent, parent.name),
+                                 approved_adaptation=ApprovedAdaptationView.from_proposal(use),
+                                 review_feedback=feedback)
+    bundle = _curation_bundle(application, run_id, principal, workspace, record)
+    source = service.create_curation_view(bundle.bundle_id)
+    recommendation = SkillEvolutionRecommendation.model_validate(await curator.recommend_evolution(
+        source, change=change,
+    ))
+    if recommendation.action == "KEEP":
+        return recommendation, None
+    context = _proposal_context(principal, parent, from_usage, recommendation.action, feedback)
+    context = context.model_copy(update={"outcome_review": recommendation.outcome_review})
+    change = SkillCurationChange.model_validate({
+        **change.model_dump(), "evolution_kind": recommendation.action,
+        "recommendation_reason": recommendation.reason,
+        "outcome_review": recommendation.outcome_review,
+    })
+    candidate = await _curate_change(service, bundle.bundle_id, curator, context, change)
+    return recommendation, candidate
+
+
+def _guide_draft(record, name, review_notes=()):
+    """Expose only authored guidance; host-only identifiers stay in their own records."""
+    procedure = record.procedure.model_dump(include=set(SkillProcedureDraft.model_fields))
+    return SkillCuratorDraft(proposed_name=name, description=record.description,
+                            procedure=procedure, review_notes=review_notes)
+
+
+def _change_input(context, parent, use, previous=None):
+    return SkillCurationChange(
+        evolution_kind=context.evolution_kind if parent else None,
+        parent_guidance=_guide_draft(parent, parent.name) if parent else None,
+        approved_adaptation=ApprovedAdaptationView.from_proposal(use) if use else None,
+        previous_draft=_guide_draft(previous, previous.proposed_name, previous.review_notes)
+        if previous else None,
+        previous_review_feedback=previous.review_feedback if previous else None,
+        review_feedback=context.review_feedback,
+        outcome_review=context.outcome_review,
+    )
+
+
+async def _curate_change(service, bundle_id, curator, context, change):
+    if not isinstance(curator, SkillCuratorPort):
+        raise TypeError("curator must implement SkillCuratorPort")
+    draft = await curator.propose_with_context(service.create_curation_view(bundle_id), change=change)
+    return service.create_proposal(bundle_id, draft, context)
+
+
+async def revise_personal_gold(application, run_id, principal, workspace, curator: SkillCuratorPort,
+                               *, proposal_id: UUID, feedback: str):
+    """Redraft against the original frozen source; supersede only on successful storage."""
+    completed_gold_source_record(application, run_id, principal, workspace)
+    service = application.configuration.skill_service
+    previous = service.pending_proposal(proposal_id)
+    if (previous.source_run_id, previous.owner_user_id, previous.lab_id) != (
+        run_id, principal.user_id, principal.lab_id
+    ):
+        raise AuthorizationDenied("Gold revision must belong to the source run and its owner")
+    parent = None
+    use = None
+    if previous.parent_skill_id is not None:
+        if previous.source_usage_record_id is None:
+            raise SkillStoreError("Gold evolution requires an exact successful ADAPT usage record")
+        parent, use = service.authorized_adaptation(previous.source_usage_record_id, run_id=run_id,
+                                                    project_id=workspace.project_id, principal=principal)
+        if (parent.skill_id, parent.version) != (previous.parent_skill_id, previous.parent_version):
+            raise SkillStoreError("Gold revision usage does not match its candidate's parent")
+    context = SkillProposalContext(
+        scope=previous.scope, owner_user_id=previous.owner_user_id, project_id=previous.project_id,
+        lab_id=previous.lab_id, parent_skill_id=previous.parent_skill_id,
+        parent_version=previous.parent_version, source_usage_record_id=previous.source_usage_record_id,
+        evolution_kind=previous.evolution_kind, revises_proposal_id=proposal_id, review_feedback=feedback,
+        outcome_review=previous.outcome_review,
+    )
+    change = _change_input(context, parent, use, previous)
+    return await _curate_change(service, previous.source_bundle_id, curator, context, change)

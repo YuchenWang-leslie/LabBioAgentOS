@@ -131,6 +131,7 @@ async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
         "runtime",
         "image_key",
         "script_content",
+        "source_revision",
         "input_artifact_ids",
         "parameters",
         "requested_outputs",
@@ -138,7 +139,15 @@ async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
         "network_required",
         "review",
     }
-    assert set(parameters["required"]) == {"image_key", "script_content"}
+    assert set(parameters["required"]) == {"image_key"}
+    alternatives = parameters["oneOf"]
+    assert len(alternatives) == 2
+    assert {"script_content"} == set(alternatives[0]["required"])
+    assert alternatives[0]["properties"]["source_revision"]["type"] == "null"
+    assert set(alternatives[1]["required"]) == {
+        "source_revision", "resources", "input_artifact_ids", "parameters", "requested_outputs"
+    }
+    assert alternatives[1]["properties"]["script_content"]["type"] == "null"
 
 
 @pytest.mark.asyncio
@@ -157,8 +166,11 @@ async def test_le3_image_and_script_are_typed_and_bounded(execution_boundary):
     assert properties["image_key"]["type"] == "string"
     assert properties["image_key"]["maxLength"] == 128
     assert properties["image_key"]["pattern"]
-    assert properties["script_content"]["type"] == "string"
-    assert properties["script_content"]["maxLength"] == 1_000_000
+    script_alternatives = properties["script_content"]["anyOf"]
+    literal = next(item for item in script_alternatives if item["type"] == "string")
+    assert literal["minLength"] == 1
+    assert literal["maxLength"] == 1_000_000
+    assert any(item["type"] == "null" for item in script_alternatives)
 
 
 @pytest.mark.asyncio
@@ -521,3 +533,29 @@ def test_ec10_capability_state_does_not_depend_on_prior_model_prose():
     assert stage_input.prior_results == ()
     assert stage_input.execution_capability == view
     assert stage_input.execution_capability.authority.value == "CONTROL_STATE"
+
+
+@pytest.mark.parametrize("stage", [WorkflowStage.UNDERSTAND, WorkflowStage.PLAN])
+def test_pre_execution_local_file_delivery_is_visible_without_a_tool_grant(stage):
+    from labbioagentos.runtime.context import stage_context_projection
+
+    view = _trusted_view()
+    stage_input = RuntimeStageInput(
+        run_id=uuid4(), stage_id=stage, instruction="Deliver the full result locally.",
+        workspace=RuntimeWorkspaceIdentifiers(user_id="user-a", project_id="project-a", lab_id="lab-a"),
+        execution_capability=view,
+    )
+    projected = stage_context_projection(stage_input)
+    capability = projected["execution_capability"]
+    local = capability["local_file_delivery"]
+    assert local["requested_exposure"] == "RAW" and local["output_contract_id"] is None
+    assert "delivery_artifact_ids" in local["selection"]
+    assert "registered_outputs" in local["selection"]
+    assert local["queryable_contract_record_limit_applies"] is False
+    assert capability["approved_output_contracts"][0]["max_records"] == 8
+    assert capability["minimum_queryable_output_count"] == 1
+    assert capability["allow_generated_file_read"] is False
+    assert "execution_submit" not in projected["allowed_capabilities"]
+    assert stage_context_projection(stage_input.model_copy(update={"execution_capability": None}))[
+        "execution_capability"
+    ] is None

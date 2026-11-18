@@ -5,7 +5,6 @@ import json
 import pytest
 
 from labbioagentos.kernel import ModelRequest, ProviderProtocolError, PublicMessage
-from labbioagentos.kernel.errors import ContextCapacityError
 
 from .harness import DEADLINE, PROMPT, capability_loop
 from .wire import Call, KNOWN_USAGE, Turn
@@ -34,13 +33,17 @@ async def test_private_continuation_counts_toward_request_admission(wire, server
     loop, effects = capability_loop(wire.provider(wire.binding()))
     loop.max_request_bytes = 18_000
 
+    result = await loop.run(messages=PROMPT, deadline_monotonic=DEADLINE)
+    assert result.output == "done"
+    assert len(server.requests) == 2
+    assert all(len(request.content) <= 18_000 for request in server.requests)
+    boundaries = [event for event in result.events if event.kind == "CONTEXT_ROLLED_OVER"]
+    assert len(boundaries) == int(wire.carries_reasoning)
     if wire.carries_reasoning:
-        with pytest.raises(ContextCapacityError):
-            await loop.run(messages=PROMPT, deadline_monotonic=DEADLINE)
-        assert len(server.requests) == 1
-    else:
-        assert (await loop.run(messages=PROMPT, deadline_monotonic=DEADLINE)).output == "done"
-        assert len(server.requests) == 2
+        assert boundaries[0].numeric_facts["previous_wire_request_bytes"] > 18_000
+        assert boundaries[0].numeric_facts["wire_request_bytes"] <= 18_000
+        assert "PRIVATE" * 5_000 not in json.dumps(server.bodies[1])
+        assert boundaries[0].references[0] != boundaries[0].references[1]
     assert effects == ["a"]
 
 

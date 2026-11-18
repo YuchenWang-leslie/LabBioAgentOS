@@ -1,18 +1,22 @@
 """Local conversation lookup and explicit, non-replaying continuation commands."""
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import os
 from pathlib import Path
 import stat
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .application import ApplicationRunHandle, ApplicationRunRequest
-from .artifacts import ArtifactReleaseBasis
+from .artifacts import ArtifactExposureClass, ArtifactReleaseBasis, LocalArtifactStore
 from .artifacts.store import StoredArtifact
+from .contracts import WorkflowStage
 from .local_conversations import ConversationStore, read_run_record
-from .local_delivery import _digest, _no_symlinks, export_run, selected_execution_id
+from .local_delivery import (
+    _digest, _no_symlinks, _stored_file, export_run, selected_execution_id, selected_delivery_manifest,
+)
+from .runtime.delivery import build_delivery_manifest
 from .local_revision import import_revision_artifacts
 
 
@@ -243,14 +247,22 @@ async def revise(args, settings):
         raise ValueError("Reconcile a nonterminal source before requesting a revision")
     refs = result_refs(source_directory, record)
     selected_execution = selected_execution_id(record)
-    selected = tuple(args.artifact_id) if args.artifact_id else tuple(ref.artifact_id for ref in refs
+    delivery = (selected_delivery_manifest(LocalArtifactStore(source_directory / 'artifacts'), record)
+                if not args.artifact_id else None)
+    if delivery is not None:
+        store = LocalArtifactStore(source_directory / 'artifacts')
+        refs = tuple({ref.artifact_id: ref for ref in (
+            *refs, *(store.get_ref(item.artifact_id) for item in delivery.outputs))}.values())
+    selected = (tuple(args.artifact_id) if args.artifact_id else
+        tuple(item.artifact_id for item in delivery.outputs) if delivery is not None else
+        tuple(ref.artifact_id for ref in refs
         if ref.artifact_type not in {"report", "report_text"}
         and ref.release_basis is not ArtifactReleaseBasis.MODEL_AUTHORED_REPORT
-        and selected_execution is not None and ref.metadata.get("execution_id") == selected_execution)
+        and selected_execution is not None and ref.metadata.get("execution_id") == selected_execution))
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("Revision requires distinct selected source results; prior reports require explicit --artifact-id selection")
-    if not set(selected).issubset({ref.artifact_id for ref in refs}):
-        raise ValueError("Revision selection is not a registered result of the source run")
+    extra_ids = set(selected).difference(ref.artifact_id for ref in refs)
+    programs = {}
     selected_refs = tuple(ref for ref in refs if ref.artifact_id in selected)
     selected_executions = {ref.metadata.get("execution_id") for ref in selected_refs}
     report_execution_ids = {
@@ -270,13 +282,24 @@ async def revise(args, settings):
     for path in sorted((source_directory / "artifacts").glob("*.json")):
         _no_symlinks(path)
         ref = StoredArtifact.model_validate_json(path.read_bytes()).ref
+        if (ref.artifact_id in extra_ids and ref.run_id == record.run_id
+                and ref.artifact_type == "execution-script" and ref.stage_id is WorkflowStage.EXECUTE
+                and ref.producer_invocation_id is not None
+                and ref.exposure_class is ArtifactExposureClass.RAW
+                and "requested_exposure" not in ref.metadata):
+            programs[ref.artifact_id] = ref
         if (ref.artifact_type in {"report", "report_text"}
                 or ref.release_basis is ArtifactReleaseBasis.MODEL_AUTHORED_REPORT):
             narrative_ids.add(ref.artifact_id)
         if (ref.artifact_type == "execution-script" and "requested_exposure" not in ref.metadata
                 and ref.metadata.get("execution_id") in selected_executions
-                and ref.run_id == record.run_id):
+                and (ref.run_id == record.run_id or ref.artifact_id in
+                     (*record.input_artifact_ids, *record.context_artifact_ids))):
             sources.append(ref.artifact_id)
+    if delivery is not None:
+        sources = [item.artifact_id for item in delivery.programs]
+    if programs.keys() != extra_ids:
+        raise ValueError("Revision selection is not a registered result or original program of the source run")
     artifact_ids = tuple(dict.fromkeys((
         *record.input_artifact_ids,
         *record.context_artifact_ids,
@@ -288,12 +311,44 @@ async def revise(args, settings):
     if len(artifact_ids) > 128:
         raise ValueError("Revision context exceeds its bound; narrow the selected artifacts")
     task = cli._task_text(args.task, args.preference)
-    directory = cli._run_directory(settings.result_root,
-        args.output or settings.result_root / str(uuid4()), create=True)
-    with run_writer(source_directory), run_writer(directory):
+    with run_writer(source_directory), ExitStack() as locks:
+        if programs:
+            # A missing ledger cannot attest to the program. Do not create one here.
+            ledger = _stored_file(source_directory / "jobs.sqlite", source_directory)
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                path = ledger.with_name(ledger.name + suffix)
+                _no_symlinks(path)
+                if path.exists() and (not path.is_file() or path.stat().st_nlink != 1):
+                    raise ValueError("Invalid revision source ledger")
         source = cli.build_application(settings, source_directory, load_provider=False)
         application = None
         try:
+            program_receipts = {}
+            for artifact_id, ref in programs.items():
+                blob = source.artifact_store.root / "blobs" / str(artifact_id) / "content"
+                if (Path(ref.storage_locator) != blob
+                        or _stored_file(blob, source.artifact_store.root).stat().st_nlink != 1):
+                    raise ValueError("Original program is outside its registered blob")
+                execution_id = UUID(ref.metadata["execution_id"])
+                bound_ref, _, execution = source.execution_submission.original_program_binding(
+                    execution_id, principal=settings.principal, workspace=settings.workspace, run_id=record.run_id)
+                if bound_ref != ref or ref.metadata.get("sha256") != execution.script_hash:
+                    raise ValueError("Original program differs from its execution receipt")
+                program_receipts[artifact_id] = {
+                    "producer_execution_id": str(execution_id),
+                    "producer_execution_status": execution.status.value,
+                    "producer_exit_code": execution.exit_code,
+                }
+            if delivery is not None:
+                verified = build_delivery_manifest(source.artifact_store, source.access_service, selected,
+                    principal=settings.principal, workspace=settings.workspace, run_id=record.run_id,
+                    imported_artifact_ids=(*record.input_artifact_ids, *record.context_artifact_ids),
+                    trace_recorder=source.trace_recorder)
+                if verified != delivery.model_dump(mode='json'):
+                    raise ValueError('Saved delivery provenance differs from its registered sources')
+            directory = cli._run_directory(settings.result_root,
+                args.output or settings.result_root / str(uuid4()), create=True)
+            locks.enter_context(run_writer(directory))
             manifest = runtime_manifest(settings)
             cli._write_json(directory / "RUNTIME.json", manifest)
             application = cli.build_application(settings, directory, load_provider=False)
@@ -314,7 +369,8 @@ async def revise(args, settings):
                 receipt.append({"artifact_id": str(ref.artifact_id),
                                 "producer_run_id": str(ref.run_id) if ref.run_id else None,
                                 "snapshot_size_bytes": size, "snapshot_sha256": digest,
-                                "registered_sha256": ref.metadata.get("sha256")})
+                                "registered_sha256": ref.metadata.get("sha256"),
+                                **program_receipts.get(ref.artifact_id, {})})
             handle = application.create_run(ApplicationRunRequest(task_text=task,
                 principal=settings.principal, workspace=settings.workspace,
                 input_artifact_ids=tuple(inputs), context_artifact_ids=tuple(context)))

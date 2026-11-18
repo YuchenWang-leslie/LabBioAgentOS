@@ -74,6 +74,7 @@ class ClarificationCheckpoint(BaseModel):
 RejectedStageFailureCode = Literal[
     "INVALID_RUNTIME_PROPOSAL", "MALFORMED_RUNTIME_RESULT",
     "REQUIRED_CAPABILITY_INCOMPLETE", "HANDOFF_REQUIRED",
+    "FINALIZATION_CONTEXT_TOO_LARGE",
 ]
 REJECTED_STAGE_FAILURE_CODES = frozenset(get_args(RejectedStageFailureCode))
 

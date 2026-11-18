@@ -14,33 +14,24 @@ import time
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
 from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError,
                            EnvironmentRequestError, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
-
-
-_PROBE = """import contextlib, importlib, importlib.metadata, json, sys
-modules = json.loads(sys.argv[1])
-failed = []
-with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-    for module in modules:
-        try:
-            importlib.import_module(module)
-        except BaseException:
-            failed.append(module)
-    packages = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
-print(json.dumps({'installed_packages': packages, 'failed_imports': failed}, sort_keys=True))
-"""
+from .import_probe import PROGRAM as _PROBE, import_diagnostics, parse_import_probe
 
 
 def diagnose_pip_log(text: str) -> str:
     """Map pip output to a model-safe failure code; unrecognized output is BUILD_FAILED."""
     patterns = (
+        # pip also prints its generic no-match summary after exhausting index retries.
+        ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
+        ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
         ("PIP_NO_MATCH", ("No matching distribution found", "Could not find a version that satisfies")),
         ("PIP_RESOLUTION_CONFLICT", ("ResolutionImpossible", "conflicting dependencies")),
         ("PYTHON_VERSION_INCOMPATIBLE", ("requires a different Python", "Requires-Python")),
-        ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
-        ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
         ("PIP_CHECK_FAILED", ("has requirement", "which is not installed")),
     )
     return next((code for code, matches in patterns if any(value in text for value in matches)), "BUILD_FAILED")
@@ -48,6 +39,8 @@ def diagnose_pip_log(text: str) -> str:
 
 def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
     """Bounded, re-validated dependency facts from pip output; no log text is copied."""
+    if code in {"NETWORK_FAILURE", "TLS_FAILURE"}:
+        return ({"code": code},)
     diagnostics = []
     for match in re.finditer(r"No matching distribution found for ([^\r\n]{1,256})", text):
         try:
@@ -63,6 +56,21 @@ def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
             continue
         diagnostics.append({"code": "PIP_RESOLUTION_CONFLICT", "package": match.group(1),
                             "version": match.group(2), "dependency": dependency})
+    if code == "PIP_CHECK_FAILED":
+        for line in text.splitlines():
+            match = re.fullmatch(r"([\w.-]+) ([\w.!+_-]+) requires (.{1,256}), which is not installed\.", line)
+            wrong = re.fullmatch(r"([\w.-]+) ([\w.!+_-]+) has requirement (.{1,256}), but you have ([\w.-]+) ([\w.!+_-]+)\.", line)
+            if match is None and wrong is None:
+                continue
+            found = match or wrong
+            try:
+                dependency = normalize_requirements((found.group(3),))[0]
+            except EnvironmentRequestError:
+                continue
+            if wrong and canonicalize_name(wrong.group(4)) != Requirement(dependency).name:
+                continue
+            diagnostics.append({"code": code, "package": found.group(1), "version": found.group(2),
+                "dependency": dependency, **({"installed_version": wrong.group(5)} if wrong else {})})
     return tuple(diagnostics[:8]) or ({"code": code},)
 
 
@@ -312,13 +320,9 @@ class DockerEnvironmentBuilder:
         try:
             if probe_log.stat().st_size > 1_048_576:
                 raise ValueError()
-            inventory = json.loads(probe_log.read_text())
-            failed_modules = inventory["failed_imports"]
-            if not isinstance(failed_modules, list) or any(module not in modules for module in failed_modules):
-                raise ValueError()
-            if failed_modules:
-                return failed("IMPORT_CHECK_FAILED", tuple({"code": "IMPORT_CHECK_FAILED", "module": module}
-                                                           for module in failed_modules[:8]))
+            inventory = parse_import_probe(json.loads(probe_log.read_text()), modules)
+            if inventory["failed_imports"]:
+                return failed("IMPORT_CHECK_FAILED", import_diagnostics(inventory))
             if self._stop_requested():
                 interrupted_daemon("BUILD_CANCELLED", probe_name=probe_name, image_id=image_id)
             return EnvironmentBuildResult(image_id=image_id, installed_packages=inventory["installed_packages"],
