@@ -504,6 +504,37 @@ that Gold Skill versions have no retired state:
   SIF file is therefore confirmed by its owner (`--confirm-no-upstream`);
   only a lab image's deletion needs a LAB_ADMIN.
 
+Refined for restore by MOHAN CUI on 2026-11-18:
+
+- Lock files are kept. From now on, an image built from lock files keeps
+  its base image key and its locks: a personal image in the member's
+  private area (0600), a lab image in the lab area (0640), where the
+  approval moves the request's locks instead of deleting them. A restore
+  uses the kept locks by default, or locks given again with `--base` and
+  `--lock`. Images admitted before this change need the locks given again.
+  Either way, the rebuilt image must have the record's derived identity.
+- The base of a lock-built image or of an Agent-built environment may be
+  DEPRECATED, because a restore is not a new selection. A REVOKED base is
+  refused (`BASE_REVOKED`); a base whose file was deleted is refused
+  (`BASE_DELETED`) until the base itself is restored.
+- Only a DEPRECATED image is restored. A REVOKED image is refused
+  (`IMAGE_REVOKED`), because it never executes again. A restored image
+  stays DEPRECATED: runs that already used it continue or are revised, and
+  `image-activate` makes it selectable for new work.
+- A restore runs the admission limits: the per-image size limit and the
+  member's or the lab's quota.
+- An Agent-built environment is rebuilt from the exact locks in its
+  record, without a new solve. Its identity, Python inventory, conda
+  inventory and importable modules must equal the record. An environment
+  recorded without locks (built before step 7a) is refused
+  (`RESTORE_UNVERIFIABLE`).
+- Restore is split: 9c-1 re-pulls OCI sources and re-delivers archives and
+  SIF files, appends the RESTORED event and makes execution and Agent
+  environments run from the restored file; 9c-2 rebuilds lock-built images
+  and Agent environments and keeps lock files.
+- Permissions follow deletion: the owner restores a personal image, a
+  LAB_ADMIN restores a lab image and delivers its archive or SIF file.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:
