@@ -87,7 +87,7 @@ the same frozen input and schema and does not repair JSON locally.
 | UNDERSTAND | form a task understanding | enforce exposure and validate structure |
 | PLAN | choose scientific approach and collaboration | validate proposal and permissions |
 | PREFLIGHT | identify required execution assumptions | enforce trusted environment and policy |
-| EXECUTE | author and revise the analysis program | execute in Docker and register evidence |
+| EXECUTE | author and revise the analysis program; choose the image, runtime (PYTHON default, SHELL named), GPU count and any derived environment | check the image's state, runtimes and GPU flag; execute in Docker or Scheduler/Apptainer and register evidence |
 | VALIDATE | assess produced evidence and limitations | preserve immutable receipts and checks |
 | INTERPRET | interpret allowed derived results | enforce evidence scope and claim boundary |
 | REPORT | author the report and citations | validate references and export exact content |
@@ -103,4 +103,9 @@ control operations, never model-owned stage transitions.
 - In-flight external effects fail closed until reconciled.
 - Capability evidence and finalization results persist before the next action.
 - A successful execution is selected by persisted identity, not recency.
+- An execution records its image's backend-neutral source identity and the
+  realization that ran; a runtime other than PYTHON is recorded as named by
+  the Agent, never as a default.
+- An environment build attempt whose process was lost is marked `ABANDONED`
+  once its leftovers are removed; it is never rebuilt automatically.
 - Workflow completion is not proof of scientific correctness.

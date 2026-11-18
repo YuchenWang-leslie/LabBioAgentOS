@@ -125,6 +125,12 @@ Schema-valid output can still be scientifically or semantically poor. Host
 validation enforces authority, structure, lineage, and release policy—not
 scientific usefulness.
 
+A structured response with one field the stage schema does not allow fails
+local validation (`extra_forbidden`), and the run fails at that stage; there
+is no correction turn for it. This was seen once with `gemini-3.6-flash` in
+JSON-object mode during the C15 cluster validation and is recorded for a
+separate decision.
+
 ## Data exposure
 
 Raw matrices and unrestricted files remain local, but explicitly enabled
@@ -169,14 +175,24 @@ does not truncate declared scientific output files. Scheduler log files remain
 on disk and are only read in bounded portions by the control plane. Docker
 environment-build logs use a 16 MiB polling threshold, not a hard disk quota.
 An interrupted Docker build/probe may continue in the daemon after its client
-is killed; such attempts are marked `UNCONFIRMED` and require operator
-reconciliation rather than automatic replay.
+is killed. An environment build attempt holds a lease for as long as it runs;
+an attempt whose lease is free and that has no final receipt (none, or
+`UNCONFIRMED`) is cleaned up before the next environment build, by
+`image-reconcile` and after a run's `reconcile`, and marked `ABANDONED`. It
+is never rebuilt automatically. On a cluster, an attempt is cleaned up only
+once its run's ledger has no open build job; an attempt started before this
+rule, or whose run directory and ledger were removed, is kept, since its jobs
+cannot be confirmed stopped.
 
-The platform trusts the local Docker engine, host kernel, configured images,
-and local administrator. It does not defend against their compromise.
+The platform trusts the local Docker engine, host kernel, configured and
+admitted images, and local administrator. It does not defend against their
+compromise; admission checks an image's source, architecture, entry points
+and inventory, not its honesty.
 
-The source Scheduler + Apptainer backend has not been validated on a real
-cluster with the Native Kernel or deployed. In a narrow crash window
+The Scheduler + Apptainer backend has been validated on one Slurm test
+cluster (C14 full workflows; C15 executions, admissions, environment builds,
+image lifecycle and GPUs), not on PBS or LSF, and is not deployed. In a narrow
+crash window
 between scheduler acceptance and persistence of the returned job ID, orphan
 reconciliation records `UNCONFIRMED` and requires operator inspection; it
 cannot guarantee automatic cancellation. See
@@ -200,14 +216,32 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   falsify results; container isolation cannot prevent that. Personal images
   serve only their owner, lab images need a LAB_ADMIN, and trace records which
   image and source ran.
-- On Docker, records with the same source share one image id, so a lab image
-  and a personal image of the same manifest are one Docker image.
 - Image admission pulls on the host where the command runs, which on a cluster
   is the login node; only the Apptainer conversion runs in a job.
+- Apptainer's `/tmp` lives in the execution's scratch directory and is
+  checked every few seconds, not enforced as a quota: a program can exceed
+  `tmpfs_size_mb` between two checks before it is stopped with
+  `SCRATCH_LIMIT`.
 - Conda environments are solved on the host where the command runs. The
   solver's repodata cache is not kept, so each conda build fetches the channel
-  metadata again. On a cluster, the offline install in the build job has been
-  tested only with a fake Apptainer and a Docker simulation of the job step.
+  metadata again.
+- Permissions a conda package carries itself are kept (for example 775 on a
+  program); a SIF is read-only, so others can read and run it. Every other
+  file in an image's conda environment and Python site-packages must be
+  readable by others, or the build fails with `IMAGE_NOT_SHAREABLE`.
+- Derived and lock-built images built on a cluster before 2026-11-18 may be
+  readable only by the building account (the build then ran with umask 077).
+  They are deleted and restored, which rebuilds them under the current rule.
+- That another account can run a lab image rebuilt by the holding account was
+  checked with two real OS accounts on Docker only. On the test cluster, with
+  one account, only the file permissions inside the SIF were checked.
+- An Apptainer conversion of the same OCI source is not byte-reproducible
+  (D4): a restored or separately converted SIF can differ from the original.
+  Identity is the source and the inventory, which are checked on every
+  restore, not the SIF's own hash.
+- Registry credentials are static (username and password or token). Tokens
+  that expire, such as AWS ECR's, need the file refreshed by hand, and the
+  Docker credential-helper protocol is not supported.
 - A member's conda lock is checked by solving exactly its builds against the
   current channel metadata. A lock naming a file the channel no longer serves,
   or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
@@ -241,10 +275,16 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
   are not checked at all.
 - AMD ROCm and multi-node GPU jobs are not supported.
 - Under a scheduler, only the scheduler confines a job to its allocated GPUs
-  (for example Slurm `ConstrainDevices=yes`); `--nv` itself exposes every GPU
-  on the node. Whether `--nv` works together with LabBio's isolation options
-  has not yet been verified on a GPU node. The PBS and LSF GPU directives are
-  tested only against fake scheduler output.
+  (for example Slurm `ConstrainDevices=yes`); `--nv` itself binds every GPU
+  device node of the node. On the Slurm test cluster `--nv` worked together
+  with LabBio's isolation options, `CUDA_VISIBLE_DEVICES` reached the
+  container, and with `ConstrainDevices` only the allocated GPU could be used.
+  The PBS and LSF GPU directives are tested only against fake scheduler
+  output.
+- Some Slurm sites refuse `--gpus` and require `--gres`; such a site needs a
+  site template, and `backend-check` reports the refusal.
+- Local Apptainer under systemd does not support GPUs; a configuration with
+  `gpus > 0` is refused at load.
 
 ## Persistence and concurrency
 

@@ -26,8 +26,12 @@ labbio --help
 - 模型服务的接口格式、端点、模型、输出预算、重试次数、phase deadline，以及
   仓库外凭据文件中的密钥变量名（见下文"模型服务"）；
 - 已批准的不可变镜像（每个镜像一张 `[[execution.images]]` 表，`[execution] default_image`
-  指定 Agent 没有点名镜像时使用哪一个）、模块清单、资源限额、输出限额和网络策略；
-- 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
+  指定 Agent 没有点名镜像时使用哪一个）、模块清单、资源限额（包括 `[execution.resources]
+  gpus`，即一次执行最多能申请的 GPU 数，默认 0）、输出限额和网络策略；
+- 实验室区和成员私有区（`[lab] root`、`member_root`，可选 `registry_credentials`），见
+  [多用户工作区](LOCAL_WORKSPACES.md)；
+- 可选外部 profile、托管 workspace、个人 Gold、环境缓存根目录，以及 conda 包的设置
+  （`[environment.conda]`：micromamba 程序、它的 sha256 和允许的渠道）。
 
 任务文字和工具参数不能修改上述权威值。新任务冻结配置与源码内容身份；不匹配
 的旧运行不能由当前源码静默接管。
@@ -146,8 +150,9 @@ ANTHROPIC_API_KEY=<密钥>
 | `LAB_MEMBER_NOT_APPROVED` | 当前用户不是已批准的成员，或者已被撤销 |
 | `LAB_MEMBER_UID_MISMATCH` | 该成员登记的是另一个操作系统账号 |
 | `LAB_ADMIN_REQUIRED` | 成员管理命令没有在持有账号下、由已登记的管理员执行 |
-| `LAB_MEMBER_ACTION_INVALID` | 成员变更不符合当前状态（例如重复批准），或者会让实验室没有管理员 |
-| `CREDENTIAL_UNDER_BOUND_PATH` | 凭据文件（模型 API 密钥文件或工作区令牌）位于可能被挂进容器的目录里，例如数据根、结果根、托管工作区、环境根、SIF 仓库、scratch 或缓存目录；把它移到这些目录之外 |
+| `LAB_MEMBER_ACTION_INVALID` | 成员变更不符合当前状态（例如重复批准，包括批准持有账号本人：`lab-init` 已经把它登记为成员），或者会让实验室没有管理员 |
+| `LAB_USAGE_MISSING` | 实验室区建于镜像使用标记之前，还没有 `usage/` 目录；持有账号运行任意一条 LabBio 命令后会自动补上 |
+| `CREDENTIAL_UNDER_BOUND_PATH` | 凭据文件（模型 API 密钥文件、工作区令牌，或存在时的注册表凭据 `[lab] registry_credentials`）位于可能被挂进容器的目录里，例如数据根、结果根、托管工作区、环境根、SIF 仓库、scratch 或缓存目录；把它移到这些目录之外 |
 
 ### 从旧配置迁移
 
@@ -210,8 +215,10 @@ channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、m
 环境记录里会记下镜像大小；C15 以前的记录没有大小，不计入用量。
 
 Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
-`SHELL`，平台不会根据脚本或镜像推断。回执和 trace 都记录实际的运行时，以及它是明确
-给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）。
+`SHELL`，平台不会根据脚本或镜像推断。每个镜像都声明自己支持哪些运行时；选了镜像不
+支持的运行时，提交会被拒绝（`IMAGE_NOT_APPROVED`），不会换别的镜像。回执和 trace 都记录
+实际的运行时，以及它是明确给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）；SHELL 只能是
+明确给出的。
 
 ```toml
 [execution]
@@ -289,7 +296,9 @@ include_error_context = false
 allow_generated_file_read = false
 ```
 
-单文件和收集合计必须为正数，合计不能小于单文件上限。`tmpfs` 计入容器内存。
+单文件和收集合计必须为正数，合计不能小于单文件上限。Docker 下 `tmpfs` 计入容器内存；
+Apptainer 下 `/tmp` 放在每次执行的 scratch 目录里，作业每隔几秒检查它的大小，超过
+`tmpfs_size_mb` 就停止执行并报 `SCRATCH_LIMIT`。
 这些限制不构成工作目录磁盘配额；大量未声明文件仍需操作侧清理。
 
 声明输出只有在收集、登记、哈希和谱系核对后才成为 Artifact。失败执行可以保留
@@ -314,7 +323,9 @@ labbio revise --conversation my-analysis --from-run <UUID> \
 
 `status` 和 `export` 不加载 provider 凭据或调用模型。恢复前重新验证身份、访问、
 Artifact、工作流状态和 runtime revision。`STAGE_IN_FLIGHT` 等不确定外部副作用
-不会自动重放。
+不会自动重放。`reconcile` 处理完这个运行遗留的作业之后，还会清理进程已经不在的
+Agent 环境构建（输出 `environment_attempts_reconciled`），见
+[多用户工作区](LOCAL_WORKSPACES.md)的"中断的 Agent 环境构建"。
 
 `revise` 创建新运行，不改写原运行。它默认导入所选成功执行的非报告产物、原始
 输入/上下文和原执行程序；旧报告需通过 `--artifact-id` 显式选择。

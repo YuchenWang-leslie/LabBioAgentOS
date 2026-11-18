@@ -91,6 +91,14 @@ actor, consumer, execution policy, Artifact access, and resource limits.
 Provider arguments contain task choices only and cannot override those trusted
 facts.
 
+Images are such facts too (C15). The host merges the configured lab images,
+the lab's admitted images and the member's own admitted images into one
+catalog, with lab membership, roles and the OS uid taken from the lab area,
+never from configuration or task text. The model sees a bounded projection of
+the selectable images (key, scope, purpose, GPU flag, inventory origin and
+size), never a raw reference, registry or host path, and names an image only
+by its key.
+
 Capability results become bounded, safe observations plus typed evidence.
 Finalization consumes a frozen evidence bundle and cannot call tools.
 
@@ -98,12 +106,22 @@ Finalization consumes a frozen evidence bundle and cannot call tools.
 
 Raw data remains local. Artifact policy decides which metadata, bounded preview,
 or derived result is visible to a remote model. The active production backend
-is Local + Docker. The source cluster backend adds Scheduler + Apptainer behind
-the same governed execution contract; it has not been
-validated or activated on a cluster under the Native Kernel. Execution receives
-read-only registered inputs, declared writable output locations, resource
-limits, and network policy. Outputs become evidence only after collection,
-registration, hashing, and lineage checks.
+is Local + Docker. The cluster backend adds Scheduler + Apptainer behind the
+same governed execution contract; it has been validated on a Slurm test
+cluster but is not activated in production. Execution receives read-only
+registered inputs, declared writable output locations, resource limits
+(including a GPU count up to the configured maximum), network policy, and the
+image and runtime (PYTHON or SHELL) the Agent chose; the host never chooses
+an image or runtime for it and never falls back to another. Outputs become
+evidence only after collection, registration, hashing, and lineage checks.
+
+Every image has two identities: a backend-neutral source identity (an OCI
+manifest digest, a SIF hash, or a hash of a base source plus exact package
+locks and recipe for a derived environment) and a backend realization (a
+Docker image id or a SIF). Trace and Gold provenance record the source, so the
+same environment is recognized on Docker and Apptainer. Image admission,
+promotion, state changes, deletion and restore are operator commands under
+the lab's roles; see [local workspaces](LOCAL_WORKSPACES.md).
 
 ### External behavior plane
 
@@ -125,7 +143,8 @@ filename or modification time.
 
 ## Current evidence boundary
 
-The deterministic suite currently passes 1382 tests with 10 intentional skips.
+The deterministic suite currently passes 3541 tests with 73 intentional skips
+(C15, branch `feat/container-images`).
 Generic live model behavior, dynamic collaboration, interruption/recovery,
 Docker execution, and one bounded ordinary-user PBMC3k task through an
 Agent-authored report have been observed. This does not establish independent

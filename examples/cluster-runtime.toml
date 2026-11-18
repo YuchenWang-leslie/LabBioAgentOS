@@ -2,8 +2,10 @@
 # paths use this file's directory. Credentials belong only in the provider env file.
 #
 # `labbio run` submits every execution to the scheduler; the Apptainer capability
-# probe runs before the first execution. `labbio image-register` and
-# `labbio backend-check` run light operations on the login node only.
+# probe runs before the first execution. `labbio image-register`,
+# `labbio backend-check` and the registry pull of `labbio image-admit` run on the
+# login node; image conversions and environment builds run as jobs. Lab-area and
+# image commands are described in docs/LOCAL_WORKSPACES.md.
 result_root = "/shared/lab/labbio/result"
 input_roots = ["/shared/lab/data"]
 default_format = "raw"
@@ -37,6 +39,7 @@ cpus = 4.0
 memory_mb = 16384
 pids_limit = 256
 timeout_seconds = 3600.0
+# gpus = 1   # Most GPUs one execution may request; default 0 (no GPUs).
 
 
 # One table per base image; every configured image is a lab image.
@@ -46,6 +49,8 @@ key = "scientific-python"
 reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 available_python_modules = []  # Enter the actual verified image import inventory.
 installed_packages = {}       # Optional verified distribution-to-version inventory.
+# runtimes = ["PYTHON", "SHELL"]  # Default ["PYTHON"]; the default_image must include PYTHON.
+# gpu = "SUPPORTED"               # NONE (default), SUPPORTED or REQUIRED.
 
 [execution.apptainer]
 binary = "/path/to/apptainer/bin/apptainer"   # Absolute: jobs start from a cleared environment.
@@ -68,9 +73,11 @@ walltime_margin_seconds = 600   # walltime = timeout + 30 s kill grace + this ma
 poll_interval_seconds = 30
 max_queue_seconds = 86400       # Longer queues are cancelled and reported as a timeout.
 completion_grace_seconds = 60   # Shared-filesystem lag allowed for the exit record.
-extra_directives = []           # Single plain lines, e.g. "--constraint=avx2".
+extra_directives = []           # Single plain lines, e.g. "--constraint=avx2"; never GPU requests.
+# gpu_partition = "gpu"         # Jobs that request GPUs; defaults to partition.
 
-# Optional: let the runtime model build verified Python environments (wheels only).
+# Optional: let the runtime model build verified environments (Python wheels and,
+# with [environment.conda], conda packages from allowlisted channels).
 # Downloading wheels is the only networked step; installing, checking, packing the
 # SIF and the import check run in a network-disabled scheduler job.
 [environment]
@@ -97,3 +104,16 @@ download_cpu_seconds = 1800
 cache_dir = "/shared/lab/labbio/pip-cache"
 # index_url = "https://pypi.example/simple"  # A mirror without credentials.
 # ca_bundle = "/etc/pki/tls/certs/site-ca.pem"   # For proxies that re-sign HTTPS.
+
+# Optional: conda packages in derived environments.
+# [environment.conda]
+# micromamba = "/shared/lab/labbio/tools/micromamba"   # Official static release; not writable.
+# micromamba_sha256 = "<64 hex>"
+# channels = ["conda-forge", "bioconda"]               # Never the Anaconda defaults.
+
+# Optional: the lab area (created by `labbio lab-init` under the holding account)
+# and this member's private area for admitted images.
+# [lab]
+# root = "/shared/lab/labbio/lab"
+# member_root = "~/labbio-member"                      # 0700, this account only.
+# registry_credentials = "~/.config/labbioagent/registries.json"  # Outside every bindable path.
