@@ -25,7 +25,7 @@ from labbioagentos.execution.identity import SourceIdentity, SourceKind
 from labbioagentos.execution.oci import AcquiredImage
 
 from test_c15_admission import FakeRealizer, _probe
-from test_c15_image_delete import _cli, _delete, _deleted, _retire, lab  # noqa: F401 - the fixture
+from test_c15_image_delete import _cli, _delete, _deleted, _removed, _retire, lab  # noqa: F401 - the fixture
 from test_c15_promotion import OCI, _record
 
 RESTORED = "sha256:" + "e" * 64
@@ -224,7 +224,7 @@ def test_a_deleted_oci_image_is_pulled_again_and_runs_from_the_new_file(restorin
 
     # Deleting again removes the restored file, not the recorded one.
     lab.docker.clear()
-    assert _delete(capsys, lab, "mine")[0] == 0 and lab.docker == [["docker", "image", "rm", RESTORED]]
+    assert _delete(capsys, lab, "mine")[0] == 0 and _removed(lab) == [RESTORED]
 
 
 def test_a_deleted_image_is_activated_only_after_its_restore(restoring, capsys):
@@ -323,7 +323,7 @@ def test_rebuilt_images_are_not_delivered_again(restoring, capsys):
     records = settings.environment.root / "records"
     records.mkdir(parents=True, exist_ok=True)
     (records / ("8" * 64 + ".json")).write_text("{}")
-    for key, error in (("locked", "RESTORE_LOCKS_REQUIRED"), (environment, "RESTORE_BY_REBUILD_UNAVAILABLE")):
+    for key, error in (("locked", "RESTORE_LOCKS_REQUIRED"), (environment, "ENVIRONMENT_RECORD_INVALID")):
         catalog.set_state(key, catalog.state(key).DEPRECATED, actor="admin", reason="Retired.")
         catalog.record_realization(key, resolved_image=RESTORED, action=RealizationAction.DELETED,
                                    actor="admin", reason="Freeing space.")
@@ -439,7 +439,7 @@ async def test_deletion_sees_an_environments_restored_file(restoring, capsys):
     lab.docker.clear()
     assert _delete(capsys, lab, "mine")[0] == 0 and lab.docker == []
     _retire(capsys, lab, key)
-    assert _delete(capsys, lab, key)[0] == 0 and lab.docker == [["docker", "image", "rm", OCI.digest]]
+    assert _delete(capsys, lab, key)[0] == 0 and _removed(lab) == [OCI.digest]
 
 
 def test_the_restored_image_is_counted_once_and_a_lab_image_against_the_lab_quota(restoring, capsys, monkeypatch):

@@ -316,8 +316,15 @@ labbio image-restore --config <配置> --key <镜像> --reason "..." --sif <文�
   保存下来。重建出的镜像必须有记录里的派生身份。基础镜像弃用了也可以，撤销了
   （`BASE_REVOKED`）或文件已删除（`BASE_DELETED`）时不行，要先恢复基础镜像；实验室镜像只能
   建在实验室镜像上（`BASE_NOT_LAB`）。
-- Agent 构建的 `env-` 环境要重新构建才能恢复，当前版本还不支持
-  （`RESTORE_BY_REBUILD_UNAVAILABLE`）。
+- Agent 构建的 `env-` 环境按它自己的记录重新构建，不需要也不接受 `--archive`、`--sif`、
+  `--base`、`--lock`。基础镜像按记录里的来源身份查找（弃用的也可以，撤销或已删除的不行）；
+  wheel 按记录里的"名字==版本 + sha256"原样下载；conda 包按记录里的文件地址原样下载，不求解。
+  2026-11-18 之前建的含 conda 的环境，记录里没有文件地址，会按原来的 conda 请求求解一次，
+  求出的每个包（名字、版本、sha256）必须和记录里的锁定清单完全一致，否则报
+  `CONDA_LOCK_MISMATCH`。重建出的环境身份、Python 包清单、conda 清单和可导入模块都必须和
+  记录一致；还要检查单个镜像上限和成员配额。没有锁定清单的旧环境（第 7a 步之前建的）不能
+  恢复（`RESTORE_UNVERIFIABLE`）。在 Apptainer 上，重建出的 SIF 和 Agent 构建时一样登记到
+  配置的 SIF 库。
 - Docker 29 用 containerd 存储时，`docker save` 会把镜像附带的 SBOM 和 provenance 清单也写进
   归档；入库和恢复都会忽略这些附属清单，只取镜像本身。
 

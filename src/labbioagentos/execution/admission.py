@@ -150,8 +150,9 @@ ADMISSION_HINTS = {
                               "the same SIF file with --sif."),
     "RESTORE_FORM_INVALID": ("--sif restores only an image admitted from a SIF file, and --archive only one "
                              "admitted from an OCI reference or archive."),
-    "RESTORE_BY_REBUILD_UNAVAILABLE": ("Agent-built environments are restored by rebuilding, which this "
-                                       "version does not do yet."),
+    "RESTORE_UNVERIFIABLE": ("This environment was built before exact locks were recorded, so a rebuild "
+                             "could not be shown to be the same environment; it is not restored."),
+    "ENVIRONMENT_RECORD_INVALID": "The environment's record is unreadable or fails its checks; nothing was built.",
     "RESTORE_LOCKS_REQUIRED": ("No locks were kept for this image (it was admitted before locks were kept): "
                                "give --base and the same --lock files again."),
     "KEPT_LOCKS_INVALID": ("The kept locks are unreadable or fail their integrity check; give --base and the "

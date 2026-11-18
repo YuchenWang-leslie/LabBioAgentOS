@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -24,7 +25,8 @@ from labbioagentos.model_safety import UnsafeModelContentError, validate_model_v
 from .images import ApprovedImage, ApprovedImageRegistry
 from .catalog import ImageCatalog
 from .errors import ImageNotApprovedError
-from .conda import CONDA_RECIPE, CondaError, LockedPackage, normalize_conda_specs
+from .conda import (CONDA_RECIPE, CondaError, CondaPolicy, LockedPackage, lock_entries, normalize_conda_specs,
+                    packages_from_files, solve as conda_solve)
 from .identity import SourceIdentity, derived_identity
 from .models import ExecutionRuntime
 from .wheel_lock import PinnedWheel
@@ -104,6 +106,8 @@ class EnvironmentBuildResult:
     machine: str | None = None  # Architecture the lock was resolved for; needed for an identity.
     # Exact conda packages ({"name", "version", "sha256"} with "conda::" names) and the installed set.
     locked_conda: tuple[dict, ...] = ()
+    # The same packages' files ({"name", "version", "build", "url", "sha256"}), to install them again.
+    conda_files: tuple[dict, ...] = ()
     conda_packages: dict[str, str] = field(default_factory=dict)
     size_bytes: int | None = None  # The built image's size, for the per-image limit and the quota.
     created: bool = True  # False when the build produced an image that was already stored.
@@ -262,6 +266,125 @@ def recorded_environments(root: Path, *, deleted: Callable[[str], bool] = lambda
     return sizes
 
 
+def _read_record_json(path: Path) -> dict:
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_097_152:
+        raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+
+
+def _conda_files(values) -> list[dict]:
+    """Recorded conda files, by shape; their channels are checked against the policy when they are used."""
+    if not isinstance(values, (tuple, list)) or len(values) > 2048:
+        raise ValueError()
+    files = []
+    for item in values:
+        if (not isinstance(item, dict) or set(item) != {"name", "version", "build", "url", "sha256"}
+                or not all(isinstance(value, str) and value for value in item.values())
+                or not item["url"].startswith("https://") or _SHA256.fullmatch(item["sha256"]) is None):
+            raise ValueError()
+        files.append(dict(item))
+    return sorted(files, key=lambda item: item["name"])
+
+
+def _file_locks(files: list[dict]) -> list[dict]:
+    """The lock entries recorded files stand for; they must equal the recorded conda lock."""
+    return sorted(({"name": "conda::" + item["name"], "version": item["version"], "sha256": item["sha256"]}
+                   for item in files), key=lambda item: item["name"])
+
+
+def load_environment_record(path: Path, owner_user_id: str) -> tuple[dict, ApprovedImage]:
+    """A verified Agent environment record: request hash, image key, inventory and identity agree."""
+    try:
+        record = _read_record_json(path)
+        requirements = normalize_requirements(tuple(record["requested_requirements"]))
+        modules = normalize_modules(tuple(record["requested_import_modules"]))
+        conda = normalize_conda_specs(tuple(record.get("requested_conda", ())))
+        # Records from before C15 name only the base realization, which was the hash input.
+        base = (SourceIdentity.model_validate(record["base_source_identity"], strict=False)
+                if "base_source_identity" in record else None)
+        request_hash = _request_hash(base.canonical if base else record["base_image_reference"],
+                                     requirements, modules, conda)
+        image = ApprovedImage.model_validate_json(json.dumps(record["image"]))
+        if (record["owner_user_id"] != owner_user_id or record["recipe_version"] != RECIPE_VERSION
+                or record["request_hash"] != request_hash or path.stem != request_hash
+                or image.key != "env-" + request_hash or image.network_allowed
+                or ExecutionRuntime.PYTHON not in image.runtimes):
+            raise ValueError()
+        if not set(modules).issubset(image.available_python_modules):
+            raise ValueError()
+        for value in requirements:
+            req = Requirement(value)
+            if not req.specifier.contains(image.installed_packages[canonicalize_name(req.name)], prereleases=True):
+                raise ValueError()
+        locked = _locked_wheels(record.get("locked_wheels", []))  # Absent before lock lists.
+        locked_conda = _locked_conda(record.get("locked_conda", []))
+        if conda and not locked_conda:
+            raise ValueError()
+        if "conda_files" in record:  # Absent before 2026-11-18: such records are restored by a checked solve.
+            if _file_locks(_conda_files(record["conda_files"])) != locked_conda:
+                raise ValueError()
+        if image.source is not None and (base is None or image.source != derived_identity(
+                base, locked + locked_conda, _identity_recipe(conda), record["machine"])):
+            raise ValueError()
+        return record, image
+    except (KeyError, TypeError, ValueError, CondaError):
+        raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+
+
+def restore_locks(record: dict, conda_policy: CondaPolicy | None, work: Path) -> PinnedLocks:
+    """The exact locks a verified environment record was built from (DECIDED-C15-H, refined 2026-11-18).
+
+    Wheels come from the recorded lock. Conda packages come from the recorded
+    files; a record from before files were kept is solved once, and the solution
+    must be the recorded lock exactly. Nothing else is resolved.
+    """
+    wheels = tuple(PinnedWheel(name=item["name"], version=item["version"], hashes=frozenset({item["sha256"]}))
+                   for item in _locked_wheels(record.get("locked_wheels", [])))
+    specs = normalize_conda_specs(tuple(record.get("requested_conda", ())))
+    packages: tuple[LockedPackage, ...] = ()
+    if specs:
+        if conda_policy is None:
+            raise EnvironmentRequestError("CONDA_UNAVAILABLE")
+        try:
+            if "conda_files" in record:
+                packages = packages_from_files(record["conda_files"], conda_policy)
+            else:
+                work.mkdir(mode=0o700)
+                try:
+                    packages = conda_solve(conda_policy, specs, work)
+                finally:
+                    shutil.rmtree(work, ignore_errors=True)  # The repodata cache is large.
+        except CondaError as exc:
+            raise EnvironmentRequestError(exc.code) from None
+        if sorted(lock_entries(packages), key=lambda item: item["name"]) != _locked_conda(record["locked_conda"]):
+            raise EnvironmentRequestError("CONDA_LOCK_MISMATCH")
+    if not wheels and not packages:
+        raise EnvironmentRequestError("RESTORE_UNVERIFIABLE")
+    return PinnedLocks(wheels=wheels, conda=packages)
+
+
+def check_restored(record: dict, image: ApprovedImage, base: ApprovedImage, result: EnvironmentBuildResult) -> None:
+    """A rebuilt environment is the recorded one: same identity, inventories and importable modules."""
+    if result.failure_code is not None:
+        raise EnvironmentRequestError(result.failure_code)
+    try:
+        locked = _locked_wheels(result.locked_wheels) + _locked_conda(result.locked_conda)
+        source = derived_identity(base.source_identity, locked,
+                                  _identity_recipe(tuple(record.get("requested_conda", ()))), result.machine)
+        inventory = {canonicalize_name(name): str(Version(version))
+                     for name, version in result.installed_packages.items()}
+    except (ValueError, TypeError, KeyError, InvalidVersion):
+        raise EnvironmentRequestError("VERIFICATION_FAILED") from None
+    if source != image.source:
+        raise EnvironmentRequestError("SOURCE_MISMATCH")
+    if (inventory != image.installed_packages or dict(result.conda_packages) != image.conda_packages
+            or set(result.available_python_modules) != set(image.available_python_modules)):
+        raise EnvironmentRequestError("INVENTORY_MISMATCH")
+
+
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
                  owner_user_id: str, *, catalog: ImageCatalog | None = None,
@@ -302,46 +425,10 @@ class EnvironmentService:
 
     @staticmethod
     def _read_json(path: Path) -> dict:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size > 2_097_152:
-            raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID")
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError):
-            raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+        return _read_record_json(path)
 
     def _load_record(self, path: Path) -> tuple[dict, ApprovedImage]:
-        try:
-            record = self._read_json(path)
-            requirements = normalize_requirements(tuple(record["requested_requirements"]))
-            modules = normalize_modules(tuple(record["requested_import_modules"]))
-            conda = normalize_conda_specs(tuple(record.get("requested_conda", ())))
-            # Records from before C15 name only the base realization, which was the hash input.
-            base = (SourceIdentity.model_validate(record["base_source_identity"], strict=False)
-                    if "base_source_identity" in record else None)
-            request_hash = _request_hash(base.canonical if base else record["base_image_reference"],
-                                         requirements, modules, conda)
-            image = ApprovedImage.model_validate_json(json.dumps(record["image"]))
-            if (record["owner_user_id"] != self.owner_user_id or record["recipe_version"] != RECIPE_VERSION
-                    or record["request_hash"] != request_hash or path.stem != request_hash
-                    or image.key != "env-" + request_hash or image.network_allowed
-                    or ExecutionRuntime.PYTHON not in image.runtimes):
-                raise ValueError()
-            if not set(modules).issubset(image.available_python_modules):
-                raise ValueError()
-            for value in requirements:
-                req = Requirement(value)
-                if not req.specifier.contains(image.installed_packages[canonicalize_name(req.name)], prereleases=True):
-                    raise ValueError()
-            locked = _locked_wheels(record.get("locked_wheels", []))  # Absent before lock lists.
-            locked_conda = _locked_conda(record.get("locked_conda", []))
-            if conda and not locked_conda:
-                raise ValueError()
-            if image.source is not None and (base is None or image.source != derived_identity(
-                    base, locked + locked_conda, _identity_recipe(conda), record["machine"])):
-                raise ValueError()
-            return record, image
-        except (KeyError, TypeError, ValueError, CondaError):
-            raise EnvironmentRequestError("ENVIRONMENT_CACHE_INVALID") from None
+        return load_environment_record(path, self.owner_user_id)
 
     def environment_bytes(self) -> int:
         """The recorded size of every environment built for this member; older records have none."""
@@ -548,6 +635,10 @@ class EnvironmentService:
                         raise ValueError()
                     locked_wheels = _locked_wheels(result.locked_wheels)
                     locked_conda = _locked_conda(result.locked_conda)
+                    # Each conda file is recorded too, so the environment can be installed again.
+                    conda_files = _conda_files(result.conda_files) if conda else []
+                    if conda and _file_locks(conda_files) != locked_conda:
+                        raise ValueError()
                     conda_inventory = dict(result.conda_packages)
                     if conda and (not locked_conda or any(
                             re.split(r"[=<>!,]", spec)[0] not in conda_inventory for spec in conda)):
@@ -615,7 +706,8 @@ class EnvironmentService:
                 "requested_requirements": requirements, "requested_import_modules": modules,
                 "image": image.model_dump(mode="json"), "locked_wheels": locked_wheels,
                 "size_bytes": result.size_bytes,
-                **({"requested_conda": list(conda), "locked_conda": locked_conda} if conda else {})}
+                **({"requested_conda": list(conda), "locked_conda": locked_conda,
+                    "conda_files": conda_files} if conda else {})}
             try:
                 _write_private(path, record)
             except FileExistsError:

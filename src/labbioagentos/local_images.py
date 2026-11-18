@@ -722,7 +722,9 @@ def image_restore(settings: LocalSettings, args) -> dict:
     if not reason or len(reason) > 500 or any(character in reason for character in "\r\n\0"):
         raise AdmissionError("REASON_INVALID")
     if record is None:
-        raise AdmissionError("RESTORE_BY_REBUILD_UNAVAILABLE")  # Agent environments: step 9c-2b.
+        if any(getattr(args, name, None) for name in ("archive", "sif", "base", "lock")):
+            raise AdmissionError("RESTORE_FORM_INVALID")  # Rebuilt from its own record only.
+        return _restore_environment(settings, catalog, area, key, actor=actor, reason=reason)
     if lock_built(record):
         return _restore_locked(settings, catalog, area, record, args, actor=actor, reason=reason)
     if getattr(args, "base", None) is not None or getattr(args, "lock", None):
@@ -828,6 +830,91 @@ def _restore_locked(settings: LocalSettings, catalog, area: LabArea, record, arg
             "state": catalog.state(record.key).value, "backend": catalog.backend.value,
             "source": record.source.canonical, "delivery": "locks_given" if given else "locks_kept",
             "base": base_key, "produced_by": realization.produced_by, "reconciled": _reconciled(reconciled)}
+
+
+def _restore_environment(settings: LocalSettings, catalog, area: LabArea, key: str, *, actor: str,
+                         reason: str) -> dict:
+    """Rebuild a deleted Agent environment from the exact locks in its record (DECIDED-C15-H)."""
+    from .execution.environments import check_restored, load_environment_record, restore_locks
+    from .execution.identity import SourceIdentity
+
+    path = settings.environment.root / "records" / (key.removeprefix("env-") + ".json")
+    try:
+        record, image = load_environment_record(path, settings.principal.user_id)
+    except EnvironmentRequestError:
+        raise AdmissionError("ENVIRONMENT_RECORD_INVALID") from None
+    if image.source is None:
+        raise AdmissionError("RESTORE_UNVERIFIABLE")  # Built before lock lists: no identity to match.
+    base = _environment_base(settings, catalog,
+                             SourceIdentity.model_validate(record["base_source_identity"], strict=False))
+    policy, member_root = area.policy(), private_member_root(settings.lab.member_root)
+    configured = {}
+    if settings.execution.backend != "docker":
+        from .execution.apptainer import SifStore
+
+        configured = {"sif_store": SifStore(settings.execution.apptainer.sif_store)}  # Where builds register.
+    with _admission_jobs(settings, member_root, lock_builds=True, **configured) as jobs:
+        reconciled = asyncio.run(jobs.attempts.reconcile())
+        with jobs.attempts.attempt() as attempt:
+            root = attempt.root / attempt.id.hex
+            root.mkdir(mode=0o700)
+            try:
+                pinned = restore_locks(record, getattr(jobs.builder, "conda", None), root / "lock-solve")
+                result = asyncio.run(jobs.builder.build(
+                    base_image=base, requirements=(), import_modules=image.available_python_modules,
+                    build_root=root, request_hash=key.removeprefix("env-"), run_id=attempt.id, pinned=pinned))
+            except EnvironmentRequestError as exc:
+                raise AdmissionError(exc.code) from None
+            except EnvironmentBuildUnconfirmedError:
+                raise AdmissionError("ENVIRONMENT_BUILD_UNCONFIRMED") from None
+            try:
+                check_restored(record, image, base, result)
+                if not isinstance(result.size_bytes, int):
+                    raise AdmissionError("VERIFICATION_FAILED")
+                if result.size_bytes > policy.max_image_bytes:
+                    raise AdmissionError("IMAGE_TOO_LARGE")
+                current = _image_catalog(settings)
+                used = sum(item.size_bytes or 0 for name, item in current.personal.records().items()
+                           if not current.deleted(name))
+                if used + sum(size or 0 for size in _environment_sizes(settings)) + result.size_bytes \
+                        > policy.member_quota_bytes:
+                    raise AdmissionError("MEMBER_QUOTA_EXCEEDED")
+                produced_by = f"restore-env:{attempt.id.hex}"
+                catalog.record_realization(key, resolved_image=result.image_id, action=RealizationAction.RESTORED,
+                                           actor=actor, reason=reason, produced_by=produced_by)
+            except EnvironmentRequestError as exc:
+                _discard_build(jobs.builder, result)
+                raise AdmissionError(exc.code) from None
+            except BaseException:
+                _discard_build(jobs.builder, result)
+                raise
+    return {"event": "image_restored", "key": key, "scope": ImageScope.PERSONAL.value,
+            "state": catalog.state(key).value, "backend": catalog.backend.value,
+            "source": image.source.canonical, "delivery": "environment_record",
+            "conda": ("files" if "conda_files" in record else "solved") if record.get("requested_conda") else None,
+            "produced_by": produced_by, "reconciled": _reconciled(reconciled)}
+
+
+def _discard_build(builder, result) -> None:
+    discard = getattr(builder, "discard", None)
+    if discard is not None and result.image_id is not None:
+        discard(result)
+
+
+def _environment_base(settings: LocalSettings, catalog, source) -> ApprovedImage:
+    """The image an environment was built on, found by its source identity; deprecated is fine."""
+    candidates = [image.key for image in settings.execution.approved_images() if image.source_identity == source]
+    candidates += sorted(key for key in catalog.held_keys()
+                         if (record := catalog.record(key)) is not None and record.source == source)
+    images = {image.key: image for image in (*settings.execution.approved_images(), *catalog.admitted_images())}
+    for key in candidates:
+        if catalog.state(key) is not ImageState.REVOKED and not catalog.deleted(key) and key in images:
+            return images[key]
+    if any(catalog.deleted(key) and catalog.state(key) is not ImageState.REVOKED for key in candidates):
+        raise AdmissionError("BASE_DELETED")
+    if any(catalog.state(key) is ImageState.REVOKED for key in candidates):
+        raise AdmissionError("BASE_REVOKED")
+    raise AdmissionError("BASE_NOT_FOUND")  # Unknown, or recorded for another backend only.
 
 
 def _restore_base(settings: LocalSettings, catalog, key: str, *, lab_only: bool) -> ApprovedImage:

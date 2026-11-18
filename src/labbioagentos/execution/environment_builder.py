@@ -23,7 +23,7 @@ from collections.abc import Callable
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from .conda import (CONDA_ENV_PREFIX, CondaError, CondaPolicy, download as conda_download, lock_entries,
+from .conda import (CONDA_ENV_PREFIX, CondaError, CondaPolicy, download as conda_download, file_entries, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
 from .wheel_lock import PinnedWheel, WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
 from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError, EnvironmentRequestError,
@@ -563,7 +563,7 @@ class DockerEnvironmentBuilder:
                 locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                     for wheel in locked),
                 machine=machine if locked or locked_conda else None,
-                locked_conda=tuple(lock_entries(locked_conda)),
+                locked_conda=tuple(lock_entries(locked_conda)), conda_files=tuple(file_entries(locked_conda)),
                 conda_packages=probed_conda_packages(inventory, requested=with_conda),
                 size_bytes=int(size),
             )

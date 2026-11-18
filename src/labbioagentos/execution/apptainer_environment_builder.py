@@ -39,7 +39,7 @@ from .apptainer_build import (
     render_download_program,
     verify_download,
 )
-from .conda import (CondaError, CondaPolicy, LockedPackage, download as conda_download, lock_entries,
+from .conda import (CondaError, CondaPolicy, LockedPackage, download as conda_download, file_entries, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
 from .environment_builder import _CONDA_FAILURES, probed_conda_packages
 from .wheel_lock import WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
@@ -238,6 +238,7 @@ class ApptainerEnvironmentBuilder:
             locked_wheels=tuple({"name": wheel.name, "version": wheel.version, "sha256": wheel.sha256}
                                 for wheel in wheels),
             machine=self.policy.machine, locked_conda=tuple(lock_entries(locked_conda)),
+            conda_files=tuple(file_entries(locked_conda)),
             conda_packages=inventory["conda_packages"], size_bytes=size, created=created,
         )
 

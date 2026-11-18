@@ -232,6 +232,9 @@ async def test_the_docker_recipe_installs_offline_in_a_separate_stage_and_append
         assert result.failure_code == "VERIFICATION_FAILED"
         return
     assert result.locked_conda == ({"name": "conda::samtools", "version": "1.21", "sha256": "c" * 64},)
+    (file,) = result.conda_files  # Recorded so the environment can be installed again without a solve.
+    assert (file["name"], file["version"], file["sha256"]) == ("samtools", "1.21", "c" * 64)
+    assert file["url"].startswith("https://conda.anaconda.org/") and file["build"]
     assert result.conda_packages == {"samtools": "1.21", "_openmp_mutex": "4.5"} and result.machine == "x86_64"
 
 
@@ -281,6 +284,8 @@ class CondaBuilder(RecordingBuilder):
             image_id="sha256:" + "b" * 64, installed_packages={"basepkg": "1.0"},
             available_python_modules=kwargs["import_modules"], machine="x86_64",
             locked_conda=({"name": "conda::samtools", "version": "1.21", "sha256": "c" * 64},),
+            conda_files=({"name": "samtools", "version": "1.21", "build": "h_0", "sha256": "c" * 64,
+                          "url": "https://conda.anaconda.org/bioconda/linux-64/samtools-1.21-h_0.conda"},),
             conda_packages=self.installed)
 
 

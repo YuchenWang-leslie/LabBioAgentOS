@@ -284,8 +284,37 @@ def lock_entries(locked: tuple[LockedPackage, ...]) -> list[dict]:
             for package in locked]
 
 
+def file_entries(locked: tuple[LockedPackage, ...]) -> list[dict]:
+    """Where each locked package was downloaded from, so it can be installed again without a solve."""
+    return [{"name": package.name, "version": package.version, "build": package.build, "url": package.url,
+             "sha256": package.sha256} for package in locked]
+
+
+def packages_from_files(values, policy: CondaPolicy) -> tuple[LockedPackage, ...]:
+    """Recorded files back to locked packages: allowed channels and sha256 only, nothing is guessed."""
+    try:
+        if not isinstance(values, (list, tuple)) or len(values) > MAX_CONDA_PACKAGES:
+            raise ValueError()
+        locked = []
+        for item in values:
+            if not isinstance(item, dict) or set(item) != {"name", "version", "build", "url", "sha256"}:
+                raise ValueError()
+            if (not all(isinstance(item[name], str) and item[name] for name in item)
+                    or not _within_channel(item["url"], policy)
+                    or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None):
+                raise ValueError()
+            locked.append(LockedPackage(name=item["name"], version=item["version"], build=item["build"],
+                                        url=item["url"], sha256=item["sha256"]))
+    except (KeyError, TypeError, ValueError):
+        raise CondaError("CONDA_LOCK_INVALID") from None
+    if len({item.name for item in locked}) != len(locked):
+        raise CondaError("CONDA_LOCK_INVALID")
+    return tuple(sorted(locked, key=lambda item: item.name))
+
+
 __all__ = [
-    "CONDA_ENV_PREFIX", "CONDA_RECIPE", "CondaError", "CondaPolicy", "ExplicitEntry", "LockedPackage", "download",
-    "lock_entries", "lock_explicit", "lock_from_solution", "normalize_conda_specs", "parse_explicit",
-    "render_explicit", "solve", "validate_channels", "verify_micromamba",
+    "CONDA_ENV_PREFIX", "CONDA_RECIPE", "CondaError", "CondaPolicy", "ExplicitEntry", "LockedPackage",
+    "download", "file_entries", "lock_entries", "packages_from_files", "lock_explicit", "lock_from_solution",
+    "normalize_conda_specs", "parse_explicit", "render_explicit", "solve", "validate_channels",
+    "verify_micromamba",
 ]
