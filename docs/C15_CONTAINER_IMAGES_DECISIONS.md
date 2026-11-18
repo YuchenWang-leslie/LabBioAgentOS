@@ -534,6 +534,17 @@ Refined for restore by MOHAN CUI on 2026-11-18:
   and Agent environments and keeps lock files.
 - Permissions follow deletion: the owner restores a personal image, a
   LAB_ADMIN restores a lab image and delivers its archive or SIF file.
+- Conda packages in Agent environment records (MOHAN CUI, 2026-11-18,
+  after the code showed that a record kept only each conda package's
+  name, version and sha256, which cannot be installed offline): from now
+  on a record also keeps each conda package's URL and build. Neither is
+  part of the request hash or the identity, so existing hashes and
+  identities are unchanged. Such a record is rebuilt from its exact files
+  without a solve. An existing record without them is rebuilt by solving
+  its recorded conda request once; the solved packages (name, version,
+  sha256) must equal the recorded lock exactly and the derived identity
+  must match, or the restore fails with `CONDA_LOCK_MISMATCH` and nothing
+  is registered.
 
 ## Not decided here
 
