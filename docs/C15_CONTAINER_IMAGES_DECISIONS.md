@@ -570,6 +570,26 @@ Refined for lost environment builds (step 9d) by MOHAN CUI on 2026-11-18:
   build logs, whose id the receipt names) and loses its build contents,
   such as downloaded wheels and conda packages and the build context.
 
+## Fixes after the cluster validation
+
+Decided by MOHAN CUI on 2026-11-18, after the step 10 cluster report:
+
+- Image builds run with a umask that lets every lab member read what they
+  install: the in-container install and packing steps of an Apptainer
+  build use umask 022. The host-side work directory and the logs stay
+  private, because their directories are 0700.
+- The control plane creates the configured Apptainer `tmp_dir` (0700) when
+  it is missing, and `backend-check` checks it. An admission conversion
+  job gives `apptainer build` its own temporary directory inside the job
+  workspace, so cleanup of the workspace also removes it. When a
+  conversion fails, a bounded tail of the job's stderr is kept in the
+  member's area and the error names where it is.
+- The finding that one extra field in a model's structured response fails
+  the whole run belongs to the C14 structured-response rules and affects
+  every run. It is recorded here and handled separately, not in C15.
+- After these fixes, a short second cluster round re-checks only what
+  changed.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:
@@ -583,3 +603,5 @@ These are outside C15. Each needs its own decision before any change:
   and cosign-style formats.
 - Host-built definition files (A4) and Agent-proposed base images (E3-b),
   both rejected for C15.
+- How a model's structured response with an unexpected extra field is
+  handled (fails the run today; found in the C15 cluster validation).
