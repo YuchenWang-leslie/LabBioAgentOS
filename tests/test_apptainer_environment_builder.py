@@ -137,7 +137,8 @@ packages = state["packages"]
 importable = {{name.replace("-", "_") for name in packages}}
 print(json.dumps({{"installed_packages": packages, "conda_packages": state.get("conda", {{}}),
                   "conda_on_path": state.get("conda_on_path", False),
-                  "failed_imports": [module for module in json.loads(command[-1]) if module not in importable]}}))
+                  "failed_imports": [module for module in json.loads(command[-1]) if module not in importable],
+                  "unshared_count": config.get("unshared", 0), "unshared_paths": []}}))
 """
 
 
@@ -446,3 +447,18 @@ def test_exactly_one_download_placement_is_required(cluster):
                                     build_launcher=cluster.launcher, workspace_root=cluster.jobs,
                                     job_ledger=cluster.ledger,
                                     download_runner=builder.download_runner, download_launcher=cluster.launcher)
+
+
+
+@pytest.mark.asyncio
+async def test_an_image_others_could_not_read_is_not_registered(cluster):
+    """Every member runs a lab image under their own uid (cluster validation, 2026-11-18)."""
+    cluster.configure(unshared=3)
+    service = cluster.service()
+    before = set((cluster.tmp_path / "sif").iterdir())
+
+    receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4())
+
+    assert receipt["status"] == "FAILED" and receipt["failure_code"] == "IMAGE_NOT_SHAREABLE"
+    assert "could not read" in receipt["diagnostics"][0]["message"]
+    assert set((cluster.tmp_path / "sif").iterdir()) == before

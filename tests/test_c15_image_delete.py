@@ -515,9 +515,99 @@ def test_a_file_is_shared_only_within_one_store(tmp_path, backend, others, envir
 def test_each_live_use_blocks_once(lab, capsys, monkeypatch):
     from labbioagentos import local_images
 
-    reference = SimpleNamespace(kind=SimpleNamespace(value="ENVIRONMENT"), holder="env-" + "a" * 64)
+    reference = SimpleNamespace(kind=SimpleNamespace(value="ENVIRONMENT"), holder="env-" + "a" * 64,
+                                image_key="mine")
     monkeypatch.setattr(local_images, "member_index", lambda _settings: SimpleNamespace(
         live=lambda key, source: [(reference, "ENVIRONMENT_RECORDED"), (reference, "ENVIRONMENT_RECORDED")]))
     _retire(capsys, lab, "mine")
     plan = _cli(capsys, lab, "image-delete", "--key", "mine")[1]
     assert plan["blocking"] == [{"kind": "ENVIRONMENT", "holder": "env-" + "a" * 64, "live": "ENVIRONMENT_RECORDED"}]
+
+
+
+def _environment_use(lab, *, key, holder):
+    """A live use by an Agent environment, recorded by key and source or (older records) by source only."""
+    from datetime import datetime, timezone
+
+    from labbioagentos.local_config import load_settings
+    from labbioagentos.local_image_references import ImageReference, ReferenceKind, member_index
+
+    location = lab.tmp / f"{holder}.json"
+    location.write_text("{}")
+    member_index(load_settings(lab.path)).record(ImageReference(
+        kind=ReferenceKind.ENVIRONMENT, image_key=key, image_source=OCI.canonical, holder=holder,
+        location=str(location), at=datetime.now(timezone.utc)))
+
+
+def _copy_of_mine(lab, key="mine-copy"):
+    """Another personal image of the same OCI source, with its own file."""
+    realization = _record().realizations[0].model_copy(update={"resolved_image": "sha256:" + "e" * 64})
+    CatalogStore(lab.tmp / "member" / "catalog").add_record(_record(key=key).model_copy(update={
+        "realizations": (realization,)}))
+
+
+def _blocking(capsys, lab, key):
+    return _cli(capsys, lab, "image-delete", "--key", key)[1]["blocking"]
+
+
+def test_a_use_by_key_blocks_only_that_key(lab, capsys):
+    """Cluster validation, round 2: same source, different keys and files (MOHAN CUI, 2026-11-18)."""
+    _copy_of_mine(lab)
+    _environment_use(lab, key="mine", holder="env-" + "a" * 64)
+    for key in ("mine", "mine-copy"):
+        _retire(capsys, lab, key)
+    assert [item["holder"] for item in _blocking(capsys, lab, "mine")] == ["env-" + "a" * 64]
+    assert _blocking(capsys, lab, "mine-copy") == []
+    assert _delete(capsys, lab, "mine-copy")[0] == 0 and _removed(lab) == ["sha256:" + "e" * 64]
+
+
+def test_a_use_by_source_only_blocks_the_sources_last_usable_file(lab, capsys):
+    _copy_of_mine(lab)
+    _environment_use(lab, key=None, holder="env-" + "b" * 64)  # Recorded before keys were.
+    for key in ("mine", "mine-copy"):
+        _retire(capsys, lab, key)
+    assert _blocking(capsys, lab, "mine") == [] and _blocking(capsys, lab, "mine-copy") == []
+    assert _delete(capsys, lab, "mine-copy")[0] == 0
+    # The copy's file is gone: "mine" is now the source's last usable file.
+    assert [item["holder"] for item in _blocking(capsys, lab, "mine")] == ["env-" + "b" * 64]
+
+
+def test_a_revoked_image_of_the_same_source_is_no_usable_file(lab, capsys):
+    _copy_of_mine(lab)
+    _environment_use(lab, key=None, holder="env-" + "b" * 64)
+    _retire(capsys, lab, "mine")
+    _retire(capsys, lab, "mine-copy", "image-revoke")
+    assert [item["holder"] for item in _blocking(capsys, lab, "mine")] == ["env-" + "b" * 64]
+
+
+
+def test_an_agent_environment_of_the_same_source_is_a_usable_file(lab, capsys, monkeypatch):
+    """A lock-built image and an Agent environment built from the same locks share one identity."""
+    from labbioagentos import local_images
+    from labbioagentos.execution.images import ApprovedImage
+    from labbioagentos.local_config import load_settings
+
+    derived = SourceIdentity(kind=SourceKind.DERIVED, digest="sha256:" + "d" * 64)
+    realization = _record().realizations[0].model_copy(update={"resolved_image": "sha256:" + "e" * 64,
+                                                               "produced_by": "lock:attempt"})
+    CatalogStore(lab.tmp / "member" / "catalog").add_record(_record(key="six", repository=None, source=derived)
+                                                            .model_copy(update={"realizations": (realization,)}))
+    records = load_settings(lab.path).environment.root / "records"
+    records.mkdir(parents=True, exist_ok=True)
+    (records / ("7" * 64 + ".json")).write_text("{}")
+    environment = ApprovedImage(key="env-" + "7" * 64, reference="sha256:" + "7" * 64,
+                                entry_points={"PYTHON": ("python",)}, source=derived)
+    real = local_images._environment_record
+    monkeypatch.setattr(local_images, "_environment_record", lambda settings, key, catalog=None: (
+        environment if key == environment.key else real(settings, key, catalog)))
+    from datetime import datetime, timezone
+
+    from labbioagentos.local_image_references import ImageReference, ReferenceKind, member_index
+
+    location = lab.tmp / "run-use.json"
+    location.write_text("{}")
+    member_index(load_settings(lab.path)).record(ImageReference(
+        kind=ReferenceKind.ENVIRONMENT, image_source=derived.canonical, holder="env-" + "8" * 64,
+        location=str(location), at=datetime.now(timezone.utc)))
+    _retire(capsys, lab, "six")
+    assert _blocking(capsys, lab, "six") == []  # The environment still has a file of this source.

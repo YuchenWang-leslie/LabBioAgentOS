@@ -31,8 +31,27 @@ from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedEr
 from .images import ApprovedImage
 
 
-_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, os, sys
+_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, os, stat, sys, sysconfig
 modules = json.loads(sys.argv[1])
+def unshared():
+    # Every lab member runs the image under their own uid: each file must be readable and each
+    # directory searchable by others. Links are not followed.
+    roots = sorted({'/opt/labbio-env', sysconfig.get_paths()['purelib'], sysconfig.get_paths()['platlib']})
+    count, paths = 0, []
+    for root in roots:
+        if not os.path.isdir(root) or os.path.islink(root):
+            continue
+        for base, dirs, files in os.walk(root):
+            for path in [base] * (base == root) + [os.path.join(base, name) for name in dirs + files]:
+                try:
+                    mode = os.lstat(path).st_mode
+                except OSError:
+                    continue
+                need = 0o005 if stat.S_ISDIR(mode) else 0o004
+                if mode & need != need:  # A link's own mode always allows reading.
+                    count += 1
+                    paths.append(path) if len(paths) < 8 else None
+    return count, paths
 failed = []
 with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
     for module in modules:
@@ -50,13 +69,23 @@ with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log),
         except Exception:
             pass
 conda_on_path = '/opt/labbio-env/bin' in os.environ.get('PATH', '').split(os.pathsep)
+unshared_count, unshared_paths = unshared()
 print(json.dumps({'installed_packages': packages, 'conda_packages': conda, 'conda_on_path': conda_on_path,
-                  'failed_imports': failed}, sort_keys=True))
+                  'failed_imports': failed, 'unshared_count': unshared_count,
+                  'unshared_paths': unshared_paths}, sort_keys=True))
 """
 
 
 _CONDA_FAILURES = {"CONDA_NO_SOLUTION", "CONDA_LOCK_INVALID", "CONDA_PLATFORM_UNSUPPORTED", "CONDA_UNAVAILABLE",
                    "NETWORK_FAILURE", "VERIFICATION_FAILED", "BUILD_TIMEOUT"}
+
+
+def probed_unshared(inventory: dict) -> int:
+    """How many files in the image other lab members could not read (cluster validation, 2026-11-18)."""
+    count = inventory.get("unshared_count")
+    if type(count) is not int or count < 0:
+        raise ValueError("The probed permission check is invalid")
+    return count
 
 
 def probed_conda_packages(inventory: dict, *, requested: bool) -> dict[str, str]:
@@ -528,6 +557,12 @@ class DockerEnvironmentBuilder:
             self._remove_stage_images(build_root, keep=image_id)
         if self._stop_requested():
             interrupted_daemon("BUILD_CANCELLED", image_id=image_id)
+
+        def refused(code, diagnostics=()):
+            # The image exists but is not registered: it goes, with every image this build left.
+            self._remove_stage_images(build_root, keep=None)
+            return failed(code, diagnostics)
+
         probe_name = "labbio-env-check-" + build_root.name
         probe_log = build_root / "verification.log"
         code, error = self._run(["docker", "run", "--rm", "--pull", "never", "--name", probe_name,
@@ -542,7 +577,7 @@ class DockerEnvironmentBuilder:
             if error == "BUILD_CANCELLED" or (code is None and error in {"BUILD_TIMEOUT", "BUILD_LOG_LIMIT"}):
                 interrupted_daemon(error, probe_name=probe_name, image_id=image_id)
             self._cleanup(build_root, probe_name=probe_name)
-            return failed(error or "VERIFICATION_FAILED")
+            return refused(error or "VERIFICATION_FAILED")
         try:
             if probe_log.stat().st_size > 1_048_576:
                 raise ValueError()
@@ -551,8 +586,10 @@ class DockerEnvironmentBuilder:
             if not isinstance(failed_modules, list) or any(module not in modules for module in failed_modules):
                 raise ValueError()
             if failed_modules:
-                return failed("IMPORT_CHECK_FAILED", tuple({"code": "IMPORT_CHECK_FAILED", "module": module}
-                                                           for module in failed_modules[:8]))
+                return refused("IMPORT_CHECK_FAILED", tuple({"code": "IMPORT_CHECK_FAILED", "module": module}
+                                                            for module in failed_modules[:8]))
+            if probed_unshared(inventory):
+                return refused("IMAGE_NOT_SHAREABLE")  # The paths stay in verification.log.
             if self._stop_requested():
                 interrupted_daemon("BUILD_CANCELLED", probe_name=probe_name, image_id=image_id)
             size_log = build_root / "image-size.log"
@@ -572,4 +609,4 @@ class DockerEnvironmentBuilder:
                 size_bytes=int(size),
             )
         except (ValueError, KeyError, TypeError):
-            return failed("VERIFICATION_FAILED")
+            return refused("VERIFICATION_FAILED")

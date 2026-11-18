@@ -104,8 +104,10 @@ class AdmissionAttempts:
                 if path.is_symlink() or not path.is_dir() or _ATTEMPT_NAME.fullmatch(name) is None:
                     continue
                 if name == path.name and _emptied(path):
-                    # Left by a deletion that could not finish while its lease was open (NFS).
+                    # Left by a deletion that could not finish while its lease was open (NFS);
+                    # reported like any other cleaned attempt.
                     shutil.rmtree(path, ignore_errors=True)
+                    results.append(ReconciledAttempt(UUID(hex=name), (), not path.exists()))
                     continue
                 descriptor = _take_lease(path / ATTEMPT_LEASE)
                 if descriptor is None:

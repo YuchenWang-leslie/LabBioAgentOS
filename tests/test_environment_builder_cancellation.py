@@ -40,6 +40,7 @@ async def test_build_wait_owns_fixture_process_until_exit(
         seconds = 0 if outcome == "complete" else 30
         inventory = json.dumps({
             "installed_packages": {"examplepkg": "2.0"}, "failed_imports": [],
+            "unshared_count": 0, "unshared_paths": [],
         })
         code, error = DockerEnvironmentBuilder._run(
             backend.builder,

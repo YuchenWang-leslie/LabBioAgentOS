@@ -705,10 +705,14 @@ def image_delete(settings: LocalSettings, args) -> dict:
     image = (record.approved_image(catalog.backend, resolved_image=catalog.realization(key)) if record is not None
              else environment)
     source = image.source.canonical if image is not None and image.source is not None else None
-    # One entry per (kind, holder): a run or an environment may have recorded its use more than once.
+    # A use recorded by key always blocks. A use recorded only by source blocks while this is the
+    # source's last usable file: another file can still serve it, for example to restore what was built
+    # on it (MOHAN CUI, 2026-11-18). One entry per (kind, holder): a use may be recorded more than once.
+    elsewhere = _source_elsewhere(settings, catalog, key, source)
     blocking = list({(reference.kind.value, reference.holder): {
         "kind": reference.kind.value, "holder": reference.holder, "live": why}
-        for reference, why in member_index(settings).live(key, source)}.values())
+        for reference, why in member_index(settings).live(key, source)
+        if reference.image_key == key or not elsewhere}.values())
     if scope is ImageScope.LAB:
         blocking += [{"kind": "LAB_MEMBER", "user_id": marker.user_id, "holder": marker.holder,
                       "verified": marker.verified} for marker in area.usage_markers() if marker.key == key]
@@ -981,6 +985,25 @@ def _restore_base(settings: LocalSettings, catalog, key: str, *, lab_only: bool)
     if key not in images:
         raise AdmissionError("BASE_NOT_FOUND")  # Unknown, or recorded for another backend only.
     return images[key]
+
+
+def _source_elsewhere(settings: LocalSettings, catalog, key: str, source: str | None) -> bool:
+    """Another image of the same source still has a usable file on this backend."""
+    if source is None:
+        return False
+    # Configured images carry no source of their own (their identity is their file), so only
+    # admitted images and Agent environments can share a source with an image being deleted.
+    images = list(catalog.admitted_images())  # Never revoked or deleted ones.
+    if settings.environment is not None:
+        for path in sorted((settings.environment.root / "records").glob("*.json")):
+            try:
+                other = _environment_record(settings, "env-" + path.stem, catalog)
+            except AdmissionError:
+                continue
+            if (other is not None and not catalog.deleted(other.key)
+                    and catalog.state(other.key) is not ImageState.REVOKED):
+                images.append(other)
+    return any(image.key != key and image.source_identity.canonical == source for image in images)
 
 
 def _environment_record(settings: LocalSettings, key: str, catalog=None) -> ApprovedImage | None:

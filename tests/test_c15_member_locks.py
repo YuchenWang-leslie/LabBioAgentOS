@@ -214,7 +214,7 @@ async def test_docker_installs_a_pinned_conda_lock_without_solving(tmp_path, mon
     monkeypatch.setattr(module, "conda_download", lambda packages, destination, **_: destination.mkdir())
     responses = {"base-inspect.log": BASE_ID, "image-size.log": "1000", "verification.log": json.dumps({
         "installed_packages": {}, "conda_packages": {"samtools": "1.21"}, "conda_on_path": True,
-        "failed_imports": []})}
+        "failed_imports": [], "unshared_count": 0, "unshared_paths": []})}
 
     def run(argv, path, deadline):
         path.write_text(responses.get(path.name, ""))

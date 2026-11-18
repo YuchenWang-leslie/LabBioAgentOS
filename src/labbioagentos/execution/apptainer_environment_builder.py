@@ -40,7 +40,7 @@ from .apptainer_build import (
 )
 from .conda import (CondaError, CondaPolicy, LockedPackage, download as conda_download, file_entries, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
-from .environment_builder import _CONDA_FAILURES, probed_conda_packages
+from .environment_builder import _CONDA_FAILURES, probed_conda_packages, probed_unshared
 from .wheel_lock import WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
 from .backend import ProcessOutcome
 from .environments import (
@@ -271,6 +271,8 @@ class ApptainerEnvironmentBuilder:
             if inventory["failed_imports"]:
                 return failed("IMPORT_CHECK_FAILED", tuple(
                     {"code": "IMPORT_CHECK_FAILED", "module": module} for module in inventory["failed_imports"][:8]))
+            if inventory["unshared"]:
+                return failed("IMAGE_NOT_SHAREABLE")  # The paths stay in the probe output log.
             try:
                 reference, created = await asyncio.to_thread(self.sif_store.register_new, output_sif)
                 size = self.sif_store.path_for(reference).stat().st_size
@@ -379,7 +381,8 @@ def _probe_inventory(path: Path, modules: tuple[str, ...], *, conda: bool = Fals
             or not isinstance(packages, dict)):
         raise ValueError("The import probe output is invalid")
     return {"failed_imports": failed, "installed_packages": packages,
-            "conda_packages": probed_conda_packages(inventory, requested=conda)}
+            "conda_packages": probed_conda_packages(inventory, requested=conda),
+            "unshared": probed_unshared(inventory)}
 
 
 def _write_private(path: Path, text: str) -> None:

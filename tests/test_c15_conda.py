@@ -188,7 +188,7 @@ async def test_the_docker_recipe_installs_offline_in_a_separate_stage_and_append
     calls = []
     responses = {"base-inspect.log": BASE_ID + "\n", "image-size.log": "1000\n", "verification.log": json.dumps({
         "installed_packages": {}, "conda_packages": {"samtools": "1.21", "_openmp_mutex": "4.5"},
-        "conda_on_path": on_path, "failed_imports": []}),
+        "conda_on_path": on_path, "failed_imports": [], "unshared_count": 0, "unshared_paths": []}),
         # The classic builder keeps the conda stage's last image beside the final one.
         "stage-images-0.log": f"{IMAGE_ID}\nsha256:{'f' * 64}\n",
         "stage-images-1.log": f"{IMAGE_ID}\nsha256:{'d' * 64}\n", "stage-images-2.log": f"{IMAGE_ID}\n"}
@@ -223,8 +223,11 @@ async def test_the_docker_recipe_installs_offline_in_a_separate_stage_and_append
     listing = next(argv for argv in calls if argv[:3] == ["docker", "image", "ls"])
     assert f"label=labbio.environment.build={root.name}" in listing and "dangling=true" in listing
     # Round by round, until only the environment image is left; never the image itself.
-    assert [argv for argv in calls if argv[:3] == ["docker", "image", "rm"]] == [
-        ["docker", "image", "rm", "sha256:" + "f" * 64], ["docker", "image", "rm", "sha256:" + "d" * 64]]
+    removed = [argv for argv in calls if argv[:3] == ["docker", "image", "rm"]]
+    assert removed[:2] == [["docker", "image", "rm", "sha256:" + "f" * 64],
+                           ["docker", "image", "rm", "sha256:" + "d" * 64]]
+    # A refused image is never registered, so it goes too (cluster validation, 2026-11-18).
+    assert any(IMAGE_ID in argv for argv in removed[2:]) is (not on_path)
     # The downloaded packages, the micromamba copy and the solver's repodata cache are not kept.
     assert {path.name for path in (root / "context").iterdir()} == {"Dockerfile", "explicit.txt"}
     assert not (root / "conda").exists()

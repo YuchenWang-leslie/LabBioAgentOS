@@ -164,7 +164,7 @@ if stage == "sandbox":
 elif stage in ("pack", "pack-check"):
     open(args[2], "w").write("sif")
 elif stage == "probe":
-    print(json.dumps({{"installed_packages": {{"examplepkg": "2.0"}}, "failed_imports": []}}))
+    print(json.dumps({{"installed_packages": {{"examplepkg": "2.0"}}, "failed_imports": [], "unshared_count": 0}}))
 """
 
 

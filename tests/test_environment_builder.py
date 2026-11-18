@@ -36,6 +36,7 @@ def backend(tmp_path, monkeypatch):
             "base-inspect.log": (0, None, BASE_ID + "\n"),
             "verification.log": (0, None, json.dumps({
                 "installed_packages": {"examplepkg": "2.0"}, "failed_imports": [],
+                "unshared_count": 0, "unshared_paths": [],
             })),
             "image-size.log": (0, None, "123456789\n"),  # C15: the built image's size.
         },
@@ -245,3 +246,71 @@ def test_subprocess_timeout_kills_its_process_and_filters_host_secrets(tmp_path,
     assert not set(secret_names).intersection(captured["env"])
     assert "SYNTHETIC_PRIVATE_VALUE" not in captured["env"].values()
     assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+
+@pytest.mark.asyncio
+async def test_an_image_others_could_not_read_is_refused_and_removed(backend):
+    backend.responses["verification.log"] = (0, None, json.dumps({
+        "installed_packages": {"examplepkg": "2.0"}, "failed_imports": [],
+        "unshared_count": 2, "unshared_paths": ["/opt/labbio-env/bin", "/opt/labbio-env/lib"]}))
+    backend.responses["stage-images-0.log"] = (0, None, IMAGE_ID + "\n")  # The build's only image.
+
+    result = await build(backend)
+
+    assert result.failure_code == "IMAGE_NOT_SHAREABLE" and result.image_id is None
+    assert ["docker", "image", "rm", IMAGE_ID] in backend.calls  # Never registered, so never kept.
+
+
+@pytest.mark.asyncio
+async def test_an_image_that_failed_its_import_check_is_removed(backend):
+    backend.responses["verification.log"] = (0, None, json.dumps({
+        "installed_packages": {"examplepkg": "2.0"}, "failed_imports": ["examplepkg"],
+        "unshared_count": 0, "unshared_paths": []}))
+    backend.responses["stage-images-0.log"] = (0, None, IMAGE_ID + "\n")
+
+    result = await build(backend)
+
+    assert result.failure_code == "IMPORT_CHECK_FAILED" and ["docker", "image", "rm", IMAGE_ID] in backend.calls
+
+
+@pytest.mark.parametrize("inventory", [{}, {"unshared_count": -1}, {"unshared_count": True},
+                                       {"unshared_count": "0"}])
+def test_a_permission_check_that_did_not_report_is_never_taken_as_clean(inventory):
+    from labbioagentos.execution.environment_builder import probed_unshared
+
+    with pytest.raises(ValueError):
+        probed_unshared(inventory)
+
+
+def test_the_probe_finds_files_and_directories_others_could_not_read(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from labbioagentos.execution.environment_builder import _PROBE
+
+    conda, site = tmp_path / "labbio-env", tmp_path / "site-packages"
+    for root in (conda, site):
+        (root / "pkg").mkdir(parents=True)
+        (root / "pkg" / "ok.py").write_text("")
+    (site / "pkg" / "private.py").write_text("")
+    (site / "pkg" / "private.py").chmod(0o600)
+    (conda / "closed").mkdir(mode=0o700)
+    (conda / "listable").mkdir(mode=0o744)  # Readable, but others cannot enter it.
+    (conda / "link").symlink_to(site / "pkg" / "private.py")  # Links are not judged.
+    site.chmod(0o700)  # A root itself is judged too.
+    roots = "'/opt/labbio-env', sysconfig.get_paths()['purelib'], sysconfig.get_paths()['platlib']"
+    assert roots in _PROBE
+    program = _PROBE.replace(roots, f"{str(conda)!r}, {str(site)!r}")
+    work = tmp_path / "work"
+    work.mkdir()
+    output = subprocess.run([sys.executable, "-I", "-c", program.replace("/tmp/import-check.log",
+                                                                          str(work / "log")), "[]"],
+                            capture_output=True, text=True, check=True).stdout
+    report = json.loads(output)
+    assert report["unshared_count"] == 4
+    assert sorted(report["unshared_paths"]) == sorted([str(conda / "closed"), str(conda / "listable"),
+                                                       str(site), str(site / "pkg" / "private.py")])
+    for directory in (conda / "closed", conda / "listable", site):
+        os.chmod(directory, 0o755)

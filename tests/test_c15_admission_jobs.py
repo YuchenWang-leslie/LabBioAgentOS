@@ -263,7 +263,8 @@ async def test_only_trustworthy_attempt_directories_are_touched(tmp_path):
     finally:
         os.close(descriptor)
 
-    assert [item.removed for item in results] == [True]
+    assert sorted((item.attempt_id.hex, item.removed) for item in results) == sorted(
+        [(pending.name.removeprefix(".new-"), True), (emptied.name, True)])  # Both are reported.
     assert not pending.exists() and not emptied.exists()
     assert unsafe.is_dir() and missing.is_dir() and foreign.is_dir() and held.is_dir()
 

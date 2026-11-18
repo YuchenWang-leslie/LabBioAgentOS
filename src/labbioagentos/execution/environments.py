@@ -56,6 +56,8 @@ _FAILURES = {
     "TLS_FAILURE": "Dependency download certificate verification failed.",
     "PIP_CHECK_FAILED": "Installed dependency compatibility verification failed.",
     "IMPORT_CHECK_FAILED": "An explicitly requested import failed in the isolated image.",
+    "IMAGE_NOT_SHAREABLE": ("The built image contains files that other lab members could not read; it was not "
+                            "registered."),
     "VERIFICATION_FAILED": "The built image identity or installed package inventory is invalid.",
     "CONDA_NO_SOLUTION": "The conda packages could not be resolved from the allowed channels.",
     "CONDA_LOCK_INVALID": "The conda resolution named a package outside the allowed channels or without a sha256.",
