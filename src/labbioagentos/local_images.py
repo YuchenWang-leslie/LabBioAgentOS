@@ -653,7 +653,8 @@ def image_references(settings: LocalSettings) -> dict:
     if settings.lab is None:
         raise AdmissionError("ADMISSION_REQUIRES_LAB")
     index, catalog = member_index(settings), _image_catalog(settings)
-    live = [(reference, why) for reference in index.references() if (why := liveness(reference)) is not None]
+    live = [(reference, why) for reference in index.references()
+            if (why := liveness(reference, deleted=catalog.deleted)) is not None]
     added, removed = sync_lab_markers(settings, catalog, live)
     return {"event": "image_references",
             "references": [{"kind": reference.kind.value, "image_key": reference.image_key,
@@ -711,7 +712,7 @@ def image_delete(settings: LocalSettings, args) -> dict:
     elsewhere = _source_elsewhere(settings, catalog, key, source)
     blocking = list({(reference.kind.value, reference.holder): {
         "kind": reference.kind.value, "holder": reference.holder, "live": why}
-        for reference, why in member_index(settings).live(key, source)
+        for reference, why in member_index(settings).live(key, source, deleted=catalog.deleted)
         if reference.image_key == key or not elsewhere}.values())
     if scope is ImageScope.LAB:
         blocking += [{"kind": "LAB_MEMBER", "user_id": marker.user_id, "holder": marker.holder,

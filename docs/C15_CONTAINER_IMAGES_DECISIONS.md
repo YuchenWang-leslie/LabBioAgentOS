@@ -489,7 +489,8 @@ that Gold Skill versions have no retired state:
   member's own area, written at the moment of use: an execution submission
   and a derived-environment build each record the image, the run and the
   run directory. Deletion then checks whether each reference is still live
-  (the run is not terminal; the environment record still exists). When the
+  (the run is not terminal; the environment exists and its file was not
+  deleted, as decided on 2026-11-16 and corrected on 2026-11-19). When the
   index is first created, the registered runs that can be found are added
   to it. A member's live references to lab images are kept in step with the
   lab area's `usage/` markers.
@@ -604,6 +605,15 @@ After the second cluster round (MOHAN CUI, 2026-11-18):
   rebuilds them.
 - Permissions that conda packages carry themselves (for example 775 on a
   program) are kept: a SIF is read-only, and others can read and run them.
+
+After the third cluster round (MOHAN CUI, 2026-11-19):
+
+- An Agent environment whose file was deleted no longer holds its base
+  image, as decided on 2026-11-16; its record is kept forever, so the
+  record alone never counts as a use. Restoring such an environment after
+  its base was deleted reports `BASE_DELETED`, and the base is restored
+  first, as for a terminal run that is revised. Its lab usage markers are
+  released the same way.
 
 ## Not decided here
 

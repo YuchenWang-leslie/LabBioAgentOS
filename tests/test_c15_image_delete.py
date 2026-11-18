@@ -518,7 +518,7 @@ def test_each_live_use_blocks_once(lab, capsys, monkeypatch):
     reference = SimpleNamespace(kind=SimpleNamespace(value="ENVIRONMENT"), holder="env-" + "a" * 64,
                                 image_key="mine")
     monkeypatch.setattr(local_images, "member_index", lambda _settings: SimpleNamespace(
-        live=lambda key, source: [(reference, "ENVIRONMENT_RECORDED"), (reference, "ENVIRONMENT_RECORDED")]))
+        live=lambda key, source, deleted=None: [(reference, "ENVIRONMENT_RECORDED")] * 2))
     _retire(capsys, lab, "mine")
     plan = _cli(capsys, lab, "image-delete", "--key", "mine")[1]
     assert plan["blocking"] == [{"kind": "ENVIRONMENT", "holder": "env-" + "a" * 64, "live": "ENVIRONMENT_RECORDED"}]
@@ -611,3 +611,38 @@ def test_an_agent_environment_of_the_same_source_is_a_usable_file(lab, capsys, m
         location=str(location), at=datetime.now(timezone.utc)))
     _retire(capsys, lab, "six")
     assert _blocking(capsys, lab, "six") == []  # The environment still has a file of this source.
+
+
+def _delete_environment_file(lab, key):
+    from labbioagentos.local_config import _image_catalog, load_settings
+
+    _image_catalog(load_settings(lab.path)).record_realization(
+        key, resolved_image="sha256:" + "7" * 64, action=RealizationAction.DELETED, actor="admin",
+        reason="Freeing space.")
+
+
+def test_an_environment_whose_file_was_deleted_no_longer_holds_its_base(lab, capsys):
+    """Cluster validation, round 3: its record stays forever, so the record alone is no use (2026-11-19)."""
+    environment = "env-" + "a" * 64
+    _environment_use(lab, key="mine", holder=environment)
+    _retire(capsys, lab, "mine")
+    assert [item["holder"] for item in _blocking(capsys, lab, "mine")] == [environment]
+
+    _delete_environment_file(lab, environment)
+
+    assert _blocking(capsys, lab, "mine") == []
+    assert _delete(capsys, lab, "mine")[0] == 0
+
+
+def test_an_environment_whose_file_was_deleted_releases_its_lab_marker(lab, capsys):
+    environment = "env-" + "a" * 64
+    _environment_use(lab, key="lab-tools", holder=environment)
+    added = _cli(capsys, lab, "image-references")[1]
+    assert added["lab_markers"] == {"added": 1, "removed": 0}
+    assert [marker.holder for marker in lab.area.usage_markers()] == [environment]
+
+    _delete_environment_file(lab, environment)
+
+    output = _cli(capsys, lab, "image-references")[1]
+    assert output["references"] == [] and output["lab_markers"] == {"added": 0, "removed": 1}
+    assert lab.area.usage_markers() == []

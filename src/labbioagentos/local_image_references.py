@@ -19,7 +19,7 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -102,10 +102,11 @@ class ReferenceIndex:
                                            holder="env-" + path.stem, location=str(path), at=_now()))
         (self.root.parent / _BACKFILLED).touch(mode=0o600)
 
-    def live(self, key: str, source: str | None = None) -> list[tuple[ImageReference, str]]:
+    def live(self, key: str, source: str | None = None, *, deleted: Callable[[str], bool] = lambda _key: False
+             ) -> list[tuple[ImageReference, str]]:
         """The live references to one image, each with why it is live."""
         return [(reference, why) for reference in self.references()
-                if reference.matches(key, source) and (why := liveness(reference)) is not None]
+                if reference.matches(key, source) and (why := liveness(reference, deleted=deleted)) is not None]
 
 
 def run_reference(directory: Path, *, key: str | None, source: str | None, run_id: str | None = None
@@ -114,13 +115,17 @@ def run_reference(directory: Path, *, key: str | None, source: str | None, run_i
                           holder=run_id or _run_id(directory), location=str(directory), at=_now())
 
 
-def liveness(reference: ImageReference) -> str | None:
-    """Why a reference is live, or None when it no longer holds the image."""
+def liveness(reference: ImageReference, *, deleted: Callable[[str], bool] = lambda _key: False) -> str | None:
+    """Why a reference is live, or None when it no longer holds the image.
+
+    An environment holds its base while its record exists and its file was not deleted
+    (`deleted` says, by the environment's key): records are kept forever (DECIDED-C15-H).
+    """
     from .local_conversations import read_run_record
 
     location = Path(reference.location)
     if reference.kind is ReferenceKind.ENVIRONMENT:
-        return "ENVIRONMENT_RECORDED" if location.is_file() else None
+        return "ENVIRONMENT_RECORDED" if location.is_file() and not deleted(reference.holder) else None
     if not location.exists():
         return None  # The run directory was removed.
     try:
