@@ -907,6 +907,15 @@ def _environment_base(settings: LocalSettings, catalog, source) -> ApprovedImage
     candidates += sorted(key for key in catalog.held_keys()
                          if (record := catalog.record(key)) is not None and record.source == source)
     images = {image.key: image for image in (*settings.execution.approved_images(), *catalog.admitted_images())}
+    # An environment may be built on another of the member's environments.
+    for path in sorted((settings.environment.root / "records").glob("*.json")):
+        try:
+            other = _environment_record(settings, "env-" + path.stem, catalog)
+        except AdmissionError:
+            continue  # An unreadable record is no base.
+        if other is not None and other.source == source:
+            candidates.append(other.key)
+            images[other.key] = other
     for key in candidates:
         if catalog.state(key) is not ImageState.REVOKED and not catalog.deleted(key) and key in images:
             return images[key]

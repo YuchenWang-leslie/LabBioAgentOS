@@ -456,3 +456,34 @@ def test_an_apptainer_rebuild_registers_in_the_configured_store(environment, mon
                                           actor="admin", reason="Needed again.")
     (store,) = stores
     assert store.root == tmp_path / "sif"
+
+
+def test_an_environment_built_on_another_environment_finds_it_as_its_base(environment):
+    import asyncio
+
+    from labbioagentos.local_config import _image_catalog, load_settings
+
+    lab = environment
+    settings = load_settings(lab.path)
+    catalog = _image_catalog(settings)
+    registry = ApprovedImageRegistry(settings.execution.approved_images())
+    service = EnvironmentService(settings.environment.root, registry, LockingBuilder("sha256:" + "7" * 64), "admin",
+                                 catalog=catalog)
+    lower = asyncio.run(service.build_environment("python-base", ("examplepkg==2.0",), ("examplepkg",)))
+    base_key = lower["image_key"]
+    upper = asyncio.run(service.build_environment(base_key, ("examplepkg==2.0",), ()))
+    assert upper["status"] == "SUCCEEDED", upper
+    lab.key = upper["image_key"]
+    for key in (lab.key, base_key):
+        catalog.set_state(key, catalog.state(key).DEPRECATED, actor="admin", reason="Retired.")
+        catalog.record_realization(key, resolved_image="sha256:" + "7" * 64, action=RealizationAction.DELETED,
+                                   actor="admin", reason="Freeing space.")
+    assert _restore(lab)[1]["error"] == "BASE_DELETED" and lab.builder.calls == []
+
+    catalog.record_realization(base_key, resolved_image="sha256:" + "6" * 64, action=RealizationAction.RESTORED,
+                               actor="admin", reason="Back.", produced_by="test")
+    (settings.environment.root / "records" / ("1" * 64 + ".json")).write_text("{}")  # Damaged: never a base.
+    code, output = _restore(lab)
+    assert code == 0, output
+    base = lab.builder.calls[0]["base_image"]
+    assert base.key == base_key and base.reference == "sha256:" + "6" * 64  # Its restored file.
