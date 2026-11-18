@@ -319,13 +319,27 @@ def image_admit(settings: LocalSettings, args) -> dict:
 
 
 def image_reconcile(settings: LocalSettings) -> dict:
-    """Clean up admissions whose process is gone: stop their jobs and delete their files."""
+    """Clean up admissions and Agent environment builds whose process is gone; nothing is resubmitted."""
     if settings.lab is None:
         raise AdmissionError("ADMISSION_REQUIRES_LAB")
     member_root = private_member_root(settings.lab.member_root)
-    with _admission_jobs(settings, member_root) as jobs:
+    environments = []
+    with _admission_jobs(settings, member_root, lock_builds=settings.environment is not None) as jobs:
         reconciled = asyncio.run(jobs.attempts.reconcile())
-    return {"event": "image_attempts_reconciled", "attempts": _reconciled(reconciled)}
+        if settings.environment is not None and jobs.builder is not None:
+            environments = _environment_service(settings, jobs.builder).reconcile_attempts()
+    return {"event": "image_attempts_reconciled", "attempts": _reconciled(reconciled),
+            "environment_attempts": environments}
+
+
+def _environment_service(settings: LocalSettings, builder):
+    """The member's Agent environments, with every image they may build on registered."""
+    from .execution.environments import EnvironmentService
+
+    catalog = _image_catalog(settings)
+    registry = ApprovedImageRegistry((*settings.execution.approved_images(), *catalog.admitted_images()))
+    return EnvironmentService(settings.environment.root, registry, builder, settings.principal.user_id,
+                              catalog=catalog)
 
 
 def _base_image(settings: LocalSettings, catalog, key: str, *, lab_only: bool = False) -> ApprovedImage:

@@ -490,7 +490,8 @@ def test_image_reconcile_reports_what_it_cleaned(tmp_path, capsys, monkeypatch):
     output = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
 
     assert output == {"event": "image_attempts_reconciled",
-                      "attempts": [{"attempt": attempt_id.hex, "removed": True, "jobs": []}]}
+                      "attempts": [{"attempt": attempt_id.hex, "removed": True, "jobs": []}],
+                      "environment_attempts": []}  # No [environment]: no Agent builds to clean.
     assert removed == [(attempt_id.hex, {OCI.digest})] and not attempt.exists()  # Admitted images stay.
 
 

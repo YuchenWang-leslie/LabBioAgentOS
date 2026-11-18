@@ -16,8 +16,6 @@ import re
 import shlex
 import shutil
 import stat
-from collections.abc import Iterator
-from contextlib import contextmanager
 from enum import IntEnum
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -30,11 +28,10 @@ from .conda import CONDA_ENV_PREFIX
 # The same import probe and pip diagnosis as the Docker builder.
 from .wheel_lock import MAX_LOCKED_WHEELS, LockedWheel, WheelLockError, lock_wheelhouse
 from .environment_builder import _PROBE, diagnose_pip_log, pip_log_diagnostics
-from .environments import normalize_modules
+from .environments import LEASE_FILE, attempt_lease, normalize_modules  # noqa: F401 - re-exported
 
 MAX_REPORT_BYTES = 16_777_216
 PROBE_OUTPUT = "probe.json"
-LEASE_FILE = "active.lock"
 # The download step runs contained but with the host network; nothing else does.
 CONTAIN_ARGUMENTS = ISOLATION_ARGUMENTS[:ISOLATION_ARGUMENTS.index("--net")]
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
@@ -335,21 +332,6 @@ class DownloadRunner(SubprocessApptainerRunner):
     def entrypoint_options(self) -> tuple[str, ...]:
         return (*super().entrypoint_options(), "--cpu-seconds", str(self.cpu_seconds),
                 "--parent-pid", str(self._parent_pid), "--nice", "10")
-
-
-@contextmanager
-def attempt_lease(build_root: Path) -> Iterator[None]:
-    """Held for the whole build attempt; restart cleanup never touches a held attempt."""
-
-    descriptor = os.open(build_root / LEASE_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
-            raise PermissionError("The attempt lease must be a private regular file")
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        os.close(descriptor)
 
 
 def remove_stale_downloads(attempts_root: Path) -> int:

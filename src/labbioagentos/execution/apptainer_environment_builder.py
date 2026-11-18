@@ -30,7 +30,6 @@ from .apptainer_build import (
     DownloadRunner,
     _check_path,
     _plain_url,
-    attempt_lease,
     classify_build,
     classify_download,
     prepare_cache_dir,
@@ -58,6 +57,8 @@ from .launchers.base import JobLauncher, JobSpec
 from .models import RequestedResources
 
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
+JOBS_FILE = "jobs.json"
+_DOWNLOADS = ("download/wheels", "conda/pkgs", "conda/solve")
 _MAX_PROBE_BYTES = 1_048_576
 
 
@@ -142,18 +143,55 @@ class ApptainerEnvironmentBuilder:
             raise EnvironmentRequestError()
         if run_id is None:  # Every job must belong to a run so that crash cleanup covers it.
             raise EnvironmentRequestError()
+        # The caller holds the attempt's lease for the whole build: the environment service, or
+        # an admission for a member's lock build.
         await asyncio.to_thread(remove_stale_downloads, build_root.parent)
-        with attempt_lease(build_root):
-            if (conda_packages or (pinned is not None and pinned.conda)) and self.conda is None:
-                raise EnvironmentRequestError("CONDA_UNAVAILABLE")  # The service checks supports_conda first.
-            result = await self._build(base_image, requirements, import_modules, build_root, run_id,
-                                       tuple(conda_packages), pinned)
-            # Downloaded packages are not kept; the locks and logs are. After a cancellation the
-            # job may still run, so they stay until a later build finds the attempt unheld.
-            for path in (build_root / "download" / "wheels", build_root / "conda" / "pkgs",
-                         build_root / "conda" / "solve"):
-                shutil.rmtree(path, ignore_errors=True)
-            return result
+        if (conda_packages or (pinned is not None and pinned.conda)) and self.conda is None:
+            raise EnvironmentRequestError("CONDA_UNAVAILABLE")  # The service checks supports_conda first.
+        # Written before any job is submitted: cleanup of a lost attempt asks this ledger whether
+        # its run still has an open build job (DECIDED-C15-H).
+        _write_private(build_root / JOBS_FILE, json.dumps({"ledger": str(self.job_ledger.path)}))
+        result = await self._build(base_image, requirements, import_modules, build_root, run_id,
+                                   tuple(conda_packages), pinned)
+        # Downloaded packages are not kept; the locks and logs are. After a cancellation the
+        # job may still run, so they stay until a later build finds the attempt unheld.
+        for path in _DOWNLOADS:
+            shutil.rmtree(build_root / path, ignore_errors=True)
+        return result
+
+    def abandon(self, attempt: Path, *, intent: dict, receipt: dict | None, keep: set[str]) -> bool:
+        """Clean up a lost attempt once its run has no open build job; True when nothing is left.
+
+        An attempt that recorded no ledger submitted no job, provided it was
+        created under a lease; an older one is kept, since its jobs are unknown.
+        A SIF it registered without an environment record is removed.
+        """
+        jobs = attempt / JOBS_FILE
+        if jobs.exists():
+            try:
+                ledger_path = Path(json.loads(jobs.read_text(encoding="utf-8"))["ledger"])
+                run_id = UUID(intent["run_id"])
+            except (OSError, ValueError, KeyError, TypeError):
+                return False
+            if not ledger_path.is_file():
+                return False  # The run's ledger is gone: its jobs cannot be confirmed stopped.
+            ledger = JobLedger(ledger_path)
+            try:
+                if any(entry.purpose is JobPurpose.ENVIRONMENT_BUILD for entry in ledger.open_jobs(run_id)):
+                    return False  # The run's reconcile resolves the job first.
+            finally:
+                ledger.close()
+        elif intent.get("leased") is not True:
+            return False
+        for path in _DOWNLOADS:
+            shutil.rmtree(attempt / path, ignore_errors=True)
+        image_id = receipt.get("image_id") if receipt else None
+        if isinstance(image_id, str) and image_id not in keep:
+            try:
+                self.sif_store.remove(image_id)
+            except SifStoreError:
+                pass  # Already gone.
+        return True
 
     async def _build(self, base_image: ApprovedImage, requirements: tuple[str, ...],
                      modules: tuple[str, ...], build_root: Path, run_id: UUID,

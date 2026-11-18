@@ -327,6 +327,10 @@ class DockerEnvironmentBuilder:
         if list_owned(build_root / "cleanup-confirm.log"):
             raise EnvironmentBuildUnconfirmedError("CLEANUP_CONFIRM_FAILED")
 
+    def abandon(self, attempt: Path, *, intent: dict, receipt: dict | None, keep: set[str]) -> bool:
+        """Remove a lost attempt's labelled containers and images, never one in `keep` (DECIDED-C15-H)."""
+        return remove_build_leftovers(attempt.name, keep=lambda: keep)
+
     def discard(self, result: EnvironmentBuildResult) -> None:
         """Remove a built image that will not be used; best effort, never a prune."""
         if result.image_id is not None and result.created and re.fullmatch(r"sha256:[0-9a-f]{64}", result.image_id):

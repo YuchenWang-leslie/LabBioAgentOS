@@ -546,6 +546,30 @@ Refined for restore by MOHAN CUI on 2026-11-18:
   must match, or the restore fails with `CONDA_LOCK_MISMATCH` and nothing
   is registered.
 
+Refined for lost environment builds (step 9d) by MOHAN CUI on 2026-11-18:
+
+- Each Agent environment build attempt holds a lease for as long as it
+  builds, as admission attempts do. Cleanup takes the lease of an attempt
+  that has no final receipt; holding it proves the building process is
+  gone, whatever happened to its run.
+- Cleanup runs before every environment build, in `image-reconcile`, and
+  after a run's `reconcile`.
+- Docker and cluster attempts are both cleaned. Docker: the attempt's
+  labelled containers and untagged images are removed, never a file a
+  record or an environment runs from. Cluster: an attempt is cleaned only
+  when its run has no open environment build job in the job ledger;
+  otherwise it stays for the next cleanup. Its downloads are removed, and a
+  SIF it registered without an environment record is removed, as for a
+  failed admission.
+- A cleaned attempt gets a `resolution.json` with status `ABANDONED`
+  beside its receipt, which is never rewritten. The same request is then
+  no longer blocked: the Agent's next identical request builds again;
+  nothing is rebuilt automatically.
+- Attempts with an `UNCONFIRMED` receipt are cleaned the same way.
+- A cleaned attempt keeps its small files (intent, receipt, resolution and
+  build logs, whose id the receipt names) and loses its build contents,
+  such as downloaded wheels and conda packages and the build context.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:

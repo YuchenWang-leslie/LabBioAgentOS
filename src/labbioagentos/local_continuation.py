@@ -169,6 +169,12 @@ async def reconcile_or_continue(args, settings):
                     {"execution_id": str(job.execution_id), "job_id": job.job_id,
                      "launcher": job.launcher, "action": job.action.value} for job in jobs
                 ]})
+            # With the run's build jobs resolved, its lost environment builds can be cleaned up.
+            environments = application.capability_services.environment_service
+            abandoned = environments.reconcile_attempts() if environments is not None else []
+            if abandoned:
+                cli._emit({"event": "environment_attempts_reconciled", "run_id": str(args.run_id),
+                           "attempts": abandoned})
             assessment = application.reconcile_run(
                 args.run_id, principal=settings.principal, workspace=settings.workspace,
             )
