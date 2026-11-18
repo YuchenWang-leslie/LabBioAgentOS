@@ -363,6 +363,7 @@ def _layout_manifest(staging: Path, index: dict, platform: str) -> tuple[str, st
         _verify_file(staging, nested)
         index = json.loads((staging / "blobs" / "sha256" / nested.split(":")[1]).read_bytes())
         entries = index.get("manifests", ())
+    entries = _without_attached(entries)
     if len(entries) == 1 and "platform" not in entries[0]:
         digest = entries[0].get("digest", "")
         if _DIGEST.fullmatch(digest) is None:
@@ -371,6 +372,30 @@ def _layout_manifest(staging: Path, index: dict, platform: str) -> tuple[str, st
     digest = select_platform(index, platform)
     media_type = next(item.get("mediaType", MANIFEST_TYPES[0]) for item in entries if item.get("digest") == digest)
     return digest, media_type
+
+
+# Annotations naming the manifest an entry is attached to: containerd's, written by `docker save`
+# on the containerd image store, and buildx's for attestations in an image index.
+_SUBJECT_ANNOTATIONS = ("io.containerd.manifest.subject", "vnd.docker.reference.digest")
+
+
+def _without_attached(entries) -> list:
+    """Leave out entries attached to another entry of the same index, such as SBOM or provenance.
+
+    They are never run, and only the chosen manifest's own blobs are kept; an
+    entry naming a manifest that is not in the index stays and is judged as usual.
+    """
+    if not isinstance(entries, (list, tuple)):
+        return []
+    digests = {item.get("digest") for item in entries if isinstance(item, dict)}
+    kept = []
+    for item in entries:
+        annotations = item.get("annotations") if isinstance(item, dict) else None
+        subjects = ({annotations.get(name) for name in _SUBJECT_ANNOTATIONS} - {None}
+                    if isinstance(annotations, dict) else set())
+        if not any(isinstance(subject, str) and subject in digests for subject in subjects):
+            kept.append(item)
+    return kept
 
 
 def _verify_file(root: Path, digest: str, size: int | None = None) -> None:

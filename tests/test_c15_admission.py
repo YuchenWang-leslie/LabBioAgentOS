@@ -241,6 +241,56 @@ def test_an_archive_of_the_same_image_has_the_same_source_identity(tmp_path):
     assert not (tmp_path / "from-archive.unpack").exists()
 
 
+def _saved_with_attachment(tmp_path, annotation: str, subject: str | None = None) -> tuple[Path, object, str]:
+    """A layout as `docker save` writes it on the containerd store: the image entry has no platform,
+    and an SBOM/provenance manifest is attached to it by an annotation."""
+    pulled = _pull(FakeRegistry(), tmp_path)
+    blobs = pulled.layout / "blobs" / "sha256"
+    statement = b'{"predicateType": "https://spdx.dev/Document"}'
+    config = b"{}"
+    for body in (statement, config):
+        (blobs / _digest(body).split(":")[1]).write_bytes(body)
+    attached = json.dumps({"schemaVersion": 2, "mediaType": MANIFEST_TYPES[0],
+                           "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                                      "digest": _digest(config), "size": len(config)},
+                           "layers": [{"mediaType": "application/vnd.in-toto+json",
+                                       "digest": _digest(statement), "size": len(statement)}]}).encode()
+    (blobs / _digest(attached).split(":")[1]).write_bytes(attached)
+    index = json.loads((pulled.layout / "index.json").read_text())
+    (entry,) = index["manifests"]
+    entry.pop("platform", None)
+    index["manifests"].append({"mediaType": MANIFEST_TYPES[0], "digest": _digest(attached), "size": len(attached),
+                               "annotations": {annotation: subject or pulled.source.digest}})
+    (pulled.layout / "index.json").write_text(json.dumps(index))
+    archive = tmp_path / "saved.tar"
+    layout_archive(pulled.layout, archive)
+    return archive, pulled, _digest(statement)
+
+
+@pytest.mark.parametrize("annotation", ["io.containerd.manifest.subject", "vnd.docker.reference.digest"])
+def test_an_attached_sbom_or_provenance_manifest_is_left_out(tmp_path, annotation):
+    archive, pulled, statement = _saved_with_attachment(tmp_path, annotation)
+
+    unpacked = read_archive(archive, platform="linux/amd64", layout=tmp_path / "from-archive", max_bytes=10**7)
+
+    assert unpacked.source == pulled.source
+    kept = {path.name for path in (unpacked.layout / "blobs" / "sha256").iterdir()}
+    assert statement.split(":")[1] not in kept
+    index = json.loads((unpacked.layout / "index.json").read_text())
+    assert [entry["digest"] for entry in index["manifests"]] == [pulled.source.digest]
+
+
+@pytest.mark.parametrize("annotation, subject", [
+    ("io.containerd.manifest.subject", "sha256:" + "f" * 64),  # Attached to nothing in this index.
+    ("org.example.subject", None),  # Not a known attachment annotation.
+])
+def test_an_entry_that_is_not_attached_within_the_index_is_never_guessed_away(tmp_path, annotation, subject):
+    archive, _pulled, _statement = _saved_with_attachment(tmp_path, annotation, subject)
+    with pytest.raises(OciError) as raised:
+        read_archive(archive, platform="linux/amd64", layout=tmp_path / "from-archive", max_bytes=10**7)
+    assert raised.value.code == "PLATFORM_NOT_AVAILABLE"
+
+
 def _archive_with(tmp_path, name, *, link=False) -> Path:
     archive = tmp_path / "bad.tar"
     with tarfile.open(archive, "w:") as tar:
