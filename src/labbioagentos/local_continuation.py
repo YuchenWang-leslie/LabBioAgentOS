@@ -11,10 +11,11 @@ from uuid import UUID, uuid4
 from .application import ApplicationRunHandle, ApplicationRunRequest
 from .artifacts import ArtifactExposureClass, ArtifactReleaseBasis, LocalArtifactStore
 from .artifacts.store import StoredArtifact
-from .contracts import WorkflowStage
+from .contracts import RunStatus, WorkflowStage
 from .local_conversations import ConversationStore, read_run_record
 from .local_delivery import (
-    _digest, _no_symlinks, _stored_file, export_run, selected_execution_id, selected_delivery_manifest,
+    _digest, _no_symlinks, _stored_file, export_run,
+    selected_delivery_manifest, selected_execution_id, selected_report_id,
 )
 from .runtime.delivery import build_delivery_manifest
 from .local_revision import import_revision_artifacts
@@ -247,18 +248,27 @@ async def revise(args, settings):
         raise ValueError("Reconcile a nonterminal source before requesting a revision")
     refs = result_refs(source_directory, record)
     selected_execution = selected_execution_id(record)
-    delivery = (selected_delivery_manifest(LocalArtifactStore(source_directory / 'artifacts'), record)
-                if not args.artifact_id else None)
-    if delivery is not None:
-        store = LocalArtifactStore(source_directory / 'artifacts')
-        refs = tuple({ref.artifact_id: ref for ref in (
-            *refs, *(store.get_ref(item.artifact_id) for item in delivery.outputs))}.values())
-    selected = (tuple(args.artifact_id) if args.artifact_id else
-        tuple(item.artifact_id for item in delivery.outputs) if delivery is not None else
-        tuple(ref.artifact_id for ref in refs
-        if ref.artifact_type not in {"report", "report_text"}
-        and ref.release_basis is not ArtifactReleaseBasis.MODEL_AUTHORED_REPORT
-        and selected_execution is not None and ref.metadata.get("execution_id") == selected_execution))
+    delivery = None
+    if args.report_only or not args.artifact_id:
+        store = LocalArtifactStore(source_directory / "artifacts")
+        delivery = selected_delivery_manifest(store, record)
+        if delivery is not None:
+            refs = tuple({ref.artifact_id: ref for ref in (
+                *refs, *(store.get_ref(item.artifact_id) for item in delivery.outputs))}.values())
+    if args.report_only:
+        report_id = selected_report_id(record)
+        if record.workflow_run.status is not RunStatus.COMPLETED or delivery is None or report_id is None:
+            raise ValueError("Report-only revision requires a completed run with a registered report and delivery")
+        selected = tuple(dict.fromkeys((
+            report_id, *(item.artifact_id for item in delivery.outputs), *args.artifact_id,
+        )))
+    else:
+        selected = (tuple(args.artifact_id) if args.artifact_id else
+            tuple(item.artifact_id for item in delivery.outputs) if delivery is not None else
+            tuple(ref.artifact_id for ref in refs
+            if ref.artifact_type not in {"report", "report_text"}
+            and ref.release_basis is not ArtifactReleaseBasis.MODEL_AUTHORED_REPORT
+            and selected_execution is not None and ref.metadata.get("execution_id") == selected_execution))
     if not selected or len(set(selected)) != len(selected):
         raise ValueError("Revision requires distinct selected source results; prior reports require explicit --artifact-id selection")
     extra_ids = set(selected).difference(ref.artifact_id for ref in refs)
@@ -300,13 +310,10 @@ async def revise(args, settings):
         sources = [item.artifact_id for item in delivery.programs]
     if programs.keys() != extra_ids:
         raise ValueError("Revision selection is not a registered result or original program of the source run")
-    artifact_ids = tuple(dict.fromkeys((
-        *record.input_artifact_ids,
-        *record.context_artifact_ids,
-        *selected,
-        *sibling_outputs,
-        *sources,
-    )))
+    inherited = () if args.report_only else (
+        *record.input_artifact_ids, *record.context_artifact_ids, *sibling_outputs,
+    )
+    artifact_ids = tuple(dict.fromkeys((*inherited, *selected, *sources)))
     artifact_ids = tuple(item for item in artifact_ids if item not in narrative_ids or item in selected)
     if len(artifact_ids) > 128:
         raise ValueError("Revision context exceeds its bound; narrow the selected artifacts")
@@ -340,7 +347,8 @@ async def revise(args, settings):
                     "producer_exit_code": execution.exit_code,
                 }
             if delivery is not None:
-                verified = build_delivery_manifest(source.artifact_store, source.access_service, selected,
+                verified = build_delivery_manifest(source.artifact_store, source.access_service,
+                    tuple(item.artifact_id for item in delivery.outputs),
                     principal=settings.principal, workspace=settings.workspace, run_id=record.run_id,
                     imported_artifact_ids=(*record.input_artifact_ids, *record.context_artifact_ids),
                     trace_recorder=source.trace_recorder)
@@ -349,7 +357,9 @@ async def revise(args, settings):
             directory = cli._run_directory(settings.result_root,
                 args.output or settings.result_root / str(uuid4()), create=True)
             locks.enter_context(run_writer(directory))
-            manifest = runtime_manifest(settings)
+            official_ids = tuple(item.artifact_id for item in delivery.outputs) if args.report_only else None
+            manifest = runtime_manifest(settings, report_only=args.report_only,
+                                        report_delivery_artifact_ids=official_ids)
             cli._write_json(directory / "RUNTIME.json", manifest)
             application = cli.build_application(settings, directory, load_provider=False)
             if application.configuration.runtime_revision != manifest["runtime_revision"]:

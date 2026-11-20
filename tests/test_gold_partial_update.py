@@ -135,6 +135,32 @@ def rich_parent(source, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audited_feedback_draft_survives_automatic_refinement_timeout(source, monkeypatch):
+    from labbioagentos.kernel.errors import KernelDeadlineExceededError
+
+    parent, usage = rich_parent(source, monkeypatch)
+    initial = {"edits": [{"field": "description", "value": "Verified initial correction."}]}
+
+    class TimedEditor(PatchInvoker):
+        async def invoke(self, *, instructions, request, response_model):
+            if response_model.__name__ == "SkillUpdatePatch" and self.audit_count:
+                raise KernelDeadlineExceededError()
+            return await super().invoke(instructions=instructions, request=request, response_model=response_model)
+
+    editor = TimedEditor([initial], request_revision=True)
+    revised = await local_gold.propose_from_completed_run(
+        *source, TypedAuditedAdaptiveSkillCurator(editor), from_usage=usage.usage_id,
+        evolution="update", feedback="Clarify the wording.",
+    )
+    assert revised.description == "Verified initial correction."
+    assert revised.parent_skill_id == parent.skill_id
+    assert revised.procedure.known_failure_modes == parent.procedure.known_failure_modes
+    assert any("timed out" in note for note in revised.review_notes)
+    assert "Clarify this description." in revised.review_notes
+    assert source[0].configuration.skill_service.pending_proposal(revised.proposal_id) == revised
+
+
+@pytest.mark.asyncio
 async def test_update_merge_preserves_parent_sections_and_legacy_contract_through_review(source, monkeypatch):
     parent, usage = rich_parent(source, monkeypatch)
     edits = [

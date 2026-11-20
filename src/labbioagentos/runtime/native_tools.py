@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+import json
+from typing import Annotated, ClassVar, Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, PrivateAttr, SkipValidation, StrictStr, create_model, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from labbioagentos.artifacts.arithmetic import ArtifactAggregateMatchValue
 from labbioagentos.artifacts.models import ArtifactQueryLimit
@@ -33,6 +35,7 @@ from labbioagentos.kernel import (
     ToolRegistry,
     ToolResult as KernelToolResult,
 )
+from labbioagentos.kernel.http_stream import strict_json_loads
 from labbioagentos.literature import LiteratureLimit, LiteratureQuery
 from labbioagentos.model_safety import validate_model_visible_json
 
@@ -49,6 +52,7 @@ from .contracts import (
     ExecutionReview,
     ReportEvidenceReference,
     RuntimeExecutionCapabilityView,
+    ShortText,
 )
 
 
@@ -56,6 +60,36 @@ class NativeToolArguments(BaseModel):
     """Strict top-level wire contract shared by native LabBio tools."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
+    _wrapped_json_fields: ClassVar[tuple[str, ...]] = ()
+    _json_wrapped_overrides: tuple[str, ...] = PrivateAttr(default=())
+
+    @classmethod
+    def model_validate_json(cls, json_data, **validation_options):
+        """Unwrap one JSON string layer in explicitly opted-in structured fields."""
+        if not cls._wrapped_json_fields:
+            return super().model_validate_json(json_data, **validation_options)
+        try:
+            arguments = strict_json_loads(json_data)
+        except (ValueError, RecursionError):
+            arguments = None
+        fields = []
+        if isinstance(arguments, dict):
+            for field in cls._wrapped_json_fields:
+                item = arguments.get(field)
+                if isinstance(item, str):
+                    try:
+                        arguments[field] = strict_json_loads(item)
+                    except (ValueError, RecursionError):
+                        continue  # Report the existing typed field error.
+                    fields.append(field)
+        if fields:
+            json_data = json.dumps(arguments, ensure_ascii=False, allow_nan=False)
+        result = super().model_validate_json(json_data, **validation_options)
+        result._json_wrapped_overrides = tuple(fields)
+        return result
+
+    def host_payload(self) -> dict:
+        return self.model_dump(mode="json")
 
 
 class ArtifactListArguments(NativeToolArguments):
@@ -146,7 +180,39 @@ _EXECUTION_INPUT_SELECTION_GUIDANCE = (
 )
 
 
-class ExecutionReviseArguments(NativeToolArguments):
+class ExecutionReviewArguments(NativeToolArguments):
+    """Describe optional review fields while deferring their validation to the host."""
+
+    review: SkipJsonSchema[ExecutionReview | JsonValue] = None
+    review_rationale: SkipValidation[ShortText | None] = Field(
+        default=None,
+        description="Optional brief rationale. An invalid review is ignored and cannot grant evidence credit.",
+    )
+    review_feedback_invocation_ids: SkipValidation[Annotated[tuple[UUID, ...], Field(max_length=8)]] = Field(
+        default=(),
+        description="Exact capability invocation IDs of delivered feedback cited by review_rationale.",
+    )
+    review_gold_authorization_ids: SkipValidation[Annotated[tuple[UUID, ...], Field(max_length=8)]] = Field(
+        default=(),
+        description="Exact approved, accessed Gold authorizations cited by review_rationale.",
+    )
+
+    def host_payload(self) -> dict:
+        fields = {"review_rationale", "review_feedback_invocation_ids", "review_gold_authorization_ids"}
+        payload = self.model_dump(mode="json", exclude=fields)
+        if fields.intersection(self.model_fields_set):
+            payload["review"] = (
+                {"mixed_review_forms": True} if self.review is not None else {
+                    "authority": "MODEL_CONTEXT",
+                    "rationale": self.review_rationale,
+                    "feedback_invocation_ids": self.review_feedback_invocation_ids,
+                    "gold_authorization_ids": self.review_gold_authorization_ids,
+                }
+            )
+        return payload
+
+
+class ExecutionReviseArguments(ExecutionReviewArguments):
     execution_id: UUID
     expected_script_hash: StrictStr = Field(pattern=r"^[a-f0-9]{64}$")
     edits: tuple[ExecutionSourceEdit, ...] = Field(default=(), max_length=32)
@@ -165,13 +231,16 @@ class ExecutionReviseArguments(NativeToolArguments):
         description=_EXECUTION_INPUT_SELECTION_GUIDANCE + " Null preserves the original selection.",
     )
     parameters: dict[str, JsonValue] | None = None
-    review: ExecutionReview | None = Field(
-        default=None,
-        description="Optional JSON object with a required rationale string; omit when no review is needed. Not a prose string.",
-    )
+    _wrapped_json_fields = ("requested_outputs", "resources", "input_artifact_ids", "parameters")
+
+    def host_payload(self) -> dict:
+        payload = super().host_payload()
+        if self._json_wrapped_overrides:
+            payload["json_wrapped_overrides"] = self._json_wrapped_overrides
+        return payload
 
 
-class ExecutionSubmitArguments(NativeToolArguments):
+class ExecutionSubmitArguments(ExecutionReviewArguments):
     model_config = ConfigDict(json_schema_extra={"oneOf": [
         {"required": ["script_content"], "properties": {
             "script_content": {"type": "string"}, "source_revision": {"type": "null"}}},
@@ -207,10 +276,7 @@ class ExecutionSubmitArguments(NativeToolArguments):
     )
     resources: RequestedResources = Field(default_factory=RequestedResources)
     network_required: bool = False
-    review: ExecutionReview | None = Field(
-        default=None,
-        description="Optional JSON object with a required rationale string; omit when no review is needed. Not a prose string.",
-    )
+    _wrapped_json_fields = ("source_revision",)
 
     @model_validator(mode="after")
     def require_exactly_one_program_source(self):
@@ -326,6 +392,8 @@ class ReportSubmitArguments(ReportCheckArguments):
 
 
 class SkillSearchArguments(NativeToolArguments):
+    _wrapped_json_fields = ("required_tags", "artifact_types")
+
     offset: int = Field(default=0, ge=0, description="Zero-based result offset.")
     limit: int = Field(default=20, ge=1, le=50, description="Page size from 1 through 50.")
     required_tags: list[StrictStr] | None = Field(
@@ -362,6 +430,8 @@ class SkillViewArguments(NativeToolArguments):
 
 
 class SkillProposeUseArguments(NativeToolArguments):
+    _wrapped_json_fields = ("proposed_deviations",)
+
     skill_id: UUID
     version: int = Field(ge=1)
     mode: Literal["REUSE", "ADAPT", "REFERENCE"] = Field(
@@ -382,6 +452,9 @@ class EvidenceReadArguments(NativeToolArguments):
         "Zero-based Unicode character offset; continue with the returned next_offset."
     ))
     limit: int = Field(default=8_000, ge=1, le=8_000)
+    reread: bool = Field(default=False, description=(
+        "Request exact text again if the complete observation was already delivered."
+    ))
 
 
 class StageContextReadArguments(NativeToolArguments):
@@ -504,8 +577,7 @@ class NativeRuntimeCapabilityHost:
         if capability_name not in CAPABILITY_ARGUMENT_MODELS:
             raise ValueError("Unknown native capability")
         method = getattr(self._host, capability_name)
-        payload = arguments.model_dump(mode="json")
-        return await method(**payload)
+        return await method(**arguments.host_payload())
 
     def mark_feedback_delivered(self, results: tuple[KernelToolResult, ...]) -> None:
         # Kernel calls this only after the provider consumed the exact final
@@ -602,7 +674,10 @@ _CAPABILITY_DESCRIPTIONS["environment_build"] = (
 _CAPABILITY_DESCRIPTIONS["evidence_read"] = (
     "Read an exact archived public tool response using its capability_invocation_id "
     "as observation_id, not an Artifact ID. Follow next_offset to finish its Unicode "
-    "text pages. Partial pages do not grant full observation read credit. Prior-stage "
+    "text pages. Stop paginating once the complete observation has been delivered. "
+    "A repeated read then returns a small delivery acknowledgment. Use reread=true "
+    "only if you need to see the exact text again. Partial pages do not grant full "
+    "observation read credit. Prior-stage "
     "Artifact reads are reauthorized; non-Artifact successes are limited to working "
     "notes authorized through working_note_read. Original safe failed diagnostics "
     "require the originating capability and current source access. Diagnostics are "

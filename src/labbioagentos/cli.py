@@ -59,6 +59,8 @@ def _parser() -> argparse.ArgumentParser:
     revise.add_argument("--task", required=True)
     revise.add_argument("--preference", action="append", default=[])
     revise.add_argument("--artifact-id", type=UUID, action="append", default=[])
+    revise.add_argument("--report-only", action="store_true",
+                        help="Revise a completed report using its registered delivery")
     revise.add_argument("--output", type=Path)
     for name in ("status", "export"):
         command = commands.add_parser(name, help=f"Read persisted run {name} without a model call")

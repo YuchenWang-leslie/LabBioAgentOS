@@ -121,6 +121,19 @@ def test_partial_report_preserves_complete_safe_lines_and_exact_offsets():
     assert not report.contains_quote(first + last)
 
 
+def test_report_releases_slash_connected_prose_but_withholds_attached_paths():
+    answer = "只有需要幅度或因果/可推广结论时才值得重做，仍无法排除批次/lane 效应。"
+    text = "结论摘要\n" + answer + "\n读取路径/var/private/result，配置/.env。"
+    digest = sha256(text.encode()).hexdigest()
+
+    report = SkillSelectedReport.from_prefix(uuid4(), digest, len(text), text)
+
+    assert report.contains_quote(answer)
+    assert report.sha256 == digest
+    assert "/var/private/result" not in report.model_dump_json()
+    assert "/.env" not in report.model_dump_json()
+
+
 @pytest.mark.parametrize("content", [
     "Bearer\nCREDENTIALSENTINEL", "api_key=\nCREDENTIALSENTINEL",
     "-----BEGIN PRIVATE KEY-----\nCREDENTIALSENTINEL\n-----END PRIVATE KEY-----",
@@ -157,6 +170,8 @@ async def test_model_selects_a_report_anchor_without_returning_any_quote():
         async def invoke(self, *, instructions, request, response_model):
             assert "report_quote" not in response_model.model_fields
             sent = json.loads(request)["outcome_evidence"]["selected_report"]
+            assert sent["coverage"]["last_released_offset"] == len(report_text)
+            assert sent["coverage"]["released_characters"] < len(report_text)
             assert "/media/private" not in request
             anchor = next(a for a in sent["anchors"] if "Main finding" in a["text"])
             return response_model(research_question="Effect?", primary_result="Estimate is 0.52",

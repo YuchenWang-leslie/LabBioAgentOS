@@ -137,7 +137,9 @@ async def test_le1_execution_draft_fields_are_the_tool_parameter_root(
         "requested_outputs",
         "resources",
         "network_required",
-        "review",
+        "review_rationale",
+        "review_feedback_invocation_ids",
+        "review_gold_authorization_ids",
     }
     assert set(parameters["required"]) == {"image_key"}
     alternatives = parameters["oneOf"]

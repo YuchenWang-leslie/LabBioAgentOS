@@ -55,10 +55,24 @@ class SkillSourceProjector:
 
     @staticmethod
     def model_view(source: SkillCurationSourceView, **filters) -> dict:
-        """An absent optional external task reference carries no procedural meaning."""
+        """Project source evidence and the coverage of the released report text."""
         data = source.model_dump(mode="json", **filters)
         if source.task_reference is None:
             data.pop("task_reference", None)
+        request = data.get("source_user_request")
+        if request is not None and request.get("text") is not None:
+            # A complete request has one verbatim representation; no partial spans.
+            request.pop("passages", None)
+        report = (data.get("outcome_evidence") or {}).get("selected_report")
+        if report is not None:
+            excerpt = report["excerpt"]["text"]
+            passages = report["passages"]
+            report["coverage"] = {
+                "released_characters": len(excerpt) if excerpt is not None else sum(
+                    span["end_offset"] - span["start_offset"] for span in passages),
+                "last_released_offset": len(excerpt) if excerpt is not None else max(
+                    (span["end_offset"] for span in passages), default=0),
+            }
         return data
 
     @staticmethod
@@ -343,6 +357,10 @@ class SkillSourceProjector:
         }
         plural_keys = {"input_artifact_ids", "output_artifact_ids"}
         for event in events:
+            # Attempted references remain in the capability record, including
+            # invalid IDs and IDs of the wrong kind. They are not Artifacts.
+            if event.event_type in {TraceEventType.CAPABILITY_INVOKED, TraceEventType.CAPABILITY_FAILED}:
+                continue
             for key in singular_keys:
                 identifier = _uuid(event.payload.get(key))
                 if identifier is not None:

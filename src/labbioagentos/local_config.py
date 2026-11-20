@@ -12,6 +12,7 @@ import stat
 import tomllib
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from dotenv import dotenv_values
 from pydantic import (
@@ -44,6 +45,7 @@ from labbioagentos.kernel.contracts import (
     DEFAULT_MAX_REQUEST_BYTES, AnthropicEffort, GeminiThinkingLevel, ReasoningEffort,
 )
 from labbioagentos.kernel.http_stream import DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT
+from labbioagentos.workflow.definition import report_revision_workflow_definition, runtime_workflow_definition
 
 
 class _SettingsModel(BaseModel):
@@ -666,7 +668,10 @@ def _provider_endpoint(endpoint: str) -> dict:
     }
 
 
-def runtime_manifest(settings: LocalSettings) -> dict:
+def runtime_manifest(
+    settings: LocalSettings, *, report_only: bool = False,
+    report_delivery_artifact_ids: tuple[UUID, ...] | None = None,
+) -> dict:
     """Content-derived identity; provider env values are neither read nor retained."""
     profile_bytes = _profile_bytes(settings)
     profile = _LocalProfile.model_validate_json(profile_bytes)
@@ -714,6 +719,17 @@ def runtime_manifest(settings: LocalSettings) -> dict:
             )))}) if "report_read" in stage.capabilities else stage
             for stage in profile.stages
         )})
+    if report_only:
+        profile = profile.model_copy(update={
+            "stages": tuple(stage for stage in profile.stages if stage.stage is WorkflowStage.REPORT),
+            "deployment_context": profile.deployment_context + (
+                "\nThis report revision uses the completed source delivery and its existing evidence. "
+                "Review the imported report and registered outputs, then register the revised report. "
+                "Send delivery_artifact_ids=[] in report_check and report_submit. The host carries "
+                "forward the exact original delivery. Cite only observations you actually read. "
+                "No new computation is scheduled."
+            ),
+        })
     effective_profile = profile.model_dump(mode="json")
     # Set iteration order must not change the revision across process restarts.
     for field in ("allowed_fields", "required_fields"):
@@ -742,6 +758,10 @@ def runtime_manifest(settings: LocalSettings) -> dict:
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
         "source": runtime_source,
     }
+    if report_only:
+        manifest["workflow_scope"] = "report"
+    if report_delivery_artifact_ids is not None:
+        manifest["report_delivery_artifact_ids"] = [str(item) for item in report_delivery_artifact_ids]
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     manifest["runtime_revision"] = "local-" + hashlib.sha256(encoded).hexdigest()
     return manifest
@@ -1019,7 +1039,14 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
-    manifest = runtime_manifest(settings)
+    runtime_file = run_root / "RUNTIME.json"
+    saved_runtime = json.loads(runtime_file.read_text()) if runtime_file.is_file() else {}
+    report_only = saved_runtime.get("workflow_scope") == "report"
+    locked_delivery = saved_runtime.get("report_delivery_artifact_ids") if report_only else None
+    report_delivery_artifact_ids = (tuple(UUID(item) for item in locked_delivery)
+                                    if locked_delivery is not None else None)
+    manifest = runtime_manifest(settings, report_only=report_only,
+                                report_delivery_artifact_ids=report_delivery_artifact_ids)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     credentials = ProviderCredentials(settings.provider)
     defaults = default_agent_profiles()
@@ -1188,7 +1215,10 @@ def build_application(
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,
+            workflow_definition=(report_revision_workflow_definition() if report_only
+                                 else runtime_workflow_definition()),
             approved_images=(settings.execution.approved_image(),), output_contracts=(profile.output_contract,),
+            report_delivery_artifact_ids=report_delivery_artifact_ids,
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,
             ),

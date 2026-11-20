@@ -9,6 +9,8 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from labbioagentos.kernel.errors import KernelDeadlineExceededError
+
 from .models import (
     BoundedText,
     SkillAdaptiveCuratorDraft,
@@ -210,9 +212,11 @@ source evidence; a run-specific mistake need not imply a defective guide.
 
 
 SKILL_OUTCOME_REVIEW_INSTRUCTIONS = """\
-Compare the source researcher's actual question, including authenticated answers
-to clarification questions, with the primary answer in the selected delivered
-report. Identify what each one asks or claims in its own terms. Distinguish the
+Compare the source researcher's actual question with the primary answer.
+When source_user_request.status is AVAILABLE, its text is the complete original
+question. When the request is withheld, use only the available passages. Include
+authenticated clarification answers where present. Identify what each one
+asks or claims in its own terms. Distinguish the
 headline from secondary results and caveats. A result merely present elsewhere
 does not establish that the headline answers the question. Select one supplied
 report anchor by its id as report_anchor_id. Choose the text that supports your
@@ -220,7 +224,12 @@ identification of the primary answer. The host copies that original text;
 do not transcribe it. Offsets are half-open character ranges in the original
 report; gaps may be withheld. Use null when no suitable evidence is available.
 Check registered output views where relevant, with attention to their identities
-and coverage. The report establishes what the Agent communicated; its wording
+and coverage. Limited access to supporting rows affects independent verification
+of the findings. It only prevents identifying the primary answer when the answer
+itself is unavailable. The report's coverage describes released source spans. A withheld
+span or shortened view may leave the primary answer readable, including at the
+end of the report. Assess the visible answer and name any gaps material to
+that judgment. The report establishes what the Agent communicated; its wording
 is not independent evidence of scientific correctness. Skill-use approval is
 permission, not a scientific clarification. Accurately note ambiguities,
 unreadable material, truncation and plausible interpretations. Use
@@ -413,10 +422,10 @@ class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
         anchors = _report_anchors(source.source_run_id, report)
         by_id = {a["id"]: a for a in anchors}
         if report is not None:
-            evidence["outcome_evidence"]["selected_report"] = {
-                **report.model_dump(mode="json", exclude={"excerpt", "passages"}),
-                "excerpt_status": report.excerpt.status, "anchors": anchors,
-            }
+            view = evidence["outcome_evidence"]["selected_report"]
+            view.pop("excerpt")
+            view.pop("passages")
+            view.update(excerpt_status=report.excerpt.status, anchors=anchors)
         self._observe("curator_outcome_review_request", evidence)
         has_intent = source.source_user_request.text or source.source_user_request.passages or (
             outcome and any(x.user_answer.text or x.user_answer.passages for x in outcome.answered_clarifications))
@@ -470,6 +479,8 @@ class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
             "Recommend KEEP if available evidence does not justify a durable change, UPDATE "
             "for a correction or useful refinement within the same intended scope, or FORK "
             "if distinct conditions support a separate guide and the parent remains applicable. "
+            "Compare the defining conditions and analysis units explicitly. A successful run "
+            "can supply a useful example of a different scope even when the parent has no defect. "
             "Use the completed outcome_review to judge whether the parent guidance contributed "
             "to, failed to prevent, or was unrelated to any mismatch between the question and the primary answer. "
             "Explain that relationship and remaining uncertainty in your reason. "
@@ -510,15 +521,19 @@ class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
         audit = await self._audit(review_source, initial, "curator_audit")
         if not audit.findings:
             return self._reviewed(initial.to_curator_draft(), audit, "initial")
-        revised = await self._invoke(
-            SKILL_CURATOR_REVISION_INSTRUCTIONS,
-            json.dumps({
-                "source": context,
-                "draft": initial.model_dump(mode="json"),
-                "audit": audit.model_dump(mode="json"),
-            }, ensure_ascii=False),
-            SkillAdaptiveCuratorDraft,
-        )
+        try:
+            revised = await self._invoke(
+                SKILL_CURATOR_REVISION_INSTRUCTIONS,
+                json.dumps({
+                    "source": context,
+                    "draft": initial.model_dump(mode="json"),
+                    "audit": audit.model_dump(mode="json"),
+                }, ensure_ascii=False),
+                SkillAdaptiveCuratorDraft,
+            )
+        except KernelDeadlineExceededError:
+            return self._reviewed(initial.to_curator_draft(), audit, "initial_after_refinement_timeout",
+                                  status_note="Automatic refinement timed out. Review the initial draft and the audit findings.")
         self._observe("curator_revised_adaptive_draft", revised)
         final = await self._audit(review_source, revised, "curator_final_audit")
         return self._reviewed(revised.to_curator_draft(), final, "revised")
@@ -543,10 +558,14 @@ class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
         audit = await self._audit(review_source, initial, "curator_audit")
         if not audit.findings:
             return self._reviewed(initial, audit, "initial")
-        revised = await self._edit(initial, SKILL_CURATOR_REVISION_INSTRUCTIONS + instructions, {
-            "source": context, "draft": initial.model_dump(mode="json"),
-            "audit": audit.model_dump(mode="json"), "edit_base": "draft",
-        })
+        try:
+            revised = await self._edit(initial, SKILL_CURATOR_REVISION_INSTRUCTIONS + instructions, {
+                "source": context, "draft": initial.model_dump(mode="json"),
+                "audit": audit.model_dump(mode="json"), "edit_base": "draft",
+            })
+        except KernelDeadlineExceededError:
+            return self._reviewed(initial, audit, "initial_after_refinement_timeout",
+                                  status_note="Automatic refinement timed out. Review the initial edits and the audit findings.")
         self._observe("curator_revised_update_draft", revised)
         final = await self._audit(review_source, revised, "curator_final_audit")
         return self._reviewed(revised, final, "revised")
@@ -585,9 +604,11 @@ class TypedAuditedAdaptiveSkillCurator(SkillCuratorPort):
         except (ValidationError, ValueError, TypeError) as exc:
             raise SkillCuratorError("Curator returned an invalid typed response") from exc
 
-    def _reviewed(self, draft, audit, revision):
+    def _reviewed(self, draft, audit, revision, *, status_note=None):
         notes = (audit.summary, *(text for finding in audit.findings
                                  for text in (finding.statement, finding.rationale)))
+        if status_note is not None:
+            notes = (status_note, *notes)
         self._observe("curator_guidance_ready_for_user_review", {"draft": revision})
         return draft.model_copy(update={"review_notes": notes})
 

@@ -1,0 +1,219 @@
+#AOCI-CODE-VOLUME: 1
+
+===/<repository>/===
+.gitattributes[FC5T]: F:统一文本检出的换行属性 | R:- | A:* text=auto eol=lf | S:AOCI指纹按原始字节计算，跨平台文本检出须保持LF以避免无实质变化的漂移
+.gitignore[FC6T]: F:排除本机运行资料、Python缓存及宿主机绑定配置 | R:- | A:.local/,.codex/config.toml | S:AOCI认知文件需保留在Git可见范围，宿主MCP配置与备份按机器隔离
+AGENTS.md[SG8M]: F:定义平台开发约束、科学决策归属及AOCI操作纪律 | R:code:docs/ARCHITECTURE.md,code:docs/STAGE_RUNTIME_CONTRACTS.md | A:- | S:Agent拥有科学方法、程序、解释和报告，维护者负责实现与审计。定位最早失真层并保留原权限与结果
+LICENSE[SG3T]: F:声明项目MIT授权和再分发条款 | R:- | A:- | S:分发副本须保留版权与授权声明
+README.md[SG6S]: F:介绍研究阶段平台、执行与交付路径并提供安装和任务入口 | R:code:docs/ARCHITECTURE.md,code:docs/USER_INSTALL.md | A:labbio | S:流程完成仍需独立科学复核
+SECURITY.md[SS3T]: F:提供版本与漏洞报告章节的策略草稿 | R:- | A:- | S:正文保留通用占位说明
+pyproject.toml[FV6T]: F:声明Python发行包、依赖、工具入口和测试配置 | R:code:src/labbioagentos/cli.py | A:labbio,project.optional-dependencies | S:最低Python版本3.11，运行资源文件随包交付
+
+===/<repository>/docker/scientific-scrna/===
+Dockerfile[OV6T]: F:构建基于固定Python基础镜像的科学计算环境并验证安装 | R:code:docker/scientific-scrna/requirements.lock | A:BASE_IMAGE | S:pip仅接收二进制包，构建时校验依赖一致性及关键库导入
+README.md[SV4T]: F:说明科学镜像准备及不可变Docker镜像标识的使用 | R:code:docker/scientific-scrna/Dockerfile | A:- | S:关于Scanpy缺省的文字已落后于当前依赖锁文件
+requirements.lock[FV5T]: F:固定科学Python镜像的直接与关键ABI依赖版本 | R:code:docker/scientific-scrna/Dockerfile | A:- | S:包含Scanpy、igraph及Numba相关的版本固定
+verified-base-20260911.json[TV4T]: F:记录一次科学Python基镜像构建、探针和实际包清单 | R:code:docker/scientific-scrna/Dockerfile,code:docker/scientific-scrna/requirements.lock | A:image_id,installed_packages | S:只证明该本地基镜像的环境核验范围
+
+===/<repository>/docs/===
+ARCHITECTURE.md[SG8S]: F:描述外层工作流、Native Kernel与受控执行交付的责任边界 | R:code:src/labbioagentos/application.py,code:docs/STAGE_RUNTIME_CONTRACTS.md | A:- | S:阶段运行时只返回提案，未知外部副作用在对账前禁止自动重放
+C13_APPTAINER_EXECUTION_ACCEPTANCE.md[SQ5T]: F:区分上游集群Apptainer验收、本地Native集成与生产证据 | R:code:docs/CLUSTER_DEPLOYMENT.md | A:- | S:上游真实集群结果不证明当前集成或生产上线
+C14_API_COMPAT_ACCEPTANCE.md[SN5M]: F:记录C14接口适配验收、实时测试范围和遗留限制 | R:code:docs/C14_API_COMPAT_DECISIONS.md | A:- | S:准则20仅部分满足，文档签字不代表已发布
+C14_API_COMPAT_DECISIONS.md[SN5M]: F:冻结C14的HTTP传输、凭据、重试和资源边界决策 | R:code:docs/C14_API_COMPAT_GAP_MEMO.md | A:- | S:供应商凭据保留在专用文件，不进入进程环境
+C14_API_COMPAT_GAP_MEMO.md[SN4L]: F:归档C14实施前的能力审计、协议差距和验收准则 | R:code:docs/C14_API_COMPAT_DECISIONS.md | A:- | S:历史源基线，不能充当验收
+CLUSTER_DEPLOYMENT.md[SO5M]: F:说明集群Apptainer拓扑、镜像注册、预检和站点配置 | R:code:examples/cluster-runtime.toml,code:docs/C13_APPTAINER_EXECUTION_ACCEPTANCE.md | A:- | S:集群下载分区和代理链路需按站点独立验证
+ENGINEERING_HANDOFF.md[SO6L]: F:提供服务器安装、模型连接、任务操作和故障恢复手册 | R:code:docs/LOCAL_TASK_ENTRYPOINT.md,code:docs/LOCAL_APPTAINER.md,code:docs/LOCAL_WORKSPACES.md | A:- | S:资源后端显式配置，默认路径是用户级非setuid Apptainer
+GOLD_BENCHMARK_DESIGN.md[SA6T]: F:规定Gold预印本两条真实案例链、对照和判分策略 | R:code:docs/GOLD_RESEARCH_DIRECTION.md | A:- | S:评测设计和运行准备需与实际Benchmark结果区分
+GOLD_RESEARCH_DIRECTION.md[SA6T]: F:界定Gold的研究主张、拟验证贡献和实验约束 | R:code:docs/GOLD_BENCHMARK_DESIGN.md | A:- | S:强调纠错后学习适用条件及跨项目错误迁移，已有工程机制不能直接证明研究贡献
+KNOWN_LIMITATIONS.md[SR6M]: F:汇总模型供应商、数据暴露、执行、持久状态和发布的已知限制 | R:code:docs/ARCHITECTURE.md,code:docs/REAL_E2E_CONVERGENCE_WORKPLAN.md | A:- | S:工程交付、科学正确性和同版本重复性分别验收
+LOCAL_APPTAINER.md[SO6M]: F:说明本地Apptainer的资源前提、配置和验证边界 | R:code:examples/local-runtime.toml,code:docs/USER_INSTALL.md | A:- | S:缺少受控命名空间或资源限制即拒绝，不切换其他后端
+LOCAL_TASK_ENTRYPOINT.md[SU6M]: F:说明本地任务、凭据、执行环境、交付及续接入口 | R:code:src/labbioagentos/cli.py,code:docs/LOCAL_WORKSPACES.md | A:labbio | S:只修报告走 report-only 并沿用原正式清单。继续原运行仍校验身份、版本及副作用状态
+LOCAL_WORKSPACES.md[SI6S]: F:说明托管项目身份、数据与运行目录及个人Gold存储 | R:code:src/labbioagentos/local_workspace_cli.py | A:GoldSkills,registry.sqlite | S:个人Gold与项目授权有独立边界，命令使用认证后的工作区而非任务文字
+NATIVE_RUNTIME_RELIABILITY.md[SR6M]: F:记录Native运行时可靠性契约、复现证据和接受范围 | R:code:docs/RUNTIME_EVOLUTION_PROPOSAL.md,code:docs/STAGE_RUNTIME_CONTRACTS.md | A:- | S:确定性验收、真实科研任务及生产激活保留各自证据
+REAL_E2E_CONVERGENCE_WORKPLAN.md[SR6L]: F:记录真实端到端试次、根因回放、隔离版本、独立核验和 Gold 验收证据 | R:code:docs/KNOWN_LIMITATIONS.md,code:docs/ENGINEERING_HANDOFF.md | A:- | S:按实际使用记录追溯 UPDATE、FORK 和父子路由，保留失败分母及反馈修订。正式交付、科学核验、策展建议、候选晋升及正式 benchmark 各有独立证据
+RUNTIME_EVOLUTION_PROPOSAL.md[SW6L]: F:规划Native运行时演进并归档证据连续性、接管及隔离原型 | R:code:docs/NATIVE_RUNTIME_RELIABILITY.md,code:prototypes/dbos_r2/README.md | A:- | S:DBOS原型只验证通用调度与恢复边界，业务状态仍由Native控制面处理
+STAGE_RUNTIME_CONTRACTS.md[SW8M]: F:规定能力调用、证据、动态动作、无工具定稿和运行恢复契约 | R:code:src/labbioagentos/runtime/coordinator.py,code:src/labbioagentos/runtime/handoff.py | A:RuntimeStageInput,RuntimeStageResult,ARTIFACT_SET_V1 | S:报告的阅读引用和本地正式交付选择独立绑定。接收的Agent决策与当前权威状态都核验后才转换阶段
+USER_INSTALL.md[SO5T]: F:说明用户级安装、SIF注册及主机资源检查 | R:code:docs/LOCAL_APPTAINER.md,code:examples/local-runtime.toml | A:labbio apptainer-install | S:CPU亲和锁定是核集合约束，缺少硬限制时拒绝执行
+GOLD_PREPRINT_EVALUATION.md[SA5T]: F:公开说明 Gold 预印本的两条案例链、对照与评分 | R:code:docs/GOLD_BENCHMARK_DESIGN.md,code:docs/GOLD_RESEARCH_DIRECTION.md | A:- | S:每次学习后分别从只读知识快照答两题，答案及分数不回流到学习会话
+
+===/<repository>/examples/===
+cluster-runtime.toml[FC5T]: F:配置共享目录、调度器、Apptainer及集群环境构建示例 | R:code:docs/CLUSTER_DEPLOYMENT.md,code:examples/local-runtime.toml | A:execution.apptainer,launcher,environment.cluster | S:镜像标识采用SIF内容哈希，调度资源执行方式须显式配置
+docker-runtime.toml[FC4T]: F:提供显式选择本地Docker的运行配置示例 | R:code:examples/local-runtime.toml | A:execution.backend,execution.resources | S:镜像须使用批准的不可变ID
+local-runtime.toml[FC6S]: F:提供本地Native加Apptainer的模型、身份、镜像和资源配置示例 | R:code:docs/LOCAL_APPTAINER.md,code:src/labbioagentos/local_config.py | A:provider,execution,identity | S:配置声明外部凭据文件，实际密钥保留于仓库外。选择Docker须使用独立显式配置
+
+===/<repository>/examples/data/===
+small-table.csv[FD2T]: F:提供任务入口演示用的短表，含分组、测量值和时长 | R:- | A:record_id,group,measurement,duration_minutes | S:-
+
+===/<repository>/prototypes/dbos_r2/===
+README.md[SR5S]: F:描述DBOS恢复原型的测试、回执绑定及进程接管证据 | R:code:prototypes/dbos_r2/blocking_worker.py,code:prototypes/dbos_r2/joint_round.py | A:- | S:原型未接入生产。直接取消DBOS的负例保留为风险证据
+blocking_worker.py[TR4T]: F:构造合成同步DBOS写入和独立子进程的取消验证 | R:code:prototypes/dbos_r2/controlled_round.py,code:src/labbioagentos/execution/job_ledger.py | A:blocking_step,workflow,late_write | S:使用文件门控观察取消后可能晚到的写入
+child_cancellation.py[TR4T]: F:用真实Native协作循环验证合成子任务取消 | R:code:src/labbioagentos/kernel/collaboration.py | A:cancel_child | S:合成路径不能证明生产调度恢复
+controlled_round.py[TR5S]: F:验证持有写入租约的R2控制进程、子进程与接替操作 | R:code:src/labbioagentos/local_continuation.py,code:src/labbioagentos/execution/launchers/systemd.py | A:owner,worker,run | S:接替者先清理旧执行；取消失败不视为成功接替
+execution_reconciliation.py[TR5T]: F:只读核对Native请求回执和Launcher接受状态 | R:code:src/labbioagentos/execution/job_ledger.py | A:execution_binding,reconcile_execution | S:缺少本地回执或单元消失不能证明从未执行
+joint_round.py[TR5L]: F:用合成Provider串接DBOS编排、Native工具及本地Apptainer | R:code:prototypes/dbos_r2/round_trip.py,code:src/labbioagentos/execution/job_ledger.py | A:joint_round,run_joint,validate_delivery,retire_executions | S:缺失稳定调用绑定或供应商结果不明时拒绝重放
+round_trip.py[TR5M]: F:用合成单轮验证DBOS缓存和Native事实回执的完整绑定 | R:code:src/labbioagentos/artifacts/store.py,code:src/labbioagentos/execution/job_ledger.py | A:native_record,receipt_ref,one_round,run_round | S:DBOS只存Native引用，缓存命中仍重验回执及作用域
+runtime_binding.py[TR4T]: F:绑定R2探针运行配置与可选的SIF和Apptainer安装身份 | R:code:src/labbioagentos/local_config.py | A:probe_settings,installation_digest,runtime_identity | S:摘要证明身份，不充当预检成功证据
+
+===/<repository>/scripts/===
+runtime_stress.py[XQ5S]: F:通过正常CLI为授权工程压力题创建独立运行及记录 | R:code:src/labbioagentos/cli.py,code:scripts/runtime_stress_report.py | A:main | S:题面和用量记录服务于评估，分析程序由运行Agent自行创建
+runtime_stress_report.py[XQ6L]: F:统计真实试次、追溯交付并续接指定工程恢复试验 | R:code:scripts/runtime_stress.py,code:src/labbioagentos/application.py | A:report,resume,summarize_attempt,delivery_verified | S:仅从可核验中断点续接；未报用量不填零，输出不泄露任务文字或凭据
+
+===/<repository>/src/labbioagentos/===
+__init__.py[LG5L]: F:汇集平台、运行时与Native组件的公共导出 | R:code:src/labbioagentos/application.py,code:src/labbioagentos/contracts.py | A:- | S:-
+__main__.py[EU4T]: F:把Python模块运行绑定到相同的CLI入口 | R:code:src/labbioagentos/cli.py | A:entrypoint | S:沿用CLI退出码
+application.py[AW9L]: F:组合可信基础设施并管理输入登记、阶段执行、用户授权、恢复与结果 | R:code:src/labbioagentos/runtime/coordinator.py,code:src/labbioagentos/workflow/engine.py,code:src/labbioagentos/run_state.py,code:src/labbioagentos/runtime/reporting.py | A:LabBioApplication,ApplicationRunRequest,ApplicationRuntimeConfiguration,ApplicationReconciliationStatus | S:授权先于门禁恢复；未知外部副作用不得自动重放。报告固定交付来自可信进程配置，在登记时仍重新校验文件绑定
+bioformats.py[DA7L]: F:在本机有界检查H5AD结构和样本列汇总并生成可登记规格 | R:code:src/labbioagentos/artifacts/models.py,code:src/labbioagentos/application.py | A:BioFormatInspectionRegistry,H5ADInspector,H5ADInspectionPolicy | S:显式选择格式，后备模式读取，轴标识和矩阵值不作为摘要返回
+cli.py[EU8L]: F:解析任务、运维和修订命令，加载可信配置并调用应用和导出边界 | R:code:src/labbioagentos/application.py,code:src/labbioagentos/local_config.py,code:src/labbioagentos/local_continuation.py,code:src/labbioagentos/local_delivery.py | A:main,entrypoint | S:结果目录须位于配置根，任务凭据按需读取。report-only 由调用方显式选择。中断提示需核查持久状态
+contracts.py[CW8L]: F:定义工作流图、动作、停门、澄清和运行状态模型 | R:code:src/labbioagentos/workflow/engine.py,code:src/labbioagentos/runtime/contracts.py | A:WorkflowDefinition,WorkflowRun,NextActionProposal,governed_next_action_proposal_format,GateUserDecision | S:动作按判别联合约束，状态转换由引擎执行；澄清与审批分别记录
+literature.py[IN5S]: F:通过固定公共 HTTPS 文献源返回受限检索结果 | R:code:src/labbioagentos/local_config.py | A:LiteratureSearchService,LiteratureSearchError | S:默认验证 TLS，不读分析文件、凭证或向模型透传远端响应体
+local_backend.py[EO5S]: F:为本地 CLI 接入 SIF 登记和 Apptainer 及调度器能力检查 | R:code:src/labbioagentos/local_config.py,code:src/labbioagentos/execution/apptainer_probe.py | A:register_image,check_backend,check_environment_builds | S:构建检查验证登录节点、SIF 与集群架构，探针失败需拒绝运行
+local_config.py[FC9L]: F:解析 TOML 并组装模型、本地应用、运行图和执行后端 | R:code:src/labbioagentos/kernel/providers.py,code:src/labbioagentos/runtime/capability_catalog.py,code:src/labbioagentos/execution/images.py,code:src/labbioagentos/workflow/definition.py | A:LocalSettings,LocalProviderSettings,load_settings,build_application,runtime_manifest,ProviderCredentials | S:凭据不进入运行摘要；报告修订的范围和原交付 ID 进入摘要。仅 REPORT 的运行保留原程序读取所需的输入绑定
+local_continuation.py[AR8L]: F:按对话定位运行并提供对账、继续、问答及新运行修订 | R:code:src/labbioagentos/local_conversations.py,code:src/labbioagentos/local_delivery.py,code:src/labbioagentos/run_state.py | A:run_writer,reconcile_or_continue,question_or_answer,revise,resolve_run | S:每个运行用不可替换 inode 的非阻塞租约防重复写。报告修订须验证已完成来源的正式清单，并将其固化进新运行配置
+local_conversations.py[PR6M]: F:为单一身份工作区注册会话与运行的不可变关联 | R:code:src/labbioagentos/run_state.py,code:src/labbioagentos/local_workspace.py | A:ConversationStore,ConversationRunLink,read_run_record | S:SQLite 目录只证明关联，完成情况从准确匹配的持久化运行状态读取
+local_delivery.py[AD8M]: F:按持久化的执行、报告和交付清单导出已登记的结果 | R:code:src/labbioagentos/run_state.py,code:src/labbioagentos/artifacts/store.py,code:src/labbioagentos/local_replay.py | A:export_run,selected_execution_id,selected_report_id,selected_delivery_manifest,LocalDeliveryError | S:不得靠时间戳或文件名推定最终交付，导出校验选定清单、来源与哈希，不附带恢复或重新运行
+local_gold.py[AW9M]: F:绑定个人 Gold 库并接入候选评审、原稿提炼、使用后演进与重拟 | R:code:src/labbioagentos/local_gold_source.py,code:src/labbioagentos/skills/curator.py,code:src/labbioagentos/skills/models.py | A:build_personal_gold_service,review_personal_gold,decide_personal_gold,propose_from_completed_run,propose_evolution_from_usage,revise_personal_gold | S:提炼只读已完成源的冻结证据，ADAPT 后由策展 Agent 形成建议，用户决定绑定具体原稿，重拟写入成功才替代前稿
+local_gold_library.py[PD7M]: F:浏览个人已批准 Gold 版本并生成可验证派生 Markdown | R:code:src/labbioagentos/local_gold.py,code:src/labbioagentos/skills/models.py | A:list_gold_library,export_gold_library,GoldExportConflict | S:SQLite 是权威，目录不作相关性排名或使用授权，用户编辑和非导出器文件须保留
+local_gold_source.py[AS7S]: F:从完成源的已持久化阶段与已选报告组装受限候选证据 | R:code:src/labbioagentos/local_gold.py,code:src/labbioagentos/skills/models.py,code:src/labbioagentos/trace.py | A:stage_context_from_results,source_artifact_views,source_outcome_evidence | S:阶段结果需与持久调用序列一致，声明计划不是执行凭据，RAW 制品不供策展
+local_replay.py[AR7M]: F:验证正式选定的执行、原程序、制品和回执，支持本地重放包 | R:code:src/labbioagentos/local_delivery.py,code:src/labbioagentos/local_config.py,code:src/labbioagentos/execution/submission.py | A:export_replay,replay,ReplayBundle,verify_file | S:只允许准确的运行所有者导出，重放校验绑定和哈希并沿用本地可信策略，不调用模型或联网解析
+local_revision.py[PS6S]: F:把明确选定的历史制品无损导入当前修订输入 | R:code:src/labbioagentos/local_delivery.py,code:src/labbioagentos/run_state.py | A:import_revision_artifacts,RevisionImportError | S:限相同工作区和明确制品身份，拒绝硬链接并重验大小和指纹，不改变制品分级
+local_workspace.py[PI7M]: F:以本地 SQLite 管理用户、项目、认证与隔离工作区解析 | R:code:src/labbioagentos/governance/models.py,code:src/labbioagentos/local_workspace_cli.py | A:ManagedWorkspace,WorkspaceRegistry | S:路径由已注册 ID 推导，目录和持久文件须为受保护真实路径，该边界不隔离同一 Unix 用户进程
+local_workspace_cli.py[EI6S]: F:适配本地托管身份、项目管理和个人 Gold CLI | R:code:src/labbioagentos/local_workspace.py,code:src/labbioagentos/local_gold.py | A:add_commands,administer,scoped_settings,gold_catalog,gold_review_comparison,configured_curator | S:Gold 查看和导出需要已认证的托管工作区，对比绑定原稿或准确的批准版本
+model_safety.py[MS8S]: F:为模型可见的结构化 JSON 建立共享类型、内容与大小边界 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/trace/models.py | A:validate_model_visible_json,normalized_model_key,UnsafeModelContentError | S:递归拒绝显式危险字段、非 JSON 值和私钥文本，绝对路径可按调用方策略禁止
+run_state.py[PR9L]: F:保存可重建运行的权威控制快照、检查点和持久化版本 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/local_continuation.py,code:src/labbioagentos/contracts.py | A:ApplicationRunRecord,RunRecoveryState,RunStateStore,SQLiteRunStateStore,ClarificationCheckpoint,RejectedStageCheckpoint | S:乐观版本防止旧记录覆盖，澄清与被拒检查点须匹配原调用，潜在外部副作用用独立恢复状态表示
+
+===/<repository>/src/labbioagentos/artifacts/===
+__init__.py[LD4T]: F:公开Artifact模型、审批、暴露服务和存储接口 | R:code:src/labbioagentos/artifacts/models.py,code:src/labbioagentos/artifacts/exposure.py | A:- | S:-
+approvals.py[PI6S]: F:持久化与产物及消费者绑定的人工暴露审批 | R:code:src/labbioagentos/artifacts/models.py | A:ArtifactApprovalStore,SQLiteArtifactApprovalStore | S:SQLite回读重验产物和消费者身份，审批存储只属于可信宿主
+arithmetic.py[KD6T]: F:在完整已授权记录表上执行受限数值或计数聚合 | R:code:src/labbioagentos/artifacts/models.py | A:aggregate_records,ArtifactAggregateQuery | S:拒绝不完整源和不合法数值，不作填补或类型强制转换
+exposure.py[DS8L]: F:按消费者与视图策略构造模型可见的有界Artifact证据 | R:code:src/labbioagentos/artifacts/approvals.py,code:src/labbioagentos/artifacts/models.py,code:src/labbioagentos/governance/policy.py | A:ExposurePolicy,ArtifactModelViewProjector,ArtifactExposureService | S:先校验授权和暴露类别，再构造视图。取得产物ID不代表可以读取RAW内容
+models.py[CD7L]: F:定义产物、受控视图、来源、审批与查询的结构契约 | R:code:src/labbioagentos/artifacts/preview.py,code:src/labbioagentos/model_safety.py | A:ArtifactRef,ArtifactView,ArtifactQuery,ArtifactApproval,ArtifactRepresentation | S:只有模型视图适合跨上下文，存储定位符不能充当凭据。分页完整性必须与真实记录范围一致
+preview.py[DS6M]: F:产生固定首记录预览及文件结构证据 | R:code:src/labbioagentos/model_safety.py,code:src/labbioagentos/artifacts/store.py | A:RawHeadPreview,inspect_head,inspect_file | S:不提供随机偏移、原始二进制内容或分析轴向推断，解压与元数据读取有界
+store.py[PD7M]: F:按UUID持久化Artifact封装和文件Blob，提供可信查询 | R:code:src/labbioagentos/artifacts/models.py,code:src/labbioagentos/artifacts/preview.py | A:LocalArtifactStore,ArtifactStore,coerce_artifact_id | S:UUID不是路径，拒绝链接作为输入文件源，预览只读取受托Blob
+
+===/<repository>/src/labbioagentos/execution/===
+__init__.py[LR5S]: F:公开容器、批准镜像、执行收集和Launcher适配接口 | R:code:src/labbioagentos/execution/executor.py,code:src/labbioagentos/execution/models.py | A:- | S:-
+_process_entry.py[RP5T]: F:在exec前施加进程资源和父进程退出保护 | R:code:src/labbioagentos/execution/apptainer.py | A:main | S:在独立入口执行以避开多线程fork的Python回调
+apptainer.py[IR8M]: F:管理内容寻址SIF、构造固定Apptainer调用并运行受控进程组 | R:code:src/labbioagentos/execution/images.py,code:src/labbioagentos/execution/mounts.py,code:src/labbioagentos/execution/backend.py | A:SifStore,ApptainerCommandBuilder,SubprocessApptainerRunner | S:SIF按内容身份核验，资源执行者必须显式选择。systemd-affinity仅接受整数CPU核数
+apptainer_build.py[OV7L]: F:锁定集群下载的wheel并生成有边界的构建和下载程序 | R:code:src/labbioagentos/execution/apptainer_environment_builder.py,code:src/labbioagentos/execution/environment_builder.py | A:lock_wheelhouse,verify_download,render_build_program,render_download_program | S:依赖只在下载阶段解析。构建使用确切平台wheel散列并保持离线
+apptainer_environment_builder.py[IV7M]: F:编排集群Apptainer下载、离线安装和镜像导入核验 | R:code:src/labbioagentos/execution/apptainer_build.py,code:src/labbioagentos/execution/environments.py | A:ApptainerEnvironmentBuilder,ApptainerBuildPolicy | S:登录节点或调度作业只选一种下载位置，使用实际包探针证据
+apptainer_probe.py[TR7M]: F:运行无数据探针验证Apptainer隔离和资源管控能力 | R:code:src/labbioagentos/execution/apptainer.py,code:src/labbioagentos/execution/backend.py | A:probe_capabilities,ApptainerCapabilities,cgroup_limits_enforced | S:安全能力必须实证通过，有限cgroup数值才能证明所需资源控制
+backend.py[CR6T]: F:定义后端中立的容器参数构造、进程运行和结果协议 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/execution/mounts.py | A:ContainerCommandBuilder,ProcessRunner,ProcessOutcome | S:捕获的进程流留在宿主边界，模型计划不能注入运行时选项
+diagnostic_sources.py[CO6S]: F:解析有限回溯链并核验固定镜像下的技术诊断事实 | R:code:src/labbioagentos/execution/executor.py | A:traceback_chain,verified_image_imports,reported_numerical_condition | S:只释放有证据的技术分类，数值异常不暴露拟合数据
+docker.py[IR7L]: F:构造固定Docker调用并管理运行、超时及取消 | R:code:src/labbioagentos/execution/backend.py,code:src/labbioagentos/execution/executor.py | A:SubprocessDockerRunner,DockerCommandBuilder,DockerExecutor | S:不重放相同Docker调用，运行参数由可信计划和宿主政策产生
+environment_builder.py[IV6M]: F:使用固定Docker配方安装wheel、核验导入及提取环境清单 | R:code:src/labbioagentos/execution/environments.py,code:src/labbioagentos/execution/import_probe.py | A:DockerEnvironmentBuilder,diagnose_pip_log,pip_log_diagnostics | S:禁止分析数据挂载或创作构建脚本，清理不明时返回未确认状态
+environments.py[DV7L]: F:受理用户范围的Python环境请求并存储批准镜像和不可变缓存 | R:code:src/labbioagentos/execution/images.py,code:src/labbioagentos/execution/environment_builder.py | A:EnvironmentService,EnvironmentBuilder,normalize_requirements,normalize_modules | S:只对批准基础镜像和规范请求构建，缓存身份不符不能当作命中
+error_context.py[CS6T]: F:释放受限的stderr回溯结构和脱敏错误尾部 | R:code:src/labbioagentos/execution/models.py | A:bounded_error_context,redact_process_text | S:需显式允许，正文不包含stdout或运行变量快照
+errors.py[CR5S]: F:定义确定性执行拒绝、资源超限、源绑定与收集错误类 | R:code:src/labbioagentos/execution/models.py | A:ExecutionBoundaryError,ExecutionInputSelectionError,ExecutionScriptValidationError,OutputCollectionError | S:机械分类供安全回执使用
+executor.py[AR9L]: F:编排单份已验证计划的镜像解析、受控运行、技术诊断及产物注册 | R:code:src/labbioagentos/execution/images.py,code:src/labbioagentos/execution/registration.py,code:src/labbioagentos/execution/job_ledger.py,code:src/labbioagentos/execution/backend.py | A:ContainerExecutor,execute,execute_async | S:资源、挂载和输出合约由宿主执行。运行成功退出仍需验证产物，记录执行身份和实际结果后才能作为证据
+host_termination.py[CO6T]: F:从已停止的systemd单元读取有限的宿主终止信息 | R:code:src/labbioagentos/execution/models.py | A:systemd_host_termination | S:重置单元前读取，未知字段保留未知
+images.py[DS8M]: F:解析批准镜像并套用执行时间、资源、网络和文件预算 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/execution/errors.py | A:ApprovedImage,ApprovedImageRegistry,ExecutionPolicy | S:镜像键仅指受信任只读身份，注册表不会拉取或构建镜像。网络请求由宿主策略检查
+import_probe.py[TV5T]: F:提供构建后导入探针及其输出的有界验证 | R:code:src/labbioagentos/execution/environment_builder.py,code:src/labbioagentos/execution/apptainer_environment_builder.py | A:PROGRAM,parse_import_probe,import_diagnostics | S:输出身份和大小先经检查
+job_ledger.py[PR8S]: F:用SQLite持久化执行提交、Launcher意图和作业状态 | R:code:src/labbioagentos/execution/launchers/base.py,code:src/labbioagentos/execution/job_reconciliation.py | A:JobLedger,JobLedgerEntry,JobLedgerState,JobPurpose | S:执行ID只登记一次，提交内容回读需校验哈希。未确认作业按登记的用途和Launcher核验
+job_reconciliation.py[AR7S]: F:按Run和原Launcher处理丢失控制进程后的孤儿作业 | R:code:src/labbioagentos/execution/job_ledger.py,code:src/labbioagentos/execution/launchers/base.py | A:reconcile_orphan_jobs,ReconciledJob,OrphanAction | S:对账只处理已有作业，绝不重交；未知状态保留阻断并验证工作区归属
+models.py[LW8L]: F:定义资源、执行意图、输出约束、结构化诊断及模型回执 | R:code:src/labbioagentos/execution/submission.py,code:src/labbioagentos/execution/registration.py,code:src/labbioagentos/execution/python_diagnostics.py | A:ExecutionPlanDraft,ExecutionResult,ExecutionReceipt,ExecutionDiagnostic,StructuredOutputContract | S:技术退出状态不能证明科学正确性，计划草案没有受信身份和主机路径，回执只投影有限事实和引用
+mounts.py[MS6S]: F:按执行 ID 创建受控工作区，从制品注册表解析可挂载输入 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/artifacts/store.py | A:ExecutionWorkspaceManager,MountResolver,ResolvedMount | S:模型只能选择制品 ID，挂载限制在允许的根目录并拒绝 Docker 套接字
+preflight.py[MS6M]: F:执行前对无脚本请求验证输入权限、镜像、资源和输出约束 | R:code:src/labbioagentos/execution/images.py,code:src/labbioagentos/governance/policy.py | A:ExecutionPreflightService,ExecutionPreflightRequest,ExecutionPreflightReceipt | S:输入和输出约束 ID 必须唯一，模型只接收确定性校验回执
+process_streams.py[LO5T]: F:并行排空进程两路输出并限制保留的字节量 | R:code:src/labbioagentos/execution/backend.py | A:capture_process,read_bounded_stream,MAX_CAPTURED_STREAM_BYTES | S:呼叫方仍拥有停止进程副作用的责任
+python_diagnostics.py[KO7M]: F:从 Python 失败输出中提取异常类和 Agent 脚本位置 | R:code:src/labbioagentos/execution/diagnostic_sources.py,code:src/labbioagentos/execution/models.py | A:safe_python_diagnostics,safe_python_exception,script_error_locations | S:只输出受限坐标及类型，显示源码与提交脚本对应时才能保留列跨度
+registration.py[PS8L]: F:检查声明的输出，按约束登记制品并保留收集问题 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/execution/images.py,code:src/labbioagentos/artifacts/store.py | A:ArtifactRegistrationPolicy,OutputCollector,CollectedOutput,ArtifactRegistrationDecision | S:只查声明路径。缺件按原索引报告且保留后续合规制品，作业仍标失败；不安全路径等收集错误会提前终止。只有受批且通过受限扁平 JSON 约束的记录才可按 DERIVED 发布
+submission.py[AW9L]: F:授权执行意图和源码修订、关联初始绑定、持久化执行尝试和结果 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/execution/job_ledger.py,code:src/labbioagentos/governance/policy.py | A:ExecutionSubmissionService,ExecutionRevisionError,ExecutionSourceRevisionError,ExecutorPort | S:同轮按顺序做唯一精确匹配，首个失败项返回索引和匹配数。跨轮只接受明确导入的已核原程序及全源散列。持久化结果不明时有独立失败状态，不能擅自重放
+
+===/<repository>/src/labbioagentos/execution/launchers/===
+__init__.py[LR4T]: F:公开本地与调度Launcher、作业契约及模板边界 | R:code:src/labbioagentos/execution/launchers/base.py,code:src/labbioagentos/execution/launchers/job_script.py | A:- | S:-
+_local_supervisor.py[RP7S]: F:在systemd单元内验证资源限制并监视控制进程生命期 | R:code:src/labbioagentos/execution/launchers/systemd.py | A:main,read_limits,affinity_enforced | S:检测限制不存在或过宽时拒绝启动，控制进程退出触发同组子孙清理
+base.py[CR6T]: F:定义可信JobSpec、Launcher接口以及作业等待状态 | R:code:src/labbioagentos/execution/models.py,code:src/labbioagentos/execution/backend.py | A:JobLauncher,JobSpec,JobHandle,JobState | S:发现作业身份不可追溯即报错，不推断为成功
+job_script.py[OW6S]: F:将已验证的容器argv和站点策略组装为调度批脚本 | R:code:src/labbioagentos/execution/launchers/templates.py,code:src/labbioagentos/execution/launchers/base.py | A:SchedulerPolicy,render_job_script,validate_extra_directives | S:清理继承环境，站点附加指令仅单行且受约束，分析程序单独挂载
+local.py[RW5T]: F:用线程等待控制节点上的本地或 Docker 进程，提供作业句柄与结果收集 | R:code:src/labbioagentos/execution/launchers/base.py | A:LocalLauncher | S:同一执行不可重复提交，作业状态不明时不能凭本地记录假定已停止
+scheduler.py[RW7M]: F:借调度器模板从登录节点提交 Apptainer 作业并轮询、查找、收集 | R:code:src/labbioagentos/execution/launchers/templates.py,code:src/labbioagentos/execution/launchers/job_script.py | A:SchedulerLauncher,SchedulerCommandRunner,check_scheduler_client | S:客户端按环境白名单运行，共享工作区的退出记录是完成依据
+systemd.py[RW7M]: F:以 systemd 用户服务统一承载本地执行、构建和资源探针 | R:code:src/labbioagentos/execution/host_termination.py,code:src/labbioagentos/execution/launchers/base.py | A:SystemdLocalLauncher,SystemdProbeRunner | S:进程树须由经验证的资源边界接管，系统管理器无法确认时拒绝执行或报告状态不明
+templates.py[FW5S]: F:声明 Slurm、PBS、LSF 及站点自定义调度命令与状态解析模式 | R:code:src/labbioagentos/execution/launchers/scheduler.py | A:SchedulerTemplate | S:提交脚本必须经占位符或标准输入传入，任务编号和状态模式各捕获一组
+
+===/<repository>/src/labbioagentos/governance/===
+__init__.py[LI3T]: F:导出身份、访问与工作区治理接口 | R:code:src/labbioagentos/governance/models.py,code:src/labbioagentos/governance/policy.py | A:Principal,AccessService,WorkspaceResolver | S:-
+models.py[LI6S]: F:定义主体、工作区身份、项目成员和访问决定 | R:code:src/labbioagentos/governance/policy.py | A:Principal,WorkspaceContext,Project,AccessAction,AccessDecision | S:工作区上下文没有文件路径，项目所有者不能兼为只读协作者
+policy.py[MI8L]: F:根据主体、项目和作用域确定制品、技能与记忆的访问资格 | R:code:src/labbioagentos/governance/models.py,code:src/labbioagentos/governance/projects.py | A:AuthorizationPolicy,AccessService,AuthorizationDenied | S:策略只依据身份与范围，访问服务查成员元数据并记录只含引用的治理事件
+projects.py[PI4T]: F:提供可信内存项目元数据表供开发和策略测试使用 | R:code:src/labbioagentos/governance/models.py | A:InMemoryProjectStore,ProjectNotFoundError,ProjectConflictError | S:项目登记冲突有显式失败
+workspace.py[MI6T]: F:从可信上下文解析固定用户、项目及实验室工作区 | R:code:src/labbioagentos/governance/policy.py | A:WorkspaceResolver,WorkspaceArea,WorkspaceResolutionError | S:不接收调用方路径片段，实验室区域写入需要管理员身份
+
+===/<repository>/src/labbioagentos/kernel/===
+__init__.py[LG4S]: F:公开后端无关的内核契约及 Agent 循环、工具和 Provider 入口 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/loop.py | A:AgentLoop,ToolRegistry,create_provider | S:-
+anthropic_messages.py[IN7L]: F:把内核请求映射为 Anthropic Messages 并解析流式响应和工具调用 | R:code:src/labbioagentos/kernel/http_stream.py,code:src/labbioagentos/kernel/continuation.py | A:AnthropicMessagesProvider | S:必须匹配绑定，历史助手轮次按原形回放，私有续写按调用保存
+collaboration.py[AW8L]: F:用可信团队注册表、任务板和前台委派承载 Leader 与 Specialist | R:code:src/labbioagentos/kernel/loop.py,code:src/labbioagentos/kernel/control.py,code:src/labbioagentos/kernel/tooling.py | A:AgentRegistry,TaskBoard,CollaborationRuntime | S:注册保留可信顺序且不排名不路由，任务和委派受共享预算以及工具所有权约束
+continuation.py[LR6S]: F:以公有消息指纹关联调用期间的供应商私有续写 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/tooling.py | A:PrivateContinuationStore,message_fingerprint | S:仅限内存并按调用限量，清理和被撤销批次支持按作用域删除
+contracts.py[LG9L]: F:定义原生内核请求、模型轮次、Agent 调用、事件、预算和委派契约 | R:code:src/labbioagentos/kernel/loop.py,code:src/labbioagentos/kernel/tooling.py,code:src/labbioagentos/kernel/control.py | A:ProviderBinding,ModelRequest,ModelTurn,PublicMessage,AgentInvocation,KernelEvent | S:契约严格不可变，公有消息不含私有推理字段，最终化调用没有工具，委派链禁止重复目标
+control.py[MW7S]: F:按根运行原子预留共享预算并存储中断和收尾额度 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/loop.py | A:BudgetLedger,InterruptToken,completion_capacity | S:完成额度有独立上限，中断取首个信号
+errors.py[LO6M]: F:定义供应商、预算、工具批次与最终化的内核失败契约 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/loop.py | A:KernelContractError,ProviderProtocolError,ProviderTransportError,ToolBatchRejectedError,FinalizationRejectedError | S:供应商异常使用受限字段，完整被拒响应的独立有效计费用量可保留
+fake.py[IQ3T]: F:按固定序列提供测试模型轮次 | R:code:src/labbioagentos/kernel/contracts.py | A:FakeProvider | S:测试替身校验绑定且序列用尽时显式报错
+gemini_content.py[IN7L]: F:把内核请求映射至 Gemini generateContent 并解析候选及工具流 | R:code:src/labbioagentos/kernel/http_stream.py,code:src/labbioagentos/kernel/continuation.py | A:GeminiGenerateContentProvider | S:精确绑定且按原形回放模型 parts，私有签名由续写存储在调用内保留
+gemini_interactions.py[IN7L]: F:以无状态 Gemini Interactions 承载内核轮次、步骤和工具结果 | R:code:src/labbioagentos/kernel/http_stream.py,code:src/labbioagentos/kernel/continuation.py | A:GeminiInteractionsProvider | S:历史模型步骤按原形回放，解析器拒绝未支持的有内容类型及不完整流
+http_stream.py[MN8L]: F:共享 HTTP POST、SSE 解码、响应上限、时限、重试及进度观测 | R:code:src/labbioagentos/kernel/errors.py,code:src/labbioagentos/kernel/loop.py | A:HttpStreamTransport,RetryPolicy,HttpStreamResult,observe_http_progress,strict_json_loads | S:禁止重定向，限制解码后字节，只重试暂态分类，JSON 拒绝重复键及非有限数
+loop.py[AW9L]: F:驱动单 Agent 前台模型轮次、工具调度、进展观测和类型化最终化 | R:code:src/labbioagentos/kernel/tooling.py,code:src/labbioagentos/kernel/control.py,code:src/labbioagentos/kernel/http_stream.py | A:AgentLoop | S:能力轮次和最终化受同一根预算，最终化有独立尝试上限，可区分没有公开进展与格式失败
+openai_chat.py[IN7L]: F:用单一 OpenAI 兼容 Chat Completions 传输及流解析提供模型轮次 | R:code:src/labbioagentos/kernel/http_stream.py,code:src/labbioagentos/kernel/continuation.py | A:OpenAICompatibleChatProvider,HttpxChatCompletionTransport,ChatCompletionTransport | S:校验实例绑定，不切换备用协议，供应商私有续写仅限本次运行
+openai_responses.py[IN7M]: F:将内核轮次投影到无状态 OpenAI Responses 请求并解析输出事件 | R:code:src/labbioagentos/kernel/http_stream.py,code:src/labbioagentos/kernel/continuation.py | A:OpenAIResponsesProvider | S:精确校验请求绑定并按原形回放输出项，不依赖跨请求服务端会话
+providers.py[IN5T]: F:从可信绑定的 transport 构造唯一模型适配器 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/http_stream.py | A:create_provider | S:未配置协议不会触发自动回退
+request_metrics.py[LO4T]: F:记录公开请求和适配器投影的精确 JSON 字节数 | R:code:src/labbioagentos/kernel/contracts.py | A:measure_request_size | S:统计不发请求，也不估算 token
+schema_projection.py[LN5T]: F:按供应商差异投影 schema 或附加 schema 提示 | R:code:src/labbioagentos/kernel/tooling.py | A:project_json_schema,schema_instruction | S:递归剔除指定关键词后，本地结构校验仍有决定权
+tooling.py[MW8L]: F:注册可信工具、绑定调用、校验整批参数并前台依序执行 | R:code:src/labbioagentos/kernel/contracts.py,code:src/labbioagentos/kernel/control.py,code:src/labbioagentos/kernel/loop.py | A:ToolRegistry,ToolDispatcher,ModelResultProjector,parse_strict_json_object,ToolExecutionContext | S:整批在执行前校验和预留预算，结果完整投影且不截断 JSON，验证路径不回显模型自定义键
+
+===/<repository>/src/labbioagentos/memory/===
+__init__.py[LD3T]: F:公开受治理的持久记忆契约、服务和存储 | R:code:src/labbioagentos/memory/service.py,code:src/labbioagentos/memory/store.py | A:MemoryGovernanceService,MemoryStore,MemoryEntry | S:-
+models.py[LD6M]: F:定义记忆提议、决定、作用域和不可变版本 | R:code:src/labbioagentos/memory/service.py,code:src/labbioagentos/memory/store.py | A:MemoryUpdateProposal,MemoryDecision,MemoryEntry,MemoryKind | S:种类由调用者声明，退休不得替换正文，前版本关系必须连续，提议不赋予写入权限
+service.py[AD7M]: F:检查记忆证据与作用域并以显式决定推进生命周期 | R:code:src/labbioagentos/memory/models.py,code:src/labbioagentos/memory/store.py,code:src/labbioagentos/governance/policy.py | A:MemoryGovernanceService,MemoryDecisionError,MemoryEvidenceError | S:只通过匹配的用户门禁决定生成新版本，证据必须可安全持久化且作用域允许
+store.py[PD6M]: F:以进程内或事务型 SQLite 保管提议、决定和不可变记忆版本 | R:code:src/labbioagentos/memory/models.py,code:src/labbioagentos/memory/service.py | A:MemoryStore,InMemoryMemoryStore,SQLiteMemoryStore,MemoryStaleUpdateError | S:已有决定不可重写，更新提议目标若不再是当前版本则拒绝
+
+===/<repository>/src/labbioagentos/policy/===
+__init__.py[LW2T]: F:导出结构委派策略接口 | R:code:src/labbioagentos/policy/delegation.py | A:DelegationPolicy,InMemoryDelegationPolicy | S:-
+delegation.py[MW5T]: F:按明确调用方至目标边定义结构委派权限 | R:code:src/labbioagentos/contracts.py | A:DelegationPolicy,InMemoryDelegationPolicy | S:仅审查已选目标是否允许或枚举许可对象，不选择 Agent
+
+===/<repository>/src/labbioagentos/resources/===
+install-user-apptainer.sh[OV5S]: F:由操作者显式向新的绝对目录安装用户态 Apptainer | R:code:src/labbioagentos/local_backend.py | A:- | S:校验固定安装器和运行包哈希，拒绝已有路径，验证无 setuid 并保留安装回执
+local-default.json[FW7T]: F:随包定义九个本地 Agent 阶段的角色、能力与提示契约 | R:code:src/labbioagentos/runtime/profiles.py,code:src/labbioagentos/runtime/capability_catalog.py | A:- | S:程序和科学判断由 Agent 自己形成，交接依靠已交付观测，最终化不调用工具且保留调查 Agent 已绑定的行动
+
+===/<repository>/src/labbioagentos/runtime/===
+__init__.py[LG4S]: F:公开 LabBio 运行集成的类型、装配和阶段桥接入口 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/coordinator.py | A:RuntimeCoordinatorService,StageRuntimeRegistry,NativeKernelStageInvoker | S:-
+assembly.py[FW6S]: F:定义按精确阶段 ID 装配的可信团队能力、预算与允许范围 | R:code:src/labbioagentos/runtime/registry.py,code:src/labbioagentos/runtime/native_stage.py | A:RuntimeAgentCapabilitySpec,RuntimeStageAssemblySpec | S:必需能力受阶段允许集约束，配置需明确澄清、重试与轮次界限
+capability_catalog.py[FW7S]: F:声明各阶段能力上限以及每种能力的信息权威等级 | R:code:src/labbioagentos/runtime/native_tools.py,code:src/labbioagentos/contracts.py | A:CAPABILITY_CEILINGS,CAPABILITY_INFORMATION_AUTHORITY,ALL_CAPABILITIES | S:能力权威映射须覆盖完整目录，阶段接线不能越过其上限
+context.py[AW6S]: F:压缩工作上下文并关联历史交接、委派和工具拒绝证据 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/observations.py | A:attach_handoff_context,incoming_handoff,kernel_tool_rejections,stage_context_projection,delegation_directory | S:历史原文凭结果 ID 查取，压缩不改持久历史，另一运行的交接不能被载入
+contracts.py[LW9L]: F:定义阶段输入输出、能力证据、报告引用、交接及科学与控制判断的边界 | R:code:src/labbioagentos/runtime/native_stage.py,code:src/labbioagentos/runtime/coordinator.py,code:src/labbioagentos/runtime/native_tools.py | A:RuntimeStageInput,RuntimeStageProposal,RuntimeStageResult,CapabilityEvidenceItem,PreparedHandoff,RuntimeEvidenceGroundingControl | S:Agent 提议与宿主持久身份分开，技术能力结果与科学结论分开，交接引用只绑定观测而不产生阅读证明
+coordinator.py[AW8M]: F:桥接工作流引擎和精确阶段运行时以校验、接纳或恢复阶段结果 | R:code:src/labbioagentos/runtime/registry.py,code:src/labbioagentos/runtime/contracts.py | A:RuntimeCoordinatorService,RuntimeCoordinatorError,RuntimeResultValidationError | S:从当前图状态和授权工作区装配输入，按配置核对澄清及门禁的来源阶段
+delivery.py[AD7S]: F:为 Agent 选定的本地交付文件组装宿主管理的来源清单 | R:code:src/labbioagentos/runtime/reporting.py,code:src/labbioagentos/artifacts/store.py | A:build_delivery_manifest,DeliveryManifest,DeliveryOutput,DeliverySelectionError | S:以已注册输出和原始程序的可信 blob 校验来源，不产生阅读证明或发布升级
+errors.py[LO4T]: F:提供运行时配置失败和可安全追踪的集成错误类型 | R:code:src/labbioagentos/runtime/registry.py | A:RuntimeIntegrationError,RuntimeProfileConfigurationError | S:消息和错误字段清单有固定长度上限
+execution_grounding.py[AW8M]: F:把 EXECUTE 阶段选择、产物及状态绑定到当前类型化执行回执 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/execution/models.py | A:ExecutionGroundingError,execution_result_control,execution_result_response_format,validate_execution_result | S:只能依据当前调用的权威回执，产物和状态均须匹配，不能仅凭 Agent 文字推进
+files.py[MS6T]: F:授权读取受管生成文件并返回实际脱敏视图 | R:code:src/labbioagentos/artifacts/preview.py,code:src/labbioagentos/execution/error_context.py | A:authorize_generated_file,read_generated_file | S:仅允许工作区或运行输入范围的可信普通 blob，读取过程文件身份变化会拒绝
+gold_handoff.py[AW7T]: F:把已访问且获准的准确 Gold 上下文交接给专员 | R:code:src/labbioagentos/runtime/tooling.py,code:src/labbioagentos/skills/models.py | A:gold_decisions_for_stage,gold_context_for_stage | S:权限需同时匹配运行、工作区、使用提议、Skill 及版本，决定解析本身不读取正文
+handoff.py[AW9M]: F:按当前行动控制封装 Agent 的交接选择并测量请求容量 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/kernel/request_metrics.py,code:src/labbioagentos/runtime/native_stage.py | A:stage_decision_control,decision_context_sha256,decision_bound_response_format,selected_handoff_messages,handoff_capacity,finalization_evidence | S:最终化须与调查 Agent 在可信上下文中做的决定一致，线上去重不删持久证据，容量测量不回传观测正文
+native_stage.py[AW9L]: F:连接原生内核、阶段能力协作、无工具最终化和恢复检查点 | R:code:src/labbioagentos/runtime/handoff.py,code:src/labbioagentos/runtime/native_tools.py,code:src/labbioagentos/kernel/loop.py | A:NativeRuntimeFactory,NativeTypedModelInvoker,NativeKernelStageInvoker | S:恢复先校验已持久化检查点，再走专门的最终化路径，策展依赖单独的无工具类型化调用
+native_tools.py[MW9L]: F:定义原生工具请求并把宿主权限及逐调用证据绑定到内核 | R:code:src/labbioagentos/runtime/tooling.py,code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/kernel/tooling.py | A:NativeToolArguments,NativeRuntimeCapabilityHost,build_labbio_tool_registry,ExecutionReviseArguments,SkillSearchArguments,SkillProposeUseArguments | S:已声明的提交、修订、Gold 检索和拟调整列表字段可解开一层 JSON 字符串，再按原类型校验。执行复盘字段映射成宿主 review，完整观测默认回小回执
+observations.py[PD7S]: F:按运行保存和校验追加式公共工具观测 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/tooling.py | A:ObservationStore,StoredObservation,ObservationNotAvailableError,canonical_bytes | S:完整观测在持久存储中不随上下文窗口截断，响应必须匹配读取回执、审计记录及身份
+profiles.py[FW6M]: F:定义版本化模型、Agent、能力、提示与响应格式配置 | R:code:src/labbioagentos/runtime/registry.py,code:src/labbioagentos/runtime/native_stage.py | A:RuntimeProfileCatalog,ModelProfile,PromptProfile,AgentProfile,scientific_specialist_profiles | S:提示校验模板哈希与变量集合，角色目录没有基于任务的路由规则
+registry.py[FW6S]: F:按精确工作流阶段 ID 查找已配置的运行时 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/coordinator.py | A:StageRuntimeInvoker,StageRuntimeSpec,StageRuntimeRegistry | S:只覆盖九个主阶段，能力列表必须唯一且有界
+report_grounding.py[AW7T]: F:按当前 REPORT 提交回执生成紧凑的最终化控制 | R:code:src/labbioagentos/runtime/reporting.py,code:src/labbioagentos/runtime/contracts.py | A:ReportGroundingError,report_result_control,report_result_response_format,expand_report_result | S:回执须来自当前调用的权威证据且状态为 REGISTERED，扩展结果不改 Agent 决定
+reporting.py[AD8M]: F:登记报告并绑定引用观测、原程序与正式交付清单 | R:code:src/labbioagentos/runtime/delivery.py,code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/artifacts/store.py | A:ReportSubmissionService,ReportReceipt,make_read_receipt,read_report_page | S:报告修订沿用可信配置的正式交付 ID，仍核验原文件。引用观测须与调用及制品相匹配
+skill_grounding.py[AW8M]: F:把候选检索判断和使用门禁绑定到当前 Skill 能力证据 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/gold_handoff.py,code:src/labbioagentos/skills/service.py | A:requires_skill_assessment,skill_assessment_response_format,skill_retrieval_control,validate_skill_assessment | S:使用提议必须在决定中交代，批准或拒绝按准确提议关联，被拒的使用不能指导计划
+tooling.py[MW9L]: F:执行受治理的制品、程序、报告、Gold 与交接工具并投射证据 | R:code:src/labbioagentos/runtime/native_tools.py,code:src/labbioagentos/runtime/observations.py,code:src/labbioagentos/runtime/reporting.py,code:src/labbioagentos/runtime/contracts.py | A:LabBioRuntimeToolSet,RuntimeCapabilityContext,RuntimeCapabilityServices,SkillCandidatePage,ToolResult | S:有许可视图时，EXECUTE 首次重复拒绝仅反馈并给一次继续机会。同轮修订失败只返回失败项索引及匹配数。无效执行复盘记录后继续有效请求。观测完整送达后默认重复读取仅回回执
+validation_grounding.py[AW9S]: F:让 VALIDATE 推进前至少读取一个当前可查询输出的实际内容 | R:code:src/labbioagentos/runtime/contracts.py,code:src/labbioagentos/runtime/observations.py,code:src/labbioagentos/execution/submission.py | A:ValidationGroundingError,is_result_content_read,validation_result_control,validation_result_response_format,validate_validation_result | S:只认当前调用重新授权且有交付证明的内容阅读，元数据不计，读到内容也不证明科学正确
+
+===/<repository>/src/labbioagentos/skills/===
+__init__.py[LW4S]: F:公开不可变 Gold 契约及来源、策展、门禁和存储接口 | R:code:src/labbioagentos/skills/models.py,code:src/labbioagentos/skills/service.py | A:GoldSkill,GoldSkillService,SkillCuratorPort,SkillSourceProjector | S:-
+curator.py[AW9L]: F:调用模型复盘主要答复、判断 Gold 演进并草拟和审计候选 | R:code:src/labbioagentos/skills/models.py,code:src/labbioagentos/skills/source.py,code:src/labbioagentos/skills/updates.py | A:SkillCuratorPort,TypedSkillCurator,TypedAuditedAdaptiveSkillCurator,SkillCurationChange,SkillEvolutionRecommendation,ApprovedAdaptationView | S:按原题和实际释放的报告片段复盘。可选第二次改稿超时保留已审初稿与意见，二者均须经过准确人审门禁
+models.py[DW9L]: F:定义可适配流程、冻结来源、审批、使用证明与不可变的 Gold 版本 | R:code:src/labbioagentos/skills/curator.py,code:src/labbioagentos/skills/service.py,code:src/labbioagentos/skills/store.py | A:GoldSkill,SkillCurationSourceView,SkillOutcomeReview,SkillUseAuthorization,SkillUsageRecord,SkillSelectedReport | S:使用绑定准确版本和运行，FORK 另起 v1 并保留来源版本。报告保留已核原文区间，中文相邻单斜杠不能独自触发附着路径过滤
+service.py[AW9L]: F:协调 Gold 来源、草拟与使用审批、正文交付及适配记录 | R:code:src/labbioagentos/skills/source.py,code:src/labbioagentos/skills/models.py,code:src/labbioagentos/skills/store.py | A:GoldSkillService | S:服务执行业务授权和关联核对，使用与演进需要核对准确父版本及使用回执，科学取舍由 Agent 和评审作出
+source.py[KD8L]: F:把完成运行的追踪证据、原研究问题和报告覆盖范围投射给 Gold 策展 | R:code:src/labbioagentos/trace/models.py,code:src/labbioagentos/skills/models.py,code:src/labbioagentos/local_gold_source.py | A:SkillSourceProjector,SkillSourceProjectionError | S:已完成时点后的访问不计入源分析，工具发起和失败事件里的待核制品 ID 只进入审计。完整问题发送原文，报告分别提供已释放字符量和最后偏移
+store.py[PD9L]: F:事务保存 Gold 来源、提议、决策、版本谱系、使用授权和适配记录 | R:code:src/labbioagentos/skills/models.py,code:src/labbioagentos/skills/service.py | A:SkillStore,InMemorySkillStore,SQLiteSkillStore,successful_adapt_usage,SkillApprovalRequiredError,SkillVersionConflictError | S:批准和正文交付有独立记录，成功 ADAPT 按准确父项和版本核对，已提交版本不可覆盖
+updates.py[AW7T]: F:把 Agent 写出的限定字段替换应用到准确的 Skill 原稿 | R:code:src/labbioagentos/skills/models.py,code:src/labbioagentos/skills/curator.py | A:SkillUpdatePatch | S:只能修改列举字段且每字段仅一次，空集合明确清空该段，其余来自原稿
+
+===/<repository>/src/labbioagentos/teams/===
+__init__.py[ZG2T]: F:保留已退役历史团队适配器的空包入口 | R:code:src/labbioagentos/kernel/collaboration.py | A:- | S:当前不导出历史适配器
+
+===/<repository>/src/labbioagentos/trace/===
+__init__.py[LO3T]: F:公开追加式运行追踪的事件、记录器和接收端接口 | R:code:src/labbioagentos/trace/models.py,code:src/labbioagentos/trace/recorder.py | A:TraceEvent,TraceEventType,RunTraceRecorder | S:-
+models.py[LO7S]: F:定义追加追踪中的事件类型、已脱敏指令与载荷校验 | R:code:src/labbioagentos/model_safety.py,code:src/labbioagentos/trace/recorder.py | A:TraceEvent,TraceEventType,InstructionRecord,TracePayloadError | S:单事件采用带时区时间和已批准结构，不保存隐式推理或保留的原始内容字段
+otel.py[IO5S]: F:离线将单运行追踪投影到调用方提供的 OpenTelemetry tracer | R:code:src/labbioagentos/trace/projection.py,code:src/labbioagentos/trace/models.py | A:export_run_trace | S:只导出无内容的跨度信息，检测冲突父调用与父关系环
+projection.py[KO6S]: F:从有序事件重建运行、Agent 调用、委派和阶段演进 | R:code:src/labbioagentos/trace/models.py | A:project_run_trace,RunTraceProjection,InvocationProjection,DelegationProjection,TraceProjectionError | S:仅接受同一运行连续有序的事件，投影为已经观察到的状态
+recorder.py[LO5T]: F:给不可变事件分配确定的逐运行序号并写到追踪接收端 | R:code:src/labbioagentos/trace/sinks.py,code:src/labbioagentos/trace/models.py | A:RunTraceRecorder | S:维持逐运行序号与接收端既有事件连续
+sinks.py[PO6S]: F:提供追加式内存和本地 JSONL 追踪读写 | R:code:src/labbioagentos/trace/models.py,code:src/labbioagentos/trace/recorder.py | A:TraceSink,InMemoryTraceSink,JsonlTraceSink,TraceSequenceError,TraceSinkError | S:逐行验证事件，空行、坏记录和序号冲突均显式失败
+
+===/<repository>/src/labbioagentos/workflow/===
+__init__.py[LW3T]: F:导出确定性工作流图与引擎的公共接口 | R:code:src/labbioagentos/workflow/engine.py,code:src/labbioagentos/workflow/definition.py | A:WorkflowEngine,default_workflow_definition,runtime_workflow_definition | S:-
+definition.py[FW6S]: F:声明默认分析流程、原生分析流程和报告修订的阶段与有向边 | R:code:src/labbioagentos/contracts.py,code:src/labbioagentos/workflow/engine.py | A:default_workflow_definition,runtime_workflow_definition,report_revision_workflow_definition | S:分析图有回来源阶段的用户门禁；只修报告用独立的 REPORT 单节点图
+engine.py[AW9L]: F:持有和验证工作流状态、受限转换、重试、等待用户及恢复 | R:code:src/labbioagentos/workflow/definition.py,code:src/labbioagentos/runtime/coordinator.py,code:src/labbioagentos/contracts.py | A:WorkflowEngine,InvalidProposalError,InvalidRunStateError,InvalidTransitionError,RetryLimitExceededError,UserDecisionRequiredError | S:门禁恢复要准确匹配决定与来源，澄清追问有单次限制，恢复拒绝不一致历史，科学取舍由阶段 Agent 判断

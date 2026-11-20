@@ -100,14 +100,18 @@ class ReportSubmissionService:
         *,
         trace_recorder: RunTraceRecorder | None = None,
         max_report_chars: int = 64_000,
+        fixed_delivery_artifact_ids: tuple[UUID, ...] | None = None,
     ):
         self.store = store
         self.access_service = access_service
         self.trace_recorder = trace_recorder
         self.max_report_chars = max_report_chars
+        self.fixed_delivery_artifact_ids = fixed_delivery_artifact_ids
 
     def prepare_delivery(self, artifact_ids, *, principal, workspace, run_id,
                          imported_artifact_ids=()):
+        if self.fixed_delivery_artifact_ids is not None:
+            artifact_ids = self.fixed_delivery_artifact_ids
         return build_delivery_manifest(self.store, self.access_service, artifact_ids,
             principal=principal, workspace=workspace, run_id=run_id,
             imported_artifact_ids=imported_artifact_ids, trace_recorder=self.trace_recorder)

@@ -57,8 +57,10 @@ class ExecutionSubmissionPersistenceError(ExecutionSubmissionError):
 class ExecutionRevisionError(ExecutionInspectionError):
     """A fixed mechanical reason, never source or rejected replacement content."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str, *, edit_index: int | None = None, match_count: int | None = None):
         self.code = code
+        self.edit_index = edit_index
+        self.match_count = match_count
         super().__init__('Explicit execution revision was rejected')
 
 
@@ -370,9 +372,12 @@ class ExecutionSubmissionService:
         source = submission.draft.script_content
         if len(edits) > 32:
             raise ExecutionRevisionError('REVISION_EDIT_LIMIT')
-        for edit in edits:
-            if source.count(edit.old) != 1:
-                raise ExecutionRevisionError('REVISION_MATCH_NOT_UNIQUE')
+        for edit_index, edit in enumerate(edits):
+            match_count = source.count(edit.old)
+            if match_count != 1:
+                raise ExecutionRevisionError(
+                    'REVISION_MATCH_NOT_UNIQUE', edit_index=edit_index, match_count=match_count,
+                )
             source = source.replace(edit.old, edit.new, 1)
         values = submission.draft.model_dump(mode='python')
         values['script_content'] = source
@@ -459,6 +464,16 @@ class ExecutionSubmissionService:
             "submitted_contract": (submission.draft.model_dump(mode='json', exclude={'script_content'})
                                    if submission.draft is not None else None),
             "execution_id": str(execution_id),
+            **({"revision_submission": {
+                "tool": "execution_submit",
+                "source_revision": {
+                    "source_artifact_id": str(ref.artifact_id),
+                    "expected_script_hash": submission.source_hash,
+                },
+                "required_current_fields": [
+                    "image_key", "input_artifact_ids", "requested_outputs", "resources", "parameters",
+                ],
+            }} if imported else {}),
             **({'source_revision_origin': submission.source_revision_origin.model_dump(mode='json')}
                if submission.source_revision_origin is not None else {}),
             "producer_run_id": str(ref.run_id),

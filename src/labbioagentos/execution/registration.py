@@ -373,32 +373,58 @@ class OutputCollector:
         output_root: Path,
     ) -> tuple[CollectedOutput, ...]:
         collected: list[CollectedOutput] = []
+        issues: list[ExecutionIssue] = []
+        missing_count = 0
         try:
             for item in self._collect_declared_outputs(plan, output_root):
-                collected.append(item)
+                if isinstance(item, ExecutionIssue):
+                    missing_count += 1
+                    issues.append(item)
+                else:
+                    collected.append(item)
+                    if item.issue is not None:
+                        issues.append(item.issue)
         except OutputCollectionError as exc:
             raise OutputCollectionError(
                 str(exc), exc.error_class, detail_code=exc.detail_code,
                 output_artifact_refs=tuple(item.ref for item in collected),
                 issues=(
-                    *(item.issue for item in collected if item.issue is not None),
+                    *issues,
                     ExecutionIssue(
                         error_class=exc.error_class, detail_code=exc.detail_code,
-                        output_index=len(collected),
+                        output_index=len(collected) + missing_count,
                         message="Declared output could not be safely collected or registered.",
                     ),
                 ),
             ) from exc
+        if missing_count:
+            raise OutputCollectionError(
+                "One or more declared output files were not produced.",
+                ExecutionFailureClass.OUTPUT_CONTRACT_FAILURE,
+                detail_code=OutputContractFailureCode.OUTPUT_NOT_FOUND,
+                output_artifact_refs=tuple(item.ref for item in collected),
+                issues=tuple(issues),
+            )
         return tuple(collected)
 
     def _collect_declared_outputs(
         self, plan: ExecutionPlan, output_root: Path,
-    ) -> Iterator[CollectedOutput]:
+    ) -> Iterator[CollectedOutput | ExecutionIssue]:
         controlled_root = output_root.resolve(strict=True)
         collected_bytes = 0
         for output_index, spec in enumerate(plan.requested_outputs):
             try:
-                path = self._resolve_declared_output(controlled_root, spec)
+                try:
+                    path = self._resolve_declared_output(controlled_root, spec)
+                except OutputCollectionError as exc:
+                    if exc.detail_code is not OutputContractFailureCode.OUTPUT_NOT_FOUND:
+                        raise
+                    yield ExecutionIssue(
+                        error_class=exc.error_class, detail_code=exc.detail_code,
+                        output_index=output_index,
+                        message="Declared output file was not produced.",
+                    )
+                    continue
                 size = path.stat().st_size
                 collected_bytes += size
                 if size > self.max_output_file_bytes:

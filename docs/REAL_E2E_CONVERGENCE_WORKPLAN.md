@@ -1,5 +1,11 @@
 # Real E2E Convergence Workplan
 
+## 2026-11-20 公布 Gold 工程阶段更新
+
+- 更新覆盖 Native 工具协议、执行修订及收集、阶段交接和 Gold 复盘。工具允许指定字段的一层 JSON 解包，并继续执行原类型和授权校验。精确修订失败提供失败项索引和匹配数；缺件登记保留后续合规制品；失败请求的待核制品 ID 不再进入 Gold 来源清单。
+- 真实单细胞工程验收已观察到多候选选择、精确版本授权、实际 ADAPT、正式报告与清单、使用后自主 UPDATE 建议及反馈重拟。独立核验发现报告的聚合口径和候选适用范围仍需审查。UPDATE 晋升、FORK、父子路由和框架冻结仍待验收。
+- 本次沿用预印本分支同步源码、回归与可公开文档。站点配置、内部运行证据和盲测材料保存在服务器。评测入口见 [Gold 预印本评测方案](GOLD_BENCHMARK_DESIGN.md)。
+
 ## Authorized main publication and PR 3 merge — 2026-10-28
 
 The user authorized publishing the reviewed local integration. GitHub `main`

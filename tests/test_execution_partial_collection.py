@@ -131,14 +131,22 @@ async def test_partial_collection_preserves_receipt_evidence_and_trace(
     assert receipt["retryable"] is False
     assert len(runner.calls) == 1
     refs = [ref for ref in store.list_refs() if ref.artifact_type == "synthetic-output"]
-    assert len(refs) == 1  # Collection still stops at the first unsafe file.
-    ref = refs[0]
+    by_name = {ref.original_filename: ref for ref in refs}
+    expected_names = {"result.json", "third.json"} if later_failure == "missing" else {"result.json"}
+    assert set(by_name) == expected_names
+    ref = by_name["result.json"]
     assert Path(ref.storage_locator).read_bytes() == first
-    assert (paths[0] / "third.json").exists()  # Not silently collected after failure.
+    assert (paths[0] / "third.json").exists()
     assert ref.exposure_class is (
         ArtifactExposureClass.DERIVED if first_valid else ArtifactExposureClass.RAW
     )
-    assert receipt["output_artifact_ids"] == ([str(ref.artifact_id)] if first_valid else [])
+    expected_queryable = [str(ref.artifact_id)] if first_valid else []
+    if later_failure == "missing":
+        third = by_name["third.json"]
+        assert third.exposure_class is ArtifactExposureClass.DERIVED
+        assert Path(third.storage_locator).read_bytes() == _document()
+        expected_queryable.append(str(third.artifact_id))
+    assert receipt["output_artifact_ids"] == expected_queryable
     failure_class = (
         "ARTIFACT_REGISTRATION_FAILURE" if later_failure in {"registration", "registration_io"}
         else "OUTPUT_CONTRACT_FAILURE"
@@ -154,7 +162,7 @@ async def test_partial_collection_preserves_receipt_evidence_and_trace(
     assert receipt["issue_detail_codes"] == (
         ([] if first_valid else ["UNDECLARED_RECORD_FIELDS"])
         + ([] if expected is None else [expected])
-        + ([] if first_valid else ["QUERYABLE_OUTPUT_REQUIRED"])
+        + ([] if expected_queryable else ["QUERYABLE_OUTPUT_REQUIRED"])
     )
     evidence = toolset.evidence_items()[0]
     assert evidence.safe_result == receipt
@@ -170,10 +178,10 @@ async def test_partial_collection_preserves_receipt_evidence_and_trace(
     for forbidden in (
         "SECRET_FIELD", "SECRET_VALUE", "SECRET_PROGRAM", "SECRET_HOST_PATH",
         "SECRET_STORE_ERROR", "PRIVATE_PROCESS_OUTPUT", "PRIVATE_PROCESS_ERROR",
-        str(tmp_path), "second.json", "third.json", "output_path",
+        str(tmp_path), "second.json", "output_path",
     ):
         assert forbidden not in encoded
-    assert receipt["registered_outputs"] == {str(ref.artifact_id): "result.json"}
+    assert receipt["registered_outputs"] == {str(ref.artifact_id): name for name, ref in by_name.items()}
 
 
 @pytest.mark.asyncio
@@ -222,6 +230,29 @@ async def test_missing_first_output_does_not_invent_partial_refs(boundary, tmp_p
         "error_class": "OUTPUT_CONTRACT_FAILURE", "detail_code": "OUTPUT_NOT_FOUND",
         "output_index": 0, "record_index": None,
     }]
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_first_attachment_keeps_later_queryable_output(boundary, tmp_path):
+    toolset, runner, contract = _execution_tools(boundary, tmp_path, _document())
+    result = await toolset.execution_submit(
+        image_key="python-analysis", script_content="pass\n",
+        requested_outputs=[
+            {"relative_path": "missing.txt", "artifact_type": "attachment",
+             "requested_exposure": "RAW"},
+            {"relative_path": "result.json", "artifact_type": "synthetic-output",
+             "requested_exposure": "DERIVED", "output_contract_id": contract.contract_id},
+        ],
+    )
+    receipt = result["data"]
+    assert receipt["status"] == "FAILED" and receipt["exit_code"] == 0
+    assert receipt["issue_detail_codes"] == ["OUTPUT_NOT_FOUND"]
+    assert receipt["output_issues"][0]["output_index"] == 0
+    artifact_id, = receipt["output_artifact_ids"]
+    assert receipt["registered_outputs"] == {artifact_id: "result.json"}
+    view = await toolset.artifact_query(artifact_id, view_type="TOP_N", limit=1)
+    assert view["success"]
     assert len(runner.calls) == 1
 
 

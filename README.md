@@ -145,8 +145,7 @@ the [local workspace guide](docs/LOCAL_WORKSPACES.md) and
 
 ## Documentation
 
-- [User installation and local execution](docs/USER_INSTALL.md)
-- [Gold Skill preprint evaluation plan](docs/GOLD_PREPRINT_EVALUATION.md)
+- [工程交接与运行手册（安装、启动、模型 API、Python API、Apptainer、配置与运维）](docs/ENGINEERING_HANDOFF.md)
 
 ## Citation and attribution
 

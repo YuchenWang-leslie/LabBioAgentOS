@@ -1,5 +1,6 @@
 """Engineering-only counterexample: a check must not hide the analysis producer."""
 
+import asyncio
 import hashlib
 from pathlib import Path
 from uuid import uuid4
@@ -130,6 +131,91 @@ def test_default_revision_uses_report_selection_across_producers(revision_cli, t
     assert {main.artifact_id, check.artifact_id, program.artifact_id, checker.artifact_id}.issubset(imported)
     assert unused.artifact_id not in imported
     assert receipt.report_artifact_id not in imported
+
+
+def test_report_only_revision_reuses_the_official_delivery(revision_cli, tmp_path, monkeypatch):
+    from uuid import UUID
+
+    from labbioagentos import ApplicationRunHandle, RunStatus, cli
+    from labbioagentos.local_config import build_application
+    from labbioagentos.local_conversations import read_run_record
+    from labbioagentos.runtime.tooling import LabBioRuntimeToolSet, RuntimeCapabilityContext
+
+    settings, directory, _, _, source, *_ = revision_cli
+    app = build_application(settings, directory, load_provider=False)
+    fixture = (app, ApplicationRunHandle(run_id=source.run_id), settings.principal, settings.workspace)
+    result, program = producer(fixture, tmp_path, 'scientific-result')
+    unused, _ = producer(fixture, tmp_path, 'unselected-result')
+    report = submit(fixture, (result.artifact_id,))
+    try:
+        app.run_state_store.update(source.model_copy(update={
+            "workflow_run": source.workflow_run.model_copy(update={
+                "status": RunStatus.COMPLETED, "current_stage": WorkflowStage.LEARN,
+            }),
+        }), expected_version=source.record_version)
+    finally:
+        cli._close(app)
+
+    def selected(record):
+        return report.report_artifact_id if record.run_id == source.run_id else None
+
+    monkeypatch.setattr("labbioagentos.local_delivery.selected_report_id", selected)
+    monkeypatch.setattr("labbioagentos.local_continuation.selected_report_id", selected, raising=False)
+    assert cli.main([*_args(revision_cli), "--report-only"]) == 2
+
+    destination = settings.result_root / "revision"
+    child = read_run_record(destination)
+    imported = {*child.input_artifact_ids, *child.context_artifact_ids}
+    assert imported == {report.report_artifact_id, result.artifact_id, program.artifact_id}
+    assert unused.artifact_id not in imported
+    app = build_application(settings, destination, load_provider=False)
+    try:
+        handle = app.recover_run(child.run_id, principal=settings.principal, workspace=settings.workspace)
+        session = app._session(handle)
+        app.workflow_engine.start(session.run)
+        assert session.run.current_stage is WorkflowStage.REPORT
+        assert app.configuration.workflow_definition.nodes == {WorkflowStage.REPORT}
+        capabilities = session.coordinator.registry.get(WorkflowStage.REPORT).capability_allowlist
+        assert "execution_inspect" in capabilities
+        assert "execution_submit" not in capabilities
+        page = app.execution_submission.inspect(
+            UUID(program.metadata["execution_id"]), principal=settings.principal,
+            workspace=settings.workspace, run_id=child.run_id,
+            imported_source_artifact_ids=session.coordinator.execution_capability.mountable_input_artifact_ids,
+        )
+        assert page["submitted_program"]["source"] == "print('scientific-result')\n"
+        host = LabBioRuntimeToolSet(
+            RuntimeCapabilityContext(
+                principal=settings.principal, workspace=settings.workspace, run_id=child.run_id,
+                stage_id=WorkflowStage.REPORT, invocation_id=uuid4(), actor_profile_key="coordinator",
+                actor_agent_name="CoordinatorAgent", capability_allowlist=capabilities,
+                mountable_input_artifact_ids=child.input_artifact_ids,
+            ), app.capability_services,
+        )
+        checked = asyncio.run(host.report_check(delivery_artifact_ids=[]))
+        assert checked["success"]
+        fixed = checked["data"]["delivery_manifest"]
+        assert [row["artifact_id"] for row in fixed["outputs"]] == [str(result.artifact_id)]
+        assert [row["artifact_id"] for row in fixed["programs"]] == [str(program.artifact_id)]
+
+        submitted = asyncio.run(host.report_submit(
+            "Revised engineering report", "The result is unchanged.",
+            delivery_artifact_ids=[str(result.artifact_id), str(report.report_artifact_id)],
+        ))
+        assert submitted["success"]
+        saved = app.artifact_store.load_for_view(UUID(submitted["data"]["report_artifact_id"]))
+        assert saved.representation.summary["delivery_manifest"] == fixed
+    finally:
+        cli._close(app)
+
+
+def test_report_only_requires_a_completed_delivery(revision_cli):
+    from labbioagentos import cli
+
+    settings, _, observed, *_ = revision_cli
+    assert cli.main([*_args(revision_cli), "--report-only"]) == 1
+    assert observed["explicit_provider_loads"] == []
+    assert not (settings.result_root / "revision").exists()
 
 
 @pytest.mark.parametrize('capability', ['report_check', 'report_submit'])

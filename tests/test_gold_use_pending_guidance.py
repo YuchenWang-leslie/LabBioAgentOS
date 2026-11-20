@@ -9,7 +9,11 @@ import pytest
 from labbioagentos import RuntimeStageInput, RuntimeWorkspaceIdentifiers
 from labbioagentos.runtime.contracts import CapabilityEvidenceBundle, RuntimeStageResult
 from labbioagentos.runtime.handoff import finalization_evidence
-from labbioagentos.runtime.native_tools import build_labbio_tool_registry
+from labbioagentos.kernel import FinishReason, ToolBatchRejectedError, ToolCall
+from labbioagentos.runtime.native_tools import (
+    NativeCapabilityBinding, NativeCapabilityDispatcher, NativeRuntimeCapabilityHost,
+    build_labbio_tool_registry,
+)
 from labbioagentos.runtime.profiles import ResponseSchemaRef
 from labbioagentos.runtime.skill_grounding import (
     skill_assessment_response_format, skill_retrieval_control, validate_skill_assessment,
@@ -24,6 +28,46 @@ def plan(tmp_path):
     tools = _toolset(principal, workspace, artifacts, exposure, service, uuid4(),
                      ("skill_search", "skill_propose_use", "skill_view"), recorder)
     return tools, gold
+
+
+@pytest.mark.asyncio
+async def test_native_proposed_deviations_accepts_one_json_string_layer(plan):
+    tools, gold = plan
+    host = NativeRuntimeCapabilityHost(tools.binding, tools.services)
+    registry = build_labbio_tool_registry(host)
+    binding = NativeCapabilityBinding(
+        run_id=tools.binding.run_id, stage_id=tools.binding.stage_id,
+        invocation_id=tools.binding.invocation_id, actor_profile_key=tools.binding.actor_profile_key,
+        actor_agent_name=tools.binding.actor_agent_name,
+        capability_allowlist=tools.binding.capability_allowlist,
+    )
+    dispatcher = NativeCapabilityDispatcher(binding=binding, registry=registry)
+    deviations = ["Check the current input units.", "Keep the matching rule."]
+
+    async def propose(wire_value):
+        call = ToolCall(call_id=str(uuid4()), name="skill_propose_use", arguments_json=json.dumps({
+            "skill_id": str(gold.skill_id), "version": gold.version, "mode": "ADAPT",
+            "reason": "Apply the checked portion.", "proposed_deviations": wire_value,
+        }))
+        outcome, = await dispatcher.dispatch_batch((call,), finish_reason=FinishReason.TOOL_CALLS)
+        return outcome.result.content["data"]
+
+    wrapped = await propose(json.dumps(deviations))
+    assert wrapped["status"] == "USER_APPROVAL_REQUIRED"
+    canonical = await propose(deviations)
+    assert canonical["proposal_id"] == wrapped["proposal_id"]
+    assert canonical["approval_gate_id"] == wrapped["approval_gate_id"]
+    service = tools.services.skill_service
+    proposal = service.pending_use_proposal(UUID(wrapped["proposal_id"]))
+    assert tuple(proposal.proposed_deviations) == tuple(deviations)
+    assert service.store.accesses_for_run(tools.binding.run_id) == ()
+    for invalid in ('{"message":"not a list"}', json.dumps([True]), json.dumps(json.dumps(deviations))):
+        with pytest.raises(ToolBatchRejectedError) as rejected:
+            await propose(invalid)
+        assert rejected.value.tool_name == "skill_propose_use"
+    assert [e.event_type.value for e in tools.services.trace_recorder.events(tools.binding.run_id)].count(
+        "SKILL_USE_PROPOSED"
+    ) == 1
 
 
 @pytest.mark.asyncio

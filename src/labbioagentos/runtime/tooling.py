@@ -893,17 +893,19 @@ class LabBioRuntimeToolSet:
         return await self._call("evidence_list", locate)
 
     async def evidence_read(self, observation_id: UUID | str, offset: int = 0,
-                            limit: int = 8_000) -> dict:
-        """Read an immutable observation by ID, with explicit exact text pages.
+                            limit: int = 8_000, *, reread: bool = False) -> dict:
+        """Read exact pages or acknowledge an observation already delivered.
 
-        Prior-stage artifact observations are reauthorized. Reading only part
-        never grants report coverage; finish the pages to receive read credit.
+        Prior-stage artifact observations are reauthorized. Only provider
+        delivery of all pages grants read credit. An explicit reread still
+        returns the requested characters.
         """
         saved = None
 
         def read():
             nonlocal saved
-            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8_000:
+            if (type(offset) is not int or offset < 0 or type(limit) is not int
+                    or not 1 <= limit <= 8_000 or type(reread) is not bool):
                 raise ObservationPageError()
             store = self._required(self.services.observation_store, "observation")
             saved = store.load(self.binding, UUID(str(observation_id)))
@@ -917,14 +919,31 @@ class LabBioRuntimeToolSet:
                 raise ObservationPageError()
             end = min(len(text), offset + limit)
             ranges = self._observation_read_ranges.get(item.capability_invocation_id, [])
-            covered = self._covered_observation_prefix([*ranges, (offset, end)])
-            return {
+            page = {
                 "observation_id": str(item.capability_invocation_id),
                 "authority": item.information_authority.value,
-                "format": "EXACT_OBSERVATION_JSON", "offset": offset, "end": end,
-                "total_characters": len(text), "text": text[offset:end],
-                "next_offset": end if end < len(text) else None,
+                "offset": offset, "end": end,
+                "total_characters": len(text),
                 "sha256": sha256(text.encode("utf-8")).hexdigest(),
+            }
+            if ranges and self._covered_observation_prefix(ranges) == len(text) and not reread:
+                return {
+                    **page,
+                    "format": "OBSERVATION_PAGE_ALREADY_DELIVERED",
+                    "next_offset": None,
+                    "complete_observation_delivered": True,
+                    "message": (
+                        "You already received the complete observation in this invocation. "
+                        "No further pages are needed. Set reread=true only if you need "
+                        "the exact text again."
+                    ),
+                }
+            covered = self._covered_observation_prefix([*ranges, (offset, end)])
+            return {
+                **page,
+                "format": "EXACT_OBSERVATION_JSON",
+                "text": text[offset:end],
+                "next_offset": end if end < len(text) else None,
                 "complete_observation_delivered": covered == len(text),
             }
         response = await self._call("evidence_read", read, request_ids={
@@ -932,7 +951,7 @@ class LabBioRuntimeToolSet:
             "observation_offset": offset,
             "observation_limit": limit,
         })
-        if response["success"]:
+        if response["success"] and response["data"]["format"] == "EXACT_OBSERVATION_JSON":
             page = response["data"]
             self._pending_observation_pages[UUID(response["capability_invocation_id"])] = (
                 saved, page["offset"], page["end"])
@@ -1119,7 +1138,7 @@ class LabBioRuntimeToolSet:
             "handoff_observation_ids": observation_ids,
         })
 
-    def _review_execution(self, value: ExecutionReview | dict) -> ExecutionReview:
+    def _review_execution(self, value: ExecutionReview | JsonValue) -> ExecutionReview:
         try:
             review = ExecutionReview.model_validate(value)
             available = set(self._delivered_observations)
@@ -1186,6 +1205,18 @@ class LabBioRuntimeToolSet:
                     and request.view_type != 'INVALID_VALUE'
                     and (request.view_type, request.limit, request.offset) ==
                         (previous.view_type, previous.limit, previous.offset))
+            if (denied and self.binding.stage_id is WorkflowStage.EXECUTE
+                    and error.query_constraints.allowed_view_types
+                    and details.repeated_request is None):
+                return self._repeated_error(
+                    error, prior.capability_invocation_id,
+                    reason="DENIED_VIEWS_UNCHANGED",
+                    safe_message=(
+                        "The repeated view is still denied. No data was read. "
+                        "Continue with a permitted view or an authorized local execution."
+                    ),
+                    stop=False,
+                )
             if denied or same:
                 return self._repeated_error(
                     error,
@@ -1247,8 +1278,10 @@ class LabBioRuntimeToolSet:
         *,
         reason: str,
         safe_message: str,
+        stop: bool = True,
     ) -> ToolError:
-        self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
+        if stop:
+            self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
         return error.model_copy(update={
             "safe_message": safe_message,
             "repeated_request": RepeatedRequestDetails(
@@ -1268,7 +1301,7 @@ class LabBioRuntimeToolSet:
         skill_search_request: SkillSearchRequestAudit | None = None,
         execution_submit_request: ExecutionSubmitRequestAudit | None = None,
         report_reference_selections: tuple[ReportReferenceSelection, ...] | None = None,
-        execution_review: ExecutionReview | dict | None = None,
+        execution_review: ExecutionReview | JsonValue = None,
         public_data: Callable[[Any], JsonValue] | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
@@ -1299,8 +1332,12 @@ class LabBioRuntimeToolSet:
         try:
             self._guard(capability)
             if execution_review is not None:
-                reviewed = self._review_execution(execution_review)
-                request_audit_payload['execution_review'] = reviewed.model_dump(mode='json')
+                try:
+                    reviewed = self._review_execution(execution_review)
+                except _ExecutionReviewRejected:
+                    request_audit_payload["execution_review_status"] = "IGNORED_INVALID"
+                else:
+                    request_audit_payload["execution_review"] = reviewed.model_dump(mode="json")
             event = self._emit(
                 TraceEventType.CAPABILITY_INVOKED,
                 capability,
@@ -1330,6 +1367,8 @@ class LabBioRuntimeToolSet:
                     'registered_output_count': len(execution_receipt.registered_outputs),
                     'output_inventory_archived': False,
                 }
+                if "execution_review_status" in request_audit_payload:
+                    retained_receipt["execution_review_status"] = request_audit_payload["execution_review_status"]
                 if execution_receipt.host_termination is not None:
                     retained_receipt['host_termination'] = execution_receipt.host_termination.model_dump(mode='json')
                 if len(json.dumps(retained_receipt, ensure_ascii=False).encode()) > 4_096:
@@ -1368,7 +1407,9 @@ class LabBioRuntimeToolSet:
                 retained_metadata=(
                     retained_receipt
                     if execution_receipt is not None else
-                    {'kind': 'OBSERVATION_PAGE', **{key: value[key] for key in (
+                    {'kind': ('OBSERVATION_PAGE' if value['format'] == 'EXACT_OBSERVATION_JSON'
+                              else 'OBSERVATION_PAGE_ALREADY_DELIVERED'),
+                     **{key: value[key] for key in (
                         'observation_id', 'offset', 'end', 'next_offset', 'complete_observation_delivered')}}
                     if capability == 'evidence_read' else None),
             )
@@ -1758,7 +1799,8 @@ class LabBioRuntimeToolSet:
         resources: RequestedResources | None = None,
         input_artifact_ids: ExecutionInputArtifactIds | None = None,
         parameters: dict[str, JsonValue] | None = None,
-        review: ExecutionReview | None = None,
+        review: ExecutionReview | JsonValue = None,
+        json_wrapped_overrides: tuple[str, ...] = (),
     ) -> dict:
         """Run an explicit revision of this run's original submitted program.
 
@@ -1800,8 +1842,10 @@ class LabBioRuntimeToolSet:
                     input_artifact_ids=draft.input_artifact_ids, parameters=draft.parameters)
             except ValidationError as exc:
                 raise _InvalidExecutionRevision(exc) from None
-        return await self._call("execution_revise", revise,
-                                request_ids={"execution_id": execution_id}, execution_review=review)
+        request = {"execution_id": execution_id}
+        if json_wrapped_overrides:
+            request["json_wrapped_overrides"] = list(json_wrapped_overrides)
+        return await self._call("execution_revise", revise, request_ids=request, execution_review=review)
 
     async def execution_submit(
         self,
@@ -1813,7 +1857,7 @@ class LabBioRuntimeToolSet:
         requested_outputs: ExecutionRequestedOutputs = _EXECUTION_INTENT_UNSET,
         resources: RequestedResources = _EXECUTION_INTENT_UNSET,
         network_required: bool = False,
-        review: ExecutionReview | None = None,
+        review: ExecutionReview | JsonValue = None,
         source_revision: ExecutionSourceRevision | dict | None = None,
     ) -> dict:
         """Submit one governed execution intent through canonical draft fields.
@@ -2287,10 +2331,12 @@ class LabBioRuntimeToolSet:
         """
         def check():
             delivery = None
+            service = self.services.report_submission
             if delivery_artifact_ids is not None:
-                delivery = (self._required(self.services.report_submission, "report").prepare_delivery(
+                has_fixed_delivery = service is not None and service.fixed_delivery_artifact_ids is not None
+                delivery = (self._required(service, "report").prepare_delivery(
                     tuple(coerce_artifact_id(item) for item in delivery_artifact_ids),
-                    **self._generated_read_context()) if delivery_artifact_ids else
+                    **self._generated_read_context()) if delivery_artifact_ids or has_fixed_delivery else
                     DeliveryManifest(outputs=(), programs=()).model_dump(mode='json'))
             evidence = self._check_report_references(evidence_artifact_ids, evidence_references)
             return evidence if delivery is None else {
@@ -3128,12 +3174,6 @@ class LabBioRuntimeToolSet:
                     reason="REQUEST_UNCHANGED",
                 ),
             )
-        if isinstance(exc, _ExecutionReviewRejected):
-            return ToolError(error_code='INVALID_EXECUTION_REVIEW', safe_message=(
-                'No execution started. review requires a brief nonempty rationale and only '
-                'real prior tool response capability_invocation_id values from this invocation; '
-                'Gold authorization IDs must be approved and already read in this run. '
-                'Omit absent references; do not invent them. Review is MODEL_CONTEXT, not approval.'))
         if isinstance(exc, ArtifactArithmeticError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message,
                 aggregate_validation=ArtifactAggregateValidationDetails.model_validate(
@@ -3319,6 +3359,18 @@ class LabBioRuntimeToolSet:
                 "execution fields are separate; no previous receipt or settings were inherited."
             ))
         if isinstance(exc, ExecutionRevisionError):
+            if exc.edit_index is not None:
+                return ToolError(
+                    error_code=exc.code,
+                    safe_message=(
+                        f"No revision was executed. Edit index {exc.edit_index} (zero-based) "
+                        f"has {exc.match_count} exact matches after the preceding edits. "
+                        "Inspect the verified source and provide an old string that matches once."
+                    ),
+                    revision_validation=RevisionValidationDetails(issues=(
+                        RevisionValidationIssue(field="edits.old", item_index=exc.edit_index, reason="invalid_value"),
+                    )),
+                )
             return ToolError(error_code=exc.code, safe_message=(
                 "No revision was executed. Inspect the exact same-run execution and script_hash; "
                 "each edit.old must match once in sequential order. Null overrides retain the original "

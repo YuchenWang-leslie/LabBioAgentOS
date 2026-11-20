@@ -318,6 +318,49 @@ async def test_partial_failure_pages_do_not_grant_original_delivery(tmp_path, ar
 
 
 @pytest.mark.asyncio
+async def test_polling_delivered_observation_tail_does_not_resend_it(
+    tmp_path, artifact_query_boundary,
+):
+    author, _ = note_tools(tmp_path, artifact_query_boundary)
+    note = await author.working_note_write("界" * 7_950)
+    identity = UUID(note["capability_invocation_id"])
+    reader = fresh(author)
+    first = await reader.evidence_read(identity)
+    reader.mark_feedback_delivered((first,))
+    offset = first["data"]["next_offset"]
+    assert offset == 8_000
+    tail = await reader.evidence_read(identity, offset)
+    assert tail["data"]["complete_observation_delivered"]
+    assert identity not in reader._delivered_observations
+
+    # Before provider delivery the page is still needed, even for the same request.
+    pending = await reader.evidence_read(identity, offset)
+    assert pending["data"] == tail["data"]
+    reader.mark_feedback_delivered((tail,))
+    assert identity in reader._delivered_observations
+
+    for _ in range(3):
+        repeated = await reader.evidence_read(identity, offset)
+        assert repeated["success"], repeated
+        data = repeated["data"]
+        assert data["format"] == "OBSERVATION_PAGE_ALREADY_DELIVERED"
+        assert "text" not in data
+        assert data["complete_observation_delivered"]
+        assert data["next_offset"] is None
+        assert repeated["retained_metadata"]["kind"] == "OBSERVATION_PAGE_ALREADY_DELIVERED"
+        assert reader.services.observation_store.load(
+            reader.binding, UUID(repeated["capability_invocation_id"])
+        ).public_response == repeated
+        reader.mark_feedback_delivered((repeated,))
+
+    reread = await reader.evidence_read(identity, offset, reread=True)
+    assert reread["data"] == tail["data"]
+    assert json.loads(first["data"]["text"] + reread["data"]["text"]) == note
+    next_reader = fresh(reader)
+    assert (await next_reader.evidence_read(identity, offset))["data"]["text"] == tail["data"]["text"]
+
+
+@pytest.mark.asyncio
 async def test_successful_control_observations_do_not_gain_cross_stage_replay(tmp_path, artifact_query_boundary):
     tools, _ = note_tools(tmp_path, artifact_query_boundary)
     tools = add_history(tools)

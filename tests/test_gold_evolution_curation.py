@@ -138,6 +138,38 @@ async def test_native_curation_observes_exact_parent_and_intent(source, evolutio
 
 
 @pytest.mark.asyncio
+async def test_audited_auto_fork_survives_optional_refinement_timeout(source):
+    from labbioagentos.kernel.errors import KernelDeadlineExceededError
+    from labbioagentos.skills.curator import SkillEvolutionDecision
+
+    parent, usage = approved_use(source)
+
+    class TimedFork(RecordingInvoker):
+        async def invoke(self, *, instructions, request, response_model):
+            if response_model is SkillEvolutionDecision:
+                return SkillEvolutionDecision(action="FORK", reason="The designs have different units.")
+            if response_model is SkillCuratorAudit:
+                return SkillCuratorAudit.model_validate_json(json.dumps({
+                    "summary": "Check the boundaries of the draft.",
+                    "findings": [{"category": "UNSUPPORTED_BY_SOURCE", "draft_field": "description",
+                                  "statement": "Check the reported scope.", "rationale": "Review is needed."}],
+                }))
+            if response_model is SkillAdaptiveCuratorDraft and "audit" in json.loads(request):
+                raise KernelDeadlineExceededError()
+            return await super().invoke(instructions=instructions, request=request, response_model=response_model)
+
+    recommendation, pending = await local_gold.propose_evolution_from_usage(
+        *source, TypedAuditedAdaptiveSkillCurator(TimedFork()), from_usage=usage.usage_id,
+    )
+    assert recommendation.action == pending.evolution_kind == "FORK"
+    assert pending.parent_skill_id == parent.skill_id and pending.parent_version == parent.version
+    assert pending.description == "Conditional update."
+    assert any("timed out" in note for note in pending.review_notes)
+    assert "Check the reported scope." in pending.review_notes
+    assert source[0].configuration.skill_service.pending_proposal(pending.proposal_id) == pending
+
+
+@pytest.mark.asyncio
 async def test_redrafting_reuses_frozen_bundle_and_supersedes_only_after_model_returns(source):
     app, run_id, principal, workspace = source
     service = app.configuration.skill_service
@@ -298,6 +330,7 @@ async def test_original_request_is_a_safe_user_assertion_on_the_frozen_source(so
         assert intent["authority"] == "USER_ASSERTION" and intent["status"] == expected
         if expected == "AVAILABLE":
             assert intent["text"] == request_text
+            assert "passages" not in intent
         else:
             assert not intent.get("text")
             if request_text:

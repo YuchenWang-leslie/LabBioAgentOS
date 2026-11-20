@@ -597,6 +597,7 @@ class ApplicationRuntimeConfiguration:
     boundary_observer: BoundaryObserver | None = None
     retry_limit: int = 1
     max_stage_invocations: int = 64
+    report_delivery_artifact_ids: tuple[UUID, ...] | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -810,6 +811,7 @@ class LabBioApplication:
             self.artifact_store,
             self.access_service,
             trace_recorder=self.trace_recorder,
+            fixed_delivery_artifact_ids=configuration.report_delivery_artifact_ids,
         )
         from .runtime.observations import ObservationStore
         self.capability_services = RuntimeCapabilityServices(

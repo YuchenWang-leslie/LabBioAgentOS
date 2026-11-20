@@ -243,8 +243,10 @@ MAX_CURATION_SOURCE_BYTES = 512_000
 
 
 def _scan_source_text(text):
-    # Recognize a credential or host path immediately following a non-ASCII word.
-    return re.sub(r"(?<=[^\x00-\x7f])(?=[A-Za-z~/])", " ", text)
+    # Expose attached credential and path tokens to the redactor. A single
+    # slash joining prose such as "批次/lane" does not start a path.
+    attached_token = r"(?<=[^\x00-\x7f])(?=[A-Za-z~]|/(?=/|[\w.@%+-]+/|\.|(?:home|media|mnt|tmp|var|run)\b))"
+    return re.sub(attached_token, " ", text)
 
 
 class SkillSourceText(BaseModel):

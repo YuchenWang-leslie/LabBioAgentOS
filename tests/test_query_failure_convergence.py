@@ -44,6 +44,29 @@ async def test_denied_view_switch_after_feedback_requests_stop_and_retains_failu
 
 
 @pytest.mark.asyncio
+async def test_execute_gets_one_chance_to_recover_from_repeated_denied_read(artifact_query_boundary):
+    _, _, _, tools = artifact_query_boundary
+    tools.binding = replace(tools.binding, stage_id=WorkflowStage.EXECUTE)
+    ref = _register(artifact_query_boundary, ArtifactExposureClass.AGGREGATE,
+                    ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR)
+
+    first = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not first["success"]
+    assert "SUMMARY" in first["error"]["query_constraints"]["allowed_view_types"]
+    tools.mark_feedback_delivered((first,))
+    repeat = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not repeat["success"] and repeat["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    assert repeat["error"]["repeated_request"]["previous_capability_invocation_id"] == first["capability_invocation_id"]
+    assert "local execution" in repeat["error"]["safe_message"]
+    assert tools.stop_reason is None
+
+    tools.mark_feedback_delivered((repeat,))
+    third = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not third["success"] and third["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    assert tools.stop_reason == "REPEATED_NON_RETRYABLE_REQUEST"
+
+
+@pytest.mark.asyncio
 async def test_unchanged_artifact_list_after_feedback_requests_stop(boundary):
     tools = _toolset(boundary, WorkflowStage.INTAKE, ("artifact_list",))
     first = await tools.artifact_list()

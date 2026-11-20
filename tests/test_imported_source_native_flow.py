@@ -92,8 +92,9 @@ def revision_payload(imported, digest):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('wrapped', [False, True], ids=['canonical', 'json-wrapped'])
 async def test_native_inspect_then_exact_source_edit_keeps_original_and_fresh_receipt(
-    inspection, boundary,
+    inspection, boundary, wrapped,
 ):
     fresh, executor, current, old, imported, host, _, dispatcher = await source_case(
         inspection, boundary)
@@ -104,8 +105,21 @@ async def test_native_inspect_then_exact_source_edit_keeps_original_and_fresh_re
     assert inspected['data']['submitted_contract'] is None
     assert inspected['data']['submitted_program']['source'] == SOURCE
 
-    result = await dispatch(dispatcher, 'execution_submit',
-                            revision_payload(imported, old.script_hash))
+    # The old execution UUID is an inspection reference. The same response
+    # must identify the fresh-submit route and its exact imported Artifact UUID.
+    submission = inspected['data']['revision_submission']
+    assert submission['tool'] == 'execution_submit'
+    assert submission['source_revision'] == {
+        'source_artifact_id': str(imported.artifact_id), 'expected_script_hash': old.script_hash,
+    }
+    assert submission['required_current_fields'] == [
+        'image_key', 'input_artifact_ids', 'requested_outputs', 'resources', 'parameters',
+    ]
+    payload = revision_payload(imported, old.script_hash)
+    payload['source_revision'].update(submission['source_revision'])
+    if wrapped:
+        payload['source_revision'] = json.dumps(payload['source_revision'])
+    result = await dispatch(dispatcher, submission['tool'], payload)
     assert result['success'], result
     receipt = result['data']
     plan = executor.plans[-1]
@@ -126,6 +140,7 @@ async def test_native_inspect_then_exact_source_edit_keeps_original_and_fresh_re
                              workspace=host._host.binding.workspace, run_id=current)
     assert own_page['receipt']['execution_id'] == receipt['execution_id']
     assert own_page['submitted_program']['source'] == expected
+    assert 'revision_submission' not in own_page
     # Reading/patching old source never imports the old result as current success.
     receipts = [x.safe_result for x in host.evidence_items()
                 if x.capability_name == 'execution_submit' and x.status.value == 'COMPLETED']

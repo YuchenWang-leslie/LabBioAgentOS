@@ -242,6 +242,15 @@ Artifact、工作流状态和 runtime revision。`STAGE_IN_FLIGHT` 等不确定�
 `revise` 创建新运行，不改写原运行。它默认导入所选成功执行的非报告产物、原始
 输入/上下文和原执行程序；旧报告需通过 `--artifact-id` 显式选择。
 
+已完成的运行只需修报告时，使用 `revise --report-only`。新运行从 REPORT 开始，
+导入上一轮正式报告、已选的正式产物和程序。框架沿用并校验原交付清单，
+Agent 只需核对证据并登记修订后的报告。需要重新计算或新增科学产物时，走普通 `revise`。
+
+```bash
+labbio revise --report-only --conversation my-analysis --from-run <UUID> \
+  --task "请根据已交付的分析结果核对并修订报告。"
+```
+
 ## 运行目录
 
 ```text
