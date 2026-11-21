@@ -625,6 +625,22 @@ After the third cluster round (MOHAN CUI, 2026-11-19):
   first, as for a terminal run that is revised. Its lab usage markers are
   released the same way.
 
+After the fifth cluster round (MOHAN CUI, 2026-11-21):
+
+- A live Agent did not choose the existing samtools or `six` images. The
+  earliest false layer was the model-visible context: `environment_list`
+  was described as a list of Python images, it showed no conda inventory
+  (the samtools image appeared with an unknown inventory), it existed only
+  with `[environment]`, and `environment_build` was described as wheels
+  only. The facts are now complete and stated without preference: each
+  listed image carries its runtimes, Python and conda inventories, and an
+  optional `conda_packages` argument reports the recorded versions of named
+  conda packages. `environment_list` is offered whenever more than one image
+  is selectable (a lab or several configured images); building still needs
+  `[environment]`. The descriptions say that every listed image is an
+  equally valid execution choice. No model guidance on which image to prefer
+  is added.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:

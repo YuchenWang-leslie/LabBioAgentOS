@@ -61,7 +61,7 @@ from labbioagentos.execution.submission import (
     ExecutionInspectionError, ExecutionRevisionError, ExecutionSubmissionPersistenceError,
 )
 from labbioagentos.execution.environments import (
-    EnvironmentBuildUnconfirmedError, EnvironmentRequestError, EnvironmentService,
+    EnvironmentBuildUnconfirmedError, EnvironmentRequestError, EnvironmentService, ImageListing,
 )
 from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceContext
 from labbioagentos.literature import (
@@ -512,6 +512,7 @@ class RuntimeCapabilityServices:
     report_submission: ReportSubmissionService | None = None
     trace_recorder: RunTraceRecorder | None = None
     environment_service: EnvironmentService | None = None
+    image_listing: ImageListing | None = None  # Lists selectable images when no builds are configured.
     literature_search: LiteratureSearchService | None = None
     observation_store: ObservationStore | None = None
 
@@ -1121,22 +1122,35 @@ class LabBioRuntimeToolSet:
             raise AuthorizationDenied("Environment owner does not match the bound user")
         return service
 
-    async def environment_list(
-        self, requirements: list[str] = [], offset: int = 0, limit: int = 10,
-    ) -> dict:
-        """Discover approved Python images and verified package-version facts.
+    def _image_listing(self) -> ImageListing:
+        if self.services.environment_service is not None:
+            return self._environment_service().listing()
+        listing = self._required(self.services.image_listing, "environment")
+        if listing.owner_user_id is not None and listing.owner_user_id != self.binding.principal.user_id:
+            raise AuthorizationDenied("Image listing owner does not match the bound user")
+        return listing
 
-        The execution capability describes the default image, not every cached
-        environment. Returned image keys may be used by execution_submit.
+    async def environment_list(
+        self, requirements: list[str] = [], offset: int = 0, limit: int = 10, conda_packages: list[str] = [],
+    ) -> dict:
+        """List every approved image this user may select, with its recorded facts.
+
+        Items are the configured images, the lab's and the user's own admitted
+        images, and verified built environments, each with its runtimes (PYTHON,
+        SHELL), its Python packages and its conda packages; deprecated images are
+        not listed. The execution capability names only the default image; every
+        listed image_key is an equally valid execution_submit choice.
         build_provenance identifies the base and verified additions of a saved
         build, including builds recovered for this user after restart.
         Requirements are optional PyPI distribution names with extras/version
-        constraints, not import names. An unspecified inventory does not prove
-        that a package is absent. No environment is selected or built by listing.
+        constraints, not import names; conda_packages are optional conda package
+        names whose recorded versions are reported. An unspecified inventory does
+        not prove that a package is absent. No image is selected or built by listing.
         """
         return await self._call("environment_list", lambda: (
-            self._environment_service().list_environments(
+            self._image_listing().list(
                 requirements=tuple(requirements), offset=offset, limit=limit,
+                conda_packages=tuple(conda_packages),
             )
         ))
 
@@ -1144,12 +1158,13 @@ class LabBioRuntimeToolSet:
         self, base_image_key: ExecutionImageKey, requirements: list[str],
         import_modules: list[str] = [], conda_packages: list[str] = [],
     ) -> dict:
-        """Prepare and verify a reusable Python image, without running analysis.
+        """Prepare and verify a reusable image, without running analysis.
 
-        Choose an approved base image key and PyPI package requirements with
-        optional extras/version constraints. Only wheels are supported; URLs,
-        local paths, editable installs, environment markers and pip options are
-        not accepted. import_modules are optional Python import names to verify.
+        Choose an approved base image key, PyPI package requirements with
+        optional extras/version constraints, and optional conda packages. Python
+        packages are installed from wheels only; URLs, local paths, editable
+        installs, environment markers and pip options are not accepted.
+        import_modules are optional Python import names to verify.
         Builds have no analysis data mounted. A SUCCEEDED receipt contains an
         immutable verified image key usable by execution_submit; FAILED contains
         bounded dependency diagnostics for your decision. No automatic repair or

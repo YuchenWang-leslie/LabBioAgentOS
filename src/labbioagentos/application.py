@@ -79,7 +79,7 @@ from .execution import (
     StructuredOutputContract,
 )
 from .execution.catalog import ImageCatalog, ImageState
-from .execution.environments import EnvironmentService
+from .execution.environments import EnvironmentService, ImageListing
 from .governance import (
     AccessAction,
     AccessService,
@@ -818,6 +818,10 @@ class LabBioApplication:
             artifact_exposure=self.artifact_exposure,
             execution_submission=self.execution_submission,
             environment_service=environment_service,
+            # Without environment builds, the images the user may select are still listed.
+            image_listing=None if environment_service is not None else ImageListing(
+                self.image_registry, catalog=catalog,
+                owner_user_id=catalog.owner_user_id if catalog is not None else None),
             literature_search=configuration.literature_search,
             skill_service=configuration.skill_service,
             memory_service=configuration.memory_service,

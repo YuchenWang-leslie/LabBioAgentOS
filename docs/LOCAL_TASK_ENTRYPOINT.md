@@ -214,6 +214,12 @@ channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、m
 超过个人配额报 `MEMBER_QUOTA_EXCEEDED`。两种情况下，构建出的镜像都会被删除，不会登记。
 环境记录里会记下镜像大小；C15 以前的记录没有大小，不计入用量。
 
+Agent 用 `environment_list` 查看它能选的全部镜像：配置的镜像、实验室和自己入库的镜像、
+已经建好的环境。每一项列出支持的运行时（PYTHON、SHELL）、用途、GPU 标志、Python 包和
+conda 包；`conda_packages` 参数可以按包名查已装的 conda 版本。只要可选的镜像不止一个
+（配置了 `[lab]` 或多个镜像），PLAN 和 EXECUTE 阶段就提供这个工具；`environment_build`
+仍然只在配置了 `[environment]` 时提供。平台只列出事实，不替 Agent 选镜像。
+
 Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
 `SHELL`，平台不会根据脚本或镜像推断。每个镜像都声明自己支持哪些运行时；选了镜像不
 支持的运行时，提交会被拒绝（`IMAGE_NOT_APPROVED`），不会换别的镜像。回执和 trace 都记录

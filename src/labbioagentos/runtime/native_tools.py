@@ -110,6 +110,12 @@ class EnvironmentListArguments(NativeToolArguments):
     )
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=10, ge=1, le=10)
+    conda_packages: list[Annotated[StrictStr, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list, max_length=64, description=(
+            "Optional conda package names, for example samtools; each item reports the recorded "
+            "version of each named package, or null when its recorded conda inventory lacks it. "
+            "Listing compares recorded facts only and never inspects or installs anything."
+        ))
 
 
 class EnvironmentBuildArguments(NativeToolArguments):
@@ -485,18 +491,22 @@ _CAPABILITY_DESCRIPTIONS["artifact_query"] = (
     "limit continues to use the policy-bounded default page size."
 )
 _CAPABILITY_DESCRIPTIONS["environment_list"] = (
-    "Discover approved Python images and verified package/version facts from the "
-    "registered inventory. Changing requirements only compares recorded facts; "
-    "listing does not probe the image. Listing does not select or build an "
-    "environment. Missing inventory is unknown, not proof that a package is absent. "
-    "Each item states whether the image is the lab's or yours, its member-written "
-    "purpose when one exists, GPU support and where its inventory came from; "
-    "deprecated images are not listed. "
-    "Returned image_key values can be explicitly selected for execution."
+    "List every approved image you may select: configured images, the lab's and "
+    "your own admitted images, and verified built environments. Each item states "
+    "its runtimes (PYTHON, SHELL), whether it is the lab's or yours, its "
+    "member-written purpose when one exists, GPU support, where its inventory came "
+    "from, and its Python and conda packages from the registered inventory. "
+    "Changing requirements (PyPI distributions) or conda_packages (conda package "
+    "names) only compares recorded facts; listing does not probe the image and "
+    "does not select or build one. Missing inventory is unknown, not proof that a "
+    "package is absent. Deprecated images are not listed. The execution capability "
+    "names only the default image; every returned image_key can be explicitly "
+    "selected for execution."
 )
 _CAPABILITY_DESCRIPTIONS["environment_build"] = (
-    "Build and verify a reusable Python environment using wheels only, with no "
-    "analysis data mounted. Choose the base and dependencies yourself. A SUCCEEDED "
+    "Build and verify a reusable environment on an approved base image, with no "
+    "analysis data mounted: Python packages from wheels only, and optional conda "
+    "packages from the lab's allowed channels. Choose the base and dependencies yourself. A SUCCEEDED "
     "receipt returns an immutable verified image_key; explicitly select that key "
     "in execution_submit or execution_revise to use the environment. The base "
     "image remains unchanged. A FAILED receipt contains bounded build diagnostics; "

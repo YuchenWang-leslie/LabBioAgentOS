@@ -306,6 +306,7 @@ async def test_build_provenance_survives_discovery_cache_and_restart(environment
         "base_image_key": "base",
         "verified_requirements": ["examplepkg==2.0"],
         "verified_import_modules": ["examplepkg"],
+        "verified_conda_packages": [],
     }
     assert first["build_provenance"] == expected
     reopened = EnvironmentService(environment.root, ApprovedImageRegistry((environment.base,)),

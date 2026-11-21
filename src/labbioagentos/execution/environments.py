@@ -433,6 +433,100 @@ def check_restored(record: dict, image: ApprovedImage, base: ApprovedImage, resu
         raise EnvironmentRequestError("INVENTORY_MISMATCH")
 
 
+class ImageListing:
+    """The model-visible list of the images this user may select (DECIDED-C15-H projection).
+
+    It needs no environment builder: configured, lab and personal images are listed
+    whenever they exist, and built environments add their recorded provenance. Raw
+    references, registries and host paths never appear.
+    """
+
+    def __init__(self, image_registry: ApprovedImageRegistry, *, owner_user_id: str | None,
+                 catalog: ImageCatalog | None = None, records: Callable[[], dict] = dict):
+        self.image_registry, self.owner_user_id, self.catalog, self._records = (
+            image_registry, owner_user_id, catalog, records)
+
+    def view(self, image: ApprovedImage, requirements: tuple[str, ...], conda_names: tuple[str, ...] = ()) -> dict:
+        record = next((value for value in self._records().values() if value["image"]["key"] == image.key), {})
+        requested = {canonicalize_name(Requirement(value).name) for value in requirements}
+        inventory = {canonicalize_name(name): version for name, version in image.installed_packages.items()}
+        names = sorted(requested & inventory.keys()) if requirements else sorted(inventory)[:40]
+        conda_inventory = dict(image.conda_packages)
+        conda_shown = (sorted(set(conda_names) & conda_inventory.keys()) if conda_names
+                       else sorted(conda_inventory)[:40])
+        documented_extras: dict[str, set[str]] = {}
+        for value in record.get("requested_requirements", ()):
+            req = Requirement(value)
+            documented_extras.setdefault(canonicalize_name(req.name), set()).update(req.extras)
+        facts = []
+        for value in requirements:
+            req = Requirement(value)
+            name = canonicalize_name(req.name)
+            version = inventory.get(name)
+            facts.append({"requirement": value, "installed_version": version,
+                "version_satisfied": req.specifier.contains(version, prereleases=True) if version is not None else None,
+                "extras_verified": True if req.extras.issubset(documented_extras.get(name, set())) else None})
+        known_satisfied = all(item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
+        # Raw references stay hidden from models; provenance names the base by its key.
+        base_key = next((base.key for base in self.image_registry.list()
+                         if record and base.resolved_reference == record["base_image_reference"]), None)
+        return {"image_key": image.key, "runtimes": sorted(runtime.value for runtime in image.runtimes),
+            **(self.catalog.describe(image.key) if self.catalog is not None else {}),
+            "build_provenance": {
+                "base_image_key": base_key,
+                "verified_requirements": list(record["requested_requirements"]),
+                "verified_import_modules": list(record["requested_import_modules"]),
+                "verified_conda_packages": list(record.get("requested_conda", ())),
+            } if record else None,
+            "available_python_modules": list(image.available_python_modules[:64]),
+            "module_count": len(image.available_python_modules), "modules_truncated": len(image.available_python_modules) > 64,
+            "installed_packages": {name: inventory[name] for name in names},
+            "package_count": len(inventory),
+            # Python and conda inventories are separate namespaces (cluster validation, round 5).
+            "conda_packages": {name: conda_inventory[name] for name in conda_shown},
+            "conda_package_count": len(conda_inventory),
+            "conda_inventory_truncated": len(conda_shown) < len(conda_inventory),
+            "inventory_known": bool(inventory or conda_inventory),
+            "inventory_truncated": len(names) < len(inventory),
+            "requested_requirements": list(requirements), "matching_facts": facts,
+            "requested_conda_packages": list(conda_names),
+            "conda_matching_facts": [{"package": name, "installed_version": conda_inventory.get(name)}
+                                     for name in conda_names],
+            "requirements_satisfied": True if known_satisfied else False if any(item["version_satisfied"] is False for item in facts) else None}
+
+    def list(self, requirements: tuple[str, ...] = (), *, offset=0, limit=10,
+             conda_packages: tuple[str, ...] = ()) -> dict:
+        requirements = normalize_requirements(requirements)
+        conda_names = _conda_names(conda_packages)
+        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
+            raise EnvironmentRequestError()
+        # Deprecated and revoked images are not offered for new selection.
+        images = [image for image in self.image_registry.list()
+                  if self.catalog is None or self.catalog.visible(image.key)]
+        items = []
+        for image in images[offset:offset + limit]:
+            item = self.view(image, requirements, conda_names)
+            try:
+                validate_model_visible_json({"items": [*items, item]}, max_nodes=3500, max_serialized_bytes=48_000)
+            except UnsafeModelContentError:
+                if not items:
+                    raise EnvironmentRequestError() from None
+                break
+            items.append(item)
+        end = offset + len(items)
+        return {"items": items, "offset": offset, "limit": limit, "returned_count": len(items),
+            "available_count": len(images), "next_offset": end if end < len(images) else None}
+
+
+def _conda_names(values: tuple[str, ...]) -> tuple[str, ...]:
+    """Conda package names to compare with recorded conda inventories; a version part is ignored."""
+    try:
+        specs = normalize_conda_specs(tuple(values))
+    except CondaError:
+        raise EnvironmentRequestError("INVALID_CONDA_PACKAGES") from None
+    return tuple(dict.fromkeys(re.split(r"[=<>!,\s]", spec)[0] for spec in specs))
+
+
 class EnvironmentService:
     def __init__(self, root: Path, image_registry: ApprovedImageRegistry, builder: EnvironmentBuilder,
                  owner_user_id: str, *, catalog: ImageCatalog | None = None,
@@ -632,61 +726,16 @@ class EnvironmentService:
         finally:
             os.close(descriptor)
 
-    def _view(self, image: ApprovedImage, requirements: tuple[str, ...]) -> dict:
-        record = next((value for value in self._records.values() if value["image"]["key"] == image.key), {})
-        requested = {canonicalize_name(Requirement(value).name) for value in requirements}
-        inventory = {canonicalize_name(name): version for name, version in image.installed_packages.items()}
-        names = sorted(requested & inventory.keys()) if requirements else sorted(inventory)[:40]
-        documented_extras: dict[str, set[str]] = {}
-        for value in record.get("requested_requirements", ()):
-            req = Requirement(value)
-            documented_extras.setdefault(canonicalize_name(req.name), set()).update(req.extras)
-        facts = []
-        for value in requirements:
-            req = Requirement(value)
-            name = canonicalize_name(req.name)
-            version = inventory.get(name)
-            facts.append({"requirement": value, "installed_version": version,
-                "version_satisfied": req.specifier.contains(version, prereleases=True) if version is not None else None,
-                "extras_verified": True if req.extras.issubset(documented_extras.get(name, set())) else None})
-        known_satisfied = all(item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
-        # Raw references stay hidden from models; provenance names the base by its key.
-        base_key = next((base.key for base in self.image_registry.list()
-                         if record and base.resolved_reference == record["base_image_reference"]), None)
-        return {"image_key": image.key, "runtimes": sorted(runtime.value for runtime in image.runtimes),
-            **(self.catalog.describe(image.key) if self.catalog is not None else {}),
-            "build_provenance": {
-                "base_image_key": base_key,
-                "verified_requirements": list(record["requested_requirements"]),
-                "verified_import_modules": list(record["requested_import_modules"]),
-            } if record else None,
-            "available_python_modules": list(image.available_python_modules[:64]),
-            "module_count": len(image.available_python_modules), "modules_truncated": len(image.available_python_modules) > 64,
-            "installed_packages": {name: inventory[name] for name in names},
-            "package_count": len(inventory), "inventory_known": bool(inventory), "inventory_truncated": len(names) < len(inventory),
-            "requested_requirements": list(requirements), "matching_facts": facts,
-            "requirements_satisfied": True if known_satisfied else False if any(item["version_satisfied"] is False for item in facts) else None}
+    def listing(self) -> "ImageListing":
+        return ImageListing(self.image_registry, owner_user_id=self.owner_user_id, catalog=self.catalog,
+                            records=lambda: self._records)
 
-    def list_environments(self, requirements: tuple[str, ...] = (), offset=0, limit=10) -> dict:
-        requirements = normalize_requirements(requirements)
-        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 10:
-            raise EnvironmentRequestError()
-        # Deprecated and revoked images are not offered for new selection.
-        images = [image for image in self.image_registry.list()
-                  if self.catalog is None or self.catalog.visible(image.key)]
-        items = []
-        for image in images[offset:offset + limit]:
-            item = self._view(image, requirements)
-            try:
-                validate_model_visible_json({"items": [*items, item]}, max_nodes=3500, max_serialized_bytes=48_000)
-            except UnsafeModelContentError:
-                if not items:
-                    raise EnvironmentRequestError() from None
-                break
-            items.append(item)
-        end = offset + len(items)
-        return {"items": items, "offset": offset, "limit": limit, "returned_count": len(items),
-            "available_count": len(images), "next_offset": end if end < len(images) else None}
+    def _view(self, image: ApprovedImage, requirements: tuple[str, ...]) -> dict:
+        return self.listing().view(image, requirements)
+
+    def list_environments(self, requirements: tuple[str, ...] = (), offset=0, limit=10,
+                          conda_packages: tuple[str, ...] = ()) -> dict:
+        return self.listing().list(requirements, offset=offset, limit=limit, conda_packages=conda_packages)
 
     async def build_environment(self, base_image_key, requirements: tuple[str, ...], import_modules: tuple[str, ...] = (),
                                 *, run_id: UUID | None = None, conda_packages: tuple[str, ...] = ()) -> dict:

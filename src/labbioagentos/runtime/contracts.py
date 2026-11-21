@@ -297,8 +297,9 @@ class RuntimeExecutionCapabilityView(BaseModel):
     image_key: StrictStr = Field(
         min_length=1, max_length=128,
         description=(
-            "Default approved image key. If environment tools are configured, "
-            "their verified image keys are also valid execution choices."
+            "Default approved image key. Every image listed by environment_list, "
+            "including SHELL tool images and verified built environments, is an "
+            "equally valid execution choice."
         ),
     )
     resources: RequestedResources = Field(description=(

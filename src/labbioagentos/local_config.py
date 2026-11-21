@@ -788,10 +788,14 @@ def runtime_manifest(settings: LocalSettings) -> dict:
                 WorkflowStage.INTERPRET, WorkflowStage.REPORT,
             } else stage for stage in profile.stages
         )})
-    if settings.environment is not None:
+    # The Agent chooses among every selectable image, so listing is offered whenever there is more
+    # than one to choose from; building needs [environment] (cluster validation, round 5).
+    listing = settings.lab is not None or len(settings.execution.images) > 1
+    if settings.environment is not None or listing:
         environment_tools = {
             WorkflowStage.PLAN: ("environment_list",),
-            WorkflowStage.EXECUTE: ("environment_list", "environment_build"),
+            WorkflowStage.EXECUTE: (("environment_list", "environment_build") if settings.environment is not None
+                                    else ("environment_list",)),
         }
         profile = profile.model_copy(update={"stages": tuple(
             stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
