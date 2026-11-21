@@ -72,6 +72,12 @@ def list_gold_library(service, principal, *, project_id=None, offset=0, limit=20
         "items": [{
             "skill_id": str(skill.skill_id), "version": skill.version, "name": skill.name,
             "description": skill.description, "scope": skill.scope.value,
+            "evolution_kind": skill.evolution_kind,
+            "parent_skill_id": str(skill.parent_skill_id) if skill.parent_skill_id else None,
+            "parent_version": skill.parent_version,
+            "source_run_id": str(skill.source_run_id),
+            "source_usage_record_id": (str(skill.source_usage_record_id)
+                                       if skill.source_usage_record_id else None),
             "tags": sorted(skill.procedure.tags),
             "artifact_types": sorted(skill.procedure.artifact_types),
             "applicability": skill.procedure.applicability,
@@ -84,6 +90,9 @@ def list_gold_library(service, principal, *, project_id=None, offset=0, limit=20
 
 def _content_hash(skill) -> str:
     value = skill.model_dump(mode="json")
+    # UPDATE is the implicit value in pre-fork stores and their export receipts.
+    if value["evolution_kind"] == "UPDATE":
+        del value["evolution_kind"]
     for field in ("tags", "artifact_types"):
         value["procedure"][field] = sorted(value["procedure"][field])
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
@@ -95,6 +104,12 @@ def _section(title, values) -> str:
     if not values:
         return ""
     return f"\n## {title}\n\n" + "\n\n".join(values) + "\n"
+
+
+def _parent_reference(skill) -> str:
+    if skill.parent_skill_id is None:
+        return ""
+    return f"**{skill.evolution_kind} from** `{skill.parent_skill_id}` v{skill.parent_version}\n\n"
 
 
 def _markdown(skill) -> bytes:
@@ -118,6 +133,12 @@ def _markdown(skill) -> bytes:
         f"| Approved at | {skill.approved_at.isoformat()} |\n"
         f"| Content SHA256 | `{_content_hash(skill)[:16]}...` |\n\n"
     )
+
+    # Preserve older guides without an adaptation receipt byte-for-byte.
+    if skill.evolution_kind == "FORK" or skill.source_usage_record_id is not None:
+        text += _parent_reference(skill)
+    if skill.source_usage_record_id is not None:
+        text += f"**Source usage record:** `{skill.source_usage_record_id}`\n\n"
 
     if procedure.tags:
         text += "**Tags:** " + " · ".join(f"`{t}`" for t in sorted(procedure.tags)) + "\n\n"
@@ -292,6 +313,7 @@ def export_gold_library(service, principal) -> dict:
                 f"## {skill.name}\n\n"
                 f"**v{skill.version}** · `{short_id}` · [{dirname}/skill.md]({relative})\n\n"
                 f"{skill.description}\n\n"
+                f"{_parent_reference(skill)}"
                 f"**Tags:** {tags_str}\n\n"
                 f"**When to use:** {skill.procedure.applicability}\n\n"
             )

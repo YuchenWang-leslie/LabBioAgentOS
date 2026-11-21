@@ -23,57 +23,16 @@ from collections.abc import Callable
 from urllib.parse import urlsplit
 from uuid import UUID
 
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
+
 from .conda import (CONDA_ENV_PREFIX, CondaError, CondaPolicy, download as conda_download, file_entries, lock_entries,
                     render_explicit, solve as conda_solve, verify_micromamba)
 from .wheel_lock import PinnedWheel, WheelLockError, check_pinned, lock_wheelhouse, render_lock, render_pins
 from .environments import (EnvironmentBuildResult, EnvironmentBuildUnconfirmedError, EnvironmentRequestError,
                            PinnedLocks, check_pinned_request, normalize_modules, normalize_requirements)
 from .images import ApprovedImage
-
-
-_PROBE = """import contextlib, glob, importlib, importlib.metadata, json, os, stat, sys, sysconfig
-modules = json.loads(sys.argv[1])
-def unshared():
-    # Every lab member runs the image under their own uid: each file must be readable and each
-    # directory searchable by others. Links are not followed.
-    roots = sorted({'/opt/labbio-env', sysconfig.get_paths()['purelib'], sysconfig.get_paths()['platlib']})
-    count, paths = 0, []
-    for root in roots:
-        if not os.path.isdir(root) or os.path.islink(root):
-            continue
-        for base, dirs, files in os.walk(root):
-            for path in [base] * (base == root) + [os.path.join(base, name) for name in dirs + files]:
-                try:
-                    mode = os.lstat(path).st_mode
-                except OSError:
-                    continue
-                need = 0o005 if stat.S_ISDIR(mode) else 0o004
-                if mode & need != need:  # A link's own mode always allows reading.
-                    count += 1
-                    paths.append(path) if len(paths) < 8 else None
-    return count, paths
-failed = []
-with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-    for module in modules:
-        try:
-            importlib.import_module(module)
-        except BaseException:
-            failed.append(module)
-    packages = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
-    conda = {}
-    for path in sorted(glob.glob('/opt/labbio-env/conda-meta/*.json'))[:4096]:
-        try:
-            with open(path) as stream:
-                record = json.load(stream)
-            conda[record['name']] = record['version']
-        except Exception:
-            pass
-conda_on_path = '/opt/labbio-env/bin' in os.environ.get('PATH', '').split(os.pathsep)
-unshared_count, unshared_paths = unshared()
-print(json.dumps({'installed_packages': packages, 'conda_packages': conda, 'conda_on_path': conda_on_path,
-                  'failed_imports': failed, 'unshared_count': unshared_count,
-                  'unshared_paths': unshared_paths}, sort_keys=True))
-"""
+from .import_probe import PROGRAM as _PROBE, import_diagnostics, parse_import_probe
 
 
 _CONDA_FAILURES = {"CONDA_NO_SOLUTION", "CONDA_LOCK_INVALID", "CONDA_PLATFORM_UNSUPPORTED", "CONDA_UNAVAILABLE",
@@ -106,11 +65,12 @@ def diagnose_pip_log(text: str) -> str:
     patterns = (
         # pip --require-hashes: a file differs from every hash of a member's lock.
         ("WHEEL_LOCK_MISMATCH", ("DO NOT MATCH THE HASHES",)),
+        # pip also prints its generic no-match summary after exhausting index retries.
+        ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
+        ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
         ("PIP_NO_MATCH", ("No matching distribution found", "Could not find a version that satisfies")),
         ("PIP_RESOLUTION_CONFLICT", ("ResolutionImpossible", "conflicting dependencies")),
         ("PYTHON_VERSION_INCOMPATIBLE", ("requires a different Python", "Requires-Python")),
-        ("TLS_FAILURE", ("CERTIFICATE_VERIFY_FAILED", "certificate verify failed")),
-        ("NETWORK_FAILURE", ("ProxyError", "ConnectionError", "Connection refused", "Temporary failure in name resolution", "ReadTimeoutError")),
         ("PIP_CHECK_FAILED", ("has requirement", "which is not installed")),
     )
     return next((code for code, matches in patterns if any(value in text for value in matches)), "BUILD_FAILED")
@@ -118,6 +78,8 @@ def diagnose_pip_log(text: str) -> str:
 
 def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
     """Bounded, re-validated dependency facts from pip output; no log text is copied."""
+    if code in {"NETWORK_FAILURE", "TLS_FAILURE"}:
+        return ({"code": code},)
     diagnostics = []
     for match in re.finditer(r"No matching distribution found for ([^\r\n]{1,256})", text):
         try:
@@ -133,6 +95,21 @@ def pip_log_diagnostics(text: str, code: str) -> tuple[dict, ...]:
             continue
         diagnostics.append({"code": "PIP_RESOLUTION_CONFLICT", "package": match.group(1),
                             "version": match.group(2), "dependency": dependency})
+    if code == "PIP_CHECK_FAILED":
+        for line in text.splitlines():
+            match = re.fullmatch(r"([\w.-]+) ([\w.!+_-]+) requires (.{1,256}), which is not installed\.", line)
+            wrong = re.fullmatch(r"([\w.-]+) ([\w.!+_-]+) has requirement (.{1,256}), but you have ([\w.-]+) ([\w.!+_-]+)\.", line)
+            if match is None and wrong is None:
+                continue
+            found = match or wrong
+            try:
+                dependency = normalize_requirements((found.group(3),))[0]
+            except EnvironmentRequestError:
+                continue
+            if wrong and canonicalize_name(wrong.group(4)) != Requirement(dependency).name:
+                continue
+            diagnostics.append({"code": code, "package": found.group(1), "version": found.group(2),
+                "dependency": dependency, **({"installed_version": wrong.group(5)} if wrong else {})})
     return tuple(diagnostics[:8]) or ({"code": code},)
 
 
@@ -581,13 +558,9 @@ class DockerEnvironmentBuilder:
         try:
             if probe_log.stat().st_size > 1_048_576:
                 raise ValueError()
-            inventory = json.loads(probe_log.read_text())
-            failed_modules = inventory["failed_imports"]
-            if not isinstance(failed_modules, list) or any(module not in modules for module in failed_modules):
-                raise ValueError()
-            if failed_modules:
-                return refused("IMPORT_CHECK_FAILED", tuple({"code": "IMPORT_CHECK_FAILED", "module": module}
-                                                            for module in failed_modules[:8]))
+            inventory = parse_import_probe(json.loads(probe_log.read_text()), modules)
+            if inventory["failed_imports"]:
+                return refused("IMPORT_CHECK_FAILED", import_diagnostics(inventory))
             if probed_unshared(inventory):
                 return refused("IMAGE_NOT_SHAREABLE")  # The paths stay in verification.log.
             if self._stop_requested():

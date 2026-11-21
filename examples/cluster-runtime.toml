@@ -28,8 +28,8 @@ model_identifier = "<model>"
 [execution]
 backend = "apptainer"
 default_image = "scientific-python"  # Used when the Agent names no image.
-max_output_file_bytes = 8589934592       # Enforced on the host with RLIMIT_FSIZE.
-max_collected_output_bytes = 34359738368
+max_output_file_bytes = 134217728        # Enforced on the host with RLIMIT_FSIZE.
+max_collected_output_bytes = 536870912
 # Under Apptainer, /tmp lives in the per-execution scratch directory. Its size is
 # checked every few seconds and the run stops with SCRATCH_LIMIT above this value.
 tmpfs_size_mb = 256

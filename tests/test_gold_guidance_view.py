@@ -7,7 +7,7 @@ import pytest
 from test_c9_gold_skill_lifecycle import (
     _context, _create_gold, _decide_use, _draft, _governed, _submit_use, _toolset,
 )
-from labbioagentos import SkillUsageOutcome, SkillUseMode
+from labbioagentos import RunStatus, SkillUsageOutcome, SkillUseMode
 
 
 @pytest.mark.asyncio
@@ -103,3 +103,47 @@ async def test_tag_filter_cannot_resurrect_superseded_version(tmp_path):
     assert (await tools.skill_search(required_tags=["validated-analysis"]))["data"]["items"] == []
     result = await tools.skill_search(required_tags=["revised-label"])
     assert result["data"]["items"][0]["version"] == latest.version == 2
+
+
+@pytest.mark.asyncio
+async def test_wide_catalog_reaches_every_head_with_bound_and_audited_offsets(tmp_path):
+    from labbioagentos.model_safety import validate_model_visible_json
+    from labbioagentos.kernel import ModelResultProjector
+
+    principal, workspace, artifacts, exposure, store, service, _, recorder = _governed(tmp_path)
+    created = []
+    for i in range(20):
+        d = _draft("Same procedural summary")
+        limits = ("范围限制" * 700,) * 4 if i == 0 else ("需独立复核" * 120,)
+        updates = {"applicability": "只在条件明确时适用" * 55, "known_limitations": limits}
+        if i == 0:
+            updates["tags"] = frozenset(f"{n:02d}" + "参考" * 124 for n in range(32))
+        d = d.model_copy(update={"description": "测试候选描述" * 160,
+                                  "procedure": d.procedure.model_copy(update=updates)})
+        created.append(_create_gold(service, store, principal, artifacts, draft=d)[2])
+    run_id = uuid4()
+    tools = _toolset(principal, workspace, artifacts, exposure, service, run_id,
+                     ("skill_search",), recorder)
+    observed = []
+    offset = 0
+    while True:
+        response = await tools.skill_search(offset=offset)
+        assert response["success"], response["error"]
+        ModelResultProjector(max_bytes=60_000, validate_value=validate_model_visible_json).project(response)
+        page = response["data"]
+        ids = [row["skill_id"] for row in page["items"]]
+        observed.extend(ids)
+        assert page["available_count"] == 20 and ids
+        assert tools.evidence_items()[-1].skill_search_request.returned_count == len(ids)
+        if str(created[0].skill_id) in ids:
+            large = next(row for row in page["items"] if row["skill_id"] == str(created[0].skill_id))
+            assert large["truncated_fields"]
+            assert large["applicability_preview"] == created[0].procedure.applicability[:500]
+        if page["next_offset"] is None:
+            break
+        assert page["truncated"] and page["next_offset"] == offset + len(ids)
+        offset = page["next_offset"]
+    assert observed == sorted(str(s.skill_id) for s in created)
+    assert offset > 0
+    assert service.finalize_run_usage(run_id, RunStatus.COMPLETED) == ()
+    assert not any(e.event_type.value == "CAPABILITY_FAILED" for e in recorder.events(run_id))

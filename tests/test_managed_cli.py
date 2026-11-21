@@ -39,6 +39,7 @@ def managed_cli(tmp_path, tmp_path_factory, monkeypatch):
             "endpoint": "https://provider.invalid/v1", "model_identifier": "offline-test-model",
         },
         "execution": {
+            "backend": "docker",
             "default_image": "python", "images": [{"key": "python", "reference": "sha256:" + "1" * 64}],
             "resources": {"cpus": 1.0, "memory_mb": 512,
                           "pids_limit": 32, "timeout_seconds": 30.0},
@@ -248,8 +249,8 @@ def test_exact_registry_identity_reaches_every_stage_context_without_credential(
         assert context.workflow_control.request_user_input_available is (context.stage_id is WorkflowStage.PLAN)
 
 
-@pytest.mark.parametrize("gold_gate", (True, False), ids=("gold-use", "generic-input"))
-def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli, monkeypatch, capsys, gold_gate):
+@pytest.mark.parametrize("use_mode", ("REFERENCE", None, "ADAPT"), ids=("gold-use", "generic-input", "adapt"))
+def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli, monkeypatch, capsys, use_mode):
     """Real persisted governance with deterministic proposals, not model acceptance."""
     from dataclasses import replace
     from uuid import UUID
@@ -261,6 +262,7 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
     from test_c9_gold_skill_lifecycle import _toolset
     from test_local_gold import _gold
 
+    gold_gate = use_mode is not None
     _, _, workspace, _, _, observed = managed_cli
     settings = managed_cli[4]
     monkeypatch.setattr(cli, "load_settings", lambda _path: settings)
@@ -282,7 +284,7 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
             _, state["gold"] = _gold(config.skill_service, settings.principal)
         return application
 
-    async def capability(_self, stage_input):
+    async def capability(_self, stage_input, *, resolve_finalization=None):
         items = ()
         if gold_gate and stage_input.stage_id is WorkflowStage.PLAN:
             application = state["applications"][-1]
@@ -297,7 +299,7 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
                 assert search["success"] is True
                 gold = state["gold"]
                 receipt = await toolset.skill_propose_use(str(gold.skill_id), gold.version,
-                                                         "REFERENCE", "Synthetic optional reference.")
+                                                         use_mode, "Synthetic optional reference.")
                 assert receipt["success"] is True
                 state["proposal"] = service.pending_use_proposal(UUID(receipt["data"]["proposal_id"]))
                 assert service.store.get_authorization_for_proposal(state["proposal"].proposal_id) is None
@@ -311,7 +313,7 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
         return CapabilityEvidenceBundle(run_id=stage_input.run_id, stage_id=stage_input.stage_id,
                                         invocation_id=stage_input.invocation_id, items=items)
 
-    async def finalizer(_self, stage_input, capability_evidence=None):
+    async def finalizer(_self, stage_input, capability_evidence=None, *, resolved_finalization=None):
         state["final_inputs"].append(stage_input)
         stage = stage_input.stage_id
         references = ()
@@ -377,8 +379,102 @@ def test_gate_restores_exact_scope_then_hands_context_to_next_stage(managed_cli,
     assert all((item.workspace.user_id, item.workspace.project_id) == ("alice", "one")
                for item in state["final_inputs"])
     assert len(state["applications"]) == count + 1  # every command rebuilt, no reused sessions
+    capsys.readouterr()
+    assert cli.main(["gold-usage", *_scope(managed_cli), "--run-dir", str(directory)]) == 0
+    usage = json.loads(capsys.readouterr().out)
+    if gold_gate:
+        assert len(usage["items"]) == 1
+        item = usage["items"][0]
+        assert UUID(item["usage_id"])
+        assert item["skill_id"] == str(state["gold"].skill_id)
+        assert item["skill_version"] == state["gold"].version
+        assert item["proposed_mode"] == use_mode
+        if use_mode == "ADAPT":
+            _assert_cli_evolution(managed_cli, monkeypatch, capsys, directory, item)
+    else:
+        assert usage["items"] == []
     if not gold_gate:
         _assert_cli_curation_lifecycle(managed_cli, monkeypatch, capsys, directory, state)
+
+
+def test_gold_review_compares_content_with_exact_parent(tmp_path):
+    from labbioagentos import Principal
+    from labbioagentos.local_gold import build_personal_gold_service, close_personal_gold
+    from labbioagentos import local_workspace_cli
+    from test_local_gold import _gold, _proposal
+
+    owner = Principal(user_id="alice", lab_id="lab")
+    service = build_personal_gold_service(tmp_path / "gold", owner.user_id)
+    try:
+        _, parent = _gold(service, owner)
+        proposal = _proposal(service, owner, parent_skill_id=parent.skill_id, parent_version=1)
+        comparison = local_workspace_cli.gold_review_comparison(service, proposal, owner)
+        assert comparison == {"skill_id": str(parent.skill_id), "skill_version": 1, "fields": {}}
+    finally:
+        close_personal_gold(service)
+
+
+def _assert_cli_evolution(fixture, monkeypatch, capsys, directory, usage):
+    from labbioagentos import local_workspace_cli
+    from test_local_gold import _FixtureCurator, _draft
+
+    class FixtureEvolutionCurator(_FixtureCurator):
+        async def assess_outcome(self, source):
+            from labbioagentos.skills.models import SkillOutcomeReview
+            return SkillOutcomeReview(research_question="Fixture task", primary_result="Not established.",
+                                      report_quote=None, assessment="INSUFFICIENT_EVIDENCE",
+                                      explanation="No grounded comparison in this fixture.")
+
+        async def recommend_evolution(self, source, *, change):
+            from labbioagentos.skills.curator import SkillEvolutionRecommendation
+            return SkillEvolutionRecommendation(action="KEEP", reason="No new reusable change.",
+                                                outcome_review=await self.assess_outcome(source))
+
+        async def propose_with_context(self, source, *, change):
+            return _draft().model_copy(update={"description": change.review_feedback or "fixture update"})
+
+    monkeypatch.setattr(local_workspace_cli, "configured_curator", lambda app: FixtureEvolutionCurator())
+    scope = [*_scope(fixture), "--run-dir", str(directory)]
+    assert cli.main(["gold-propose", *scope, "--from-usage", usage["usage_id"]]) == 0
+    kept = json.loads(capsys.readouterr().out)
+    assert kept["recommendation"]["action"] == "KEEP" and kept["proposal"] is None
+    for kind in ("update", "fork"):
+        assert cli.main(["gold-propose", *scope, "--from-usage", usage["usage_id"],
+                         "--evolution", kind]) == 0
+        proposal = json.loads(capsys.readouterr().out)["proposal"]
+        assert proposal["parent_skill_id"] == usage["skill_id"]
+        assert proposal["parent_version"] == usage["skill_version"]
+        assert proposal["source_usage_record_id"] == usage["usage_id"]
+        assert proposal["evolution_kind"] == kind.upper()
+        if kind == "fork":
+            note = "Clarify the context in which the new branch applies."
+            assert cli.main(["gold-revise", *scope, "--proposal-id", proposal["proposal_id"],
+                             "--feedback", note]) == 0
+            revised = json.loads(capsys.readouterr().out)["proposal"]
+            assert revised["revises_proposal_id"] == proposal["proposal_id"]
+            assert revised["review_feedback"] == note and revised["description"] == note
+            assert cli.main(["gold-review", *scope, "--proposal-id", revised["proposal_id"]]) == 0
+            comparison = json.loads(capsys.readouterr().out)["comparison"]
+            assert comparison["proposal_id"] == proposal["proposal_id"]
+            assert comparison["fields"]["description"] == {
+                "before": proposal["description"], "after": revised["description"],
+            }
+            assert cli.main(["gold-decide", *scope, "--proposal-id", proposal["proposal_id"],
+                             "--gate-id", proposal["approval_gate_id"], "--decision", "approve"]) == 1
+            capsys.readouterr()
+            assert cli.main(["gold-review", *scope, "--proposal-id", proposal["proposal_id"]]) == 0
+            archived = json.loads(capsys.readouterr().out)
+            assert archived["proposal"] == proposal and archived["decision_pending"] is False
+            proposal = revised
+        assert cli.main(["gold-decide", *scope, "--proposal-id", proposal["proposal_id"],
+                         "--gate-id", proposal["approval_gate_id"], "--decision", "approve"]) == 0
+        decision = json.loads(capsys.readouterr().out)
+        assert decision["approved"] and decision["export_status"] == "complete"
+        assert (decision["skill_id"] == usage["skill_id"]) is (kind == "update")
+        assert decision["version"] == (usage["skill_version"] + 1 if kind == "update" else 1)
+
+    assert cli.main(["gold-list", *_scope(fixture)]) == 0
+    assert len(json.loads(capsys.readouterr().out)["items"]) == 2
 
 
 def _assert_cli_curation_lifecycle(fixture, monkeypatch, capsys, directory, state):
@@ -404,7 +500,9 @@ def _assert_cli_curation_lifecycle(fixture, monkeypatch, capsys, directory, stat
     assert cli.main([*review, *_scope(fixture, token_user="bob")]) == 1
     capsys.readouterr()
     assert cli.main([*review, *_scope(fixture)]) == 0
-    assert json.loads(capsys.readouterr().out)["proposal"] == proposal
+    reviewed = json.loads(capsys.readouterr().out)
+    assert reviewed["proposal"] == proposal
+    assert reviewed["comparison"] is None and reviewed["decision_pending"] is True
     decision = ["gold-decide", "--run-dir", str(directory), "--proposal-id", proposal["proposal_id"],
                 "--decision", "approve"]
     assert cli.main([*decision, *_scope(fixture), "--gate-id", "wrong-gate"]) == 1

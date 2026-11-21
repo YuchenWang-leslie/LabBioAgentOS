@@ -51,8 +51,9 @@ def test_environment_and_generated_read_prompts_render_without_changing_text(set
         stage["stage"]: shared + profile["capability_common"].format(stage=stage["stage"])
         + stage_protocol(stage) for stage in profile["stages"]
     }
-    # The production option combination, without private config or model calls.
-    assert len(legacy["EXECUTE"]) == 8007
+    # This option combination still crosses the former single-value 8000 cap.
+    # Its exact length changes when explicitly configured tools are added.
+    assert len(legacy["EXECUTE"]) > 8000
     app = local_config.build_application(settings, settings.result_root / "all-prompts", load_provider=False)
     try:
         for assembly in app.configuration.stage_assemblies:
@@ -108,6 +109,9 @@ def test_segment_accepts_its_exact_8000_character_boundary(settings_file, segmen
         execute = next(stage for stage in profile["stages"] if stage["stage"] == "EXECUTE")
         overhead = len(stage_protocol(execute)) - len(execute["capability_protocol"])
         execute["capability_protocol"] = "x" * (8000 - overhead)
+        # A valid segment need not fit together with every other valid segment.
+        # Keep this fixture below the independent total limit tested below.
+        profile['capability_common'] = 'Engineering segment-capacity fixture for {stage}.'
     else:
         field = {"common": "capability_common", "finalization": "finalization_protocol"}[segment]
         profile[field] = "x" * 8000

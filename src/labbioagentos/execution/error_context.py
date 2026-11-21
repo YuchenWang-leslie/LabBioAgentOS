@@ -6,7 +6,7 @@ import re
 from .models import ExecutionErrorContext
 
 
-def bounded_error_context(stderr: bytes) -> ExecutionErrorContext | None:
+def bounded_error_context(stderr: bytes, *, raw_stderr: bytes | None = None) -> ExecutionErrorContext | None:
     """Release the traceback or error tail without stdout or variable inspection.
 
     Redaction is best effort, not a guarantee that arbitrary exception text is
@@ -15,6 +15,8 @@ def bounded_error_context(stderr: bytes) -> ExecutionErrorContext | None:
     """
     if not stderr.strip():
         return None
+    # Backend filtering may precede this projection; bind the retained RAW log.
+    raw_stderr = stderr if raw_stderr is None else raw_stderr
     tail = stderr[-65_536:]
     truncated = len(tail) != len(stderr)
     text = tail.decode("utf-8", errors="replace")
@@ -27,7 +29,7 @@ def bounded_error_context(stderr: bytes) -> ExecutionErrorContext | None:
         text = text[start:]
     original = text
     text = redact_process_text(text)
-    redacted = text != original
+    redacted = text != original or stderr != raw_stderr
     # Retain the terminal exception; make all length loss explicit.
     lines = text.splitlines()
     truncated |= len(lines) > 80 or any(len(line) > 1200 for line in lines)
@@ -36,7 +38,7 @@ def bounded_error_context(stderr: bytes) -> ExecutionErrorContext | None:
     text = text[-6000:]
     return ExecutionErrorContext(
         source=source, text=text, truncated=truncated, redacted=redacted,
-        stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+        stderr_sha256=hashlib.sha256(raw_stderr).hexdigest(),
     )
 
 
@@ -65,7 +67,8 @@ def redact_process_text(text: str) -> str:
     text = re.sub(r"(?i)\b(?:https?|ftp)://[^\s\"'<>]+", "[REDACTED_URL]", text)
     text = re.sub(r"\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+)\b",
                   "[REDACTED_TOKEN]", text)
-    text = re.sub(r'''(?<![\w])(?:[A-Za-z]:[\\/]|/|~[/\\])[^\s'"<>),;]+''',
+    # A slash inside a signed identifier is not an absolute POSIX path start.
+    text = re.sub(r'''(?<![\w])(?:[A-Za-z]:[\\/]|(?<![+-])/|~[/\\])[^\s'"<>),;]+''',
                   "[REDACTED_PATH]", text)
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]|[\x00-\x08\x0b-\x1f\x7f]", "", text)
     return text

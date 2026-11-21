@@ -2,10 +2,14 @@
 
 from uuid import UUID
 
-from .artifacts import ArtifactConsumer, ArtifactExposureClass, ArtifactQuery, ArtifactViewType
+from .artifacts import ArtifactConsumer, ArtifactExposureClass, ArtifactExposureDenied, ArtifactNotFoundError, ArtifactQuery, ArtifactViewType
 from .contracts import WorkflowStage
 from .governance import AuthorizationDenied
-from .skills.models import SkillStageContext
+from .model_safety import UnsafeModelContentError
+from .skills.models import (
+    SkillOutcomeEvidence, SkillSelectedDelivery, SkillSelectedReport, SkillSourceClarification, SkillSourceText,
+    SkillSourceUserRequest, SkillStageContext,
+)
 from .trace import TraceEventType
 
 
@@ -53,7 +57,7 @@ def stage_context_from_results(results, events, run_id):
     return tuple(context)
 
 
-def source_artifact_views(application, run_id, principal, workspace):
+def source_artifact_views(application, run_id, principal, workspace, *, selected_delivery=None):
     """Project source-run outputs under existing exposure rules, never RAW files.
 
     Format-neutral views are source material, not a selection of scientific results.
@@ -66,8 +70,13 @@ def source_artifact_views(application, run_id, principal, workspace):
         ArtifactExposureClass.USER_APPROVED: (ArtifactViewType.SUMMARY, ArtifactViewType.TOP_N),
     }
     requests = []
+    selected_ids = {item.artifact_id for item in selected_delivery.outputs} if selected_delivery is not None else None
     for ref in sorted(application.artifact_store.list_refs(), key=lambda item: str(item.artifact_id)):
-        if ref.run_id != run_id or ref.exposure_class is ArtifactExposureClass.RAW:
+        if ref.exposure_class is ArtifactExposureClass.RAW:
+            continue
+        if selected_ids is not None and ref.artifact_id not in selected_ids:
+            continue
+        if selected_ids is None and ref.run_id != run_id:
             continue
         if (ref.owner_user_id, ref.project_id, ref.lab_id) != (
             principal.user_id, workspace.project_id, principal.lab_id
@@ -80,3 +89,52 @@ def source_artifact_views(application, run_id, principal, workspace):
         artifact_id, ArtifactQuery(view_type=view), ArtifactConsumer.REMOTE_LLM,
         principal=principal,
     ) for artifact_id, view in requests)
+
+
+def source_outcome_evidence(application, record, run_id, principal, workspace):
+    from .local_delivery import selected_delivery_manifest, selected_report_id
+    from .runtime.delivery import build_delivery_manifest
+    from .runtime.reporting import read_report_page
+
+    clarifications = tuple(SkillSourceClarification(
+        agent_question=SkillSourceText.from_record(item.question.prompt),
+        user_answer=SkillSourceUserRequest.from_record(item.answer_text),
+    ) for item in getattr(record.workflow_run, "clarifications", ())
+        if item.status in {"ANSWERED", "RESOLVED"} and item.answered_by == principal.user_id)
+    report_id = selected_report_id(record)
+    report = None
+    if report_id is not None:
+        try:
+            if application.artifact_store.get_ref(report_id).run_id != run_id:
+                raise AuthorizationDenied("Selected report does not belong to the reviewed run")
+            page = read_report_page(application.artifact_store, application.artifact_exposure, report_id,
+                                    principal=principal, workspace=workspace, limit=8000)
+            pages = [page["content"]]
+            while page["next_offset"] is not None and page["end_offset"] < 32_000:
+                page = read_report_page(
+                    application.artifact_store, application.artifact_exposure, report_id,
+                    principal=principal, workspace=workspace, offset=page["next_offset"],
+                    limit=8000, expected_sha256=page["sha256"],
+                )
+                pages.append(page["content"])
+            report = SkillSelectedReport.from_prefix(report_id, page["sha256"], page["total_characters"],
+                                                    "".join(pages))
+        except ArtifactNotFoundError:
+            report = SkillSelectedReport(artifact_id=report_id, excerpt=SkillSourceText())
+        except (ArtifactExposureDenied, UnsafeModelContentError):
+            report = SkillSelectedReport(artifact_id=report_id, excerpt=SkillSourceText(status="WITHHELD"))
+    selected_delivery = None
+    if report is not None:
+        saved = selected_delivery_manifest(application.artifact_store, record)
+        if saved is not None:
+            verified = build_delivery_manifest(application.artifact_store, application.access_service,
+                tuple(item.artifact_id for item in saved.outputs), principal=principal, workspace=workspace,
+                run_id=run_id, imported_artifact_ids=(*record.input_artifact_ids, *record.context_artifact_ids),
+                trace_recorder=application.trace_recorder)
+            if verified != saved.model_dump(mode="json"):
+                raise ValueError("Selected delivery differs from its registered producers")
+            selected_delivery = SkillSelectedDelivery(
+                outputs=tuple(item.model_dump(exclude={"filename"}) for item in saved.outputs),
+                programs=tuple(item.model_dump() for item in saved.programs))
+    return SkillOutcomeEvidence(selected_report=report, selected_delivery=selected_delivery,
+                                answered_clarifications=clarifications)

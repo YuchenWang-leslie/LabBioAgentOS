@@ -122,7 +122,7 @@ async def test_two_delegations_require_redelivery_and_preserve_workflow_report_i
             references = [{"artifact_id": str(ref.artifact_id), "observation_ids": [identity]}]
             if request.turn_index == 1:
                 self.second_started_with_prepared = host.prepared_handoff
-                return call("report_check", {"evidence_references": references})
+                return call("report_check", {"evidence_references": references, "delivery_artifact_ids": []})
             self.replies[request.turn_index - 1] = previous
             if request.turn_index == 2:
                 return call("prepare_handoff", {"observation_ids": [identity], "summary": "Not read here."})
@@ -132,6 +132,7 @@ async def test_two_delegations_require_redelivery_and_preserve_workflow_report_i
                 return call("prepare_handoff", {"observation_ids": [identity], "summary": "Actually reread here."})
             if request.turn_index == 5:
                 return call("report_submit", {"title": "Synthetic report",
+                    "delivery_artifact_ids": [],
                     "report_text": "Only the reread mechanical count is cited.",
                     "evidence_references": references})
             return ModelTurn(content="Report registered.", finish_reason=FinishReason.STOP)

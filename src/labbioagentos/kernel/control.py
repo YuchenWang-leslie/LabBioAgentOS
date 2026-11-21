@@ -12,6 +12,23 @@ from .contracts import (
 from .errors import BudgetExceededError, KernelInterruptedError
 
 
+_CLOSEOUT_OUTPUT_TOKEN_CEILING = 8192
+
+
+def completion_capacity(limits: BudgetLimits, *, max_output_tokens: int = 8192) -> dict[str, int]:
+    """Capacity within original limits, with a separate bounded closeout ceiling.
+
+    max_output_tokens is the caller/model ceiling; a larger investigation
+    allowance does not enlarge closeout. A smaller model ceiling still applies.
+    """
+    return {
+        'model_time_ms': limits.wall_time_ms // 3,
+        'tokens': limits.tokens // 3,
+        'provider_turns': min(3, max(0, limits.provider_turns - 1)),
+        'max_output_tokens': min(_CLOSEOUT_OUTPUT_TOKEN_CEILING, max_output_tokens),
+    }
+
+
 class BudgetLedger:
     """Reserve root-run budget atomically across all bounded dimensions."""
 

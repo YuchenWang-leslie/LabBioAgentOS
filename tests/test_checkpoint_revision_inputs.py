@@ -11,6 +11,57 @@ from test_runtime_milestone_b import boundary, _toolset  # noqa: F401
 from test_skill_retrieval_grounding import boundary as gold_boundary, _pending_proposal  # noqa: F401
 
 
+@pytest.mark.parametrize('mode', ['base', 'optional', 'data_bearing'])
+@pytest.mark.parametrize('capability', ['execution_submit', 'execution_revise'])
+def test_generated_native_input_guidance_publishes_both_uuid_sources(mode, capability):
+    from labbioagentos import ExecutionRuntime, RequestedResources, RuntimeExecutionCapabilityView
+    from labbioagentos.execution.models import ExecutionReceipt
+    from labbioagentos.runtime.native_tools import build_labbio_tool_registry
+
+    # Check actual published ToolSpecs, including the data-bearing field override.
+    # The reference names must correspond to real public contracts, not a prose alias.
+    checkpoint_field = 'registered_outputs'
+    initial_field = 'mountable_input_artifact_ids'
+    assert checkpoint_field in ExecutionReceipt.model_fields
+    assert initial_field in RuntimeExecutionCapabilityView.model_fields
+    view = None if mode == 'base' else RuntimeExecutionCapabilityView(
+        runtime=ExecutionRuntime.PYTHON, image_key='fixture-image',
+        resources=RequestedResources(), network_required=False,
+        minimum_queryable_output_count=int(mode == 'data_bearing'),
+        mountable_input_artifact_ids=(uuid4(),))
+    spec = next(item for item in build_labbio_tool_registry(object(), view).specs
+                if item.name == capability)
+    for guidance in (spec.description, spec.parameters['properties']['input_artifact_ids']['description']):
+        assert checkpoint_field in guidance
+        assert initial_field in guidance
+        assert 'invocation' in guidance.lower()
+        assert 'scratch' in guidance.lower()
+
+
+def test_mountable_input_view_distinguishes_initial_inputs_from_receipt_checkpoints():
+    from labbioagentos import RuntimeExecutionCapabilityView
+    guidance = RuntimeExecutionCapabilityView.model_json_schema()['properties'][
+        'mountable_input_artifact_ids']['description']
+    assert 'initial' in guidance.lower()
+    assert 'registered_outputs' in guidance
+
+
+def test_native_revision_guidance_identifies_original_scope_and_fresh_rerun():
+    from labbioagentos.runtime.native_tools import build_labbio_tool_registry
+    registry = build_labbio_tool_registry(object())
+    spec = next(item for item in registry.specs if item.name == 'execution_revise')
+    properties = spec.parameters['properties']
+    for field in ('execution_id', 'expected_script_hash', 'edits'):
+        assert field in properties
+        assert field in spec.description
+    assert 'execution_inspect' in registry.names
+    assert 'execution_inspect' in spec.description
+    assert 'same-run' in spec.description
+    assert 'prior-run' in spec.description
+    assert '.py' in spec.description
+    assert 'fresh' in spec.description
+
+
 @pytest.mark.asyncio
 async def test_revision_explicitly_replaces_inputs_and_parameters(inspection, boundary):
     service, executor, run_id = inspection
@@ -25,7 +76,7 @@ async def test_revision_explicitly_replaces_inputs_and_parameters(inspection, bo
     schemas = {t.name: t.inputSchema['parameters'] for t in await provider.list_tools()}
     assert 'input_artifact_ids' in schemas['execution_revise']['properties']
     assert 'parameters' in schemas['execution_revise']['properties']
-    assert 'review' in schemas['execution_revise']['properties']
+    assert 'review_rationale' in schemas['execution_revise']['properties']
     result = await provider.call_tool('execution_revise', {
         'execution_id': str(first.execution_id), 'expected_script_hash': first.script_hash,
         'input_artifact_ids': [str(checkpoint_id)], 'parameters': {'mode': 'reuse'},
@@ -37,6 +88,32 @@ async def test_revision_explicitly_replaces_inputs_and_parameters(inspection, bo
     assert _inspect(inspection, boundary, first.execution_id)['submitted_contract']['input_artifact_ids'] == []
     assert _inspect(inspection, boundary, first.execution_id)['submitted_program']['source'] == 'value = 1\nprint(value)\n'
     assert len(executor.plans) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("second_old", "match_count"), [("SECRET_MISSING_OLD", 0), ("print(value)", 2)])
+async def test_same_run_revision_reports_the_failing_edit_and_match_count(
+    inspection, boundary, second_old, match_count,
+):
+    service, executor, run_id = inspection
+    original = 'value = 1\nprint(value)\nprint(value)\n'
+    first = await _submit(inspection, boundary, original)
+    base = _toolset(boundary, WorkflowStage.EXECUTE, ('execution_revise',), execution_submission=service)
+    tools = LabBioRuntimeToolSet(replace(base.binding, run_id=run_id), base.services)
+
+    result = await tools.execution_revise(str(first.execution_id), first.script_hash, edits=[
+        {'old': 'value = 1', 'new': 'value = 2'},
+        {'old': second_old, 'new': 'SECRET_REPLACEMENT'},
+    ])
+
+    assert not result['success'] and result['error']['error_code'] == 'REVISION_MATCH_NOT_UNIQUE'
+    assert result['error']['revision_validation']['issues'] == [
+        {'field': 'edits.old', 'item_index': 1, 'reason': 'invalid_value'},
+    ]
+    assert f'{match_count} exact matches' in result['error']['safe_message']
+    assert 'SECRET_' not in str(result)
+    assert len(executor.plans) == 1
+    assert _inspect(inspection, boundary, first.execution_id)['submitted_program']['source'] == original
 
 
 @pytest.mark.asyncio
@@ -66,8 +143,10 @@ async def test_execution_review_requires_real_feedback_and_remains_model_context
     actual_feedback = UUID(failed['capability_invocation_id'])
     invented = await tools.execution_revise(str(first.execution_id), first.script_hash,
         review={'rationale': 'Use the verified base.', 'feedback_invocation_ids': [str(uuid4())]})
-    assert invented['error']['error_code'] == 'INVALID_EXECUTION_REVIEW'
-    assert len(executor.plans) == 1
+    assert invented['success']
+    assert invented['retained_metadata']['execution_review_status'] == 'IGNORED_INVALID'
+    assert tools.evidence_items()[-1].execution_review is None
+    assert len(executor.plans) == 2
     tools.mark_feedback_delivered((failed,))
     completed = await tools.execution_revise(str(first.execution_id), first.script_hash,
         review={'rationale': 'Use the actual source hash returned for this base.',
@@ -76,13 +155,13 @@ async def test_execution_review_requires_real_feedback_and_remains_model_context
     audit = tools.evidence_items()[-1].execution_review
     assert audit.authority == 'MODEL_CONTEXT'
     assert audit.feedback_invocation_ids == (actual_feedback,)
-    assert len(executor.plans) == 2
+    assert len(executor.plans) == 3
     assert type(tools.evidence_items()[-1]).model_validate_json(
         tools.evidence_items()[-1].model_dump_json()).execution_review == audit
 
 
 @pytest.mark.asyncio
-async def test_malformed_or_unread_gold_review_does_not_execute(inspection, boundary):
+async def test_malformed_or_unread_gold_review_is_ignored(inspection, boundary):
     service, executor, run_id = inspection
     base = _toolset(boundary, WorkflowStage.EXECUTE, ('execution_submit',), execution_submission=service)
     tools = LabBioRuntimeToolSet(replace(base.binding, run_id=run_id), base.services)
@@ -91,9 +170,39 @@ async def test_malformed_or_unread_gold_review_does_not_execute(inspection, boun
                    {'rationale': '-----BEGIN PRIVATE KEY-----\nSECRET_KEY\n-----END PRIVATE KEY-----'},
                    {'rationale': 'Use guidance.', 'gold_authorization_ids': [str(uuid4())]}):
         result = await tools.execution_submit('approved', 'pass\n', review=review)
-        assert result['error']['error_code'] == 'INVALID_EXECUTION_REVIEW'
+        assert result['success']
+        assert result['retained_metadata']['execution_review_status'] == 'IGNORED_INVALID'
+        assert tools.evidence_items()[-1].execution_review is None
         assert 'SECRET_' not in str(result)
-    assert executor.plans == []
+    assert len(executor.plans) == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review_arguments", [
+    {"review_feedback_invocation_ids": [str(uuid4())]},
+    {"review_gold_authorization_ids": [str(uuid4())]},
+    {"review": '{"rationale":"PRIVATE_CANARY"}'},
+    {"review_feedback_invocation_ids": "not-an-array"},
+])
+async def test_native_invalid_review_keeps_execution_and_drops_annotation(
+    inspection, boundary, review_arguments,
+):
+    service, executor, run_id = inspection
+    base = _toolset(boundary, WorkflowStage.EXECUTE, ('execution_submit',),
+                    execution_submission=service)
+    tools = LabBioRuntimeToolSet(replace(base.binding, run_id=run_id), base.services)
+    response = await LocalProvider(tools).call_tool("execution_submit", {
+        "image_key": "approved",
+        "script_content": "pass\n",
+        **({"review_rationale": "Considered the supplied reference."}
+           if "review" not in review_arguments else {}),
+        **review_arguments,
+    })
+    assert response["success"]
+    assert response["retained_metadata"]["execution_review_status"] == "IGNORED_INVALID"
+    assert tools.evidence_items()[-1].execution_review is None
+    assert "PRIVATE_CANARY" not in str(response)
+    assert len(executor.plans) == 1
 
 
 @pytest.mark.asyncio
@@ -178,6 +287,8 @@ async def test_revision_none_inherits_but_empty_overrides_clear(inspection, boun
         input_artifact_ids=[str(checkpoint)], parameters={'mode': 'reuse'}))['data']
     inherited = await tools.execution_revise(selected['execution_id'], selected['script_hash'])
     assert inherited['success']
+    assert inherited['data']['execution_id'] != selected['execution_id']
+    assert executor.plans[-1].script_content == executor.plans[-2].script_content
     assert executor.plans[-1].input_artifact_ids == (checkpoint,)
     assert executor.plans[-1].parameters == {'mode': 'reuse'}
     cleared = await tools.execution_revise(selected['execution_id'], selected['script_hash'],

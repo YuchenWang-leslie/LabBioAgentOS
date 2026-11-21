@@ -239,15 +239,17 @@ def test_stage_spec_allowlist_controls_tool_exposure_and_never_auto_calls(bounda
         (WorkflowStage.UNDERSTAND, {"artifact_list", "artifact_query", "skill_search", "skill_view", "memory_search", "memory_view"}),
         (WorkflowStage.PLAN, {"artifact_query", "skill_search", "skill_view", "skill_propose_use", "memory_search", "memory_view", "environment_list"}),
         (WorkflowStage.PREFLIGHT, {"artifact_query"}),
-        (WorkflowStage.EXECUTE, {"artifact_query", "execution_submit", "execution_revise", "execution_inspect", "environment_list", "environment_build", "skill_view"}),
-        (WorkflowStage.VALIDATE, {"artifact_query", "artifact_aggregate", "execution_inspect", "skill_view"}),
-        (WorkflowStage.INTERPRET, {"artifact_query", "artifact_aggregate", "literature_search", "execution_inspect", "skill_view"}),
-        (WorkflowStage.REPORT, {"artifact_query", "artifact_aggregate", "report_check", "report_submit", "execution_inspect", "skill_view"}),
+        (WorkflowStage.EXECUTE, {"artifact_list", "artifact_query", "execution_submit", "execution_revise", "execution_inspect", "environment_list", "environment_build", "skill_view"}),
+        (WorkflowStage.VALIDATE, {"artifact_list", "artifact_query", "artifact_aggregate", "execution_inspect", "skill_view"}),
+        (WorkflowStage.INTERPRET, {"artifact_list", "artifact_query", "artifact_aggregate", "literature_search", "execution_inspect", "skill_view"}),
+        (WorkflowStage.REPORT, {"artifact_list", "artifact_query", "artifact_aggregate", "report_check", "report_submit", "execution_inspect", "skill_view"}),
         (WorkflowStage.LEARN, {"skill_search", "skill_view", "memory_search", "memory_view", "memory_propose_update"}),
     ),
 )
 def test_stage_capability_ceiling_is_exact(stage, expected):
-    expected = expected | {"evidence_read", "prepare_handoff"}
+    expected = expected | {
+        "evidence_list", "evidence_read", "stage_context_read", "prepare_handoff", "handoff_status", "working_note_write", "working_note_read",
+    }
     if "artifact_query" in expected:
         expected = expected | {"report_read", "file_read"}
     assert set(CAPABILITY_CEILINGS[stage]) == expected

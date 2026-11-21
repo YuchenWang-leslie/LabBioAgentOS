@@ -10,6 +10,7 @@ from .contracts import (
     BudgetDelta,
     BudgetLimits,
     BudgetUsage,
+    CompletionRejection,
     DelegationRequest,
     DelegationResult,
     FinishReason,
@@ -91,6 +92,7 @@ from .tooling import (
 )
 
 __all__ = [
+    "CompletionRejection",
     "AgentInvocation",
     "AgentHistoryLimitError",
     "AgentLoop",

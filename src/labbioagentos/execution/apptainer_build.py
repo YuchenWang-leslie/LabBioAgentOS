@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import re
 import shlex
@@ -23,17 +24,20 @@ from urllib.parse import urlsplit
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
-from .apptainer import ISOLATION_ARGUMENTS, SubprocessApptainerRunner
+from .apptainer import CONTAIN_ARGUMENTS, ISOLATION_ARGUMENTS, SubprocessApptainerRunner
 from .conda import CONDA_ENV_PREFIX
 # The same import probe and pip diagnosis as the Docker builder.
 from .wheel_lock import MAX_LOCKED_WHEELS, LockedWheel, WheelLockError, lock_wheelhouse
 from .environment_builder import _PROBE, diagnose_pip_log, pip_log_diagnostics
 from .environments import LEASE_FILE, attempt_lease, normalize_modules  # noqa: F401 - re-exported
+from .models import RequestedResources
 
 MAX_REPORT_BYTES = 16_777_216
 PROBE_OUTPUT = "probe.json"
 # The download step runs contained but with the host network; nothing else does.
-CONTAIN_ARGUMENTS = ISOLATION_ARGUMENTS[:ISOLATION_ARGUMENTS.index("--net")]
+# A contained base image can have an empty resolv.conf even on the host network.
+# Resolve through the download node's DNS; installation and analysis keep their isolated network.
+_DOWNLOAD_ARGUMENTS = (*CONTAIN_ARGUMENTS, "--bind", "/etc/resolv.conf:/etc/resolv.conf:ro")
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
 _UNSAFE_PATH = re.compile(r"[\s\x00-\x1f\x7f:,]")  # ':' and ',' would split a bind spec.
 _CHUNK_BYTES = 1_048_576
@@ -183,7 +187,7 @@ def render_download_program(
         "set -u",
         "umask 077",
         f"A={quote(str(apptainer_binary))}",
-        "CONTAIN=(" + " ".join(quote(item) for item in CONTAIN_ARGUMENTS) + ")",
+        "CONTAIN=(" + " ".join(quote(item) for item in _DOWNLOAD_ARGUMENTS) + ")",
         *_SIGNAL_SAFE_STEPS,
         f"work=$(mktemp -d {quote(str(work_root))}/labbio-download.XXXXXXXX) || exit {failed}",
         'cleanup() { rm -rf -- "$work"; }',
@@ -219,7 +223,7 @@ def download_check_argv(
     for url in (index_url, proxy_url):
         if url is not None and not _plain_url(url):
             raise ValueError("Index and proxy settings must be HTTP(S) endpoints without credentials")
-    argv = [str(apptainer_binary), "--silent", "exec", *CONTAIN_ARGUMENTS, "--workdir", str(work_dir),
+    argv = [str(apptainer_binary), "--silent", "exec", *_DOWNLOAD_ARGUMENTS, "--workdir", str(work_dir),
             "--bind", f"{work_dir}:/labbio/check:rw"]
     options = ["--no-cache-dir"]
     if cache_dir is not None:
@@ -295,7 +299,7 @@ def classify_build(exit_status: int | None, *, timed_out: bool, log_dir: Path) -
         code = diagnose_pip_log(text)
         return code, pip_log_diagnostics(text, code)
     if exit_status == BuildExit.CHECK_FAILED:
-        return "PIP_CHECK_FAILED", ({"code": "PIP_CHECK_FAILED"},)
+        return "PIP_CHECK_FAILED", pip_log_diagnostics(_tail(log_dir / "check.log"), "PIP_CHECK_FAILED")
     return "BUILD_FAILED", ({"code": "BUILD_FAILED"},)
 
 
@@ -374,6 +378,7 @@ def render_build_program(
     log_dir: Path,
     import_modules: tuple[str, ...],
     conda_dir: Path | None = None,
+    resources: RequestedResources | None = None,
 ) -> str:
     """Return the fixed bash program a build job runs; every value is validated and quoted.
 
@@ -388,6 +393,13 @@ def render_build_program(
         _check_path(path)
     modules = normalize_modules(import_modules, max_count=256)
     quote = shlex.quote
+    packing = ""
+    if resources is not None:
+        workers = max(1, math.floor(resources.cpus))
+        # Bound compression caches within the job; the launcher still enforces
+        # the entire process tree's memory/CPU/PID limits.
+        packing = " --mksquashfs-args " + quote(
+            f"-processors {workers} -mem {resources.memory_mb // 2}M")
 
     def log(name: str) -> str:
         return quote(str(log_dir / name))
@@ -425,7 +437,7 @@ def render_build_program(
         f" || exit {unavailable}",
         f'run {isolated} --writable "$sandbox" python -I -c {quote(_WRITABLE_CHECK)}'
         f' > {log("writable.log")} 2>&1 || exit {unavailable}',
-        f'run "$A" --silent build "$work/pack-check.sif" "$work/pack-check" > {log("pack-check.log")} 2>&1'
+        f'run "$A" --silent build{packing} "$work/pack-check.sif" "$work/pack-check" > {log("pack-check.log")} 2>&1'
         f" || exit {unavailable}",
         f'mount="$sandbox"{_BUILD_MOUNT}',
         *(_conda_steps(conda_dir, isolated, log) if conda_dir is not None else ()),
@@ -437,7 +449,7 @@ def render_build_program(
         "fi",
         f'run {isolated} "$sandbox" python -I -m pip check > {log("check.log")} 2>&1'
         f" || exit {int(BuildExit.CHECK_FAILED)}",
-        f'run "$A" --silent build {partial} "$sandbox" > {log("pack.log")} 2>&1'
+        f'run "$A" --silent build{packing} {partial} "$sandbox" > {log("pack.log")} 2>&1'
         f" || exit {int(BuildExit.PACK_FAILED)}",
         f"run {isolated} {partial} python -I -c {quote(_PROBE)} {quote(json.dumps(list(modules)))}"
         f" > {log(PROBE_OUTPUT)} 2> {log('probe.log')} || exit {int(BuildExit.PROBE_FAILED)}",

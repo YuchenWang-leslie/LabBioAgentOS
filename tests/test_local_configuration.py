@@ -2,6 +2,7 @@
 
 import json
 import os
+from inspect import signature
 from pathlib import Path
 import subprocess
 import sys
@@ -13,10 +14,13 @@ from labbioagentos import (
     ApplicationRecoveryError,
     ApplicationRunRequest,
     ArtifactExposureClass,
+    RuntimeStageAssemblySpec,
     SQLiteRunStateStore,
     WorkflowStage,
 )
 from labbioagentos import local_config
+from labbioagentos.kernel import AgentLoop, CollaborationRuntime
+from labbioagentos.kernel.contracts import DEFAULT_MAX_REQUEST_BYTES
 from labbioagentos.local_config import (
     ProviderConfigurationError, build_application, load_settings, provider_credentials,
     runtime_manifest,
@@ -40,6 +44,7 @@ env_file = "provider.env"
 api_key_env = "LOCAL_TEST_KEY"
 model_identifier = "test-provider-model"
 [execution]
+backend = "docker"
 default_image = "python-local"
 [execution.resources]
 cpus = 1.0
@@ -62,7 +67,7 @@ def test_settings_are_explicit_relative_and_frozen(settings_file):
     assert settings.input_roots == (settings_file.parent / "inputs",)
     assert settings.provider.env_file == settings_file.parent / "provider.env"
     assert settings.provider.max_model_phase_seconds == 300
-    assert settings.provider.max_request_bytes == 256_000
+    assert settings.provider.max_request_bytes == DEFAULT_MAX_REQUEST_BYTES
     assert settings.provider.finalization_json_object is False
     assert settings.provider.trust_env is True
     assert settings.principal.user_id == settings.workspace.user_id == "user-local"
@@ -99,10 +104,28 @@ def test_unknown_configuration_is_not_an_import_or_plugin_path(settings_file):
         load_settings(settings_file)
 
 
-def test_request_byte_limit_reaches_stage_assemblies_and_runtime_identity(settings_file):
+def test_request_byte_default_is_shared_by_settings_stages_and_kernel(settings_file):
+    settings = load_settings(settings_file)
+    assert DEFAULT_MAX_REQUEST_BYTES == 1_048_576
+    for runtime in (RuntimeStageAssemblySpec, AgentLoop, CollaborationRuntime):
+        assert signature(runtime).parameters["max_request_bytes"].default == DEFAULT_MAX_REQUEST_BYTES
+    application = build_application(
+        settings, settings.result_root / "default-request-capacity", load_provider=False
+    )
+    try:
+        assert all(
+            assembly.max_request_bytes == DEFAULT_MAX_REQUEST_BYTES
+            for assembly in application.configuration.stage_assemblies
+        )
+    finally:
+        application.run_state_store.close()
+
+
+@pytest.mark.parametrize("request_bytes", [80_000, 123_456])
+def test_request_byte_limit_reaches_stage_assemblies_and_runtime_identity(settings_file, request_bytes):
     default_settings = load_settings(settings_file)
     settings_file.write_text(settings_file.read_text().replace(
-        "[provider]", "[provider]\nmax_request_bytes = 123456",
+        "[provider]", f"[provider]\nmax_request_bytes = {request_bytes}",
     ))
     settings = load_settings(settings_file)
     application = build_application(
@@ -110,7 +133,7 @@ def test_request_byte_limit_reaches_stage_assemblies_and_runtime_identity(settin
     )
     try:
         assert all(
-            assembly.max_request_bytes == 123_456
+            assembly.max_request_bytes == request_bytes
             for assembly in application.configuration.stage_assemblies
         )
         assert runtime_manifest(settings)["runtime_revision"] != runtime_manifest(
@@ -169,6 +192,31 @@ build_proxy = "http://127.0.0.1:12199"
         )
     finally:
         app.run_state_store.close()
+
+
+@pytest.mark.parametrize(("with_gold", "with_environment"), [
+    (False, False), (True, False), (False, True), (True, True),
+])
+def test_optional_plan_tools_keep_bounded_handoff_reachable(settings_file, with_gold, with_environment):
+    if with_environment:
+        with settings_file.open("a") as file:
+            file.write('\n[environment]\nroot = "environments"\n')
+    settings = load_settings(settings_file)
+    if with_gold:
+        settings = settings.model_copy(update={"gold_root": settings_file.parent / "personal-gold"})
+    application = build_application(settings, settings.result_root / "plan", load_provider=False)
+    try:
+        plans = {spec.stage_id: spec for spec in application.configuration.stage_assemblies}
+        plan = plans[WorkflowStage.PLAN]
+        assert plan.capability_phase_enabled == (with_gold or with_environment)
+        assert ("skill_view" in plan.capability_allowlist) == with_gold
+        assert ("environment_list" in plan.capability_allowlist) == with_environment
+        for tool in ("prepare_handoff", "handoff_status"):
+            assert (tool in plan.capability_allowlist) == plan.capability_phase_enabled
+        assert plan.max_capability_turns == 16
+        assert not plans[WorkflowStage.PREFLIGHT].capability_phase_enabled
+    finally:
+        application.run_state_store.close()
 
 
 def test_environment_proxy_cannot_include_credentials(settings_file):
@@ -264,10 +312,13 @@ def test_reopen_composition_never_loads_credentials_or_changes_environment(setti
         assemblies = {spec.stage_id: spec for spec in application.configuration.stage_assemblies}
         assert len(assemblies) == 9
         assert assemblies[WorkflowStage.REPORT].max_capability_turns == 24
+        assert assemblies[WorkflowStage.EXECUTE].max_capability_turns == 64
+        assert assemblies[WorkflowStage.EXECUTE].max_capability_tokens == 2_031_616
+        assert assemblies[WorkflowStage.EXECUTE].max_finalization_tokens == 131_072
         assert all(
             spec.max_capability_turns == 16
             for stage, spec in assemblies.items()
-            if stage is not WorkflowStage.REPORT
+            if stage not in {WorkflowStage.REPORT, WorkflowStage.EXECUTE}
         )
         assert assemblies[WorkflowStage.UNDERSTAND].required_capabilities == ()
         assert assemblies[WorkflowStage.EXECUTE].required_capabilities == ()

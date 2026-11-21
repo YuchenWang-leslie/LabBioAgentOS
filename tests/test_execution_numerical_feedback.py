@@ -28,6 +28,7 @@ def diagnostic(message, exception="ValueError", source="operation()\n", line=1):
     ("Singular matrix", "LinAlgError", "SINGULAR_MATRIX"),
     ("SVD did not converge", "LinAlgError", "DECOMPOSITION_DID_NOT_CONVERGE"),
     ("array must not contain infs or NaNs", "ValueError", "NON_FINITE_INPUT"),
+    ("need at least one array to concatenate", "ValueError", "EMPTY_ARRAY_SEQUENCE"),
 ])
 def test_finite_numerical_condition_without_message_or_values(message, exception, condition):
     item = diagnostic(message, exception)[0]
@@ -45,6 +46,12 @@ def test_finite_numerical_condition_without_message_or_values(message, exception
     "b'reciprocal condition number  nan'",
     "b'reciprocal condition number  1e99999'",
     "array must not contain infs or NaNs SECRET",
+    "need at least one array to concatenate PRIVATE_SECRET",
+    "need at least one array to concatenate /private/file",
+    "prefix need at least one array to concatenate",
+    "need at least one array to concatenate ",
+    "Need at least one array to concatenate",
+    "need at least one array to concatenate\t",
 ])
 def test_unknown_message_is_not_released_or_inferred(message):
     item = diagnostic(message)[0]
@@ -54,6 +61,7 @@ def test_unknown_message_is_not_released_or_inferred(message):
 
 def test_numerical_reason_does_not_cross_exception_identity_or_chain():
     assert diagnostic("b'reciprocal condition number  2.025e-14'", "KeyError")[0].reported_numerical_condition is None
+    assert diagnostic("need at least one array to concatenate", "IndexError")[0].reported_numerical_condition is None
     text = (
         "Traceback (most recent call last):\nValueError: array must not contain infs or NaNs\n\n"
         "During handling of the above exception, another exception occurred:\n\n"
@@ -62,6 +70,46 @@ def test_numerical_reason_does_not_cross_exception_identity_or_chain():
     items = DockerExecutor._safe_python_diagnostics(text)
     assert items[0].reported_numerical_condition is None
     assert items[1].reported_numerical_condition == "NON_FINITE_INPUT"
+
+
+def test_empty_array_sequence_does_not_transfer_across_exception_chain():
+    text = (
+        "Traceback (most recent call last):\n"
+        "ValueError: need at least one array to concatenate\n\n"
+        "During handling of the above exception, another exception occurred:\n\n"
+        "Traceback (most recent call last):\nValueError: PRIVATE\n"
+    ).encode()
+    terminal, predecessor = DockerExecutor._safe_python_diagnostics(text)
+    assert terminal.reported_numerical_condition is None
+    assert predecessor.reported_numerical_condition == "EMPTY_ARRAY_SEQUENCE"
+    assert predecessor.chain_relation == "CONTEXT"
+    assert "PRIVATE" not in terminal.model_dump_json()
+
+
+def test_real_non_scientific_empty_array_sequence_failure(monkeypatch):
+    source = "import numpy as np\nnp.vstack([])\n"
+    stderr = _synthetic_traceback(source, monkeypatch)
+    item = DockerExecutor._safe_python_diagnostics(stderr, script_content=source)[0]
+    assert item.exception_type == "ValueError"
+    assert item.reported_numerical_condition == "EMPTY_ARRAY_SEQUENCE"
+    assert item.script_line_numbers == (2,)
+    assert "need at least one array to concatenate" not in item.model_dump_json()
+    assert "np.vstack" not in item.model_dump_json()
+
+
+def test_empty_array_sequence_condition_survives_public_dto_roundtrip():
+    from pydantic import ValidationError
+    from labbioagentos import ExecutionDiagnostic, ExecutionDiagnosticCode
+    item = ExecutionDiagnostic(
+        code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
+        exception_type="ValueError", reported_numerical_condition="EMPTY_ARRAY_SEQUENCE",
+    )
+    assert ExecutionDiagnostic.model_validate_json(item.model_dump_json()) == item
+    with pytest.raises(ValidationError):
+        ExecutionDiagnostic(
+            code=ExecutionDiagnosticCode.PYTHON_EXCEPTION,
+            exception_type="IndexError", reported_numerical_condition="EMPTY_ARRAY_SEQUENCE",
+        )
 
 
 def test_real_non_scientific_linear_algebra_failure(monkeypatch):
@@ -86,16 +134,19 @@ def test_numerical_condition_is_optional_finite_and_exception_bound():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["numerical", "missing_key"])
+@pytest.mark.parametrize("failure", ["numerical", "empty_array_sequence", "missing_key"])
 async def test_failure_location_inspection_audit_and_next_submission(inspection, boundary, monkeypatch, failure):
     service, executor, run_id = inspection
     original = executor.execute
-    failing_line = "operation()\n" if failure == "numerical" else "{}['choice']\n"
+    failing_line = "{}['choice']\n" if failure == "missing_key" else "operation()\n"
     source = "# model-owned filler\n" * 800 + failing_line
     line = 801
     diagnostics = (
-        diagnostic("b'reciprocal condition number  2.025e-14'", source=source, line=line)
-        if failure == "numerical" else DockerExecutor._safe_python_diagnostics(
+        diagnostic(
+            "need at least one array to concatenate" if failure == "empty_array_sequence"
+            else "b'reciprocal condition number  2.025e-14'", source=source, line=line,
+        )
+        if failure != "missing_key" else DockerExecutor._safe_python_diagnostics(
             _synthetic_traceback(source, monkeypatch), script_content=source,
         )
     )
@@ -120,6 +171,8 @@ async def test_failure_location_inspection_audit_and_next_submission(inspection,
     receipt = failed["data"]
     if failure == "numerical":
         assert receipt["diagnostics"][0]["reported_numerical_condition"] == "ILL_CONDITIONED_FIT"
+    elif failure == "empty_array_sequence":
+        assert receipt["diagnostics"][0]["reported_numerical_condition"] == "EMPTY_ARRAY_SEQUENCE"
     else:
         assert len(receipt["diagnostics"][0]["missing_key_source_locations"]) == 1
     first = await provider.call_tool("execution_inspect", {"execution_id": receipt["execution_id"]})
@@ -151,5 +204,7 @@ async def test_failure_location_inspection_audit_and_next_submission(inspection,
     persisted = json.dumps([e.model_dump(mode="json") for e in events])
     assert "operation()" not in persisted and "model-owned filler" not in persisted
     assert "choice" not in persisted
-    assert "2.025" not in persisted
+    assert "need at least one array to concatenate" not in persisted
+    # Envelope timestamps may legitimately contain seconds such as 52.025025.
+    assert "2.025" not in json.dumps([event.payload for event in events])
     assert tools.evidence_items()[0].safe_result == receipt

@@ -10,6 +10,8 @@ import os
 import signal
 import subprocess
 import sys
+import time
+from contextlib import suppress
 from pathlib import Path
 
 from labbioagentos import ProcessOutcome
@@ -102,9 +104,15 @@ class FakeSlurm:
             return outcome(stdout=b"RUNNING\n" if job.process.poll() is None else b"")
         if argv[0] == "scancel":
             job = self.jobs[argv[1]]
-            job.cancelled = True
             if job.process is not None and job.process.poll() is None:
-                os.killpg(job.process.pid, signal.SIGTERM)
-                job.process.wait(timeout=10)
+                # Keep the leader unreaped during the grace period so its private
+                # process group cannot be reused while descendants remain.
+                with suppress(ProcessLookupError):
+                    os.killpg(job.process.pid, signal.SIGTERM)
+                time.sleep(0.1)
+                with suppress(ProcessLookupError):
+                    os.killpg(job.process.pid, signal.SIGKILL)
+                job.process.wait(timeout=9)
+            job.cancelled = True
             return outcome()
         raise AssertionError(f"unexpected scheduler command: {argv}")

@@ -18,13 +18,17 @@ from labbioagentos.trace import RunTraceRecorder, TraceEvent, TraceEventType
 from .curator import SkillCuratorPort
 from .models import (
     GoldSkill,
+    MAX_CURATION_SOURCE_BYTES,
+    SkillSourceText,
     SkillCurationSourceView,
+    SkillOutcomeEvidence,
     SkillCuratorDraft,
     SkillProposal,
     SkillProposalContext,
     SkillProcedure,
     SkillSearchContext,
     SkillSourceBundle,
+    SkillSourceUserRequest,
     SkillStageContext,
     SkillUsageOutcome,
     SkillUsageRecord,
@@ -38,6 +42,7 @@ from .store import (
     SkillDecisionError,
     SkillStore,
     SkillStoreError,
+    successful_adapt_usage,
 )
 
 
@@ -78,6 +83,8 @@ class GoldSkillService:
         *,
         run_id: UUID | None = None,
         task_reference: str | None = None,
+        source_user_request: SkillSourceUserRequest | None = None,
+        outcome_evidence: SkillOutcomeEvidence | None = None,
         stage_context: tuple[SkillStageContext, ...] = (),
         artifact_evidence_views: tuple[ArtifactView, ...] = (),
     ) -> SkillSourceBundle:
@@ -94,7 +101,32 @@ class GoldSkillService:
             "artifact_evidence_views": artifact_evidence_views,
         })
         # Validate the model boundary before persisting an unusable source bundle.
-        self.source_projector.curation_view(bundle)
+        view = self.source_projector.curation_view(bundle)
+        if source_user_request is not None:
+            updated = view.model_copy(update={"source_user_request": source_user_request})
+            if len(updated.model_dump_json().encode("utf-8")) > MAX_CURATION_SOURCE_BYTES:
+                source_user_request = SkillSourceUserRequest(status="LENGTH_LIMIT",
+                    sha256=source_user_request.sha256, total_characters=source_user_request.total_characters)
+                identity_only = view.model_copy(update={"source_user_request": source_user_request})
+                if len(identity_only.model_dump_json().encode("utf-8")) > MAX_CURATION_SOURCE_BYTES:
+                    source_user_request = SkillSourceUserRequest(status="LENGTH_LIMIT")
+            bundle = SkillSourceBundle.model_validate({
+                **bundle.model_dump(mode="python"), "source_user_request": source_user_request,
+            })
+            view = self.source_projector.curation_view(bundle)
+        if outcome_evidence is not None:
+            updated = view.model_copy(update={"outcome_evidence": outcome_evidence})
+            if len(updated.model_dump_json().encode("utf-8")) > MAX_CURATION_SOURCE_BYTES:
+                # Keep selected producer identities even when prose does not fit. Never
+                # silently revert to an ungrounded first-time proposal.
+                report = outcome_evidence.selected_report
+                if report is not None:
+                    report = report.model_copy(update={"excerpt": SkillSourceText(status="LENGTH_LIMIT"),
+                                                       "passages": (), "truncated": True})
+                outcome_evidence = outcome_evidence.model_copy(update={"selected_report": report,
+                    "answered_clarifications": (), "projection_limited": True})
+            bundle = bundle.model_copy(update={"outcome_evidence": outcome_evidence})
+            self.source_projector.curation_view(bundle)
         self.store.save_source_bundle(bundle)
         self._emit(
             bundle.source_run_id,
@@ -145,29 +177,26 @@ class GoldSkillService:
             raise SkillStoreError(
                 "Skill source evidence references exceed the proposal bound"
             )
+        outcome = bundle.outcome_evidence
+        if outcome is not None and outcome.selected_delivery is not None:
+            script_ids = tuple(program.artifact_id for program in outcome.selected_delivery.programs)
+        else:
+            # Older sources have no formal delivery selection.
+            script_ids = tuple(item.script_artifact_id for item in bundle.execution_refs
+                               if item.script_artifact_id is not None)
         proposal = SkillProposal(
             source_bundle_id=bundle.bundle_id,
             source_run_id=bundle.source_run_id,
             proposed_name=draft.proposed_name,
             description=draft.description,
             review_notes=draft.review_notes,
-            scope=context.scope,
-            owner_user_id=context.owner_user_id,
-            project_id=context.project_id,
-            lab_id=context.lab_id,
-            parent_skill_id=context.parent_skill_id,
-            parent_version=context.parent_version,
-            source_usage_record_id=context.source_usage_record_id,
+            **context.model_dump(),
             procedure=SkillProcedure(
                 **draft.procedure.model_dump(),
                 important_instruction_ids=tuple(
                     item.instruction_id for item in bundle.instruction_refs
                 ),
-                script_artifact_ids=tuple(
-                    item.script_artifact_id
-                    for item in bundle.execution_refs
-                    if item.script_artifact_id is not None
-                ),
+                script_artifact_ids=script_ids,
                 # Complete trace lineage stays in the immutable source bundle,
                 # referenced by the proposal and Gold; do not duplicate it here.
             ),
@@ -188,6 +217,10 @@ class GoldSkillService:
                     else None
                 ),
                 "parent_version": proposal.parent_version,
+                "evolution_kind": proposal.evolution_kind,
+                "revises_proposal_id": (
+                    str(proposal.revises_proposal_id) if proposal.revises_proposal_id else None
+                ),
             },
         )
         return proposal
@@ -251,14 +284,49 @@ class GoldSkillService:
     def pending_proposal(self, proposal_id: UUID) -> SkillProposal:
         """Return one trusted pending creation proposal for gate composition."""
 
-        return self.store.get_proposal(proposal_id)
+        return self.store.get_pending_proposal(proposal_id)
+
+    def parent_for_adapt(
+        self, usage_id: UUID, *, run_id: UUID, project_id: str, principal: Principal,
+    ) -> GoldSkill:
+        """Resolve the parent from the exact authorized use on this completed run."""
+        parent, _ = self.authorized_adaptation(usage_id, run_id=run_id, project_id=project_id,
+                                               principal=principal)
+        return parent
+
+    def authorized_adaptation(
+        self, usage_id: UUID, *, run_id: UUID, project_id: str, principal: Principal,
+    ) -> tuple[GoldSkill, SkillUseProposal]:
+        """Resolve the exact accepted proposal, including when other proposals were pending."""
+        usage = successful_adapt_usage(self.store, usage_id, run_id)
+        authorization = self.store.get_authorization(usage.authorization_id)
+        if (
+            not authorization.approved
+            or authorization.authorized_user_id != principal.user_id
+            or authorization.lab_id != principal.lab_id
+            or authorization.project_id != project_id
+            or authorization.run_id != run_id
+            or (authorization.skill_id, authorization.skill_version) != (usage.skill_id, usage.skill_version)
+        ):
+            raise AuthorizationDenied("Skill usage does not match the authorized user, project and run")
+        parent = self.get_gold(usage.skill_id, usage.skill_version, principal=principal)
+        proposal = self.store.get_use_proposal(authorization.use_proposal_id)
+        if (proposal.proposal_id, proposal.approval_gate_id, proposal.run_id,
+                proposal.requesting_user_id, proposal.project_id, proposal.lab_id,
+                proposal.skill_id, proposal.skill_version, proposal.proposed_mode,
+                proposal.proposed_deviations) != (
+                authorization.use_proposal_id, authorization.approval_gate_id, run_id,
+                principal.user_id, project_id, principal.lab_id, parent.skill_id, parent.version,
+                usage.proposed_mode, usage.runtime_provided_deviations):
+            raise SkillStoreError("Approved Skill proposal does not match the exact use receipt")
+        return parent, proposal
 
     def submit_use_proposal(
         self,
         proposal: SkillUseProposal,
         *,
         principal: Principal | None = None,
-    ) -> None:
+    ) -> SkillUseProposal:
         if principal is not None and (
             proposal.requesting_user_id != principal.user_id
             or proposal.lab_id != principal.lab_id
@@ -283,7 +351,9 @@ class GoldSkillService:
                 self._use_action(skill.scope.value),
                 run_id=proposal.run_id,
             )
-        self.store.save_use_proposal(proposal)
+        saved = self.store.save_use_proposal(proposal)
+        if saved.proposal_id != proposal.proposal_id:
+            return saved
         self._emit(
             proposal.run_id,
             TraceEventType.SKILL_USE_PROPOSED,
@@ -296,6 +366,7 @@ class GoldSkillService:
                 "approval_gate_id": proposal.approval_gate_id,
             },
         )
+        return saved
 
     def decide_use(
         self,

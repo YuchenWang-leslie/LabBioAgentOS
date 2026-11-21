@@ -16,11 +16,13 @@ from pydantic import (
     JsonValue,
     StrictStr,
     ValidationError,
+    model_serializer,
     model_validator,
 )
 
 from labbioagentos.artifacts import (
     ArtifactConsumer,
+    ArtifactOriginKind,
     ArtifactExposureDenied,
     ArtifactExposureService,
     ArtifactQuery,
@@ -59,7 +61,9 @@ from labbioagentos.execution.models import (
 )
 from labbioagentos.execution.submission import (
     ExecutionInspectionError, ExecutionRevisionError, ExecutionSubmissionPersistenceError,
+    ExecutionSourceRevisionError,
 )
+from labbioagentos.execution.models import ExecutionSourceRevision, SourceRevisionExecutionDraft
 from labbioagentos.execution.environments import (
     EnvironmentBuildUnconfirmedError, EnvironmentRequestError, EnvironmentService, ImageListing,
 )
@@ -67,6 +71,7 @@ from labbioagentos.governance import AuthorizationDenied, Principal, WorkspaceCo
 from labbioagentos.literature import (
     LiteratureLimit, LiteratureQuery, LiteratureSearchError, LiteratureSearchService,
 )
+from labbioagentos.model_safety import validate_model_visible_json
 from labbioagentos.memory import (
     MemoryConflictError,
     MemoryDecisionError,
@@ -93,8 +98,13 @@ from labbioagentos.skills import (
     SkillUseProposal,
 )
 from labbioagentos.trace import RunTraceRecorder, TraceEventType
+from labbioagentos.skills.store import SkillUseDeclinedError
 
 from .contracts import (
+    AgentStageDecision,
+    RuntimeWorkflowControlView,
+    ArtifactAggregateRequestAudit,
+    ArtifactAggregateValidationDetails,
     ArtifactQueryConstraints,
     ArtifactQueryLimitType,
     ArtifactQueryRequestAudit,
@@ -106,6 +116,7 @@ from .contracts import (
     ReportEvidenceCheck,
     ReportEvidenceItem,
     ReportEvidenceReference,
+    ReportReferenceSelection,
     RevisionValidationDetails,
     RevisionValidationIssue,
     ExecutionAuditWireType,
@@ -117,6 +128,7 @@ from .contracts import (
     ScriptValidationDetails,
     RuntimeReference,
     RuntimeReferenceKind,
+    RuntimePriorResultView,
     PreparedHandoff,
     HandoffObservation,
 )
@@ -124,6 +136,8 @@ from .reporting import (
     ReportSubmissionService, read_report_page, make_read_receipt,
     artifact_representation_digest, observation_digest,
 )
+from .delivery import DeliveryManifest, DeliverySelectionError
+from .handoff import HandoffActionNotCurrentError
 from .files import authorize_generated_file, read_generated_file
 from .observations import (
     ObservationNotAvailableError, ObservationPageError, ObservationStore, canonical_bytes,
@@ -149,7 +163,36 @@ SKILL_SECTION_FIELDS = {
     "reusable_principles": "reusable_principles", "adaptation_points": "adaptation_points",
 }
 _SAFE_ARTIFACT_QUERY_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
+
+class _WorkingNoteReferenceError(ObservationNotAvailableError):
+    code = "WORKING_NOTE_SOURCE_NOT_DELIVERED"
+    safe_message = (
+        "source_observation_ids must identify responses fully delivered in this "
+        "invocation. Reading a note does not deliver its sources. Read the intended "
+        "authorized observations first, or write a note without source references. "
+        "No note was saved."
+    )
+
+
+class _WorkingNoteAuthorMismatchError(ObservationNotAvailableError):
+    code = "WORKING_NOTE_AUTHOR_MISMATCH"
+    safe_message = (
+        "previous_note_id identifies an authorized working note from a different "
+        "author_profile_key. Immutable revisions require the same author profile. "
+        "No note was saved or changed. Choose an independent note without "
+        "previous_note_id or another legal action; no reference was changed."
+    )
+
+
+class _WorkingNoteDependencyLimitError(ObservationNotAvailableError):
+    code = "WORKING_NOTE_DEPENDENCY_LIMIT"
+    safe_message = (
+        "The declared working-note dependency graph exceeds 256 observations. "
+        "No note content was released; use a smaller explicit source set."
+    )
 _CANONICAL_INTEGER_WIRE_TOKEN = re.compile(r"(?:0|-?[1-9][0-9]{0,127})")
+_EXECUTION_INTENT_UNSET = object()
 _EXECUTION_VALIDATION_PATH_PARTS = frozenset(
     {
         *(field.value for field in ExecutionDraftField),
@@ -162,6 +205,7 @@ _EXECUTION_VALIDATION_PATH_PARTS = frozenset(
         "pids_limit",
         "timeout_seconds",
         "gpus",
+        "source_artifact_id", "expected_script_hash", "edits", "old", "new",
     }
 )
 
@@ -190,14 +234,6 @@ class _ArtifactQueryFailure(ValueError):
         super().__init__(error_code)
         self.error_code = error_code
         self.query_constraints = query_constraints
-
-
-class _ArtifactPaginationProgressRequired(ValueError):
-    """A delivered TOP_N page was repeated instead of following its cursor."""
-
-    def __init__(self, query_constraints: ArtifactQueryConstraints):
-        self.query_constraints = query_constraints
-        super().__init__("PAGINATION_PROGRESS_REQUIRED")
 
 
 class _RepeatedCapabilityRequest(ValueError):
@@ -256,6 +292,9 @@ class _NonArtifactReference(ValueError):
 class _SkillAuthorizationNotFound(ValueError):
     """The requested authorization, not the Skill itself, is absent."""
 
+    def __init__(self, pending_guidance: str | None = None):
+        self.pending_guidance = pending_guidance
+
 
 class _SkillSectionError(ValueError):
     def __init__(self, code, message):
@@ -294,6 +333,14 @@ class ToolResult(BaseModel):
     capability_invocation_id: UUID | None = None
     artifact_read_receipt: ArtifactReadReceipt | None = None
     observation_archived: bool = False
+    retained_metadata: dict[str, JsonValue] | None = None
+
+    @model_serializer(mode='wrap')
+    def omit_absent_retention(self, handler):
+        data = handler(self)
+        if self.retained_metadata is None:
+            data.pop('retained_metadata', None)
+        return data
 
 
 class ArtifactListItem(BaseModel):
@@ -302,6 +349,10 @@ class ArtifactListItem(BaseModel):
     artifact_type: StrictStr
     exposure_class: StrictStr
     release_basis: StrictStr
+    origin_kind: ArtifactOriginKind | None = Field(default=None,
+        description="Registration origin only, not current-run delivery permission or source-reading credit. "
+        "Local delivery and remote view permissions are independent; report_check validates the selected "
+        "output set, including scope, provenance, program binding and byte integrity.")
     schema_: "ArtifactSchemaView | None" = Field(default=None, serialization_alias="schema")
     available_views: tuple[StrictStr, ...] = ()
     owner_user_id: StrictStr
@@ -346,8 +397,12 @@ class SkillCandidateView(BaseModel):
     artifact_types: tuple[StrictStr, ...] = ()
     input_contract_ids: tuple[StrictStr, ...] = ()
     output_contract_ids: tuple[StrictStr, ...] = ()
+    evolution_kind: Literal["UPDATE", "FORK"] = "UPDATE"
+    parent_skill_id: UUID | None = None
+    parent_version: int | None = Field(default=None, ge=1)
     applicability_preview: StrictStr
     limitation_preview: tuple[StrictStr, ...] = ()
+    truncated_fields: tuple[StrictStr, ...] = ()
 
 
 class SkillCandidatePage(BaseModel):
@@ -383,8 +438,6 @@ class SkillCandidatePage(BaseModel):
 class SkillDetailView(SkillCandidateView):
     authorization_id: UUID
     source_run_id: UUID
-    parent_skill_id: UUID | None = None
-    parent_version: int | None = None
     applicability: StrictStr
     workflow_outline: tuple[StrictStr, ...]
     collaboration_guidance: tuple[StrictStr, ...] = ()
@@ -396,7 +449,6 @@ class SkillDetailView(SkillCandidateView):
     limitations: tuple[StrictStr, ...] = ()
     reusable_principles: tuple[StrictStr, ...] = ()
     adaptation_points: tuple[SkillAdaptationPoint, ...] = ()
-    truncated_fields: tuple[StrictStr, ...] = ()
 
 
 class MemoryCandidateView(BaseModel):
@@ -465,6 +517,10 @@ class RuntimeCapabilityContext:
     consumer: ArtifactConsumer = ArtifactConsumer.REMOTE_LLM
     mountable_input_artifact_ids: tuple[UUID, ...] | None = None
     context_references: tuple[RuntimeReference, ...] = ()
+    workflow_control: RuntimeWorkflowControlView | None = None
+    decision_context_sha256: str | None = None
+    prior_results: tuple[RuntimePriorResultView, ...] = ()
+    latest_user_answer_id: str | None = None
 
     @classmethod
     def from_stage_spec(
@@ -492,6 +548,10 @@ class RuntimeCapabilityContext:
         )
 
     def __post_init__(self) -> None:
+        if (self.workflow_control is None) != (self.decision_context_sha256 is None):
+            raise ValueError("Stage decision requires both workflow control and context binding")
+        if self.workflow_control is not None and self.workflow_control.current_stage is not self.stage_id:
+            raise ValueError("Stage decision control must match the bound stage")
         ceiling = frozenset(CAPABILITY_CEILINGS.get(self.stage_id, ()))
         requested = frozenset(self.capability_allowlist)
         if not requested.issubset(ceiling):
@@ -533,12 +593,19 @@ class LabBioRuntimeToolSet:
         self._current_observation_ids: set[UUID] = set()
         self.stop_reason: str | None = None
         self._feedback_boundary: int | None = None
-        self._artifact_list_requests: list[tuple[int, int, UUID, int]] = []
+        self._artifact_list_parameters: dict[UUID, tuple[int, int]] = {}
         self._observation_read_ranges: dict[UUID, list[tuple[int, int]]] = {}
         self._pending_observation_pages: dict[UUID, tuple[Any, int, int]] = {}
         self._public_responses: dict[UUID, dict] = {}
         self._delivered_observations: dict[UUID, CapabilityEvidenceItem] = {}
+        self._pending_context_observations: dict[str, Any] = {}
         self.prepared_handoff: PreparedHandoff | None = None
+        from .contracts import runtime_stage_result_format
+        self.next_action_format = (runtime_stage_result_format(binding.stage_id,
+            binding.workflow_control).model_fields['next_action'].annotation
+            if binding.workflow_control is not None else None)
+        self.handoff_status_provider: Callable[[], dict] | None = None
+        self.handoff_action_validator: Callable[..., None] | None = None
 
     def begin_model_invocation(self, invocation_id: UUID) -> None:
         """Start one fresh model conversation without losing durable stage audit."""
@@ -632,43 +699,254 @@ class LabBioRuntimeToolSet:
         self._evidence_items.append(item)
         self._current_observation_ids.add(item.capability_invocation_id)
 
-    async def evidence_read(self, observation_id: UUID | str, offset: int = 0,
-                            limit: int = 8_000) -> dict:
-        """Read an immutable observation by ID, with explicit exact text pages.
+    def _authorize_failed_observation(self, item, original_invocation_id=None):
+        """Reauthorize original diagnostics, never their requested action."""
+        if item.capability_name not in self.binding.capability_allowlist:
+            raise ObservationNotAvailableError()
+        audit, view = None, None
+        if item.capability_name == "artifact_query":
+            # This value-free rejection is control state, not an Artifact view.
+            # Source ownership/scope still apply; the denied view stays denied.
+            audit = item.artifact_query_request
+        elif item.capability_name == "artifact_aggregate":
+            audit = item.artifact_aggregate_request
+            view = (ArtifactViewType.TOP_N if audit is not None
+                    and audit.selector_resolution == "AUTHORIZED_SOURCE"
+                    else None)
+        else:
+            if original_invocation_id == self.binding.invocation_id:
+                return  # Preserve current-invocation diagnostics after the grant check.
+            details = item.error_details
+            if (item.safe_result is not None or item.reference_ids
+                    or any(value is not None for value in (
+                        item.report_reference_selections, item.execution_review,
+                        item.skill_search_request, item.execution_submit_request))
+                    or details is not None and any(value is not None for key, value in
+                        details.model_dump().items() if key not in {"safe_message", "retryable"})):
+                raise ObservationNotAvailableError()
+            return
+        if (audit is None or not isinstance(audit.artifact_id, UUID)
+                or item.safe_result is not None or item.artifact_read_receipt is not None):
+            raise ObservationNotAvailableError()
+        ref = self._authorized_report_source(audit.artifact_id)
+        # Resolved aggregate diagnostics contain source-derived names/counts,
+        # unlike value-free query or unresolved aggregate rejection envelopes.
+        if view is not None and not self.services.artifact_exposure.policy.decide(
+            ref, ArtifactQuery(view_type=view, limit=1), self.binding.consumer,
+        ).allowed:
+            raise ObservationNotAvailableError()
 
-        Prior-stage artifact observations are reauthorized. Reading only part
-        never grants report coverage; finish the pages to receive read credit.
+    def _authorize_history_observation(self, saved):
+        item = saved.item
+        if item.artifact_read_receipt is not None:
+            self._validate_report_observation(item)
+        elif (saved.invocation_id == self.binding.invocation_id
+              and item.capability_name in self.binding.capability_allowlist):
+            pass  # Existing same-invocation access does not authorize new effects.
+        elif (item.status is CapabilityEvidenceStatus.COMPLETED
+              and item.capability_name == "working_note_write"):
+            self._guard("working_note_read")
+            self._working_note(item.capability_invocation_id)
+        elif item.status is CapabilityEvidenceStatus.COMPLETED and item.capability_name == "stage_context_read":
+            self._guard("stage_context_read")
+            data = saved.public_response["data"]
+            prior = next((entry for entry in self.binding.prior_results
+                          if str(entry.result_id) == data["result_id"]), None)
+            if prior is None:
+                raise ObservationNotAvailableError()
+            text = canonical_bytes(prior.model_dump(mode="json")).decode("utf-8")
+            if (sha256(text.encode("utf-8")).hexdigest() != data["sha256"]
+                    or text[data["offset"]:data["end"]] != data["text"]):
+                raise ObservationNotAvailableError()
+        elif item.status is CapabilityEvidenceStatus.COMPLETED and item.capability_name == "artifact_list":
+            self._guard("artifact_list")
+            for reference in saved.public_response["data"]:
+                ref = self._authorized_report_source(UUID(reference["artifact_id"]))
+                current_views = {view.value for view in ArtifactViewType if self.services.artifact_exposure.policy.decide(
+                    ref, ArtifactQuery(view_type=view, limit=1 if view is ArtifactViewType.TOP_N else None),
+                    self.binding.consumer).allowed}
+                if current_views != set(reference["available_views"]):
+                    raise ObservationNotAvailableError()
+        elif (item.status is CapabilityEvidenceStatus.COMPLETED
+              and item.capability_name in {"execution_submit", "execution_revise", "execution_inspect"}):
+            self._guard("execution_inspect")  # Read permission, never permission to replay an effect.
+            data = saved.public_response["data"]
+            self._required(self.services.execution_submission, "execution").inspect(
+                UUID(data["execution_id"]), principal=self.binding.principal,
+                workspace=self.binding.workspace, run_id=self.binding.run_id,
+                source_offset=0, source_limit=1,
+                imported_source_artifact_ids=self.binding.mountable_input_artifact_ids or (),
+            )
+        elif item.status is CapabilityEvidenceStatus.FAILED:
+            self._authorize_failed_observation(item, saved.invocation_id)
+        else:
+            raise ObservationNotAvailableError()
+        self._validate_observation_dependencies(item)
+
+    def prepare_context_handoff(self, context):
+        """Reauthorize original selections; loading alone grants no read credit."""
+        from labbioagentos.kernel import PublicMessage
+
+        if context.run_id != self.binding.run_id:
+            raise ValueError("Incoming handoff belongs to another run")
+        messages, unavailable = [], []
+        for reference in context.observations:
+            if self.services.observation_store is None:
+                unavailable.append({"observation_id": str(reference.observation_id),
+                    "status": "NO_OBSERVATION_ARCHIVE", "read_credit": False})
+                continue
+            try:
+                self._guard("evidence_read")
+                saved = self._required(self.services.observation_store, "observation").load(
+                    self.binding, reference.observation_id)
+                if sha256(canonical_bytes(saved.public_response)).hexdigest() != reference.sha256:
+                    raise ValueError("Incoming handoff observation differs from its saved identity")
+                self._authorize_history_observation(saved)
+            except (ObservationNotAvailableError, AuthorizationDenied,
+                    ArtifactExposureDenied, ArtifactNotFoundError, ExecutionInspectionError):
+                unavailable.append({"observation_id": str(reference.observation_id),
+                    "status": "UNAVAILABLE_IN_CURRENT_SCOPE", "read_credit": False})
+                continue
+            content = canonical_bytes({"authority": "ITEM_LEVEL",
+                "context_type": "CARRIED_OBSERVATION", "source_stage": saved.stage_id.value,
+                "source_invocation_id": str(saved.invocation_id), "historical_snapshot": True,
+                "observation": saved.public_response}).decode("utf-8")
+            messages.append(PublicMessage(role="USER", content=content))
+            self._pending_context_observations[content] = saved
+        return tuple(messages), unavailable
+
+    def mark_context_delivered(self, messages):
+        """Acknowledge exact bodies only after a successful provider turn."""
+        confirmed = []
+        for message in messages:
+            saved = self._pending_context_observations.get(message.content) if message.role == "USER" else None
+            if saved is None:
+                continue
+            self._authorize_history_observation(saved)
+            self.record_delivered_observation(saved.item)
+            identity = saved.item.capability_invocation_id
+            self._delivered_observations[identity] = saved.item
+            self._public_responses[identity] = saved.public_response
+            confirmed.append(identity)
+            del self._pending_context_observations[message.content]
+        return tuple(confirmed)
+
+    async def stage_context_read(self, result_id: UUID | str, offset: int = 0, limit: int = 8_000) -> dict:
+        """Read exact previous model context, not a scientific source or read credit."""
+        def read():
+            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8_000:
+                raise ObservationPageError()
+            original = next((item for item in self.binding.prior_results
+                             if item.result_id == UUID(str(result_id))), None)
+            if original is None:
+                raise ObservationNotAvailableError()
+            text = canonical_bytes(original.model_dump(mode="json")).decode("utf-8")
+            if offset > len(text):
+                raise ObservationPageError()
+            end = min(len(text), offset + limit)
+            return {"result_id": str(original.result_id), "authority": "MODEL_CONTEXT",
+                "format": "EXACT_STAGE_CONTEXT_JSON", "offset": offset, "end": end,
+                "total_characters": len(text), "text": text[offset:end],
+                "next_offset": end if end < len(text) else None,
+                "sha256": sha256(text.encode("utf-8")).hexdigest(), "source_read_credit": False}
+        return await self._call("stage_context_read", read)
+
+    async def evidence_list(self, capability_name: str, after_id: UUID | str | None = None,
+                            limit: int = 8) -> dict:
+        """List bounded original identities, not content, chronology or read credit."""
+        def locate():
+            if type(limit) is not int or not 1 <= limit <= 16:
+                raise ValueError("History limit must be an integer from 1 through 16")
+            if not (capability_name == "working_note_write"
+                    and "working_note_read" in self.binding.capability_allowlist):
+                self._guard(capability_name)
+            cursor = UUID(str(after_id)) if after_id is not None else None
+            store = self._required(self.services.observation_store, "observation")
+            rows = []
+            # Validate all envelopes before returning a page; corruption must not
+            # produce a partial success. Foreign or revoked rows disclose nothing.
+            for path in sorted(store.root.glob("*.json")):
+                identity = UUID(path.stem)
+                try:
+                    saved = store.load(self.binding, identity)
+                    if saved.item.capability_name != capability_name:
+                        continue
+                    self._authorize_history_observation(saved)
+                except (ObservationNotAvailableError, AuthorizationDenied,
+                        ArtifactExposureDenied, ArtifactNotFoundError):
+                    continue
+                if cursor is not None and identity.int <= cursor.int:
+                    continue
+                item = saved.item
+                if len(rows) <= limit:
+                    rows.append({"observation_id": str(identity), "stage_id": saved.stage_id.value,
+                        "invocation_id": str(saved.invocation_id),
+                        "actor_profile_key": item.actor_profile_key, "status": item.status.value,
+                        "information_authority": item.information_authority.value,
+                        "error_code": item.error_code,
+                        'response_delivered_in_current_invocation': identity in self._delivered_observations,
+                        **({'retained_metadata': saved.public_response['retained_metadata']}
+                            if saved.public_response.get('retained_metadata') is not None else {})})
+            return {"items": rows[:limit],
+                "next_after_id": rows[limit - 1]["observation_id"] if len(rows) > limit else None,
+                "source_read_credit": False, "ordering": "UUID_NOT_CHRONOLOGICAL",
+                'delivery_note': 'This directory grants no new reading credit and does not revoke prior delivery. '
+                    'A completed capability request is not proof its execution succeeded; retained_metadata '
+                    'preserves host-reported technical outcomes only.'}
+        return await self._call("evidence_list", locate)
+
+    async def evidence_read(self, observation_id: UUID | str, offset: int = 0,
+                            limit: int = 8_000, *, reread: bool = False) -> dict:
+        """Read exact pages or acknowledge an observation already delivered.
+
+        Prior-stage artifact observations are reauthorized. Only provider
+        delivery of all pages grants read credit. An explicit reread still
+        returns the requested characters.
         """
         saved = None
 
         def read():
             nonlocal saved
-            if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8_000:
+            if (type(offset) is not int or offset < 0 or type(limit) is not int
+                    or not 1 <= limit <= 8_000 or type(reread) is not bool):
                 raise ObservationPageError()
             store = self._required(self.services.observation_store, "observation")
             saved = store.load(self.binding, UUID(str(observation_id)))
             item = saved.item
-            if item.artifact_read_receipt is not None:
-                try:
-                    self._validate_report_observation(item)
-                except (AuthorizationDenied, ArtifactExposureDenied, ArtifactNotFoundError):
-                    raise ObservationNotAvailableError() from None
-            elif (saved.invocation_id != self.binding.invocation_id
-                  or item.capability_name not in self.binding.capability_allowlist):
-                raise ObservationNotAvailableError()
+            try:
+                self._authorize_history_observation(saved)
+            except (AuthorizationDenied, ArtifactExposureDenied, ArtifactNotFoundError):
+                raise ObservationNotAvailableError() from None
             text = canonical_bytes(saved.public_response).decode("utf-8")
             if offset > len(text):
                 raise ObservationPageError()
             end = min(len(text), offset + limit)
             ranges = self._observation_read_ranges.get(item.capability_invocation_id, [])
-            covered = self._covered_observation_prefix([*ranges, (offset, end)])
-            return {
+            page = {
                 "observation_id": str(item.capability_invocation_id),
                 "authority": item.information_authority.value,
-                "format": "EXACT_OBSERVATION_JSON", "offset": offset, "end": end,
-                "total_characters": len(text), "text": text[offset:end],
-                "next_offset": end if end < len(text) else None,
+                "offset": offset, "end": end,
+                "total_characters": len(text),
                 "sha256": sha256(text.encode("utf-8")).hexdigest(),
+            }
+            if ranges and self._covered_observation_prefix(ranges) == len(text) and not reread:
+                return {
+                    **page,
+                    "format": "OBSERVATION_PAGE_ALREADY_DELIVERED",
+                    "next_offset": None,
+                    "complete_observation_delivered": True,
+                    "message": (
+                        "You already received the complete observation in this invocation. "
+                        "No further pages are needed. Set reread=true only if you need "
+                        "the exact text again."
+                    ),
+                }
+            covered = self._covered_observation_prefix([*ranges, (offset, end)])
+            return {
+                **page,
+                "format": "EXACT_OBSERVATION_JSON",
+                "text": text[offset:end],
+                "next_offset": end if end < len(text) else None,
                 "complete_observation_delivered": covered == len(text),
             }
         response = await self._call("evidence_read", read, request_ids={
@@ -676,14 +954,135 @@ class LabBioRuntimeToolSet:
             "observation_offset": offset,
             "observation_limit": limit,
         })
-        if response["success"]:
+        if response["success"] and response["data"]["format"] == "EXACT_OBSERVATION_JSON":
             page = response["data"]
             self._pending_observation_pages[UUID(response["capability_invocation_id"])] = (
                 saved, page["offset"], page["end"])
         return response
 
+    def _validate_observation_dependencies(self, item):
+        """Reauthorize declared note ancestry at every release, without read credit."""
+        pending, visited = [item.capability_invocation_id], set()
+        while pending:
+            identity = pending.pop()
+            if identity in visited:
+                continue
+            visited.add(identity)
+            if len(visited) > 256:
+                raise _WorkingNoteDependencyLimitError()
+            store = self.services.observation_store
+            current = (item if identity == item.capability_invocation_id else
+                       self._required(store, "observation").load(self.binding, identity).item)
+            if current.status is CapabilityEvidenceStatus.FAILED:
+                original = self._required(store, "observation").load(self.binding, identity)
+                self._authorize_failed_observation(current, original.invocation_id)
+                continue
+            if current.artifact_read_receipt is not None:
+                self._validate_report_observation(current)
+                continue
+            if current.capability_name not in {
+                "working_note_write", "working_note_read", "evidence_read",
+            }:
+                continue
+            store = self._required(self.services.observation_store, "observation")
+            saved = store.load(self.binding, current.capability_invocation_id)
+            if current.status is not CapabilityEvidenceStatus.COMPLETED:
+                continue
+            data = saved.public_response["data"]
+            if current.capability_name == "working_note_write":
+                references = list(data["source_observation_ids"])
+                if data["previous_note_id"] is not None:
+                    references.append(data["previous_note_id"])
+            else:
+                references = [data["note_id"] if current.capability_name == "working_note_read"
+                              else data["observation_id"]]
+            pending.extend(UUID(value) for value in references)
+
+    def _working_note(self, note_id):
+        store = self._required(self.services.observation_store, "observation")
+        saved = store.load(self.binding, UUID(str(note_id)))
+        if (saved.item.capability_name != "working_note_write"
+                or saved.item.status is not CapabilityEvidenceStatus.COMPLETED):
+            raise ObservationNotAvailableError()
+        self._validate_observation_dependencies(saved.item)
+        return saved
+
+    async def working_note_write(self, text: str, source_observation_ids=None,
+                                 previous_note_id=None) -> dict:
+        """Archive an Agent-authored immutable revision using the existing store."""
+        def write():
+            from .native_tools import WorkingNoteWriteArguments
+            args = WorkingNoteWriteArguments.model_validate_json(canonical_bytes({
+                "text": text, "source_observation_ids": (
+                    [] if source_observation_ids is None else source_observation_ids),
+                "previous_note_id": previous_note_id,
+            }))
+            self._required(self.services.observation_store, "observation")
+            if not set(args.source_observation_ids).issubset(self._delivered_observations):
+                raise _WorkingNoteReferenceError()
+            for identity in args.source_observation_ids:
+                self._validate_observation_dependencies(self._delivered_observations[identity])
+            revision = 1
+            if args.previous_note_id is not None:
+                previous = self._working_note(args.previous_note_id)
+                if previous.item.actor_profile_key != self.binding.actor_profile_key:
+                    raise _WorkingNoteAuthorMismatchError()
+                revision = previous.public_response["data"]["revision"] + 1
+            return {"text": args.text, "revision": revision,
+                    "previous_note_id": str(args.previous_note_id) if args.previous_note_id else None,
+                    "source_observation_ids": [str(value) for value in args.source_observation_ids],
+                    "authority": "MODEL_CONTEXT", "source_read_credit": False}
+        return await self._call("working_note_write", write,
+                                request_ids={"previous_note_id": previous_note_id})
+
+    async def working_note_read(self, note_id: UUID | str) -> dict:
+        """Return the original note, not the bodies or read credit of its sources."""
+        def read():
+            saved = self._working_note(note_id)
+            return {"note_id": str(UUID(str(note_id))),
+                    **saved.public_response["data"],
+                    "author_profile_key": saved.item.actor_profile_key,
+                    "same_author_profile": saved.item.actor_profile_key == self.binding.actor_profile_key}
+        return await self._call("working_note_read", read, request_ids={"note_id": str(note_id)})
+
+    async def handoff_status(self) -> dict:
+        """Inspect the current selection and, for a Leader, its stage envelope."""
+        def inspect():
+            if self.handoff_status_provider is not None:
+                result = self.handoff_status_provider()
+            else:
+                from .handoff import handoff_capacity
+
+                result = {
+                    "prepared_handoff": handoff_capacity(self.prepared_handoff),
+                    "finalization_control": None,
+                    "request_admission": "NOT_MEASURED",
+                    "scope": "Current invocation selection only; no stage envelope is available.",
+                }
+            available = []
+            if self.stop_reason is None:
+                for identity, item in self._delivered_observations.items():
+                    try:
+                        self._validate_observation_dependencies(item)
+                    except (ObservationNotAvailableError, AuthorizationDenied,
+                            ArtifactExposureDenied, ArtifactNotFoundError):
+                        available.append({"observation_id": str(identity), "status": "UNAVAILABLE",
+                                          "handoff_item_bytes": None})
+                        continue
+                    observation = HandoffObservation(observation_id=identity,
+                        capability_name=item.capability_name, information_authority=item.information_authority,
+                        public_response=self._public_responses[identity], artifact_read_receipt=item.artifact_read_receipt)
+                    available.append({"observation_id": str(identity), "capability_name": item.capability_name,
+                        "information_authority": item.information_authority.value, "status": "AVAILABLE",
+                        "handoff_item_bytes": len(canonical_bytes(observation.model_dump(mode="json", exclude_none=True)))})
+            return {**result, "snapshot": "BEFORE_THIS_STATUS_RESPONSE",
+                    "available_observations": available, "catalog_source_read_credit": False}
+
+        return await self._call("handoff_status", inspect)
+
     async def prepare_handoff(self, observation_ids: list[str], summary: str,
-                              limitations: list[str] | None = None) -> dict:
+                              limitations: list[str] | None = None,
+                              next_action: dict | None = None) -> dict:
         """Select already delivered observations for the tool-free finalizer.
 
         The Agent authors its own summary and limitations. The host copies
@@ -694,6 +1093,15 @@ class LabBioRuntimeToolSet:
         """
         def prepare():
             self.prepared_handoff = None
+            decision = None
+            if self.next_action_format is not None:
+                action = self.next_action_format.model_validate_json(json.dumps(next_action), strict=True)
+                if self.handoff_action_validator is not None:
+                    self.handoff_action_validator(action)
+                decision = AgentStageDecision(next_action=action.model_dump(mode='python'),
+                    context_sha256=self.binding.decision_context_sha256)
+            elif next_action is not None:
+                raise ValueError("Stage decisions require current workflow control")
             ids = tuple(UUID(str(value)) for value in observation_ids)
             if not ids or len(ids) > 64:
                 raise ValueError("Select distinct bounded observation identities")
@@ -706,8 +1114,7 @@ class LabBioRuntimeToolSet:
                 raise _HandoffSelectionError("HANDOFF_OBSERVATION_NOT_DELIVERED", undelivered)
             items = tuple(self._delivered_observations[value] for value in ids)
             for item in items:
-                if item.artifact_read_receipt is not None:
-                    self._validate_report_observation(item)
+                self._validate_observation_dependencies(item)
             observations = tuple(HandoffObservation(
                 observation_id=item.capability_invocation_id,
                 capability_name=item.capability_name,
@@ -716,23 +1123,25 @@ class LabBioRuntimeToolSet:
                 artifact_read_receipt=item.artifact_read_receipt,
             ) for item in items)
             handoff = PreparedHandoff(summary=summary, limitations=tuple(limitations or ()),
-                                      observations=observations)
+                                      observations=observations, stage_decision=decision)
+            from .handoff import MAX_HANDOFF_BYTES
             encoded = canonical_bytes(handoff.model_dump(mode="json", exclude_none=True))
-            if len(encoded) > 60_000:
+            if len(encoded) > MAX_HANDOFF_BYTES:
                 return {"status": "TOO_LARGE", "serialized_bytes": len(encoded),
-                        "max_bytes": 60_000, "item_bytes": {
+                        "max_bytes": MAX_HANDOFF_BYTES, "item_bytes": {
                             str(item.observation_id): len(canonical_bytes(
                                 item.model_dump(mode="json", exclude_none=True))) for item in observations},
                         "reason": "Select narrower already-read observations or make a narrower governed query. No summary or observation was changed."}
             self.prepared_handoff = handoff
-            return {"status": "READY", "serialized_bytes": len(encoded), "max_bytes": 60_000,
+            return {"status": "READY", "serialized_bytes": len(encoded), "max_bytes": MAX_HANDOFF_BYTES,
                     "observation_ids": [str(value) for value in ids],
+                    **({'stage_decision': decision.model_dump(mode='json')} if decision is not None else {}),
                     "summary_authority": "MODEL_CONTEXT"}
         return await self._call("prepare_handoff", prepare, request_ids={
             "handoff_observation_ids": observation_ids,
         })
 
-    def _review_execution(self, value: ExecutionReview | dict) -> ExecutionReview:
+    def _review_execution(self, value: ExecutionReview | JsonValue) -> ExecutionReview:
         try:
             review = ExecutionReview.model_validate(value)
             available = set(self._delivered_observations)
@@ -755,6 +1164,18 @@ class LabBioRuntimeToolSet:
         except (ValidationError, SkillNotFoundError):
             raise _ExecutionReviewRejected() from None
 
+    def _feedback_since_last_result(self, continuing_capability: str | None = None):
+        """Bound repeat detection to the current delivered no-result episode."""
+        if self._feedback_boundary is None:
+            return
+        for prior in reversed(self._evidence_items[:self._feedback_boundary]):
+            if prior.capability_invocation_id not in self._delivered_observations:
+                continue
+            if (prior.status is CapabilityEvidenceStatus.COMPLETED
+                    and prior.capability_name != continuing_capability):
+                return
+            yield prior
+
     def _query_repeat_feedback(
         self, error: ToolError, request: ArtifactQueryRequestAudit | None,
     ) -> ToolError:
@@ -769,12 +1190,9 @@ class LabBioRuntimeToolSet:
         if error.retryable or error.error_code not in {
             'INVALID_ENUM_VALUE', 'INVALID_QUERY_SHAPE', 'ARTIFACT_EXPOSURE_DENIED',
             'ARTIFACT_NOT_FOUND', 'INVALID_REFERENCE_KIND', 'AUTHORIZATION_DENIED',
-            'PAGINATION_PROGRESS_REQUIRED',
         }:
             return error
-        for prior in reversed(self._evidence_items[:self._feedback_boundary]):
-            if prior.capability_invocation_id not in self._delivered_observations:
-                continue
+        for prior in self._feedback_since_last_result():
             previous, details = prior.artifact_query_request, prior.error_details
             if (prior.capability_name != 'artifact_query' or previous is None or details is None
                     or prior.error_code != error.error_code or details.retryable
@@ -790,6 +1208,18 @@ class LabBioRuntimeToolSet:
                     and request.view_type != 'INVALID_VALUE'
                     and (request.view_type, request.limit, request.offset) ==
                         (previous.view_type, previous.limit, previous.offset))
+            if (denied and self.binding.stage_id is WorkflowStage.EXECUTE
+                    and error.query_constraints.allowed_view_types
+                    and details.repeated_request is None):
+                return self._repeated_error(
+                    error, prior.capability_invocation_id,
+                    reason="DENIED_VIEWS_UNCHANGED",
+                    safe_message=(
+                        "The repeated view is still denied. No data was read. "
+                        "Continue with a permitted view or an authorized local execution."
+                    ),
+                    stop=False,
+                )
             if denied or same:
                 return self._repeated_error(
                     error,
@@ -820,9 +1250,7 @@ class LabBioRuntimeToolSet:
             or failure_details is None
         ):
             return error
-        for prior in reversed(self._evidence_items[:self._feedback_boundary]):
-            if prior.capability_invocation_id not in self._delivered_observations:
-                continue
+        for prior in self._feedback_since_last_result():
             if (
                 prior.capability_name == "execution_submit"
                 and prior.error_code == error.error_code
@@ -853,8 +1281,10 @@ class LabBioRuntimeToolSet:
         *,
         reason: str,
         safe_message: str,
+        stop: bool = True,
     ) -> ToolError:
-        self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
+        if stop:
+            self.stop_reason = "REPEATED_NON_RETRYABLE_REQUEST"
         return error.model_copy(update={
             "safe_message": safe_message,
             "repeated_request": RepeatedRequestDetails(
@@ -870,9 +1300,11 @@ class LabBioRuntimeToolSet:
         *,
         request_ids: dict[str, JsonValue] | None = None,
         artifact_query_request: ArtifactQueryRequestAudit | None = None,
+        artifact_aggregate_request: Callable[[], ArtifactAggregateRequestAudit] | None = None,
         skill_search_request: SkillSearchRequestAudit | None = None,
         execution_submit_request: ExecutionSubmitRequestAudit | None = None,
-        execution_review: ExecutionReview | dict | None = None,
+        report_reference_selections: tuple[ReportReferenceSelection, ...] | None = None,
+        execution_review: ExecutionReview | JsonValue = None,
         public_data: Callable[[Any], JsonValue] | None = None,
     ) -> dict[str, Any]:
         capability_invocation_id = uuid4()
@@ -882,6 +1314,9 @@ class LabBioRuntimeToolSet:
         request_audit_payload: dict[str, JsonValue] = {}
         reviewed = None
         execution_receipt = None
+        aggregate_audit = artifact_aggregate_request() if artifact_aggregate_request is not None else None
+        if aggregate_audit is not None:
+            request_audit_payload["artifact_aggregate_request"] = aggregate_audit.model_dump(mode="json")
         if artifact_query_request is not None:
             request_audit_payload["artifact_query_request"] = (
                 artifact_query_request.model_dump(mode="json")
@@ -894,11 +1329,18 @@ class LabBioRuntimeToolSet:
             request_audit_payload["execution_submit_request"] = (
                 execution_submit_request.model_dump(mode="json")
             )
+        if report_reference_selections is not None:
+            request_audit_payload["report_reference_selections"] = [
+                item.model_dump(mode="json") for item in report_reference_selections]
         try:
             self._guard(capability)
             if execution_review is not None:
-                reviewed = self._review_execution(execution_review)
-                request_audit_payload['execution_review'] = reviewed.model_dump(mode='json')
+                try:
+                    reviewed = self._review_execution(execution_review)
+                except _ExecutionReviewRejected:
+                    request_audit_payload["execution_review_status"] = "IGNORED_INVALID"
+                else:
+                    request_audit_payload["execution_review"] = reviewed.model_dump(mode="json")
             event = self._emit(
                 TraceEventType.CAPABILITY_INVOKED,
                 capability,
@@ -914,8 +1356,27 @@ class LabBioRuntimeToolSet:
             value = operation()
             if hasattr(value, "__await__"):
                 value = await value
+            if artifact_aggregate_request is not None:
+                aggregate_audit = artifact_aggregate_request()
+                request_audit_payload["artifact_aggregate_request"] = aggregate_audit.model_dump(mode="json")
             if isinstance(value, ExecutionReceipt):
                 execution_receipt = value
+            retained_receipt = None
+            if execution_receipt is not None:
+                retained_receipt = {
+                    'kind': 'EXECUTION_RECEIPT',
+                    **execution_receipt.model_dump(mode='json', include={
+                        'execution_id', 'status', 'exit_code', 'issue_codes', 'registered_outputs'}),
+                    'registered_output_count': len(execution_receipt.registered_outputs),
+                    'output_inventory_archived': False,
+                }
+                if "execution_review_status" in request_audit_payload:
+                    retained_receipt["execution_review_status"] = request_audit_payload["execution_review_status"]
+                if execution_receipt.host_termination is not None:
+                    retained_receipt['host_termination'] = execution_receipt.host_termination.model_dump(mode='json')
+                if len(json.dumps(retained_receipt, ensure_ascii=False).encode()) > 4_096:
+                    del retained_receipt['registered_outputs']
+                    retained_receipt['output_inventory_archived'] = True
             if skill_search_request is not None and isinstance(
                 value, SkillCandidatePage
             ):
@@ -946,6 +1407,14 @@ class LabBioRuntimeToolSet:
                 data=public_data(value) if public_data is not None else value,
                 observation_archived=self.services.observation_store is not None,
                 artifact_read_receipt=read_receipt,
+                retained_metadata=(
+                    retained_receipt
+                    if execution_receipt is not None else
+                    {'kind': ('OBSERVATION_PAGE' if value['format'] == 'EXACT_OBSERVATION_JSON'
+                              else 'OBSERVATION_PAGE_ALREADY_DELIVERED'),
+                     **{key: value[key] for key in (
+                        'observation_id', 'offset', 'end', 'next_offset', 'complete_observation_delivered')}}
+                    if capability == 'evidence_read' else None),
             )
             if capability == "execution_inspect":
                 # Source-free audit of the released page. Actual model receipt
@@ -983,14 +1452,19 @@ class LabBioRuntimeToolSet:
                     reference_ids=self._reference_ids(value),
                     safe_result=value,
                     artifact_query_request=artifact_query_request,
+                    artifact_aggregate_request=aggregate_audit,
                     skill_search_request=skill_search_request,
                     execution_submit_request=execution_submit_request,
+                    report_reference_selections=report_reference_selections,
                     execution_review=reviewed,
                     artifact_read_receipt=read_receipt,
                 ), response,
             )
             return response
         except Exception as exc:
+            if artifact_aggregate_request is not None:
+                aggregate_audit = artifact_aggregate_request()
+                request_audit_payload["artifact_aggregate_request"] = aggregate_audit.model_dump(mode="json")
             if execution_receipt is not None:
                 # The effect already has a receipt. Any subsequent publication
                 # failure is an uncertain handoff, not a safe request to replay.
@@ -1007,6 +1481,11 @@ class LabBioRuntimeToolSet:
                 {"execution_id": str(exc.execution_id), "replay_blocked": True}
                 if isinstance(exc, ExecutionSubmissionPersistenceError) else None
             )
+            if capability == "prepare_handoff" and isinstance(exc, HandoffActionNotCurrentError):
+                failure_details = {"handoff_action_control": exc.control.model_dump(mode="json")}
+            if report_reference_selections is not None:
+                failure_details = {"report_reference_selections":
+                    request_audit_payload["report_reference_selections"]}
             if capability == "execution_submit" and isinstance(
                 exc, ExecutionOutputDeclarationError
             ):
@@ -1035,6 +1514,7 @@ class LabBioRuntimeToolSet:
                 revision_validation=error.revision_validation,
                 report_evidence=error.report_evidence,
                 repeated_request=error.repeated_request,
+                aggregate_validation=error.aggregate_validation,
             )
             event = self._emit(
                 TraceEventType.CAPABILITY_FAILED,
@@ -1055,7 +1535,7 @@ class LabBioRuntimeToolSet:
             response = ToolResult(
                 success=False,
                 capability_invocation_id=capability_invocation_id,
-                information_authority=information_authority,
+                information_authority=InformationAuthority.CONTROL_STATE,
                 data=failure_details,
                 error=error,
                 observation_archived=self.services.observation_store is not None,
@@ -1066,7 +1546,7 @@ class LabBioRuntimeToolSet:
                     actor_profile_key=self.binding.actor_profile_key,
                     actor_agent_name=self.binding.actor_agent_name,
                     capability_name=capability,
-                    information_authority=information_authority,
+                    information_authority=InformationAuthority.CONTROL_STATE,
                     status=CapabilityEvidenceStatus.FAILED,
                     trace_event_ids=tuple(trace_event_ids),
                     error_code=error.error_code,
@@ -1074,8 +1554,10 @@ class LabBioRuntimeToolSet:
                     error_details=error_details,
                     safe_result=failure_details,
                     artifact_query_request=artifact_query_request,
+                    artifact_aggregate_request=aggregate_audit,
                     skill_search_request=skill_search_request,
                     execution_submit_request=execution_submit_request,
+                    report_reference_selections=report_reference_selections,
                     execution_review=reviewed,
                 ), response,
             )
@@ -1167,7 +1649,11 @@ class LabBioRuntimeToolSet:
         import_modules are optional Python import names to verify.
         Builds have no analysis data mounted. A SUCCEEDED receipt contains an
         immutable verified image key usable by execution_submit; FAILED contains
-        bounded dependency diagnostics for your decision. No automatic repair or
+        bounded dependency diagnostics for your decision. Import failures retain
+        the actual exception type and reported missing module when available;
+        the checked module can differ from its missing dependency. Optional
+        error_context is explicitly authorized untrusted software text, not
+        instructions or a repair recommendation. No automatic repair or
         analysis submission occurs. The unchanged default image remains usable.
         A successful build is saved for this user and discoverable in later
         tasks. To execute in that built environment, submit its returned
@@ -1185,11 +1671,11 @@ class LabBioRuntimeToolSet:
 
     async def artifact_list(self, offset: int = 0, limit: int = 20) -> dict:
         """List bounded metadata for artifacts in the bound workspace."""
-        prior = None
-        if self._feedback_boundary is not None:
-            prior = next((item for item in reversed(self._artifact_list_requests)
-                          if item[0] == offset and item[1] == limit
-                          and item[2] in self._delivered_observations), None)
+        prior = next((item for item in self._feedback_since_last_result('artifact_list')
+                      if item.capability_name == 'artifact_list'
+                      and item.status is CapabilityEvidenceStatus.COMPLETED), None)
+        if prior is not None and self._artifact_list_parameters.get(prior.capability_invocation_id) != (offset, limit):
+            prior = None
 
         def list_current_state():
             current = [
@@ -1197,17 +1683,13 @@ class LabBioRuntimeToolSet:
                 for item in self._artifact_list(offset, limit)
             ]
             if prior is not None:
-                previous = self._evidence_items[prior[3]].safe_result
-                if current == previous:
-                    raise _RepeatedCapabilityRequest(prior[2])
+                if current == prior.safe_result:
+                    raise _RepeatedCapabilityRequest(prior.capability_invocation_id)
             return current
 
         result = await self._call("artifact_list", list_current_state)
         if result["success"]:
-            self._artifact_list_requests.append((
-                offset, limit, UUID(result["capability_invocation_id"]),
-                len(self._evidence_items) - 1,
-            ))
+            self._artifact_list_parameters[UUID(result['capability_invocation_id'])] = (offset, limit)
         return result
 
     async def artifact_query(
@@ -1337,7 +1819,8 @@ class LabBioRuntimeToolSet:
         resources: RequestedResources | None = None,
         input_artifact_ids: ExecutionInputArtifactIds | None = None,
         parameters: dict[str, JsonValue] | None = None,
-        review: ExecutionReview | None = None,
+        review: ExecutionReview | JsonValue = None,
+        json_wrapped_overrides: tuple[str, ...] = (),
     ) -> dict:
         """Run an explicit revision of this run's original submitted program.
 
@@ -1379,20 +1862,23 @@ class LabBioRuntimeToolSet:
                     input_artifact_ids=draft.input_artifact_ids, parameters=draft.parameters)
             except ValidationError as exc:
                 raise _InvalidExecutionRevision(exc) from None
-        return await self._call("execution_revise", revise,
-                                request_ids={"execution_id": execution_id}, execution_review=review)
+        request = {"execution_id": execution_id}
+        if json_wrapped_overrides:
+            request["json_wrapped_overrides"] = list(json_wrapped_overrides)
+        return await self._call("execution_revise", revise, request_ids=request, execution_review=review)
 
     async def execution_submit(
         self,
         image_key: ExecutionImageKey,
-        script_content: ExecutionScriptContent,
+        script_content: ExecutionScriptContent | None = None,
         runtime: ExecutionRuntime | None = None,
-        input_artifact_ids: ExecutionInputArtifactIds = (),
-        parameters: dict[str, JsonValue] = {},
-        requested_outputs: ExecutionRequestedOutputs = (),
-        resources: RequestedResources = {},
+        input_artifact_ids: ExecutionInputArtifactIds = _EXECUTION_INTENT_UNSET,
+        parameters: dict[str, JsonValue] = _EXECUTION_INTENT_UNSET,
+        requested_outputs: ExecutionRequestedOutputs = _EXECUTION_INTENT_UNSET,
+        resources: RequestedResources = _EXECUTION_INTENT_UNSET,
         network_required: bool = False,
-        review: ExecutionReview | None = None,
+        review: ExecutionReview | JsonValue = None,
+        source_revision: ExecutionSourceRevision | dict | None = None,
     ) -> dict:
         """Submit one governed execution intent through canonical draft fields.
 
@@ -1436,7 +1922,10 @@ class LabBioRuntimeToolSet:
         evidence or a suggested repair. It may contain reported data values;
         neither a successful exit nor absence of error text proves correctness.
         output_issues identify failed requested_outputs by zero-based output_index
-        and, where known, the zero-based JSON record_index. They are mechanical
+        and, where known, the zero-based JSON record_index. Optional validation
+        identifies a host-declared field and its scalar/string-length constraint,
+        never the rejected value. Missing validation is not proof of conformity.
+        These are mechanical
         validation facts, not scientific repair instructions. A new complete
         program may be submitted within the same capability and budget; each
         execution retains its own receipt and source identity.
@@ -1475,12 +1964,21 @@ class LabBioRuntimeToolSet:
             "runtime": runtime,
             "image_key": image_key,
             "script_content": script_content,
-            "input_artifact_ids": input_artifact_ids,
-            "parameters": parameters,
-            "requested_outputs": requested_outputs,
-            "resources": resources,
             "network_required": network_required,
         }
+        current_fields = {
+            "input_artifact_ids": (input_artifact_ids, ()),
+            "parameters": (parameters, {}),
+            "requested_outputs": (requested_outputs, ()),
+            "resources": (resources, {}),
+        }
+        for name, (value, literal_default) in current_fields.items():
+            if value is not _EXECUTION_INTENT_UNSET:
+                draft[name] = value
+            elif source_revision is None:
+                draft[name] = literal_default
+        if source_revision is not None:
+            draft['source_revision'] = source_revision
 
         if "execution_submit" not in self.binding.capability_allowlist:
             return await self._call(
@@ -1489,7 +1987,8 @@ class LabBioRuntimeToolSet:
                 execution_submit_request=self._execution_submit_request_audit(draft),
             )
         try:
-            validated = ExecutionPlanDraft.model_validate(draft)
+            draft_format = SourceRevisionExecutionDraft if source_revision is not None else ExecutionPlanDraft
+            validated = draft_format.model_validate(draft)
         except ValidationError as exc:
             request_audit = self._execution_submit_request_audit(
                 draft,
@@ -1521,7 +2020,9 @@ class LabBioRuntimeToolSet:
 
         async def submit():
             service = self._required(self.services.execution_submission, "execution")
-            return await service.submit(
+            submit_operation = (service.submit_source_revision
+                if isinstance(validated, SourceRevisionExecutionDraft) else service.submit)
+            return await submit_operation(
                 validated,
                 principal=self.binding.principal,
                 workspace=self.binding.workspace,
@@ -1803,24 +2304,44 @@ class LabBioRuntimeToolSet:
         not opened. No program execution. It is independently citable as an
         aggregate observation, not as reading the underlying table pages.
         """
+        aggregate_audit = self._artifact_aggregate_request_audit(
+            artifact_id, operation, field, match_field, match_value,
+        )
         def calculate():
+            nonlocal aggregate_audit
             identifier, ref, constraints = self._authorized_artifact_ref(artifact_id)
             exposure_query = ArtifactQuery(view_type=ArtifactViewType.TOP_N, limit=1)
             if not self.services.artifact_exposure.policy.decide(
                 ref, exposure_query, self.binding.consumer
             ).allowed:
                 raise _ArtifactQueryFailure("ARTIFACT_EXPOSURE_DENIED", constraints)
+            stored = self.services.artifact_store.load_for_view(identifier)
+            resolved_fields = {}
+            for key, selected in (("field", field), ("match_field", match_field)):
+                if (isinstance(selected, str) and 1 <= len(selected) <= 128
+                        and any(selected in row for row in stored.representation.records)):
+                    try:
+                        validate_model_visible_json({selected: None}, reject_absolute_paths=True)
+                        validate_model_visible_json(selected, reject_absolute_paths=True)
+                    except ValueError:
+                        continue
+                    resolved_fields[key] = selected
+            aggregate_audit = ArtifactAggregateRequestAudit.model_validate({
+                **aggregate_audit.model_dump(),
+                **resolved_fields, "selector_resolution": "AUTHORIZED_SOURCE",
+            })
             query = ArtifactAggregateQuery(operation=operation, field=field,
                 match_field=match_field, match_value=match_value)
-            stored = self.services.artifact_store.load_for_view(identifier)
             return {"artifact_id": str(identifier),
                 **aggregate_records(stored.representation, query)}
         return await self._call("artifact_aggregate", calculate,
-            request_ids={"artifact_id": artifact_id})
+            request_ids={"artifact_id": artifact_id},
+            artifact_aggregate_request=lambda: aggregate_audit)
 
     async def report_check(
         self, evidence_artifact_ids: Annotated[list[str] | None, Field(max_length=256)] = None,
         evidence_references: Annotated[list[ReportEvidenceReference] | None, Field(max_length=64)] = None,
+        delivery_artifact_ids: Annotated[list[str] | None, Field(max_length=64)] = None,
     ) -> dict:
         """Check citation identities and observed scopes without registering prose.
 
@@ -1828,15 +2349,31 @@ class LabBioRuntimeToolSet:
         receipt scopes come from host records. Legacy evidence_artifact_ids
         reports the first unread table offset. READY is mechanical readiness,
         never scientific validation. Nothing is substituted. report_submit
-        rechecks these same conditions before registration.
+        rechecks these same conditions before registration. Separately supplied
+        delivery_artifact_ids select local result files, not citation coverage.
+        An explicit empty selection requires no storage or submission service.
         """
-        return await self._call("report_check", lambda: self._check_report_references(
-            evidence_artifact_ids, evidence_references))
+        def check():
+            delivery = None
+            service = self.services.report_submission
+            if delivery_artifact_ids is not None:
+                has_fixed_delivery = service is not None and service.fixed_delivery_artifact_ids is not None
+                delivery = (self._required(service, "report").prepare_delivery(
+                    tuple(coerce_artifact_id(item) for item in delivery_artifact_ids),
+                    **self._generated_read_context()) if delivery_artifact_ids or has_fixed_delivery else
+                    DeliveryManifest(outputs=(), programs=()).model_dump(mode='json'))
+            evidence = self._check_report_references(evidence_artifact_ids, evidence_references)
+            return evidence if delivery is None else {
+                **evidence.model_dump(mode='json'), 'delivery_manifest': delivery}
+        return await self._call("report_check", check,
+            report_reference_selections=self._report_reference_selections(
+                evidence_artifact_ids, evidence_references))
 
     async def report_submit(
         self, title: str, report_text: str,
         evidence_artifact_ids: Annotated[list[str] | None, Field(max_length=256)] = None,
         evidence_references: Annotated[list[ReportEvidenceReference] | None, Field(max_length=64)] = None,
+        delivery_artifact_ids: Annotated[list[str] | None, Field(max_length=64)] = None,
     ) -> dict:
         """Submit Agent-authored prose with source-bound observed scopes.
 
@@ -1844,6 +2381,8 @@ class LabBioRuntimeToolSet:
         The host derives the cited page, aggregate or summary scope. Legacy
         evidence_artifact_ids still require complete paginated table reads.
         Never mix formats. Mechanical citation readiness is not scientific truth.
+        delivery_artifact_ids separately selects the local result set across
+        producers; the host binds original programs without selecting science.
         """
         def submit():
             check = self._check_report_references(evidence_artifact_ids, evidence_references)
@@ -1851,6 +2390,9 @@ class LabBioRuntimeToolSet:
                 raise _ReportEvidenceIncomplete(check)
             ids = tuple(item.artifact_id for item in check.items)
             scoped = {}
+            if delivery_artifact_ids is not None:
+                scoped['delivery_artifact_ids'] = tuple(coerce_artifact_id(item) for item in delivery_artifact_ids)
+                scoped['delivery_imported_artifact_ids'] = self._generated_read_context()['imported_artifact_ids']
             if evidence_references is not None:
                 scoped["evidence_read_receipts"] = tuple(
                     receipt for item in check.items for receipt in item.read_receipts)
@@ -1864,7 +2406,30 @@ class LabBioRuntimeToolSet:
             )
         return await self._call(
             "report_submit", submit,
+            report_reference_selections=self._report_reference_selections(
+                evidence_artifact_ids, evidence_references),
         )
+
+    @staticmethod
+    def _report_reference_selections(artifact_ids, references):
+        """Project canonical identities before execution; invalid syntax remains unknown.
+
+        This never resolves sources or substitutes identities. Authoritative
+        validation still runs inside the guarded operation, not in this audit.
+        """
+        try:
+            if artifact_ids is not None or references is None:
+                return None
+            if not isinstance(references, (list, tuple)) or len(references) > 64:
+                return None
+            parsed = tuple(item if isinstance(item, ReportEvidenceReference) else
+                ReportEvidenceReference.model_validate_json(json.dumps(item)) for item in references)
+            if sum(len(item.observation_ids) for item in parsed) > 64:
+                return None
+            return tuple(ReportReferenceSelection(index=index, artifact_id=item.artifact_id,
+                observation_ids=tuple(item.observation_ids)) for index, item in enumerate(parsed))
+        except (TypeError, ValueError):
+            return None
 
     def _check_report_references(self, artifact_ids, references):
         if artifact_ids is not None and references is not None:
@@ -1884,7 +2449,7 @@ class LabBioRuntimeToolSet:
         for index, reference in enumerate(parsed):
             fields = dict(index=index, artifact_id=reference.artifact_id,
                           citation_mode="OBSERVED_SCOPE")
-            status, receipts = "READY", []
+            status, receipts, failed_observation_index = "READY", [], None
             if reference.artifact_id in seen_artifacts:
                 status = "DUPLICATE_REFERENCE"
             seen_artifacts.add(reference.artifact_id)
@@ -1895,18 +2460,21 @@ class LabBioRuntimeToolSet:
             except AuthorizationDenied:
                 status = "AUTHORIZATION_DENIED"
             if status == "READY":
-                for observation_id in reference.observation_ids:
+                for observation_index, observation_id in enumerate(reference.observation_ids):
                     observation = observations.get(observation_id)
                     if observation_id in seen_observations:
                         status = "DUPLICATE_REFERENCE"
+                        failed_observation_index = observation_index
                         break
                     seen_observations.add(observation_id)
                     if observation is None:
                         status = "REPORT_OBSERVATION_NOT_DELIVERED"
+                        failed_observation_index = observation_index
                         break
                     receipt = observation.artifact_read_receipt
                     if receipt is None or receipt.artifact_id != reference.artifact_id:
                         status = "REPORT_OBSERVATION_SOURCE_MISMATCH"
+                        failed_observation_index = observation_index
                         break
                     try:
                         self._validate_report_observation(observation)
@@ -1915,10 +2483,12 @@ class LabBioRuntimeToolSet:
                         break
                     except ValueError:
                         status = "REPORT_OBSERVATION_SOURCE_CHANGED"
+                        failed_observation_index = observation_index
                         break
                     receipts.append(receipt.model_copy(update={
                         "delivered_invocation_id": self._model_invocation_id}))
             items.append(ReportEvidenceItem(**fields, status=status,
+                failed_observation_index=failed_observation_index,
                 read_receipts=tuple(receipts) if status == "READY" else ()))
         return ReportEvidenceCheck(ready=all(item.status == "READY" for item in items),
                                    items=tuple(items))
@@ -1975,6 +2545,55 @@ class LabBioRuntimeToolSet:
             "delivered_invocation_id": receipt.source_invocation_id
         }):
             raise ValueError("Observation scope does not match its read result")
+
+    def validated_artifact_reads(self) -> tuple[ArtifactReadReceipt, ...]:
+        """Snapshot this actor's actually consumed, currently authorized content reads."""
+        from .validation_grounding import is_result_content_read
+
+        receipts = []
+        for item in self._delivered_observations.values():
+            receipt = item.artifact_read_receipt
+            if (item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE
+                    or item.capability_name not in {"artifact_query", "artifact_aggregate", "file_read"}
+                    or receipt is None or not is_result_content_read(receipt)):
+                continue
+            try:
+                self._validate_report_observation(item)
+            except (AuthorizationDenied, ArtifactExposureDenied, ArtifactNotFoundError, ValueError):
+                continue
+            receipts.append(receipt.model_copy(update={
+                "delivered_invocation_id": self.binding.invocation_id}))
+        return tuple(receipts)
+
+    def reauthorize_artifact_reads(self, receipts, *, items=()):
+        """Recheck durable read attestations without creating any delivery credit."""
+        from .validation_grounding import is_result_content_read
+
+        current = {item.capability_invocation_id: item for item in items}
+        accepted = []
+        for receipt in receipts:
+            if receipt.delivered_invocation_id != self.binding.invocation_id:
+                continue
+            try:
+                if self.services.observation_store is not None:
+                    item = self.services.observation_store.load(
+                        self.binding, receipt.observation_id).item
+                else:
+                    item = current.get(receipt.observation_id)
+                if (item is None
+                        or item.information_authority is not InformationAuthority.AUTHORITATIVE_EVIDENCE
+                        or item.capability_name not in {"artifact_query", "artifact_aggregate", "file_read"}
+                        or item.artifact_read_receipt is None
+                        or not is_result_content_read(receipt)
+                        or receipt != item.artifact_read_receipt.model_copy(update={
+                            "delivered_invocation_id": self.binding.invocation_id})):
+                    continue
+                self._validate_report_observation(item)
+            except (ObservationNotAvailableError, AuthorizationDenied, ArtifactExposureDenied,
+                    ArtifactNotFoundError, ValueError, OSError):
+                continue
+            accepted.append(receipt)
+        return tuple(accepted)
 
     def record_delivered_observation(self, item: CapabilityEvidenceItem) -> None:
         """Host hook after an authorized original observation was fully redelivered.
@@ -2088,6 +2707,7 @@ class LabBioRuntimeToolSet:
                     artifact_type=ref.artifact_type,
                     exposure_class=ref.exposure_class.value,
                     release_basis=ref.release_basis.value,
+                    origin_kind=ref.origin_kind,
                     schema_=ArtifactSchemaView.from_schema(ref.artifact_schema),
                     available_views=tuple(views),
                     owner_user_id=ref.owner_user_id,
@@ -2150,38 +2770,6 @@ class LabBioRuntimeToolSet:
             typed_view = ArtifactViewType(view_type)
         except ValueError as exc:
             raise _ArtifactQueryFailure("INVALID_ENUM_VALUE", constraints) from exc
-        if self._feedback_boundary is not None and typed_view is ArtifactViewType.TOP_N:
-            for prior in reversed(self._evidence_items[: self._feedback_boundary]):
-                if prior.capability_invocation_id not in self._delivered_observations:
-                    continue
-                previous = prior.artifact_query_request
-                result = prior.safe_result
-                if (
-                    prior.capability_name != "artifact_query"
-                    or prior.error_code is not None
-                    or previous is None
-                    or previous.artifact_id != identifier
-                    or previous.view_type != ArtifactViewType.TOP_N.value
-                    or previous.offset != offset
-                    or previous.limit != limit
-                    or not isinstance(result, dict)
-                ):
-                    continue
-                next_offset = result.get("next_offset")
-                suggested_limit = result.get("suggested_next_limit")
-                if (
-                    type(next_offset) is int
-                    and next_offset > offset
-                    and type(suggested_limit) is int
-                    and suggested_limit >= 1
-                ):
-                    raise _ArtifactPaginationProgressRequired(
-                        constraints.model_copy(update={
-                            "required_followup_offset": next_offset,
-                            "suggested_next_limit": suggested_limit,
-                        })
-                    )
-                break
         try:
             query = ArtifactQuery(view_type=typed_view, limit=limit, offset=offset)
         except ValidationError as exc:
@@ -2241,13 +2829,35 @@ class LabBioRuntimeToolSet:
                 ),
             )
         )
-        items = tuple(
-            self._skill_candidate(item) for item in active[offset : offset + limit]
-        )
+        # The native response (including its envelope) admits 60,000 bytes;
+        # the public evidence validator also limits the JSON tree to 4,096 nodes.
+        # Reserve space for the enclosing page, observation and invocation fields.
+        items = []
+        remaining_bytes, remaining_nodes = 58_000, 4_000
+        for skill in active[offset : offset + limit]:
+            row = self._skill_candidate(skill)
+            data = row.model_dump(mode="json")
+            size = len(row.model_dump_json().encode("utf-8")) + 1
+            nodes = 1 + len(data) + sum(len(v) for v in data.values() if isinstance(v, list))
+            if size > remaining_bytes or nodes > remaining_nodes:
+                if not items:
+                    # A single legal guide can have very long optional lists.
+                    # Keep identity, ancestry and scientific scope usable.
+                    omitted = tuple(k for k, v in data.items()
+                                    if isinstance(v, list) and v and k != "truncated_fields")
+                    row = row.model_copy(update={
+                        **{k: () for k in omitted},
+                        "truncated_fields": tuple(dict.fromkeys((*row.truncated_fields, *omitted))),
+                    })
+                    items.append(row)
+                break
+            items.append(row)
+            remaining_bytes -= size
+            remaining_nodes -= nodes
         next_offset = offset + len(items)
         truncated = next_offset < len(active)
         return SkillCandidatePage(
-            items=items,
+            items=tuple(items),
             returned_count=len(items),
             available_count=len(active),
             offset=offset,
@@ -2261,7 +2871,19 @@ class LabBioRuntimeToolSet:
         try:
             service.store.get_authorization(authorization_id)
         except SkillNotFoundError:
-            raise _SkillAuthorizationNotFound() from None
+            hint = None
+            for item in self._delivered_observations.values():
+                if item.capability_name != "skill_propose_use" or not isinstance(item.safe_result, dict):
+                    continue
+                receipt = item.safe_result
+                proposal_id = receipt.get("proposal_id")
+                if (isinstance(proposal_id, str)
+                        and str(authorization_id) in (proposal_id,
+                            str(receipt.get("approval_gate_id", "")).removeprefix("skill-use:"))
+                        and service.store.get_authorization_for_proposal(UUID(proposal_id)) is None):
+                    hint = receipt.get("next_step")
+                    break
+            raise _SkillAuthorizationNotFound(hint) from None
         skill = service.get_authorized_context(authorization_id,
             run_id=self.binding.run_id, project_id=self.binding.workspace.project_id,
             principal=self.binding.principal)
@@ -2313,22 +2935,11 @@ class LabBioRuntimeToolSet:
         }
         candidate = LabBioRuntimeToolSet._skill_candidate(skill).model_dump()
         partial = [name for name, (values, limit) in fields.items() if len(values) > limit]
-        for name, values in (
-            ("description", skill.description), ("tags", procedure.tags),
-            ("artifact_types", procedure.artifact_types),
-            ("input_contract_ids", procedure.input_contract_ids),
-            ("output_contract_ids", procedure.output_contract_ids),
-            ("applicability_preview", procedure.applicability),
-            ("limitation_preview", procedure.known_limitations),
-        ):
-            if len(values) > len(candidate[name]):
-                partial.append(name)
+        partial.extend(candidate.pop("truncated_fields"))
         detail = SkillDetailView(
             **candidate,
             authorization_id=authorization_id,
             source_run_id=skill.source_run_id,
-            parent_skill_id=skill.parent_skill_id,
-            parent_version=skill.parent_version,
             applicability=procedure.applicability,
             **{name: tuple(values[:limit]) for name, (values, limit) in fields.items()},
             truncated_fields=tuple(partial),
@@ -2360,17 +2971,32 @@ class LabBioRuntimeToolSet:
             skill_id=skill_id,
             skill_version=version,
             proposed_mode=SkillUseMode(mode),
+            latest_user_answer_id=self.binding.latest_user_answer_id,
             reason=reason,
             proposed_deviations=tuple(deviations),
         )
-        self._required(self.services.skill_service, "skill").submit_use_proposal(
+        proposal = self._required(self.services.skill_service, "skill").submit_use_proposal(
             proposal, principal=self.binding.principal
+        )
+        domain_reference = f"skill-use:{proposal.proposal_id}"
+        handoff = (
+            "Use prepare_handoff to submit your decision and corresponding next_action."
+            if self.next_action_format is not None and "prepare_handoff" in self.binding.capability_allowlist
+            else "Finish this capability phase with a short text handoff for PLAN finalization."
         )
         return {
             "proposal_id": str(proposal.proposal_id),
             "approval_gate_id": proposal.approval_gate_id,
-            "domain_reference_id": f"skill-use:{proposal.proposal_id}",
+            "domain_reference_id": domain_reference,
             "status": "USER_APPROVAL_REQUIRED",
+            "next_step": (
+                "Approval is pending. Neither the proposal ID nor the gate ID authorizes skill_view. "
+                f"If you wish to pursue it and a user gate is available: {handoff} "
+                f"Specify USE_PROPOSED for proposal_id {proposal.proposal_id}, next_action "
+                f"request_user_input, your own user_prompt, and domain_reference_id {domain_reference}. "
+                "You may instead choose USE_NOT_PURSUED and explain why. After approval, use the "
+                "resumed gate decision_reference_id as the skill_view authorization_id."
+            ),
         }
 
     def _memory_search(self, offset, limit, kind, scope):
@@ -2481,18 +3107,26 @@ class LabBioRuntimeToolSet:
 
     @staticmethod
     def _skill_candidate(skill) -> SkillCandidateView:
+        procedure = skill.procedure
+        previews = {
+            "description": (skill.description, 1000),
+            "tags": (tuple(sorted(procedure.tags)), 32),
+            "artifact_types": (tuple(sorted(procedure.artifact_types)), 32),
+            "input_contract_ids": (procedure.input_contract_ids, 16),
+            "output_contract_ids": (procedure.output_contract_ids, 16),
+            "applicability_preview": (procedure.applicability, 500),
+            "limitation_preview": (procedure.known_limitations, 4),
+        }
         return SkillCandidateView(
             skill_id=skill.skill_id,
             version=skill.version,
             name=skill.name[:256],
-            description=skill.description[:1000],
             scope=skill.scope.value,
-            tags=tuple(sorted(skill.procedure.tags))[:32],
-            artifact_types=tuple(sorted(skill.procedure.artifact_types))[:32],
-            input_contract_ids=tuple(skill.procedure.input_contract_ids[:16]),
-            output_contract_ids=tuple(skill.procedure.output_contract_ids[:16]),
-            applicability_preview=skill.procedure.applicability[:500],
-            limitation_preview=tuple(skill.procedure.known_limitations[:4]),
+            evolution_kind=skill.evolution_kind,
+            parent_skill_id=skill.parent_skill_id,
+            parent_version=skill.parent_version,
+            **{name: values[:limit] for name, (values, limit) in previews.items()},
+            truncated_fields=tuple(name for name, (values, limit) in previews.items() if len(values) > limit),
         )
 
     @staticmethod
@@ -2503,6 +3137,32 @@ class LabBioRuntimeToolSet:
 
     @staticmethod
     def _safe_error(exc: Exception) -> ToolError:
+        if isinstance(exc, HandoffActionNotCurrentError):
+            schema_hint = (
+                "data.handoff_action_control.action_schema is JSON text describing "
+                "next_action's schema. Parse it and propose your own next_action object, "
+                "not the encoded schema string. "
+                if exc.control.schema_status == "AVAILABLE" else
+                "The complete next_action schema exceeds the public string bound and is "
+                "withheld; no partial schema is supplied. "
+            )
+            return ToolError(error_code="HANDOFF_ACTION_NOT_CURRENT", safe_message=(
+                "No handoff was prepared: next_action is outside the current handoff action "
+                "contract. " + schema_hint +
+                "The host did not choose another action."
+            ))
+        if isinstance(exc, DeliverySelectionError):
+            field = ('delivery_artifact_ids' if exc.index is None else
+                     f'delivery_artifact_ids[{exc.index}]')
+            return ToolError(error_code='INVALID_DELIVERY_SELECTION', safe_message=(
+                f'No report was registered. {field}: {exc.reason}. '
+                'Choose distinct registered execution-output Artifact UUIDs within this run or '
+                'its explicit imported inputs, with available unchanged original programs. '
+                'RAW_INGESTION source inputs and original execution programs are not output selections. '
+                'Imported registered outputs can be selected, including RAW outputs without remote views. '
+                'The host has not '
+                'substituted files; [] explicitly selects no local result files. '
+                'Delivery selection does not grant source-reading credit or validate science.'))
         if isinstance(exc, (ObservationNotAvailableError, ObservationPageError)):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, _HandoffSelectionError):
@@ -2538,37 +3198,35 @@ class LabBioRuntimeToolSet:
                     reason="REQUEST_UNCHANGED",
                 ),
             )
-        if isinstance(exc, _ExecutionReviewRejected):
-            return ToolError(error_code='INVALID_EXECUTION_REVIEW', safe_message=(
-                'No execution started. review requires a brief nonempty rationale and only '
-                'real prior tool response capability_invocation_id values from this invocation; '
-                'Gold authorization IDs must be approved and already read in this run. '
-                'Omit absent references; do not invent them. Review is MODEL_CONTEXT, not approval.'))
         if isinstance(exc, ArtifactArithmeticError):
-            return ToolError(error_code=exc.code, safe_message=exc.safe_message)
+            return ToolError(error_code=exc.code, safe_message=exc.safe_message,
+                aggregate_validation=ArtifactAggregateValidationDetails.model_validate(
+                    exc.value_diagnostics,
+                ) if exc.value_diagnostics is not None else None)
         if isinstance(exc, _ArtifactPageTransportError):
             return ToolError(error_code="ARTIFACT_PAGE_TRANSPORT_LIMIT", safe_message=(
                 "The requested record page cannot be transported intact. Request a smaller "
                 "TOP_N limit at the same offset. It was not counted as delivered evidence."))
-        if isinstance(exc, _ArtifactPaginationProgressRequired):
-            return ToolError(
-                error_code="PAGINATION_PROGRESS_REQUIRED",
-                safe_message=(
-                    "This TOP_N page was already delivered. No new records were read. "
-                    "Copy query_constraints.required_followup_offset into offset and "
-                    "query_constraints.suggested_next_limit into limit for the next page."
-                ),
-                query_constraints=exc.query_constraints,
-            )
         if isinstance(exc, _ReportEvidenceIncomplete):
             first = next(item for item in exc.check.items if item.status != "READY")
+            # Error metadata adds an envelope to receipts that were already
+            # delivered. Keep citation identities/statuses here; exact receipts
+            # remain in the original observations and successful report_check.
+            diagnostic = exc.check.model_copy(update={
+                "receipt_details": "OMITTED_FROM_FAILURE_DIAGNOSTICS",
+                "items": tuple(item.model_copy(update={"read_receipts": ()}) for item in exc.check.items),
+            })
             return ToolError(error_code=first.status, safe_message=(
                 "No report was registered. report_evidence lists every supplied citation's identity "
-                "and status. Legacy evidence_artifact_ids requires all TOP_N pages in this "
+                "and status. failed_observation_index, when present, identifies the first failing "
+                "member of that citation's submitted observation_ids. Legacy evidence_artifact_ids "
+                "requires all TOP_N pages in this "
                 "reporting invocation. Scoped evidence_references requires authentic source-bound "
                 "observations fully delivered to this invocation; scope is not scientific validation. "
-                "report_check accepts references without resending report prose. No reference was changed."),
-                report_evidence=exc.check)
+                "report_check accepts references without resending report prose. No reference was changed. "
+                "Receipt bodies are omitted from this failure diagnostic; original observations "
+                "and report_check retain exact receipts."),
+                report_evidence=diagnostic)
         if isinstance(exc, LiteratureSearchError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
         if isinstance(exc, EnvironmentRequestError):
@@ -2642,9 +3300,12 @@ class LabBioRuntimeToolSet:
         if isinstance(exc, _SkillAuthorizationNotFound):
             return ToolError(
                 error_code="SKILL_AUTHORIZATION_NOT_FOUND",
-                safe_message=("No Skill-use authorization exists for this authorization_id. "
-                    "This does not mean the Skill is missing. Search Skill IDs and pending proposal IDs "
-                    "are not authorizations; an approved gate provides decision_reference_id for skill_view."),
+                safe_message=exc.pending_guidance or (
+                    "No Skill-use authorization exists for this authorization_id. Search Skill, proposal "
+                    "and gate IDs do not grant access. If you wish to pursue a pending use, follow its "
+                    "receipt for request_user_input with its exact domain_reference_id. After approval, "
+                    "copy the resumed gate decision_reference_id into skill_view."
+                ),
             )
         if isinstance(exc, _SkillSectionError):
             return ToolError(error_code=exc.code, safe_message=exc.safe_message)
@@ -2653,6 +3314,12 @@ class LabBioRuntimeToolSet:
                 error_code="SKILL_NOT_FOUND",
                 safe_message="The requested Skill lifecycle record does not exist.",
             )
+        if isinstance(exc, SkillUseDeclinedError):
+            return ToolError(error_code="SKILL_USE_ALREADY_DECLINED", safe_message=(
+                f"The user declined this Skill version and use mode for the current task conditions "
+                f"(proposal_id {exc.proposal_id}). Record USE_NOT_PURSUED for the declined proposal "
+                "and continue the task independently. Do not ask again or relabel the same use."
+            ))
         if isinstance(exc, SkillDecisionError):
             return ToolError(
                 error_code="INVALID_CONTROL_STATE",
@@ -2707,7 +3374,27 @@ class LabBioRuntimeToolSet:
                 "indices. Each edits entry requires old and new strings; an empty new string deletes "
                 "the exact old match. See the tool schema for the unchanged contract. "
                 "No source, overrides or matches were repaired."), revision_validation=exc.details)
+        if isinstance(exc, ExecutionSourceRevisionError):
+            return ToolError(error_code=exc.code, safe_message=(
+                "No execution started. source_revision must name an explicitly imported original "
+                "execution-script in the current run input scope, with its verified whole-source "
+                "expected_script_hash; each edit.old must match exactly once in sequential order. "
+                "Inspect the eligible original through execution_inspect when needed. Current "
+                "execution fields are separate; no previous receipt or settings were inherited."
+            ))
         if isinstance(exc, ExecutionRevisionError):
+            if exc.edit_index is not None:
+                return ToolError(
+                    error_code=exc.code,
+                    safe_message=(
+                        f"No revision was executed. Edit index {exc.edit_index} (zero-based) "
+                        f"has {exc.match_count} exact matches after the preceding edits. "
+                        "Inspect the verified source and provide an old string that matches once."
+                    ),
+                    revision_validation=RevisionValidationDetails(issues=(
+                        RevisionValidationIssue(field="edits.old", item_index=exc.edit_index, reason="invalid_value"),
+                    )),
+                )
             return ToolError(error_code=exc.code, safe_message=(
                 "No revision was executed. Inspect the exact same-run execution and script_hash; "
                 "each edit.old must match once in sequential order. Null overrides retain the original "
@@ -2815,6 +3502,22 @@ class LabBioRuntimeToolSet:
         if isinstance(exc, ValueError):
             return ToolError(error_code="INVALID_REQUEST", safe_message="The capability request is invalid.")
         return ToolError(error_code="CAPABILITY_FAILED", safe_message="The capability could not complete.")
+
+    @staticmethod
+    def _artifact_aggregate_request_audit(
+        artifact_id: Any, operation: Any, field: Any, match_field: Any, match_value: Any,
+    ) -> ArtifactAggregateRequestAudit:
+        try:
+            identifier = coerce_artifact_id(artifact_id)
+        except ArtifactIdentifierError:
+            identifier = "INVALID_IDENTIFIER"
+        return ArtifactAggregateRequestAudit(
+            artifact_id=identifier,
+            operation=operation if type(operation) is str and operation in ("SUM", "COUNT") else "INVALID_VALUE",
+            field_type=LabBioRuntimeToolSet._execution_wire_type(field),
+            match_field_type=LabBioRuntimeToolSet._execution_wire_type(match_field),
+            match_value_type=LabBioRuntimeToolSet._execution_wire_type(match_value),
+        )
 
     @staticmethod
     def _artifact_query_request_audit(

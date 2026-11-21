@@ -9,7 +9,7 @@ from typing import Protocol
 from uuid import UUID
 
 from .images import ApprovedImage
-from .models import ExecutionPlan
+from .models import ExecutionHostTermination, ExecutionPlan
 from .mounts import ExecutionWorkspace, ResolvedMount
 
 # Every backend mounts the submitted script here; diagnostics rely on this path.
@@ -33,6 +33,7 @@ class ProcessOutcome:
     output_limit_exceeded: bool = False
     # What a scheduler job recorded about its GPUs (gpu.parse_gpu_allocation); None without GPUs.
     gpu_allocation: dict | None = None
+    host_termination: ExecutionHostTermination | None = None
 
 
 class ProcessRunner(ABC):

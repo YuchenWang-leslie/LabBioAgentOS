@@ -15,6 +15,7 @@ def reported_numerical_condition(exception_type: str, message: str) -> str | Non
         ("LinAlgError", "SVD did not converge"): "DECOMPOSITION_DID_NOT_CONVERGE",
         ("numpy.linalg.LinAlgError", "SVD did not converge"): "DECOMPOSITION_DID_NOT_CONVERGE",
         ("ValueError", "array must not contain infs or NaNs"): "NON_FINITE_INPUT",
+        ("ValueError", "need at least one array to concatenate"): "EMPTY_ARRAY_SEQUENCE",
     }
     if (exception_type, message) in exact:
         return exact[exception_type, message]

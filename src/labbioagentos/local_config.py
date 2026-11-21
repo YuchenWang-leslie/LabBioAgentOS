@@ -12,6 +12,7 @@ import stat
 import tomllib
 from typing import Literal
 from urllib.parse import urlsplit
+from uuid import UUID
 
 from dotenv import dotenv_values
 from pydantic import (
@@ -22,22 +23,30 @@ from pydantic_core import PydanticCustomError
 
 from labbioagentos.literature import LiteratureSearchService
 from labbioagentos.artifacts import ExposurePolicy
+from labbioagentos.execution.images import (
+    DEFAULT_COLLECTED_OUTPUT_BYTES, DEFAULT_OUTPUT_FILE_BYTES, cap_implicit_file_limit,
+)
 from labbioagentos import (
     ApplicationExecutionProfile, ApplicationRuntimeConfiguration, ApprovedImage,
     CapabilityProfile, ExecutionPolicy, ExecutionRuntime, JsonlTraceSink,
     LabBioApplication, ModelProfile, Principal, Project, PromptProfile,
     ProviderConfigRef, ProviderThinkingWireFormat, ProviderTransport,
     RequestedResources, ResponseSchemaRef, RuntimeProfileCatalog,
-    RuntimeBackend, RuntimeStageAssemblySpec, SQLiteRunStateStore, StructuredOutputContract,
-    WorkflowStage, WorkspaceContext, default_agent_profiles,
+    RuntimeAgentCapabilitySpec, RuntimeBackend, RuntimeStageAssemblySpec,
+    SQLiteRunStateStore, StructuredOutputContract,
+    WorkflowStage, WorkspaceContext, default_agent_profiles, scientific_specialist_profiles,
 )
+from labbioagentos.runtime.capability_catalog import CAPABILITY_CEILINGS
 from labbioagentos.kernel import (
     AnthropicMessagesDialect, GeminiGenerateContentDialect, GeminiInteractionsDialect,
     OpenAIChatDialect, OpenAIResponsesDialect, ProviderBinding, create_provider,
 )
-from labbioagentos.kernel.contracts import AnthropicEffort, GeminiThinkingLevel, ReasoningEffort
+from labbioagentos.kernel.contracts import (
+    DEFAULT_MAX_REQUEST_BYTES, AnthropicEffort, GeminiThinkingLevel, ReasoningEffort,
+)
 from labbioagentos.kernel.http_stream import DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT
 from labbioagentos.execution.models import GpuSupport
+from labbioagentos.workflow.definition import report_revision_workflow_definition, runtime_workflow_definition
 
 
 class _SettingsModel(BaseModel):
@@ -211,9 +220,9 @@ class LocalProviderSettings(_SettingsModel):
     thinking_enabled: bool = False
     interpretation_thinking_enabled: bool = True
     provider_tool_schema_strict: bool = False
-    max_output_tokens: int = Field(default=16_384, ge=256, le=32_768)
+    max_output_tokens: int = Field(default=32_768, ge=256, le=32_768)
     max_model_phase_seconds: int = Field(default=300, ge=30, le=1_800)
-    max_request_bytes: int = Field(default=256_000, ge=1, strict=True)
+    max_request_bytes: int = Field(default=DEFAULT_MAX_REQUEST_BYTES, ge=1, strict=True)
     finalization_json_object: bool = False
     max_retries: int = Field(default=DEFAULT_MAX_RETRIES, ge=0, le=MAX_RETRIES_LIMIT, strict=True)
     openai: LocalOpenAIChatSettings | None = None
@@ -259,6 +268,21 @@ class LocalProviderSettings(_SettingsModel):
         return None if table is None else table.dialect()
 
 
+class MissingApptainerConfigurationError(ValueError):
+    """A fixed migration hint without echoing unsafe configuration values."""
+
+    code = "APPTAINER_SETTINGS_REQUIRED"
+    fields = ("execution.backend", "execution.apptainer")
+    hint = (
+        "Apptainer is the default execution backend; configure [execution.apptainer] "
+        "and its required resource enforcement. For Docker compatibility, explicitly "
+        "set execution.backend = 'docker' in the external configuration."
+    )
+
+    def __init__(self):
+        super().__init__(self.code)
+
+
 class LocalApptainerSettings(_SettingsModel):
     binary: str = Field(default="apptainer", min_length=1, max_length=512, pattern=r"^[^-\s][^\s]*$")
     sif_store: Path
@@ -266,7 +290,7 @@ class LocalApptainerSettings(_SettingsModel):
     cache_dir: Path | None = None
     tmp_dir: Path | None = None
     # No default: a site must state who enforces CPU, memory and process limits.
-    resource_enforcement: Literal["scheduler", "apptainer-cgroups", "systemd-cgroups"]
+    resource_enforcement: Literal["scheduler", "apptainer-cgroups", "systemd-cgroups", "systemd-affinity"]
     verify_sif_on_execute: bool = Field(default=True, strict=True)
 
 
@@ -300,16 +324,18 @@ _SINGLE_IMAGE_SETTINGS = ("image_key", "image_reference", "available_python_modu
 
 
 class LocalExecutionSettings(_SettingsModel):
-    backend: Literal["docker", "apptainer"] = "docker"
+    backend: Literal["docker", "apptainer"] = "apptainer"
     apptainer: LocalApptainerSettings | None = None
     images: tuple[LocalImageSettings, ...] = Field(min_length=1, max_length=32)
     default_image: str  # The key execution_submit uses when the Agent names none.
     resources: RequestedResources
-    max_output_file_bytes: int = Field(default=16_777_216, ge=1, strict=True)
-    max_collected_output_bytes: int = Field(default=67_108_864, ge=1, strict=True)
+    max_output_file_bytes: int = Field(default=DEFAULT_OUTPUT_FILE_BYTES, ge=1, strict=True)
+    max_collected_output_bytes: int = Field(default=DEFAULT_COLLECTED_OUTPUT_BYTES, ge=1, strict=True)
     tmpfs_size_mb: int = Field(default=64, ge=1, strict=True)
     include_error_context: bool = Field(default=False, strict=True)
     allow_generated_file_read: bool = Field(default=False, strict=True)
+
+    _cap_implicit_file_limit = model_validator(mode="before")(cap_implicit_file_limit)
 
     @model_serializer(mode="wrap")
     def omit_absent_apptainer(self, handler):
@@ -341,7 +367,9 @@ class LocalExecutionSettings(_SettingsModel):
         self.approved_images()
         if self.backend == "apptainer":
             if self.apptainer is None:
-                raise ValueError("backend = 'apptainer' requires an [execution.apptainer] section")
+                raise PydanticCustomError(
+                    MissingApptainerConfigurationError.code, MissingApptainerConfigurationError.hint,
+                )
             if any(re.fullmatch(r"sha256:[0-9a-f]{64}", image.reference) is None for image in self.images):
                 raise ValueError("Apptainer image references must be registered sha256:<64 hex> SIFs")
         if self.max_output_file_bytes > self.max_collected_output_bytes:
@@ -420,6 +448,7 @@ class LocalEnvironmentSettings(_SettingsModel):
     root: Path
     build_proxy: str | None = None
     build_timeout_seconds: float = Field(default=600.0, gt=0, le=3600)
+    include_error_context: bool = Field(default=False, strict=True)
     cluster: LocalClusterBuildSettings | None = None
     local_apptainer: LocalApptainerBuildSettings | None = None
     conda: LocalCondaSettings | None = None
@@ -522,8 +551,11 @@ class LocalSettings(_SettingsModel):
             if not Path(self.execution.apptainer.binary).is_absolute():
                 raise ValueError("Apptainer requires an absolute executable path")
             local = placement[1] == "local"
-            if local != (self.execution.apptainer.resource_enforcement == "systemd-cgroups"):
-                raise ValueError("Local Apptainer requires systemd-cgroups; scheduler placement does not")
+            resource_owner = self.execution.apptainer.resource_enforcement
+            if local != (resource_owner in {"systemd-cgroups", "systemd-affinity"}):
+                raise ValueError("Local Apptainer requires a systemd resource owner; scheduler placement does not")
+            if resource_owner == "systemd-affinity" and not float(self.execution.resources.cpus).is_integer():
+                raise ValueError("systemd-affinity requires an integer CPU count")
             if local and self.execution.resources.gpus > 0:
                 # --nv exposes every device and systemd cannot confine them (DECIDED-C15-F).
                 raise ValueError("Local Apptainer does not support GPUs; set [execution.resources] gpus = 0")
@@ -532,6 +564,10 @@ class LocalSettings(_SettingsModel):
                 raise ValueError("[environment.cluster] is required only for Scheduler + Apptainer")
             if (placement == ("apptainer", "local")) != (self.environment.local_apptainer is not None):
                 raise ValueError("[environment.local_apptainer] is required only for Local + Apptainer")
+            if (placement == ("apptainer", "local")
+                    and self.execution.apptainer.resource_enforcement == "systemd-affinity"
+                    and not float(self.environment.local_apptainer.cpus).is_integer()):
+                raise ValueError("systemd-affinity environment builds require an integer CPU count")
         return self
 
     @property
@@ -546,6 +582,12 @@ class LocalSettings(_SettingsModel):
         return self.identity
 
 
+class _PeerProfile(_SettingsModel):
+    profile_key: str
+    capabilities: tuple[str, ...] = ()
+    capability_protocol: str
+
+
 class _StageProfile(_SettingsModel):
     stage: WorkflowStage
     root: str
@@ -555,6 +597,21 @@ class _StageProfile(_SettingsModel):
     capability_protocol: str = ""
     user_input_enabled: bool = False
     clarification_enabled: bool = True
+    max_capability_turns: int | None = Field(default=None, ge=4, le=128, strict=True)
+    max_capability_tokens: int | None = Field(default=None, ge=1, strict=True)
+    max_finalization_tokens: int | None = Field(default=None, ge=1, strict=True)
+    max_finalization_output_tokens: int = Field(default=8_192, ge=1, le=131_072, strict=True)
+    peers: tuple[_PeerProfile, ...] = ()
+
+    @model_validator(mode="after")
+    def peer_bindings(self) -> "_StageProfile":
+        names = (self.root, *(peer.profile_key for peer in self.peers))
+        if len(set(names)) != len(names):
+            raise ValueError("Peer profiles must be unique and differ from the root")
+        for peer in self.peers:
+            if not set(peer.capabilities).issubset(CAPABILITY_CEILINGS.get(self.stage, ())):
+                raise ValueError("Peer capabilities exceed the stage ceiling")
+        return self
 
 
 class _LocalProfile(_SettingsModel):
@@ -573,6 +630,8 @@ def _validated_settings(raw: dict) -> LocalSettings:
         issues = exc.errors(include_url=False, include_input=False, include_context=False)
         provider = [item for item in issues if tuple(item["loc"][:1]) == ("provider",)]
         if not provider:
+            if any(item["type"] == MissingApptainerConfigurationError.code for item in issues):
+                raise MissingApptainerConfigurationError() from None
             raise
         # Only a fixed code and setting names leave this function, never values.
         code = next((item["type"] for item in provider if item["type"] in _PROVIDER_FIX_HINTS),
@@ -765,7 +824,10 @@ def _provider_endpoint(endpoint: str) -> dict:
     }
 
 
-def runtime_manifest(settings: LocalSettings) -> dict:
+def runtime_manifest(
+    settings: LocalSettings, *, report_only: bool = False,
+    report_delivery_artifact_ids: tuple[UUID, ...] | None = None,
+) -> dict:
     """Content-derived identity; provider env values are neither read nor retained."""
     profile_bytes = _profile_bytes(settings)
     profile = _LocalProfile.model_validate_json(profile_bytes)
@@ -802,6 +864,14 @@ def runtime_manifest(settings: LocalSettings) -> dict:
                 *stage.capabilities, *environment_tools.get(stage.stage, ()),
             )))}) for stage in profile.stages
         )})
+    if settings.gold_root is not None or settings.environment is not None:
+        # Optional planning tools can yield more evidence than the finalizer can
+        # receive directly. Use the same governed closeout as other active stages.
+        profile = profile.model_copy(update={"stages": tuple(
+            stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
+                *stage.capabilities, "prepare_handoff", "handoff_status",
+            )))}) if stage.stage is WorkflowStage.PLAN else stage for stage in profile.stages
+        )})
     if settings.execution.allow_generated_file_read:
         profile = profile.model_copy(update={"stages": tuple(
             stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
@@ -809,6 +879,17 @@ def runtime_manifest(settings: LocalSettings) -> dict:
             )))}) if "report_read" in stage.capabilities else stage
             for stage in profile.stages
         )})
+    if report_only:
+        profile = profile.model_copy(update={
+            "stages": tuple(stage for stage in profile.stages if stage.stage is WorkflowStage.REPORT),
+            "deployment_context": profile.deployment_context + (
+                "\nThis report revision uses the completed source delivery and its existing evidence. "
+                "Review the imported report and registered outputs, then register the revised report. "
+                "Send delivery_artifact_ids=[] in report_check and report_submit. The host carries "
+                "forward the exact original delivery. Cite only observations you actually read. "
+                "No new computation is scheduled."
+            ),
+        })
     effective_profile = profile.model_dump(mode="json")
     # Set iteration order must not change the revision across process restarts.
     for field in ("allowed_fields", "required_fields"):
@@ -837,6 +918,10 @@ def runtime_manifest(settings: LocalSettings) -> dict:
         "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
         "source": runtime_source,
     }
+    if report_only:
+        manifest["workflow_scope"] = "report"
+    if report_delivery_artifact_ids is not None:
+        manifest["report_delivery_artifact_ids"] = [str(item) for item in report_delivery_artifact_ids]
     encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     manifest["runtime_revision"] = "local-" + hashlib.sha256(encoded).hexdigest()
     return manifest
@@ -1094,6 +1179,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
                 owner_user_id=settings.principal.user_id, catalog=catalog,
                 limits=_environment_limits(settings, catalog),
                 use_recorder=_environment_use_recorder(settings, catalog),
+                include_error_context=environment.include_error_context,
             )
 
         return {"environment_service_factory": docker_service}
@@ -1113,7 +1199,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
         build_launcher = SystemdLocalLauncher(SubprocessApptainerRunner(
             max_output_file_bytes=cluster.max_file_bytes,
             cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
-        ))
+        ), resource_enforcement=apptainer.resource_enforcement)
         placement = {"download_launcher": build_launcher}
     else:
         template = settings.launcher.scheduler_template()
@@ -1151,6 +1237,7 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, cat
             owner_user_id=settings.principal.user_id, catalog=catalog,
             limits=_environment_limits(settings, catalog),
             use_recorder=_environment_use_recorder(settings, catalog),
+            include_error_context=environment.include_error_context,
         )
 
     # Crash cleanup reaches build and download jobs through the launcher of their shared root.
@@ -1218,7 +1305,7 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     )
     local = launcher is None or launcher.kind == "local"
     job_launcher = (
-        SystemdLocalLauncher(runner) if local else SchedulerLauncher(
+        SystemdLocalLauncher(runner, resource_enforcement=apptainer.resource_enforcement) if local else SchedulerLauncher(
             template=launcher.scheduler_template(), policy=scheduler_policy(settings),
             workspace_root=run_root / "executions",
         )
@@ -1264,7 +1351,14 @@ def build_application(
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
     settings = bind_lab(settings)  # Idempotent; a library caller cannot skip the membership check.
-    manifest = runtime_manifest(settings)
+    runtime_file = run_root / "RUNTIME.json"
+    saved_runtime = json.loads(runtime_file.read_text()) if runtime_file.is_file() else {}
+    report_only = saved_runtime.get("workflow_scope") == "report"
+    locked_delivery = saved_runtime.get("report_delivery_artifact_ids") if report_only else None
+    report_delivery_artifact_ids = (tuple(UUID(item) for item in locked_delivery)
+                                    if locked_delivery is not None else None)
+    manifest = runtime_manifest(settings, report_only=report_only,
+                                report_delivery_artifact_ids=report_delivery_artifact_ids)
     profile = _LocalProfile.model_validate_json(json.dumps(manifest["profile"]))
     credentials = ProviderCredentials(settings.provider)
     defaults = default_agent_profiles()
@@ -1276,11 +1370,18 @@ def build_application(
         "model_profile_key": "runtime-interpretation",
         "capability_profile_key": "interpretation-capabilities",
     })
-    profiles = (*defaults, interpretation)
+    peers = {agent.profile_key: agent for agent in scientific_specialist_profiles()}
+    requested = {peer.profile_key for stage in profile.stages for peer in stage.peers}
+    if not requested.issubset(peers):
+        raise ValueError("Unknown local peer profile")
+    profiles = (*defaults, interpretation, *(peers[key] for key in sorted(requested)))
+    assignments = ([(stage.root, stage.capabilities) for stage in profile.stages]
+                   + [(peer.profile_key, peer.capabilities)
+                      for stage in profile.stages for peer in stage.peers])
     capabilities = {
         agent.profile_key: tuple(sorted({
-            capability for stage in profile.stages if stage.root == agent.profile_key
-            for capability in stage.capabilities
+            capability for owner, names in assignments if owner == agent.profile_key
+            for capability in names
         }))
         for agent in profiles
     }
@@ -1329,6 +1430,11 @@ def build_application(
     assemblies = tuple(RuntimeStageAssemblySpec(
         stage_id=stage.stage, root_profile_key=stage.root,
         prompt_template_key="runtime-generic", capability_allowlist=stage.capabilities,
+        capability_peer_specs=tuple(RuntimeAgentCapabilitySpec(
+            profile_key=peer.profile_key, capability_allowlist=peer.capabilities,
+            capability_prompt_values={"shared_context": shared_context,
+                "phase_common": "", "protocol": peer.capability_protocol},
+        ) for peer in stage.peers),
         capability_prompt_values={
             "shared_context": shared_context,
             "phase_common": profile.capability_common.format(stage=stage.stage.value),
@@ -1348,19 +1454,23 @@ def build_application(
                 "capability mode; the others remain optional."
                 if stage.required_any_capabilities else ""
             )
-        )} if stage.capabilities else {},
+        )} if stage.capabilities or stage.peers else {},
         finalization_prompt_values={
             "shared_context": shared_context,
             "phase_common": profile.finalization_protocol.format(stage=stage.stage.value),
             "protocol": "",
         },
-        capability_phase_enabled=bool(stage.capabilities),
-        preserve_capability_completion=bool(stage.capabilities),
+        capability_phase_enabled=bool(stage.capabilities or stage.peers),
+        preserve_capability_completion=bool(stage.capabilities or stage.peers),
         required_capabilities=stage.required_capabilities,
         required_any_capabilities=stage.required_any_capabilities,
         # REPORT establishes observed-scope provenance and submits final prose.
         # Partial reading never implies full-table review; budgets stay explicit.
-        max_capability_turns=24 if stage.stage is WorkflowStage.REPORT else 16,
+        max_capability_turns=(stage.max_capability_turns if stage.max_capability_turns is not None
+                              else 24 if stage.stage is WorkflowStage.REPORT else 16),
+        max_capability_tokens=stage.max_capability_tokens,
+        max_finalization_tokens=stage.max_finalization_tokens,
+        max_finalization_output_tokens=stage.max_finalization_output_tokens,
         max_no_progress_seconds=settings.provider.max_model_phase_seconds,
         max_request_bytes=settings.provider.max_request_bytes,
         retry_enabled=stage.stage is not WorkflowStage.VALIDATE,
@@ -1421,9 +1531,12 @@ def build_application(
             projects=(Project(project_id=settings.workspace.project_id, lab_id=settings.workspace.lab_id,
                               owner_user_id=settings.principal.user_id),),
             profile_catalog=catalog, stage_assemblies=assemblies,
+            workflow_definition=(report_revision_workflow_definition() if report_only
+                                 else runtime_workflow_definition()),
             approved_images=settings.execution.approved_images(), image_catalog=image_catalog,
             image_use_recorder=_run_use_recorder(settings, image_catalog, run_root),
             output_contracts=(profile.output_contract,),
+            report_delivery_artifact_ids=report_delivery_artifact_ids,
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,
             ),

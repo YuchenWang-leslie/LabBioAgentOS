@@ -46,6 +46,15 @@ class ArtifactReleaseBasis(StrEnum):
     INTERNAL_ONLY = "INTERNAL_ONLY"
 
 
+class ArtifactOriginKind(StrEnum):
+    """Registration origin only, independent of current-run access or delivery."""
+
+    RAW_INGESTION_INPUT = "RAW_INGESTION_INPUT"
+    ORIGINAL_EXECUTION_PROGRAM = "ORIGINAL_EXECUTION_PROGRAM"
+    REGISTERED_EXECUTION_OUTPUT = "REGISTERED_EXECUTION_OUTPUT"
+    OTHER = "OTHER"
+
+
 class ArtifactConsumer(StrEnum):
     """Identity of the consumer for which a view is being generated."""
 
@@ -143,6 +152,25 @@ class ArtifactRef(BaseModel):
     release_basis: ArtifactReleaseBasis = ArtifactReleaseBasis.INTERNAL_ONLY
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @property
+    def origin_kind(self) -> ArtifactOriginKind:
+        """Derive origin from trusted registration facts, not a stored eligibility flag.
+
+        A registered output still needs scope, access, original-program provenance,
+        binding and byte-integrity checks before local delivery.
+        """
+        if self.release_basis is ArtifactReleaseBasis.RAW_INGESTION:
+            return ArtifactOriginKind.RAW_INGESTION_INPUT
+        if (self.stage_id is WorkflowStage.EXECUTE
+                and self.producer_invocation_id is not None):
+            # A declared output may itself be a script; do not confuse it with
+            # the original execution program automatically bound by delivery.
+            if "requested_exposure" in self.metadata:
+                return ArtifactOriginKind.REGISTERED_EXECUTION_OUTPUT
+            if self.artifact_type == "execution-script":
+                return ArtifactOriginKind.ORIGINAL_EXECUTION_PROGRAM
+        return ArtifactOriginKind.OTHER
 
     @field_validator("created_at")
     @classmethod

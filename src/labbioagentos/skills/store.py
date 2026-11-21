@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from threading import Lock, RLock
+from threading import RLock
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -39,6 +39,12 @@ class SkillDecisionError(SkillStoreError):
     """A decision does not match the pending proposal/gate."""
 
 
+class SkillUseDeclinedError(SkillDecisionError):
+    def __init__(self, proposal_id: UUID):
+        self.proposal_id = proposal_id
+        super().__init__(f"User declined this scoped Skill use in proposal {proposal_id}")
+
+
 class SkillApprovalRequiredError(SkillStoreError):
     """An operation requires an explicit approved user decision."""
 
@@ -54,13 +60,14 @@ class SkillStore(Protocol):
     def get_source_bundle(self, bundle_id: UUID) -> SkillSourceBundle: ...
     def save_proposal(self, proposal: SkillProposal) -> None: ...
     def get_proposal(self, proposal_id: UUID) -> SkillProposal: ...
+    def get_pending_proposal(self, proposal_id: UUID) -> SkillProposal: ...
     def decide_proposal(
         self, proposal_id: UUID, decision: SkillUserDecision
     ) -> GoldSkill | None: ...
     def get_gold(self, skill_id: UUID, version: int) -> GoldSkill: ...
     def lineage(self, skill_id: UUID) -> tuple[GoldSkill, ...]: ...
     def search(self, context: SkillSearchContext) -> tuple[GoldSkill, ...]: ...
-    def save_use_proposal(self, proposal: SkillUseProposal) -> None: ...
+    def save_use_proposal(self, proposal: SkillUseProposal) -> SkillUseProposal: ...
     def get_use_proposal(self, proposal_id: UUID) -> SkillUseProposal: ...
     def decide_use(
         self, proposal_id: UUID, decision: SkillUserDecision
@@ -93,6 +100,17 @@ class SkillStore(Protocol):
     ) -> SkillUsageRecord | None: ...
 
 
+def successful_adapt_usage(store: SkillStore, usage_id: UUID, run_id: UUID) -> SkillUsageRecord:
+    """Look up an exact, completed procedural adaptation recorded by this run."""
+    usage = store.get_usage(usage_id)
+    if (usage.run_id != run_id or usage.proposed_mode is not SkillUseMode.ADAPT
+            or usage.outcome is not SkillUsageOutcome.SUCCEEDED or not usage.user_approved):
+        raise SkillStoreError(
+            "A version proposal source usage must be a successful ADAPT record for the source run"
+        )
+    return usage
+
+
 class _SkillStoreSnapshot(BaseModel):
     """Complete JSON-serializable store state used by the SQLite backend."""
 
@@ -122,7 +140,7 @@ class InMemorySkillStore:
         self._use_decisions: dict[UUID, SkillUserDecision] = {}
         self._context_accesses: dict[UUID, SkillContextAccess] = {}
         self._usage: dict[UUID, SkillUsageRecord] = {}
-        self._lock = Lock()
+        self._lock = RLock()
 
     def save_source_bundle(self, bundle: SkillSourceBundle) -> None:
         with self._lock:
@@ -155,22 +173,34 @@ class InMemorySkillStore:
                 )
             if proposal.parent_skill_id is not None:
                 self._require_gold(proposal.parent_skill_id, proposal.parent_version)
-            if proposal.source_usage_record_id is not None:
-                usage = self._usage.get(proposal.source_usage_record_id)
-                if usage is None:
-                    raise SkillNotFoundError(
-                        f"Source usage record not found: {proposal.source_usage_record_id}"
-                    )
-                if (
-                    usage.proposed_mode is not SkillUseMode.ADAPT
-                    or usage.outcome is not SkillUsageOutcome.SUCCEEDED
-                    or usage.run_id != proposal.source_run_id
-                ):
-                    raise SkillStoreError(
-                        "A version proposal source usage must be a successful ADAPT "
-                        "record for the source run"
-                    )
+            self._validate_parent_usage(proposal)
+            if proposal.revises_proposal_id is not None:
+                prior = self.get_pending_proposal(proposal.revises_proposal_id)
+                source_fields = (
+                    "source_bundle_id", "source_run_id", "scope", "owner_user_id", "project_id",
+                    "lab_id", "parent_skill_id", "parent_version", "source_usage_record_id", "evolution_kind",
+                )
+                if any(getattr(proposal, field) != getattr(prior, field) for field in source_fields):
+                    raise SkillStoreError("A revised candidate must preserve its source and lineage")
+                if proposal.approval_gate_id == prior.approval_gate_id:
+                    raise SkillDecisionError("A revised candidate requires its own approval gate")
             self._proposals[proposal.proposal_id] = proposal
+
+    def _validate_parent_usage(self, proposal: SkillProposal) -> None:
+        if proposal.source_usage_record_id is not None:
+            usage = successful_adapt_usage(self, proposal.source_usage_record_id, proposal.source_run_id)
+            exact_parent = (proposal.parent_skill_id, proposal.parent_version)
+            if (usage.skill_id, usage.skill_version) != exact_parent:
+                raise SkillStoreError("Source usage must match the exact parent Skill and version")
+
+    def get_pending_proposal(self, proposal_id: UUID) -> SkillProposal:
+        with self._lock:
+            proposal = self.get_proposal(proposal_id)
+            if proposal_id in self._proposal_decisions:
+                raise SkillDecisionError("Skill proposal already has a user decision")
+            if any(item.revises_proposal_id == proposal_id for item in self._proposals.values()):
+                raise SkillDecisionError("Skill proposal was superseded by a revised candidate")
+            return proposal
 
     def get_proposal(self, proposal_id: UUID) -> SkillProposal:
         try:
@@ -184,31 +214,23 @@ class InMemorySkillStore:
         decision: SkillUserDecision,
     ) -> GoldSkill | None:
         with self._lock:
-            proposal = self._proposals.get(proposal_id)
-            if proposal is None:
-                raise SkillNotFoundError(f"Skill proposal not found: {proposal_id}")
+            proposal = self.get_pending_proposal(proposal_id)
             self._validate_decision(
                 decision,
                 subject_id=proposal.proposal_id,
                 gate_id=proposal.approval_gate_id,
             )
-            if proposal_id in self._proposal_decisions:
-                raise SkillDecisionError("Skill proposal already has a user decision")
             if not decision.approved:
                 self._proposal_decisions[proposal_id] = decision
                 return None
 
-            if proposal.parent_skill_id is None:
-                skill_id = uuid4()
-                version = 1
-                parent = None
-            else:
+            self._validate_parent_usage(proposal)
+            parent = None
+            if proposal.parent_skill_id is not None:
                 parent = self._require_gold(
                     proposal.parent_skill_id,
                     proposal.parent_version,
                 )
-                skill_id = parent.skill_id
-                version = parent.version + 1
                 if (
                     proposal.scope is not parent.scope
                     or proposal.owner_user_id != parent.owner_user_id
@@ -218,6 +240,10 @@ class InMemorySkillStore:
                     raise SkillStoreError(
                         "A new Gold Skill version must preserve scope and ownership"
                     )
+            if parent is None or proposal.evolution_kind == "FORK":
+                skill_id, version = uuid4(), 1
+            else:
+                skill_id, version = parent.skill_id, parent.version + 1
             key = (skill_id, version)
             if key in self._gold:
                 raise SkillVersionConflictError(
@@ -233,6 +259,7 @@ class InMemorySkillStore:
                 source_run_id=proposal.source_run_id,
                 source_bundle_id=proposal.source_bundle_id,
                 source_proposal_id=proposal.proposal_id,
+                evolution_kind=proposal.evolution_kind,
                 parent_skill_id=parent.skill_id if parent is not None else None,
                 parent_version=parent.version if parent is not None else None,
                 source_usage_record_id=proposal.source_usage_record_id,
@@ -277,14 +304,29 @@ class InMemorySkillStore:
             )
         )
 
-    def save_use_proposal(self, proposal: SkillUseProposal) -> None:
+    def save_use_proposal(self, proposal: SkillUseProposal) -> SkillUseProposal:
         with self._lock:
             if proposal.proposal_id in self._use_proposals:
                 raise SkillVersionConflictError(
                     f"Skill use proposal already exists: {proposal.proposal_id}"
                 )
             self._require_gold(proposal.skill_id, proposal.skill_version)
+            # Check inside the same lock / SQLite transaction as the insert.
+            for decision in self._use_decisions.values():
+                if not decision.approved:
+                    declined = self._use_proposals[decision.subject_id]
+                    if declined.decision_scope() == proposal.decision_scope():
+                        raise SkillUseDeclinedError(declined.proposal_id)
+            # Keep one open gate for an exact proposal retry. Different reasons
+            # or ordered deviations remain independently reviewable alternatives.
+            for prior in self._use_proposals.values():
+                if (prior.proposal_id not in self._use_decisions
+                        and prior.decision_scope() == proposal.decision_scope()
+                        and prior.reason == proposal.reason
+                        and prior.proposed_deviations == proposal.proposed_deviations):
+                    return prior
             self._use_proposals[proposal.proposal_id] = proposal
+            return proposal
 
     def get_use_proposal(self, proposal_id: UUID) -> SkillUseProposal:
         try:
@@ -659,6 +701,9 @@ class SQLiteSkillStore:
     def get_proposal(self, proposal_id: UUID) -> SkillProposal:
         return self._read("get_proposal", proposal_id)
 
+    def get_pending_proposal(self, proposal_id: UUID) -> SkillProposal:
+        return self._read("get_pending_proposal", proposal_id)
+
     def decide_proposal(
         self, proposal_id: UUID, decision: SkillUserDecision
     ) -> GoldSkill | None:
@@ -673,8 +718,8 @@ class SQLiteSkillStore:
     def search(self, context: SkillSearchContext) -> tuple[GoldSkill, ...]:
         return self._read("search", context)
 
-    def save_use_proposal(self, proposal: SkillUseProposal) -> None:
-        self._write("save_use_proposal", proposal)
+    def save_use_proposal(self, proposal: SkillUseProposal) -> SkillUseProposal:
+        return self._write("save_use_proposal", proposal)
 
     def get_use_proposal(self, proposal_id: UUID) -> SkillUseProposal:
         return self._read("get_use_proposal", proposal_id)

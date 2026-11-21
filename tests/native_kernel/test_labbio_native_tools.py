@@ -17,7 +17,6 @@ from labbioagentos.runtime.capability_catalog import (
 )
 from labbioagentos.runtime.native_tools import (
     ArtifactAggregateArguments,
-    ExecutionReviseArguments,
     ExecutionSubmitArguments,
     NativeCapabilityBinding,
     NativeCapabilityDispatcher,
@@ -30,27 +29,112 @@ IDENTITY = "11111111-1111-4111-8111-111111111111"
 OTHER_IDENTITY = "22222222-2222-4222-8222-222222222222"
 
 
-@pytest.mark.parametrize("arguments_model", [ExecutionSubmitArguments, ExecutionReviseArguments])
-def test_execution_review_tool_schema_says_optional_object_not_prose(arguments_model):
-    review = arguments_model.model_json_schema()["properties"]["review"]
+@pytest.mark.parametrize("name", ["execution_submit", "execution_revise"])
+def test_execution_tools_publish_flat_optional_review_fields(name):
+    schema = build_labbio_tool_registry(RecordingHost()).definition(name).spec.parameters
+    properties = schema["properties"]
 
-    assert "object" in review["description"].lower()
-    assert "omit" in review["description"].lower()
+    assert "review" not in properties
+    assert {field for field in properties if field.startswith("review_")} == {
+        "review_rationale", "review_feedback_invocation_ids", "review_gold_authorization_ids",
+    }
+    assert not any(field.startswith("review_") for field in schema["required"])
+    assert any(arm.get("type") == "string" for arm in properties["review_rationale"]["anyOf"])
+    for field in ("review_feedback_invocation_ids", "review_gold_authorization_ids"):
+        assert properties[field]["type"] == "array"
+        assert properties[field]["items"]["format"] == "uuid"
+        assert properties[field]["maxItems"] == 8
 
 
-def test_rejected_model_field_explains_expected_json_object():
-    arguments = dict(VALID_ARGUMENTS["execution_submit"], review="brief prose")
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["execution_submit", "execution_revise"])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_native_execution_review_reaches_existing_host_contract(monkeypatch, name, legacy):
+    tools = StableRuntimeToolSet()
+    tools.execution_revise = tools.execution_submit
+    host = _runtime_host(monkeypatch, tools)
+    host._host.next_action_format = None
+    registry = build_labbio_tool_registry(host)
+    expected = {
+        "rationale": "Considered the supplied feedback.",
+        "feedback_invocation_ids": [IDENTITY],
+        "gold_authorization_ids": [OTHER_IDENTITY],
+    }
+    arguments = {"review": expected} if legacy else {
+        f"review_{field}": value for field, value in expected.items()
+    }
+    parsed, = registry.validate_batch((ToolCall(
+        call_id="verified-native-review", name=name,
+        arguments_json=json.dumps({**VALID_ARGUMENTS[name], **arguments}),
+    ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    await registry.definition(name).handler(parsed.arguments)
+
+    _, payload = tools.calls[0]
+    assert payload["review"] == {"authority": "MODEL_CONTEXT", **expected}
+    assert not any(field.startswith("review_") for field in payload)
+
+
+def test_execution_revise_decodes_json_wrapped_overrides_with_an_audit_marker():
     registry = build_labbio_tool_registry(RecordingHost())
+    output = {"relative_path": "fixture.json", "artifact_type": "fixture", "requested_exposure": "RAW"}
+    arguments = {
+        **VALID_ARGUMENTS["execution_revise"],
+        "requested_outputs": json.dumps([output]),
+        "input_artifact_ids": "null",
+    }
+    call = ToolCall(call_id="wrapped-overrides", name="execution_revise", arguments_json=json.dumps(arguments))
+    parsed, = registry.validate_batch((call,), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+    payload = parsed.arguments.host_payload()
+    assert payload["input_artifact_ids"] is None
+    assert len(payload["requested_outputs"]) == 1
+    assert all(payload["requested_outputs"][0][k] == v for k, v in output.items())
+    assert payload["json_wrapped_overrides"] == ("requested_outputs", "input_artifact_ids")
 
+
+@pytest.mark.parametrize("field,value", [
+    ("requested_outputs", '[{"relative_path":"a","relative_path":"b","artifact_type":"fixture"}]'),
+    ("input_artifact_ids", '["not-a-uuid"]'),
+    ("resources", "None"),
+])
+def test_wrapped_execution_revision_overrides_still_reject_invalid_arguments(field, value):
+    registry = build_labbio_tool_registry(RecordingHost())
+    arguments = {**VALID_ARGUMENTS["execution_revise"], field: value}
+    call = ToolCall(call_id="invalid-wrapped-override", name="execution_revise", arguments_json=json.dumps(arguments))
+    with pytest.raises(ToolBatchRejectedError):
+        registry.validate_batch((call,), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+
+
+def test_skill_search_can_read_json_wrapped_filter_lists():
+    registry = build_labbio_tool_registry(RecordingHost())
+    arguments = {"offset": 0, "limit": 20, "required_tags": '["bulk-rna-seq"]',
+                 "artifact_types": "[]", "include_lab": True}
+    call = ToolCall(call_id="wrapped-search", name="skill_search", arguments_json=json.dumps(arguments))
+
+    parsed, = registry.validate_batch((call,), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+
+    assert parsed.arguments.host_payload() == {**arguments, "required_tags": ["bulk-rna-seq"], "artifact_types": []}
+
+
+@pytest.mark.parametrize("fields", [{"required_tags": "[true]"}, {"artifact_types": "not-a-list"},
+                                     {"artifact_types": "[]", "offset": "0"}])
+def test_skill_search_rejects_invalid_wrapped_fields_and_string_offsets(fields):
+    registry = build_labbio_tool_registry(RecordingHost())
+    call = ToolCall(call_id="invalid-search", name="skill_search", arguments_json=json.dumps(fields))
+
+    with pytest.raises(ToolBatchRejectedError):
+        registry.validate_batch((call,), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
+
+
+def test_invalid_execution_input_still_rejects_batch_with_optional_review():
+    registry = build_labbio_tool_registry(RecordingHost())
+    arguments = {**VALID_ARGUMENTS["execution_submit"],
+                 "input_artifact_ids": ["not-an-id"], "review": "Invalid review."}
     with pytest.raises(ToolBatchRejectedError) as caught:
         registry.validate_batch((ToolCall(
-            call_id="invalid-review", name="execution_submit",
+            call_id="invalid-input", name="execution_submit",
             arguments_json=json.dumps(arguments),
         ),), finish_reason=FinishReason.TOOL_CALLS, max_calls=1)
-
-    assert caught.value.validation_type == "model_type"
-    assert caught.value.validation_fields == ("review",)
-    assert "JSON object" in str(caught.value)
+    assert caught.value.validation_fields == ("input_artifact_ids.0",)
 
 
 @pytest.mark.parametrize("capability", ["report_check", "report_submit"])
@@ -58,7 +142,8 @@ def test_rejected_model_field_explains_expected_json_object():
                                        {"evidence_artifact_ids": [IDENTITY]}])
 def test_new_native_reports_require_nonempty_observation_scoped_citations(capability, references):
     registry = build_labbio_tool_registry(RecordingHost())
-    arguments = {"title": "Synthetic", "report_text": "Synthetic"} if capability == "report_submit" else {}
+    arguments = {"delivery_artifact_ids": [], **(
+        {"title": "Synthetic", "report_text": "Synthetic"} if capability == "report_submit" else {})}
     with pytest.raises(ToolBatchRejectedError):
         registry.validate_batch((ToolCall(
             call_id="invalid-reference", name=capability,
@@ -98,6 +183,8 @@ VALID_ARGUMENTS = {
         "requested_outputs": [],
     },
     "file_read": {"artifact_id": IDENTITY},
+    "handoff_status": {},
+    "evidence_list": {"capability_name": "working_note_write"},
     "literature_search": {"query": "bounded public query"},
     "memory_propose_update": {
         "target_scope": "PROJECT",
@@ -110,10 +197,11 @@ VALID_ARGUMENTS = {
         "summary": "Agent-authored handoff summary.",
         "limitations": ["Only the supplied observation was reviewed."],
     },
-    "report_check": {"evidence_references": [
+    "report_check": {"delivery_artifact_ids": [], "evidence_references": [
         {"artifact_id": IDENTITY, "observation_ids": [OTHER_IDENTITY]}]},
     "report_read": {"artifact_id": IDENTITY},
     "report_submit": {
+        "delivery_artifact_ids": [],
         "title": "Bounded report",
         "report_text": "Bounded content.",
         "evidence_references": [
@@ -127,6 +215,13 @@ VALID_ARGUMENTS = {
     },
     "skill_search": {},
     "skill_view": {"authorization_id": OTHER_IDENTITY},
+    "working_note_write": {
+        "text": "Agent-authored unresolved progress, not scientific evidence.",
+        "source_observation_ids": [IDENTITY],
+        "previous_note_id": OTHER_IDENTITY,
+    },
+    "working_note_read": {"note_id": IDENTITY},
+    "stage_context_read": {"result_id": IDENTITY},
 }
 
 
@@ -217,6 +312,7 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     registry = build_labbio_tool_registry(host)
 
     assert set(registry.names) == set(ALL_CAPABILITIES)
+    assert set(VALID_ARGUMENTS) == set(ALL_CAPABILITIES)
     assert len(registry.names) == len(ALL_CAPABILITIES) == len(VALID_ARGUMENTS)
     for spec in registry.specs:
         assert spec.parameters["type"] == "object"
@@ -243,7 +339,18 @@ def test_complete_capability_catalog_registers_without_legacy_runtime():
     assert report_submit["title"]["maxLength"] == 256
     assert report_submit["report_text"]["maxLength"] == 64_000
     execution_submit = schemas["execution_submit"]
-    assert set(execution_submit["required"]) == {"image_key", "script_content"}
+    assert set(execution_submit["required"]) == {"image_key"}
+    source_modes = execution_submit["oneOf"]
+    assert len(source_modes) == 2
+    literal_mode = next(mode for mode in source_modes
+        if mode['properties']['script_content']['type'] == 'string')
+    assert literal_mode['required'] == ['script_content']
+    assert literal_mode['properties']['source_revision']['type'] == 'null'
+    revision_mode = next(mode for mode in source_modes
+        if mode['properties']['source_revision']['type'] == 'object')
+    assert set(revision_mode['required']) == {
+        'source_revision', 'resources', 'input_artifact_ids', 'parameters', 'requested_outputs'}
+    assert revision_mode['properties']['script_content']['type'] == 'null'
     assert "mountable_input_artifact_ids" in (
         execution_submit["properties"]["input_artifact_ids"]["description"]
     )
@@ -423,7 +530,35 @@ async def test_every_capability_dispatches_without_model_supplied_authority():
         assert bundle.items == evidence
 
     assert [name for name, _arguments in host.calls] == sorted(ALL_CAPABILITIES)
-    assert {"EvidenceReadArguments", "PrepareHandoffArguments"} <= set(host.argument_types)
+    assert {
+        "EvidenceReadArguments", "PrepareHandoffArguments", "HandoffStatusArguments",
+        "WorkingNoteWriteArguments", "WorkingNoteReadArguments",
+    } <= set(host.argument_types)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capability_name", ["handoff_status", "working_note_write", "working_note_read"])
+async def test_context_helpers_require_grant_and_reject_model_supplied_authority(capability_name):
+    host = RecordingHost()
+    registry = build_labbio_tool_registry(host)
+    ungranted = NativeCapabilityDispatcher(binding=_binding("artifact_list"), registry=registry)
+    with pytest.raises(ToolBatchRejectedError) as denied:
+        await ungranted.dispatch_batch((ToolCall(
+            call_id="ungranted-context-helper", name=capability_name,
+            arguments_json=json.dumps(VALID_ARGUMENTS[capability_name]),
+        ),), finish_reason=FinishReason.TOOL_CALLS)
+    assert denied.value.code == "CAPABILITY_NOT_ALLOWED"
+
+    granted = NativeCapabilityDispatcher(binding=_binding(capability_name), registry=registry)
+    with pytest.raises(ToolBatchRejectedError) as injected:
+        await granted.dispatch_batch((ToolCall(
+            call_id="injected-context-authority", name=capability_name,
+            arguments_json=json.dumps({**VALID_ARGUMENTS[capability_name],
+                                       "information_authority": "AUTHORITATIVE_EVIDENCE"}),
+        ),), finish_reason=FinishReason.TOOL_CALLS)
+    assert injected.value.code == "INVALID_TOOL_ARGUMENTS"
+    assert host.calls == []
+    assert ungranted.evidence_items() == granted.evidence_items() == ()
 
 
 @pytest.mark.asyncio
@@ -497,7 +632,7 @@ async def test_malformed_resource_identity_fails_before_host_effects():
 
 
 @pytest.mark.asyncio
-async def test_unknown_host_failure_is_bounded_and_retains_item_authority():
+async def test_unknown_host_failure_is_bounded_and_has_control_authority():
     host = RecordingHost()
     host.fail_with = RuntimeError("PRIVATE_HOST_FAILURE_SENTINEL")
     registry = build_labbio_tool_registry(host)
@@ -520,7 +655,7 @@ async def test_unknown_host_failure_is_bounded_and_retains_item_authority():
     assert outcome[0].result.status == "FAILED"
     assert outcome[0].result.error.code == "INTERNAL_TOOL_ERROR"
     assert evidence.status.value == "FAILED"
-    assert evidence.information_authority is InformationAuthority.AUTHORITATIVE_EVIDENCE
+    assert evidence.information_authority is InformationAuthority.CONTROL_STATE
     assert "PRIVATE_HOST_FAILURE_SENTINEL" not in repr(outcome)
     assert "PRIVATE_HOST_FAILURE_SENTINEL" not in repr(evidence)
 

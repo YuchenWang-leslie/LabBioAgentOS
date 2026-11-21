@@ -63,14 +63,14 @@ async def test_usage_visible_in_all_stages_and_both_phases_without_queries(input
 
     monkeypatch.setattr(app.artifact_exposure, "artifact_query", deny_query)
 
-    async def capability(_self, stage_input):
+    async def capability(_self, stage_input, *, resolve_finalization=None):
         seen.append(("capability", stage_input))
         return CapabilityEvidenceBundle(
             run_id=stage_input.run_id, stage_id=stage_input.stage_id,
             invocation_id=stage_input.invocation_id,
         )
 
-    async def finalizer(_self, stage_input, capability_evidence=None):
+    async def finalizer(_self, stage_input, capability_evidence=None, *, resolved_finalization=None):
         seen.append(("finalizer", stage_input))
         stage = stage_input.stage_id
         action = NextActionProposal(action=NextAction.FINISH) if stage is WorkflowStage.LEARN else NextActionProposal(

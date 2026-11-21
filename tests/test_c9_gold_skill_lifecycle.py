@@ -627,6 +627,7 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     derived = artifacts.register(
         artifact_type="derived-measurements",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(summary={"count": 3}),
         owner_user_id=principal.user_id,
         project_id=workspace.project_id,
@@ -664,6 +665,8 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     )
     assert hidden["success"] and hidden["data"]["items"] == []
 
+    assert artifact["success"] is True
+    assert artifact["data"]["summary"] == {"count": 3}
     assert artifact["information_authority"] == "AUTHORITATIVE_EVIDENCE"
     assert search["information_authority"] == "MODEL_CONTEXT"
     assert view["information_authority"] == "MODEL_CONTEXT"
@@ -709,8 +712,13 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
     )
     assert bundle.authority_mode == "ITEM_LEVEL"
     assert set(CAPABILITY_INFORMATION_AUTHORITY) == {
+        "evidence_list",
         "evidence_read",
+        "stage_context_read",
         "prepare_handoff",
+        "handoff_status",
+        "working_note_write",
+        "working_note_read",
         "artifact_list",
         "artifact_query",
         "artifact_aggregate",
@@ -731,6 +739,9 @@ async def test_s5_s8_capability_information_authority_is_item_level(tmp_path):
         "skill_propose_use",
         "memory_propose_update",
     }
+    assert CAPABILITY_INFORMATION_AUTHORITY["handoff_status"] is InformationAuthority.CONTROL_STATE
+    assert CAPABILITY_INFORMATION_AUTHORITY["working_note_write"] is InformationAuthority.MODEL_CONTEXT
+    assert CAPABILITY_INFORMATION_AUTHORITY["working_note_read"] is InformationAuthority.MODEL_CONTEXT
 
     provider = LocalProvider(toolset)
     await provider.initialize()
@@ -780,7 +791,9 @@ async def test_s9_s11_full_context_requires_exact_run_version_user_and_scope(tmp
     denied = await toolset.skill_view(str(rejected.authorization_id))
     assert denied["error"]["error_code"] == "SKILL_APPROVAL_REQUIRED"
 
-    proposal = _submit_use(service, principal, workspace, gold, run_id)
+    with pytest.raises(SkillDecisionError):
+        _submit_use(service, principal, workspace, gold, run_id)
+    proposal = _submit_use(service, principal, workspace, gold, run_id, mode=SkillUseMode.ADAPT)
     authorization = _decide_use(service, principal, proposal)
     approved = await toolset.skill_view(str(authorization.authorization_id))
     assert approved["success"]
@@ -865,6 +878,8 @@ def test_s12_s15_sqlite_restart_rejection_and_immutability(tmp_path):
     assert reopened.get_gold(gold.skill_id, gold.version) == gold
     assert reopened.get_authorization(approved.authorization_id) == approved
     assert reopened.get_authorization(rejected.authorization_id) == rejected
+    with pytest.raises(SkillDecisionError):
+        reopened.save_use_proposal(rejected_proposal.model_copy(update={"proposal_id": uuid4()}))
     assert reopened.get_context_access(approved.authorization_id).run_id == approved_run_id
     assert reopened.get_usage(usage.usage_id) == usage
     assert reopened.search(
@@ -1431,6 +1446,7 @@ async def test_u1_u5_u8_modes_are_model_input_and_gold_does_not_narrow_runtime(
     current = artifacts.register(
         artifact_type="current-derived-result",
         exposure_class=ArtifactExposureClass.DERIVED,
+        release_basis=ArtifactReleaseBasis.TRUSTED_EXECUTION_DECLASSIFICATION,
         representation=ArtifactRepresentation(summary={"current": True}),
         owner_user_id=principal.user_id,
         project_id=workspace.project_id,
@@ -1484,6 +1500,8 @@ async def test_u1_u5_u8_modes_are_model_input_and_gold_does_not_narrow_runtime(
     assert set(toolset.tool_functions) == set(capabilities)
 
     artifact = await toolset.artifact_query(str(current.artifact_id), "SUMMARY")
+    assert artifact["success"] is True
+    assert artifact["data"]["summary"] == {"current": True}
     assert artifact["information_authority"] == "AUTHORITATIVE_EVIDENCE"
     assert page["information_authority"] == "MODEL_CONTEXT"
     ignored_run = uuid4()

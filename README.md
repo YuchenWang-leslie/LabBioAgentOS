@@ -26,7 +26,7 @@ flowchart TD
     W --> K[LabBio Native Kernel]
     K --> A[Agent reasoning and dynamic collaboration]
     A --> P[Policy-governed capabilities]
-    P --> E[Docker or configured Local/Scheduler + Apptainer execution]
+    P --> E[Apptainer execution: Local or Scheduler; explicit Docker compatibility]
     P --> R[Artifact and exposure rules]
     E --> R
     R --> W
@@ -59,9 +59,10 @@ The default workflow is:
 - **Native multi-Agent runtime:** exact provider binding, strict schemas,
   foreground tool dispatch, dynamic delegation, isolated child context,
   budgets, interruption, and typed outcomes.
-- **Governed execution:** policy-controlled Docker or configured Local/Scheduler +
-  Apptainer runs with registered inputs, declared outputs, resource ceilings,
-  and immutable receipts.
+- **Governed execution:** Apptainer is the primary backend, using explicitly
+  configured Local or Scheduler placement. Docker remains an explicitly selected
+  compatibility backend, never an automatic fallback. Both retain registered
+  inputs, declared outputs, resource ceilings, and immutable receipts.
 - **Artifact governance:** scoped identities, exposure decisions, bounded views,
   lineage, and content hashes.
 - **Trace and continuation:** persisted run state, event records, safe status
@@ -91,12 +92,22 @@ A real task additionally requires:
    Completions or Responses, Anthropic Messages, Gemini `generateContent` or
    Interactions), with its API key in a private env file (mode 0600) outside
    the repository;
-2. an existing, deployment-approved Docker image, or a registered SIF for a
-   configured local/cluster backend with enforced resource limits;
+2. an installed Apptainer, a registered deployment-approved SIF, and enforced
+   resource limits for the selected local/cluster placement; Docker compatibility
+   instead requires an explicitly selected, approved immutable Docker image;
 3. an external `runtime.toml` defining identity, allowed input roots, result
    root, resource limits, provider binding, and execution settings.
 
-Start from `examples/local-runtime.toml`. The configuration names the env file
+The primary path is a user-installed App and non-setuid Local + Apptainer, with
+no Slurm, Docker daemon or administrator installation requirement. See
+[user installation](docs/USER_INSTALL.md) for `uv tool`/`pipx` installation,
+`labbio apptainer-install`, and explicit supported-host/resource prerequisites.
+Start from `examples/local-runtime.toml`. Scheduler + Apptainer is an optional
+compatibility path via `examples/cluster-runtime.toml`. For optional Docker
+compatibility use `examples/docker-runtime.toml` with `execution.backend = "docker"`.
+Omitting the backend no longer selects Docker: old Docker configurations must
+name it explicitly. Missing Apptainer prerequisites refuse execution, not switch
+backends. The configuration names the env file
 and the key variable inside it; it must not contain API keys. See the
 [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md) for the local contract, or
 [cluster deployment guide](docs/CLUSTER_DEPLOYMENT.md) for site prerequisites.
@@ -133,6 +144,8 @@ the [local workspace guide](docs/LOCAL_WORKSPACES.md) and
 [local task guide](docs/LOCAL_TASK_ENTRYPOINT.md).
 
 ## Documentation
+
+- [工程交接与运行手册（安装、启动、模型 API、Python API、Apptainer、配置与运维）](docs/ENGINEERING_HANDOFF.md)
 
 ## Citation and attribution
 

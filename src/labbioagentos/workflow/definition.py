@@ -44,6 +44,16 @@ def default_workflow_definition() -> WorkflowDefinition:
     )
 
 
+def report_revision_workflow_definition() -> WorkflowDefinition:
+    """Revise the report over an already registered delivery."""
+    return WorkflowDefinition(
+        workflow_id="labbio-report-revision-v1",
+        nodes=frozenset({WorkflowStage.REPORT}),
+        initial_stage=WorkflowStage.REPORT,
+        terminal_stages=frozenset({WorkflowStage.REPORT}),
+    )
+
+
 def runtime_workflow_definition() -> WorkflowDefinition:
     """Return the reviewed first-runtime graph, including source-resuming gates."""
 
@@ -76,6 +86,12 @@ def runtime_workflow_definition() -> WorkflowDefinition:
         WorkflowTransition(
             source=WorkflowStage.VALIDATE,
             target=WorkflowStage.EXECUTE,
+        )
+    )
+    transitions.add(
+        WorkflowTransition(
+            source=WorkflowStage.INTERPRET,
+            target=WorkflowStage.VALIDATE,
         )
     )
     for source in gate_sources:

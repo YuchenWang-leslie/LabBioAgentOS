@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import os
 import subprocess
 import sys
 import threading
@@ -15,13 +17,14 @@ from uuid import UUID, uuid4
 from ..apptainer import SubprocessApptainerRunner
 from ..backend import ProcessOutcome, ProcessRunner
 from ..errors import ContainerStartError
-from ..models import RequestedResources
+from ..host_termination import systemd_host_termination
+from ..models import ExecutionHostTermination, RequestedResources
 from ..process_streams import capture_process, read_bounded_stream
 from .base import (
     JobHandle, JobLauncher, JobLauncherError, JobNotFoundError, JobSpec, JobState,
     scratch_limit_marker,
 )
-from ._local_supervisor import enforced
+from ._local_supervisor import affinity_enforced, enforced
 
 
 @dataclass
@@ -37,20 +40,42 @@ class SystemdLocalLauncher(JobLauncher):
     kind = "local-systemd"
     enforces_scratch_limit = True
 
-    def __init__(self, runner: SubprocessApptainerRunner):
+    def __init__(self, runner: SubprocessApptainerRunner, *, resource_enforcement="systemd-cgroups"):
+        if resource_enforcement not in {"systemd-cgroups", "systemd-affinity"}:
+            raise ValueError("An explicit local systemd resource owner is required")
         self.runner = runner
+        self.resource_enforcement = resource_enforcement
         self._jobs: dict[str, _Service] = {}
         self._submitted: set[str] = set()
         self._attached: set[str] = set()
         self._stopped: set[str] = set()
         self._confirmed_terminal: set[str] = set()
+        self._terminal_facts: dict[str, ExecutionHostTermination | None] = {}
+        self._stop_requests: set[str] = set()
         self._terminal_locks: dict[str, threading.Lock] = {}
 
     def command(self, spec: JobSpec) -> tuple[str, ...]:
         resource = spec.resources
+        supervisor_options = ()
+        cpu_properties = (f"CPUQuota={resource.cpus * 100:g}%",)
+        if self.resource_enforcement == "systemd-affinity":
+            if not math.isfinite(resource.cpus) or not resource.cpus.is_integer():
+                raise JobLauncherError("Systemd affinity requires a positive integer CPU count")
+            try:
+                available = sorted(os.sched_getaffinity(0))
+            except (AttributeError, OSError) as exc:
+                raise JobLauncherError("The local CPU affinity boundary is unavailable") from exc
+            if resource.cpus > len(available):
+                raise JobLauncherError("The requested CPU count exceeds the available CPU affinity")
+            affinity = ",".join(str(cpu) for cpu in available[:int(resource.cpus)])
+            cpu_properties = (
+                f"CPUAffinity={affinity}", "NoNewPrivileges=yes", "SystemCallArchitectures=native",
+                "SystemCallFilter=~sched_setaffinity", "SystemCallErrorNumber=EPERM",
+            )
+            supervisor_options = ("--systemd-affinity", affinity)
         properties = (
             "Type=exec", "KillMode=control-group", "TimeoutStopSec=5", "SendSIGKILL=yes",
-            "OOMPolicy=stop", f"CPUQuota={resource.cpus * 100:g}%",
+            "OOMPolicy=stop", *cpu_properties,
             f"MemoryMax={resource.memory_mb * 1024 * 1024}", "MemorySwapMax=0",
             f"TasksMax={resource.pids_limit}", f"RuntimeMaxSec={spec.timeout_seconds:g}",
             f"LimitFSIZE={self.runner.max_output_file_bytes}",
@@ -65,7 +90,7 @@ class SystemdLocalLauncher(JobLauncher):
             str(resource.cpus), str(resource.memory_mb * 1024 * 1024), str(resource.pids_limit),
             str(spec.scratch_limit_bytes or 0), str(scratch_limit_marker(spec.workspace_root)),
             str(len(spec.scratch_paths)), *(str(path) for path in spec.scratch_paths),
-            *spec.argv,
+            *supervisor_options, *spec.argv,
         )
         # systemd ExecStart expands dollars even without a shell. Escape all data.
         return tuple(item.replace("$", "$$") for item in command)
@@ -103,6 +128,7 @@ class SystemdLocalLauncher(JobLauncher):
                 # RuntimeMaxSec starts only when the manager starts the service.
                 # The host deadline must also cover a stalled launch request.
                 timed_out = not overflow.is_set()
+                self._stop_requests.add(name)
                 process.stdin.close()
                 await asyncio.to_thread(self._confirm_terminal, name, None)
                 try:
@@ -121,9 +147,12 @@ class SystemdLocalLauncher(JobLauncher):
                     waiter in done and process.returncode != 0
                     and time.monotonic() - started >= timeout),
                 output_limit_exceeded=overflow.is_set(),
+                host_termination=self._terminal_facts.get(name),
             )
             return result
         finally:
+            if process.returncode is None:
+                self._stop_requests.add(name)
             process.stdin.close()
             if process.returncode is None:
                 try:
@@ -150,7 +179,10 @@ class SystemdLocalLauncher(JobLauncher):
             output, code = await self._show(handle.job_id, "ActiveState")
             if code:
                 return JobState.UNKNOWN
-            return JobState.FAILED if output in {b"inactive", b"failed"} else JobState.RUNNING
+            if output in {b"inactive", b"failed"}:
+                return JobState.FAILED
+            return (JobState.RUNNING if output in {b"active", b"activating", b"deactivating", b"reloading"}
+                    else JobState.UNKNOWN)
         if job is None or job.spec.execution_id != handle.execution_id:
             return JobState.UNKNOWN
         if not job.task.done():
@@ -164,6 +196,7 @@ class SystemdLocalLauncher(JobLauncher):
         if job is not None:
             if job.task.done() and await self.status(handle) is not JobState.UNKNOWN:
                 return
+            self._stop_requests.add(handle.job_id)
             job.process.stdin.close()
         await asyncio.to_thread(self._confirm_terminal, handle.job_id, None)
         if job is not None:
@@ -182,8 +215,10 @@ class SystemdLocalLauncher(JobLauncher):
             # No outputs are inferred after a lost control plane. Reconciliation
             # may cancel a still-existing unit, but must not replay this command.
             output, code = await self._show(job_id, "LoadState")
-            if code or output != b"loaded":
+            if output == b"not-found":
                 raise JobNotFoundError("Local service no longer exists")
+            if code or output != b"loaded":
+                raise JobLauncherError("Local service lookup is unconfirmed")
             self._attached.add(job_id)
         return handle
 
@@ -252,7 +287,10 @@ class SystemdLocalLauncher(JobLauncher):
             stopped = False
             for attempt in range(2):
                 output, code = self._control_sync(
-                    "show", name, "--property=LoadState", "--property=ActiveState")
+                    "show", name, "--property=LoadState", "--property=ActiveState",
+                    "--property=MainPID", "--property=ControlGroup",
+                    "--property=Result", "--property=ExecMainCode",
+                    "--property=ExecMainStatus", "--property=MemoryPeak")
                 state = dict(line.split("=", 1) for line in output.decode("utf-8", "replace").splitlines()
                              if "=" in line)
                 if code == 0 and state.get("LoadState") == "not-found" and (client_exit == 0 or stopped):
@@ -260,28 +298,61 @@ class SystemdLocalLauncher(JobLauncher):
                 if code != 0 or state.get("LoadState") != "loaded":
                     raise JobLauncherError("Local service stop is unconfirmed")
                 if state.get("ActiveState") in {"inactive", "failed"}:
+                    self._confirm_empty_group(state)
+                    # Preserve the first terminal snapshot before reset-failed
+                    # erases the transient unit. All callers share this lock/cache.
+                    if name not in self._terminal_facts:
+                        # A reset may take effect before its response is lost.
+                        # Preserve unknown too; post-reset success/0 is not history.
+                        self._terminal_facts[name] = systemd_host_termination(
+                            state, stop_requested=stopped or name in self._stop_requests,
+                        )
                     if state["ActiveState"] == "failed":
                         self._control_sync("reset-failed", name)
                     break
                 if attempt or state.get("ActiveState") not in {"activating", "active", "deactivating", "reloading"}:
                     raise JobLauncherError("Local service stop is unconfirmed")
+                self._stop_requests.add(name)
                 _, code = self._control_sync("stop", name)
                 if code:
                     raise JobLauncherError("Local service stop is unconfirmed")
                 stopped = True
             self._confirmed_terminal.add(name)
 
+    @staticmethod
+    def _confirm_empty_group(state):
+        """A failed service can still contain processes after a stop timeout."""
+        group = state.get("ControlGroup")
+        if state.get("MainPID") != "0" or group is None:
+            raise JobLauncherError("Local service stop is unconfirmed: process state unavailable")
+        if not group:
+            return  # The manager no longer assigns a cgroup to this terminal unit.
+        relative = Path(group)
+        if not relative.is_absolute() or group == "/" or ".." in relative.parts:
+            raise JobLauncherError("Local service stop is unconfirmed: invalid cgroup")
+        try:
+            events = (Path("/sys/fs/cgroup") / group.lstrip("/") / "cgroup.events").read_text()
+        except FileNotFoundError:
+            return  # The kernel removed the now-empty cgroup.
+        except OSError as exc:
+            raise JobLauncherError("Local service stop is unconfirmed: cgroup unreadable") from exc
+        if "populated 0" not in events.splitlines():
+            raise JobLauncherError("Local service stop is unconfirmed: cgroup is not empty")
+
     def probe(self) -> dict:
         """Actually launch a service and read its cgroup files, not accepted flags."""
         resource = RequestedResources(cpus=1, memory_mb=256, pids_limit=32, timeout_seconds=20)
         spec = JobSpec(uuid4(), ("--probe",), 20, resource, Path("/tmp"))
+        checker = affinity_enforced if self.resource_enforcement == "systemd-affinity" else enforced
         try:
             result = self.run(spec)
             limits = json.loads(result.stdout)
-            if result.exit_code or not enforced(limits, 1, 256 * 1024 * 1024, 32):
+            if result.exit_code or not checker(limits, 1, 256 * 1024 * 1024, 32):
                 raise ValueError("Unenforced limits")
-        except (ContainerStartError, ValueError, TypeError):
-            return {"status": "REFUSED", "failures": ["local_cgroup_limits"]}
+        except (ContainerStartError, JobLauncherError, ValueError, TypeError):
+            failure = ("local_affinity_limits" if self.resource_enforcement == "systemd-affinity"
+                       else "local_cgroup_limits")
+            return {"status": "REFUSED", "failures": [failure]}
         return {"status": "OK", "failures": [], "limits": limits}
 
     def run(self, spec: JobSpec) -> ProcessOutcome:
@@ -295,6 +366,7 @@ class SystemdLocalLauncher(JobLauncher):
         except OSError as exc:
             raise ContainerStartError("Could not start local systemd service") from exc
         def stop():
+            self._stop_requests.add(self._name(spec.execution_id))
             process.stdin.close()
             self._confirm_terminal(self._name(spec.execution_id), None)
 
@@ -315,6 +387,7 @@ class SystemdLocalLauncher(JobLauncher):
                 not outcome.output_limit_exceeded and process.returncode != 0
                 and time.monotonic() - started >= spec.timeout_seconds),
             output_limit_exceeded=outcome.output_limit_exceeded,
+            host_termination=self._terminal_facts.get(self._name(spec.execution_id)),
         )
 
 

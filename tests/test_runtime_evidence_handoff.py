@@ -59,12 +59,10 @@ async def test_partial_observation_read_grants_no_cross_stage_report_credit(tmp_
     assert check["data"]["ready"]
 
 
-@pytest.mark.asyncio
-async def test_oversize_handoff_returns_sizes_without_dropping_selected_body(tmp_path, artifact_query_boundary):
-    tools, _ = tools_with_store(tmp_path, artifact_query_boundary)
+def large_observations(tools, count):
     ids = []
     responses = []
-    for _ in range(2):
+    for _ in range(count):
         item = CapabilityEvidenceItem(
             actor_profile_key="test", actor_agent_name="Test", capability_name="artifact_query",
             information_authority=InformationAuthority.AUTHORITATIVE_EVIDENCE,
@@ -80,6 +78,23 @@ async def test_oversize_handoff_returns_sizes_without_dropping_selected_body(tmp
         responses.append(response)
         ids.append(str(item.capability_invocation_id))
     tools.mark_feedback_delivered(tuple(responses))
+    return ids, responses
+
+
+@pytest.mark.asyncio
+async def test_handoff_accepts_multiple_legal_messages_without_truncation(tmp_path, artifact_query_boundary):
+    tools, _ = tools_with_store(tmp_path, artifact_query_boundary)
+    ids, responses = large_observations(tools, 2)
+    result = await tools.prepare_handoff(ids, 'Agent-selected engineering fixture.')
+    assert result['data']['status'] == 'READY'
+    assert result['data']['serialized_bytes'] > 60000
+    assert [o.public_response for o in tools.prepared_handoff.observations] == responses
+
+
+@pytest.mark.asyncio
+async def test_oversize_handoff_returns_sizes_without_dropping_selected_body(tmp_path, artifact_query_boundary):
+    tools, _ = tools_with_store(tmp_path, artifact_query_boundary)
+    ids, responses = large_observations(tools, 32)
     result = await tools.prepare_handoff(ids, "Agent summary")
     assert result["data"]["status"] == "TOO_LARGE"
     assert result["data"]["serialized_bytes"] > result["data"]["max_bytes"]

@@ -11,7 +11,8 @@ from .local_workspace import WorkspaceRegistry
 
 
 ADMIN_COMMANDS = {"workspace-init", "user-create", "project-create"}
-GOLD_COMMANDS = {"gold-list", "gold-export", "gold-propose", "gold-review", "gold-decide"}
+GOLD_RUN_COMMANDS = {"gold-propose", "gold-review", "gold-revise", "gold-decide", "gold-usage"}
+GOLD_COMMANDS = GOLD_RUN_COMMANDS | {"gold-list", "gold-export"}
 
 
 def add_commands(commands) -> None:
@@ -28,7 +29,16 @@ def add_commands(commands) -> None:
         command = commands.add_parser(name, help="Inspect or explicitly authorize governed state")
         if name not in {"gold-list", "gold-export"}:
             command.add_argument("--run-dir", type=Path, required=True)
-        if name in {"gold-review", "gold-decide"}:
+        if name == "gold-propose":
+            command.add_argument("--from-usage", type=UUID,
+                                 help="ID of this run's completed ADAPT use of the parent Skill")
+            command.add_argument("--evolution", choices=("auto", "update", "fork"),
+                                 help="Ask the Agent to recommend keep/update/fork (default with usage), "
+                                      "or explicitly request an update or independent branch")
+        if name in {"gold-propose", "gold-revise"}:
+            command.add_argument("--feedback", required=name == "gold-revise",
+                                 help="Reviewer's change request for the Agent-authored draft")
+        if name in {"gold-review", "gold-revise", "gold-decide"}:
             command.add_argument("--proposal-id", type=UUID, required=True)
         if name in {"decide", "gold-decide"}:
             command.add_argument("--gate-id", required=True)
@@ -45,7 +55,7 @@ def add_commands(commands) -> None:
             command.add_argument("--all-versions", action="store_true",
                                  help="Include approved history, not just each Skill's latest version")
     for name, command in commands.choices.items():
-        if name not in ADMIN_COMMANDS:
+        if name not in ADMIN_COMMANDS and name != "replay":
             command.add_argument("--workspace-root", type=Path)
             command.add_argument("--user")
             command.add_argument("--project")
@@ -133,6 +143,33 @@ def gold_export(settings) -> dict:
         close_personal_gold(service)
 
 
+def gold_review_comparison(service, proposal, principal) -> dict | None:
+    """Compare the pending text with the exact draft or approved version it derives from."""
+    from .local_gold import review_personal_gold
+    from .skills import SkillProcedureDraft
+
+    if proposal.revises_proposal_id is not None:
+        previous = review_personal_gold(service, proposal.revises_proposal_id, principal)
+        reference = {"proposal_id": str(previous.proposal_id)}
+        previous_name = previous.proposed_name
+    elif proposal.parent_skill_id is not None:
+        previous = service.get_gold(proposal.parent_skill_id, proposal.parent_version,
+                                    principal=principal)
+        reference = {"skill_id": str(previous.skill_id), "skill_version": previous.version}
+        previous_name = previous.name
+    else:
+        return None
+    fields = set(SkillProcedureDraft.model_fields)
+    before = previous.procedure.model_dump(mode="json", include=fields)
+    after = proposal.procedure.model_dump(mode="json", include=fields)
+    before.update(name=previous_name, description=previous.description)
+    after.update(name=proposal.proposed_name, description=proposal.description)
+    return {**reference, "fields": {
+        key: {"before": before[key], "after": value}
+        for key, value in after.items() if value != before[key]
+    }}
+
+
 def configured_curator(application):
     """Compose Agent-authored advisory guidance and review, without task answers."""
     from .application import RuntimeBackend
@@ -148,6 +185,7 @@ def configured_curator(application):
     if not isinstance(factory, NativeRuntimeFactory) or factory.provider_builder is None:
         raise ValueError("Native runtime factory is unavailable")
     return TypedAuditedAdaptiveSkillCurator(
-        NativeTypedModelInvoker(model=model, provider_builder=factory.provider_builder),
+        NativeTypedModelInvoker(model=model, provider_builder=factory.provider_builder,
+                                boundary_observer=application.configuration.boundary_observer),
         boundary_observer=application.configuration.boundary_observer,
     )

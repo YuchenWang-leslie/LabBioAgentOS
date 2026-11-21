@@ -13,7 +13,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from labbioagentos.artifacts import ArtifactRef, ArtifactStore
+from labbioagentos.artifacts import ArtifactNotFoundError, ArtifactRef, ArtifactStore
 from labbioagentos.contracts import WorkflowStage
 from labbioagentos.governance import (
     AccessAction,
@@ -27,7 +27,7 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 from .models import (
     ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
     ExecutionReceipt, ExecutionResult, ExecutionRuntime, ExecutionScriptLocation, ExecutionSourceEdit,
-    RuntimeSource,
+    RuntimeSource, SourceRevisionExecutionDraft, SourceRevisionOrigin,
 )
 from .catalog import ImageCatalog, ImageState
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
@@ -59,9 +59,19 @@ class ExecutionSubmissionPersistenceError(ExecutionSubmissionError):
 class ExecutionRevisionError(ExecutionInspectionError):
     """A fixed mechanical reason, never source or rejected replacement content."""
 
+    def __init__(self, code: str, *, edit_index: int | None = None, match_count: int | None = None):
+        self.code = code
+        self.edit_index = edit_index
+        self.match_count = match_count
+        super().__init__('Explicit execution revision was rejected')
+
+
+class ExecutionSourceRevisionError(ExecutionSubmissionError):
+    """Fixed source-adoption failure; no source, replacement text or paths."""
+
     def __init__(self, code: str):
         self.code = code
-        super().__init__('Explicit execution revision was rejected')
+        super().__init__('Explicit source revision was rejected')
 
 
 @dataclass(frozen=True)
@@ -71,6 +81,7 @@ class _SubmittedExecution:
     source_bytes: int
     receipt: ExecutionReceipt | None
     draft: ExecutionPlanDraft | None = None
+    source_revision_origin: SourceRevisionOrigin | None = None
 
 
 class _SubmissionBinding(BaseModel):
@@ -83,6 +94,7 @@ class _SubmissionBinding(BaseModel):
     source_bytes: int = Field(gt=0, le=4_000_000)
     receipt: ExecutionReceipt
     draft_contract: dict[str, JsonValue]
+    source_revision_origin: SourceRevisionOrigin | None = None
 
 
 class ExecutionSubmissionService:
@@ -123,6 +135,7 @@ class ExecutionSubmissionService:
         invocation_id: UUID,
         mountable_input_artifact_ids: tuple[UUID, ...] | None = None,
         revision_of: UUID | None = None,
+        _source_revision_origin: SourceRevisionOrigin | None = None,
     ) -> ExecutionReceipt:
         self._authorize_binding(principal, workspace, run_id)
         self._require_confirmed_submissions(run_id)
@@ -207,6 +220,8 @@ class ExecutionSubmissionService:
                 "input_artifact_ids": [str(item) for item in plan.input_artifact_ids],
                 "revision_of": str(revision_of) if revision_of is not None else None,
                 "resources": plan.resources.model_dump(mode="json"),
+                **({"source_revision_origin": _source_revision_origin.model_dump(mode="json")}
+                   if _source_revision_origin is not None else {}),
             },
         )
         execute_async = getattr(self.executor, "execute_async", None)
@@ -240,6 +255,7 @@ class ExecutionSubmissionService:
             source_bytes=len(source_bytes),
             receipt=receipt,
             draft=draft,
+            source_revision_origin=_source_revision_origin,
         )
         if self.job_ledger is not None:
             try:
@@ -249,6 +265,7 @@ class ExecutionSubmissionService:
                     script_ref=submission.script_ref, source_hash=submission.source_hash,
                     source_bytes=submission.source_bytes, receipt=receipt,
                     draft_contract=draft.model_dump(mode="json", exclude={"script_content"}),
+                    source_revision_origin=_source_revision_origin,
                 )
                 self.job_ledger.record_execution_submission(
                     run_id=run_id, execution_id=result.execution_id,
@@ -277,6 +294,8 @@ class ExecutionSubmissionService:
                 ],
                 "error_context": (receipt.error_context.model_dump(mode="json")
                     if receipt.error_context is not None else None),
+                "host_termination": (receipt.host_termination.model_dump(mode="json")
+                    if receipt.host_termination is not None else None),
                 "output_artifact_ids": [str(item) for item in receipt.output_artifact_ids],
                 "issue_codes": [item.value for item in receipt.issue_codes],
                 "issue_detail_codes": [
@@ -288,6 +307,65 @@ class ExecutionSubmissionService:
             },
         )
         return receipt
+
+    async def submit_source_revision(
+        self, draft: SourceRevisionExecutionDraft, *, principal, workspace, run_id,
+        stage_id, invocation_id, mountable_input_artifact_ids=None,
+    ) -> ExecutionReceipt:
+        """Materialize Agent-authored edits, then create a normal fresh submission."""
+        self._authorize_binding(principal, workspace, run_id)
+        self._require_confirmed_submissions(run_id)
+        revision = draft.source_revision
+        if mountable_input_artifact_ids is None or revision.source_artifact_id not in mountable_input_artifact_ids:
+            raise ExecutionSourceRevisionError('SOURCE_REVISION_NOT_ELIGIBLE')
+        try:
+            base = self._imported_original(revision.source_artifact_id,
+                principal=principal, workspace=workspace)
+            source = self._verified_source(base, principal, workspace, run_id, imported=True)
+        except (ArtifactNotFoundError, AuthorizationDenied, ExecutionInspectionError, OSError, ValueError):
+            raise ExecutionSourceRevisionError('SOURCE_REVISION_SOURCE_UNAVAILABLE') from None
+        if base.source_hash != revision.expected_script_hash:
+            raise ExecutionSourceRevisionError('SOURCE_REVISION_HASH_MISMATCH')
+        for edit in revision.edits:
+            if source.count(edit.old) != 1:
+                raise ExecutionSourceRevisionError('SOURCE_REVISION_MATCH_NOT_UNIQUE')
+            source = source.replace(edit.old, edit.new, 1)
+        materialized = ExecutionPlanDraft.model_validate({
+            **draft.model_dump(mode='python', exclude={'script_content', 'source_revision'}),
+            'script_content': source,
+        })
+        origin = SourceRevisionOrigin(source_artifact_id=base.script_ref.artifact_id,
+            source_execution_id=UUID(base.script_ref.metadata['execution_id']),
+            source_run_id=base.script_ref.run_id, source_sha256=base.source_hash,
+            edit_count=len(revision.edits))
+        return await self.submit(materialized, principal=principal, workspace=workspace,
+            run_id=run_id, stage_id=stage_id, invocation_id=invocation_id,
+            mountable_input_artifact_ids=mountable_input_artifact_ids,
+            _source_revision_origin=origin)
+
+    def _imported_original(self, artifact_id, *, principal, workspace, execution_id=None):
+        """Resolve only an explicit original Artifact; never discover RAW programs."""
+        ref = self.artifact_store.get_ref(artifact_id)
+        if (ref.artifact_type != 'execution-script' or ref.stage_id is not WorkflowStage.EXECUTE
+                or 'requested_exposure' in ref.metadata):
+            raise ExecutionInspectionError('Original program is unavailable')
+        try:
+            producer = UUID(ref.metadata.get('execution_id', ''))
+        except (ValueError, TypeError, AttributeError):
+            raise ExecutionInspectionError('Original program is unavailable') from None
+        if execution_id is not None and producer != execution_id:
+            raise ExecutionInspectionError('Original program is unavailable')
+        if (ref.owner_user_id, ref.project_id, ref.lab_id) != (
+                workspace.user_id, workspace.project_id, workspace.lab_id):
+            raise AuthorizationDenied('Original submission is outside the bound workspace')
+        self.access_service.require_artifact(principal, ref, AccessAction.READ_ARTIFACT)
+        digest = ref.metadata.get('sha256')
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ExecutionInspectionError('Original program is unavailable')
+        size = Path(ref.storage_locator).stat().st_size
+        if size > 4_000_000:
+            raise ExecutionInspectionError('Original program exceeds its source bound')
+        return _SubmittedExecution(ref, digest, size, None)
 
     async def revise(
         self, execution_id: UUID, expected_script_hash: str,
@@ -315,9 +393,12 @@ class ExecutionSubmissionService:
         source = submission.draft.script_content
         if len(edits) > 32:
             raise ExecutionRevisionError('REVISION_EDIT_LIMIT')
-        for edit in edits:
-            if source.count(edit.old) != 1:
-                raise ExecutionRevisionError('REVISION_MATCH_NOT_UNIQUE')
+        for edit_index, edit in enumerate(edits):
+            match_count = source.count(edit.old)
+            if match_count != 1:
+                raise ExecutionRevisionError(
+                    'REVISION_MATCH_NOT_UNIQUE', edit_index=edit_index, match_count=match_count,
+                )
             source = source.replace(edit.old, edit.new, 1)
         values = submission.draft.model_dump(mode='python')
         values['script_content'] = source
@@ -368,18 +449,9 @@ class ExecutionSubmissionService:
                 and "requested_exposure" not in ref.metadata
                 and ref.metadata.get("execution_id") == str(execution_id)]
             if len(candidates) == 1:
-                ref = candidates[0]
-                digest = ref.metadata.get("sha256")
-                if (ref.owner_user_id, ref.project_id, ref.lab_id) != (
-                        workspace.user_id, workspace.project_id, workspace.lab_id):
-                    raise AuthorizationDenied("Original submission is outside the bound workspace")
-                self.access_service.require_artifact(principal, ref, AccessAction.READ_ARTIFACT)
-                if isinstance(digest, str) and len(digest) == 64:
-                    size = Path(ref.storage_locator).stat().st_size
-                    if size > 4_000_000:
-                        raise ExecutionInspectionError("Original program exceeds its source bound")
-                    submission = _SubmittedExecution(ref, digest, size, None)
-                    imported = True
+                submission = self._imported_original(candidates[0].artifact_id,
+                    principal=principal, workspace=workspace, execution_id=execution_id)
+                imported = True
         if submission is None:
             raise ExecutionInspectionError("Original submission is unavailable")
         source = self._verified_source(submission, principal, workspace, run_id, imported=imported)
@@ -413,6 +485,18 @@ class ExecutionSubmissionService:
             "submitted_contract": (submission.draft.model_dump(mode='json', exclude={'script_content'})
                                    if submission.draft is not None else None),
             "execution_id": str(execution_id),
+            **({"revision_submission": {
+                "tool": "execution_submit",
+                "source_revision": {
+                    "source_artifact_id": str(ref.artifact_id),
+                    "expected_script_hash": submission.source_hash,
+                },
+                "required_current_fields": [
+                    "image_key", "input_artifact_ids", "requested_outputs", "resources", "parameters",
+                ],
+            }} if imported else {}),
+            **({'source_revision_origin': submission.source_revision_origin.model_dump(mode='json')}
+               if submission.source_revision_origin is not None else {}),
             "producer_run_id": str(ref.run_id),
             "submitted_program": {
                 "authority": "MODEL_CONTEXT", "script_hash": submission.source_hash,
@@ -446,6 +530,23 @@ class ExecutionSubmissionService:
         """Block further effects in this run without altering its durable receipt."""
         self._persistence_failures[run_id] = execution_id
 
+    def replay_binding(self, execution_id, *, principal, workspace, run_id):
+        """Recover a verified durable contract in its original authenticated run."""
+        self._authorize_binding(principal, workspace, run_id)
+        self._require_confirmed_submissions(run_id)
+        return self.original_program_binding(execution_id, principal=principal, workspace=workspace, run_id=run_id)
+
+    def original_program_binding(self, execution_id, *, principal, workspace, run_id):
+        """Read the exact terminal submission, without replaying it or resolving unrelated jobs."""
+        self._authorize_binding(principal, workspace, run_id)
+        if self.job_ledger is None:
+            raise ExecutionInspectionError("A persisted submission is required")
+        payload = self.job_ledger.execution_submission(run_id, execution_id)
+        if payload is None:
+            raise ExecutionInspectionError("The selected execution has no durable contract")
+        submission = self._restore_submission(payload, execution_id, principal, workspace, run_id)
+        return submission.script_ref, submission.draft, submission.receipt
+
     def _submission(self, execution_id, principal, workspace, run_id, *, selected_outputs=None):
         submission = self._submitted_executions.get(execution_id)
         if submission is not None:
@@ -462,6 +563,13 @@ class ExecutionSubmissionService:
             payload = self.job_ledger.execution_submission(run_id, execution_id)
             if payload is None:
                 return None
+            return self._restore_submission(payload, execution_id, principal, workspace, run_id,
+                                            selected_outputs=selected_outputs)
+        except (ValueError, OSError):
+            raise ExecutionInspectionError("Original submission binding is unavailable") from None
+
+    def _restore_submission(self, payload, execution_id, principal, workspace, run_id, *, selected_outputs=None):
+        try:
             binding = _SubmissionBinding.model_validate_json(payload)
             if (
                 binding.run_id != run_id or binding.execution_id != execution_id
@@ -488,6 +596,7 @@ class ExecutionSubmissionService:
                 raise ValueError("Submission contract differs")
             return _SubmittedExecution(
                 binding.script_ref, binding.source_hash, binding.source_bytes, binding.receipt, draft,
+                binding.source_revision_origin,
             )
         except (ValueError, OSError):
             raise ExecutionInspectionError("Original submission binding is unavailable") from None

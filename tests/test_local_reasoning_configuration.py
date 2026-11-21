@@ -52,10 +52,12 @@ def test_reasoning_configuration_reaches_native_model_profile(
             stage for stage in application.configuration.stage_assemblies
             if stage.stage_id is WorkflowStage.REPORT
         ).max_capability_turns == 24
+        assert next(stage for stage in application.configuration.stage_assemblies
+                    if stage.stage_id is WorkflowStage.EXECUTE).max_capability_turns == 64
         assert all(
             stage.max_capability_turns == 16
             for stage in application.configuration.stage_assemblies
-            if stage.stage_id is not WorkflowStage.REPORT
+            if stage.stage_id not in {WorkflowStage.REPORT, WorkflowStage.EXECUTE}
         )
     finally:
         application.run_state_store.close()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
+from hashlib import sha256
 import re
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
@@ -21,6 +22,7 @@ from pydantic import (
 
 from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef, ArtifactView
 from labbioagentos.contracts import InformationAuthority, RunStatus, WorkflowStage
+from labbioagentos.execution.error_context import redact_process_text
 from labbioagentos.execution.models import (
     ExecutionDiagnostic, ExecutionFailureClass, OutputContractFailureCode,
 )
@@ -138,6 +140,7 @@ class SkillExecutionRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     execution_id: UUID
+    revision_of: UUID | None = None
     planned_event_id: UUID | None = None
     terminal_event_id: UUID | None = None
     terminal_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
@@ -238,6 +241,262 @@ class SkillStageContext(BaseModel):
         return self
 
 
+MAX_CURATION_SOURCE_BYTES = 512_000
+
+
+def _scan_source_text(text):
+    # Expose attached credential and path tokens to the redactor. A single
+    # slash joining prose such as "批次/lane" does not start a path.
+    attached_token = r"(?<=[^\x00-\x7f])(?=[A-Za-z~]|/(?=/|[\w.@%+-]+/|\.|(?:home|media|mnt|tmp|var|run)\b))"
+    return re.sub(attached_token, " ", text)
+
+
+class SkillSourceText(BaseModel):
+    """Bounded source text with explicit unavailable/withheld states."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    status: Literal["AVAILABLE", "NOT_RECORDED", "WITHHELD", "LENGTH_LIMIT"] = "NOT_RECORDED"
+    text: StrictStr | None = Field(default=None, min_length=1, max_length=32_000)
+
+    @classmethod
+    def from_record(cls, text: str | None):
+        if not text or not text.strip():
+            return cls()
+        if len(text) > 32_000:
+            return cls(status="LENGTH_LIMIT")
+        try:
+            return cls(status="AVAILABLE", text=text)
+        except ValueError:
+            # Preserve the existing run's evidence without relaying rejected text
+            # or replacing the researcher's wording with a redacted instruction.
+            return cls(status="WITHHELD")
+
+    @model_validator(mode="after")
+    def validate_exposure(self):
+        if (self.status == "AVAILABLE") != (self.text is not None):
+            raise ValueError("Only an available source request may contain text")
+        if self.text is not None:
+            validate_model_visible_json(self.text, reject_absolute_paths=True,
+                                        max_string_length=32_000, max_serialized_bytes=192_002)
+            _reject_unsafe_remote_text(self.text, label="Skill source user request")
+            scan = _scan_source_text(self.text)
+            if redact_process_text(scan) != scan:
+                raise ValueError("Source request includes restricted content")
+        return self
+
+
+class SkillReportPassage(BaseModel):
+    """Exact original text at a half-open character interval in the selected report."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+    text: StrictStr = Field(min_length=1, max_length=32_000)
+
+    @model_validator(mode="after")
+    def validate_passage(self):
+        if self.end_offset - self.start_offset != len(self.text):
+            raise ValueError("Report passage length differs from its source interval")
+        SkillSourceText(status="AVAILABLE", text=self.text)
+        return self
+
+
+def _safe_report_passages(text: str, *, prefix_only: bool) -> tuple[SkillReportPassage, ...]:
+    """Preserve verbatim safe intervals without splitting a cross-boundary redaction."""
+    paragraphs = list(re.finditer(r".+?(?:\n[ \t\r]*\n|\Z)", text, flags=re.DOTALL))
+    if "PRIVATE KEY-----" in text or "-----BEGIN " in text:
+        return ()
+    local_scan = "".join(redact_process_text(_scan_source_text(m.group())) for m in paragraphs)
+    if redact_process_text(_scan_source_text(text)) != local_scan:
+        return ()
+    spans = []
+    open_fence = None
+    for match in paragraphs:
+        paragraph = match.group()
+        fenced = open_fence is not None
+        for line in paragraph.splitlines():
+            fence = re.match(r"^\s*(`{3,}|~{3,})(.*)$", line)
+            if fence:
+                fenced = True
+                mark, rest = fence.groups()
+                if open_fence is None:
+                    open_fence = mark
+                elif mark.startswith(open_fence) and not rest.strip():
+                    open_fence = None
+        if fenced or (prefix_only and match.end() == len(text)):
+            continue
+        if SkillSourceText.from_record(paragraph).status == "AVAILABLE":
+            intervals = [match.span()]
+        else:
+            # Only split on original newlines. Compare redactions solely to detect
+            # a cross-line value; replacement text never enters a passage.
+            lines = list(re.finditer(r"[^\n]*\n|[^\n]+\Z", paragraph))
+            redacted_lines = [redact_process_text(_scan_source_text(line.group())) for line in lines]
+            if redact_process_text(_scan_source_text(paragraph)) != "".join(redacted_lines):
+                continue
+            intervals = []
+            for line, redacted in zip(lines, redacted_lines):
+                body = line.group()
+                exposure = SkillSourceText.from_record(body)
+                if exposure.status == "AVAILABLE":
+                    intervals.append((match.start() + line.start(), match.start() + line.end()))
+                elif exposure.status == "WITHHELD" and SkillSourceText.from_record(redacted).status == "WITHHELD":
+                    # A restricted marker outside the diagnostic redactor may
+                    # introduce a value on the next line. Keep its paragraph closed.
+                    intervals = []
+                    break
+        for start, end in intervals:
+            if spans and start == spans[-1][1]:
+                spans[-1] = (spans[-1][0], end)
+            else:
+                spans.append((start, end))
+    return tuple(SkillReportPassage(start_offset=a, end_offset=b, text=text[a:b])
+                 for a, b in spans[:64] if SkillSourceText.from_record(text[a:b]).status == "AVAILABLE")
+
+
+class SkillSelectedReport(BaseModel):
+    """Governed prefix of the selected report. The prose is an Agent claim."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    artifact_id: UUID
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+    sha256: StrictStr | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    total_characters: int | None = Field(default=None, ge=0)
+    truncated: bool | None = None
+    excerpt: SkillSourceText
+    passages: tuple[SkillReportPassage, ...] = Field(default=(), max_length=64,
+        description="When the contiguous excerpt is withheld, these disjoint verbatim spans remain readable. Gaps are withheld.")
+
+    @model_validator(mode="after")
+    def validate_partial_coverage(self):
+        if self.passages:
+            if (self.excerpt.status != "WITHHELD" or self.truncated is not True
+                    or self.sha256 is None or self.total_characters is None):
+                raise ValueError("Partial report passages require the original identity and explicit omission")
+            previous_end = 0
+            for passage in self.passages:
+                if passage.start_offset < previous_end or passage.end_offset > self.total_characters:
+                    raise ValueError("Report passage intervals must be ordered within the original report")
+                previous_end = passage.end_offset
+        return self
+
+    @classmethod
+    def from_prefix(cls, artifact_id: UUID, digest: str, total: int, text: str):
+        excerpt = SkillSourceText.from_record(text)
+        truncated = len(text) < total
+        passages = _safe_report_passages(text, prefix_only=truncated) if excerpt.status == "WITHHELD" else ()
+        return cls(artifact_id=artifact_id, sha256=digest, total_characters=total,
+                   truncated=truncated or excerpt.text is None, excerpt=excerpt, passages=passages)
+
+    def contains_quote(self, quote: str) -> bool:
+        return bool(quote) and (quote in (self.excerpt.text or "") or any(quote in p.text for p in self.passages))
+
+
+class SkillSourceUserRequest(SkillSourceText):
+    """Original researcher wording. Gaps between safe verbatim spans remain withheld."""
+
+    authority: Literal[InformationAuthority.USER_ASSERTION] = InformationAuthority.USER_ASSERTION
+    sha256: StrictStr | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    total_characters: int | None = Field(default=None, ge=0)
+    passages: tuple[SkillReportPassage, ...] = Field(default=(), max_length=64)
+
+    @classmethod
+    def from_record(cls, text: str | None):
+        full = SkillSourceText.from_record(text)
+        if full.status == "NOT_RECORDED":
+            return cls()
+        return cls(**full.model_dump(), sha256=sha256(text.encode("utf-8")).hexdigest(),
+                   total_characters=len(text),
+                   passages=_safe_report_passages(text, prefix_only=False) if full.status == "WITHHELD" else ())
+
+    @model_validator(mode="after")
+    def validate_source_identity(self):
+        if self.passages:
+            if self.status != "WITHHELD" or self.sha256 is None or self.total_characters is None:
+                raise ValueError("Partial user wording requires the identity of the withheld original")
+            previous_end = 0
+            for span in self.passages:
+                if span.start_offset < previous_end or span.end_offset > self.total_characters:
+                    raise ValueError("User wording spans must be ordered within the original request")
+                previous_end = span.end_offset
+        if self.text is not None and self.sha256 is not None and (
+                self.sha256 != sha256(self.text.encode("utf-8")).hexdigest()
+                or self.total_characters != len(self.text)):
+            raise ValueError("User wording does not match its original identity")
+        return self
+
+
+class SkillSourceClarification(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    agent_question: SkillSourceText
+    user_answer: SkillSourceUserRequest
+
+
+class SkillDeliveryFile(BaseModel):
+    """Host-verified identity only. Compare producer_run_id to source_run_id to identify imports."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    artifact_id: UUID
+    producer_run_id: UUID
+    execution_id: UUID
+    sha256: StrictStr = Field(pattern="^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
+
+
+class SkillSelectedDelivery(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    outputs: tuple[SkillDeliveryFile, ...] = Field(max_length=64)
+    programs: tuple[SkillDeliveryFile, ...] = Field(max_length=64)
+
+
+class SkillOutcomeEvidence(BaseModel):
+    """Evidence specific to the user-facing result, frozen with the source."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    selected_report: SkillSelectedReport | None = None
+    selected_delivery: SkillSelectedDelivery | None = None
+    answered_clarifications: tuple[SkillSourceClarification, ...] = Field(default=(), max_length=3)
+    projection_limited: bool = Field(default=False,
+        description="Some originally available outcome passages were omitted to fit the curator budget.")
+
+
+class SkillReportAnchor(BaseModel):
+    """Location selected by the reviewer in this run's immutable report."""
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    id: ShortText
+    run_id: UUID
+    artifact_id: UUID
+    sha256: StrictStr = Field(pattern="^[0-9a-f]{64}$")
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+
+
+class _SkillOutcomeJudgment(BaseModel):
+    """The Agent's comparison of the requested and actually delivered answer."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    research_question: BoundedText
+    primary_result: BoundedText
+    assessment: Literal["ALIGNED", "PARTIAL", "MISALIGNED", "INSUFFICIENT_EVIDENCE"]
+    explanation: BoundedText
+
+    @model_validator(mode="after")
+    def validate_safe_text(self):
+        _reject_unsafe_remote_text(self.model_dump(mode="python"), label="Skill outcome review")
+        validate_model_visible_json(self.model_dump(mode="json"), reject_absolute_paths=True)
+        return self
+
+
+class SkillOutcomeSelection(_SkillOutcomeJudgment):
+    report_anchor_id: ShortText | None = Field(description="ID of one supplied anchor supporting the primary answer, or null if unavailable.")
+
+
+class SkillOutcomeReview(_SkillOutcomeJudgment):
+    report_quote: BoundedText | None
+    report_anchor: SkillReportAnchor | None = None
+
+
 class SkillCurationSourceView(BaseModel):
     """The only Skill source representation permitted at a curator boundary."""
 
@@ -246,6 +505,8 @@ class SkillCurationSourceView(BaseModel):
     source_bundle_id: UUID
     source_run_id: UUID
     task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    source_user_request: SkillSourceUserRequest = Field(default_factory=SkillSourceUserRequest)
+    outcome_evidence: SkillOutcomeEvidence | None = None
     final_status: RunStatus
     workflow_stage_path: tuple[WorkflowStage, ...] = Field(max_length=64)
     stage_context: tuple[SkillStageContext, ...] = Field(default=(), max_length=64)
@@ -276,7 +537,7 @@ class SkillCurationSourceView(BaseModel):
         _reject_unsafe_remote_text(
             self.model_dump(mode="python"), label="Skill curation source view"
         )
-        if len(self.model_dump_json().encode("utf-8")) > 512_000:
+        if len(self.model_dump_json().encode("utf-8")) > MAX_CURATION_SOURCE_BYTES:
             raise ValueError("Skill curation source view exceeds the size bound")
         return self
 
@@ -289,6 +550,8 @@ class SkillSourceBundle(BaseModel):
     bundle_id: UUID = Field(default_factory=uuid4)
     source_run_id: UUID
     task_reference: StrictStr | None = Field(default=None, min_length=1, max_length=2000)
+    source_user_request: SkillSourceUserRequest = Field(default_factory=SkillSourceUserRequest)
+    outcome_evidence: SkillOutcomeEvidence | None = None
     final_status: RunStatus
     workflow_stage_path: tuple[WorkflowStage, ...]
     stage_context: tuple[SkillStageContext, ...] = Field(default=(), max_length=64)
@@ -603,8 +866,8 @@ class SkillCuratorAudit(BaseModel):
         return self
 
 
-class SkillProposalContext(BaseModel):
-    """Trusted host facts used to assemble one immutable Skill proposal."""
+class _SkillProposalLineage(BaseModel):
+    """Scope, evidence of previous use, and the human decision requested."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -615,9 +878,13 @@ class SkillProposalContext(BaseModel):
     parent_skill_id: UUID | None = None
     parent_version: int | None = Field(default=None, ge=1)
     source_usage_record_id: UUID | None = None
+    evolution_kind: Literal["UPDATE", "FORK"] = "UPDATE"
+    revises_proposal_id: UUID | None = None
+    review_feedback: BoundedText | None = None
+    outcome_review: SkillOutcomeReview | None = None
 
     @model_validator(mode="after")
-    def validate_scope_and_parent(self) -> "SkillProposalContext":
+    def validate_scope_and_parent(self) -> "_SkillProposalLineage":
         if self.scope is SkillScope.PERSONAL and self.owner_user_id is None:
             raise ValueError("PERSONAL Skill proposals require owner_user_id")
         if self.scope is SkillScope.PROJECT and self.project_id is None:
@@ -626,13 +893,19 @@ class SkillProposalContext(BaseModel):
             raise ValueError("parent_skill_id and parent_version must be set together")
         if self.source_usage_record_id is not None and self.parent_skill_id is None:
             raise ValueError("A source usage record requires parent Skill lineage")
+        if self.evolution_kind == "FORK" and self.parent_skill_id is None:
+            raise ValueError("A fork requires an exact parent Skill version")
+        if self.revises_proposal_id is not None and self.review_feedback is None:
+            raise ValueError("A revised candidate requires reviewer feedback")
         return self
 
 
-class SkillProposal(BaseModel):
-    """Runtime-curator proposal that remains non-Gold until user approval."""
+class SkillProposalContext(_SkillProposalLineage):
+    """Trusted host facts used to assemble one immutable Skill proposal."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+class SkillProposal(_SkillProposalLineage):
+    """Runtime-curator proposal that remains non-Gold until user approval."""
 
     proposal_id: UUID = Field(default_factory=uuid4)
     approval_gate_id: StrictStr = Field(
@@ -643,26 +916,9 @@ class SkillProposal(BaseModel):
     source_run_id: UUID
     proposed_name: ShortText
     description: BoundedText
-    scope: SkillScope
-    owner_user_id: StrictStr | None = Field(default=None, min_length=1)
-    project_id: StrictStr | None = Field(default=None, min_length=1)
-    lab_id: StrictStr = Field(default="local-lab", min_length=1)
     procedure: SkillProcedure
     review_notes: tuple[BoundedText, ...] = Field(default=(), max_length=129)
-    parent_skill_id: UUID | None = None
-    parent_version: int | None = Field(default=None, ge=1)
-    source_usage_record_id: UUID | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    @model_validator(mode="after")
-    def validate_scope_and_parent(self) -> "SkillProposal":
-        if self.scope is SkillScope.PERSONAL and self.owner_user_id is None:
-            raise ValueError("PERSONAL Skill proposals require owner_user_id")
-        if self.scope is SkillScope.PROJECT and self.project_id is None:
-            raise ValueError("PROJECT Skill proposals require project_id")
-        if (self.parent_skill_id is None) != (self.parent_version is None):
-            raise ValueError("parent_skill_id and parent_version must be set together")
-        return self
 
     @field_validator("created_at")
     @classmethod
@@ -706,6 +962,7 @@ class GoldSkill(BaseModel):
     source_run_id: UUID
     source_bundle_id: UUID
     source_proposal_id: UUID
+    evolution_kind: Literal["UPDATE", "FORK"] = "UPDATE"
     parent_skill_id: UUID | None = None
     parent_version: int | None = Field(default=None, ge=1)
     source_usage_record_id: UUID | None = None
@@ -724,8 +981,11 @@ class GoldSkill(BaseModel):
             raise ValueError("PROJECT Gold Skills require project_id")
         if (self.parent_skill_id is None) != (self.parent_version is None):
             raise ValueError("parent_skill_id and parent_version must be set together")
-        if self.version == 1 and self.parent_skill_id is not None:
-            raise ValueError("Gold Skill v1 cannot have parent version lineage")
+        if self.evolution_kind == "FORK":
+            if self.version != 1 or self.parent_skill_id is None or self.parent_skill_id == self.skill_id:
+                raise ValueError("A fork must start a new Skill at v1 with its source version")
+        elif self.version == 1 and self.parent_skill_id is not None:
+            raise ValueError("An original Gold Skill v1 cannot have parent version lineage")
         if self.version > 1:
             if self.parent_skill_id != self.skill_id:
                 raise ValueError("A later version must preserve its parent skill_id")
@@ -772,6 +1032,7 @@ class SkillUseProposal(BaseModel):
     skill_id: UUID
     skill_version: int = Field(ge=1)
     proposed_mode: SkillUseMode
+    latest_user_answer_id: ShortText | None = Field(default=None, description="Host-bound last authenticated clarification when this request was made.")
     reason: BoundedText
     proposed_deviations: tuple[BoundedText, ...] = Field(
         default_factory=tuple,
@@ -785,6 +1046,11 @@ class SkillUseProposal(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("SkillUseProposal created_at must be timezone-aware")
         return value.astimezone(timezone.utc)
+
+    def decision_scope(self) -> tuple:
+        """Changing a model-written reason cannot reset the researcher's decision."""
+        return (self.run_id, self.requesting_user_id, self.project_id, self.lab_id,
+                self.skill_id, self.skill_version, self.proposed_mode, self.latest_user_answer_id)
 
 
 class SkillUseAuthorization(BaseModel):

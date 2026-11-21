@@ -1,8 +1,11 @@
-# Copy outside the repository and configure once. Relative paths use this file's directory.
+# Primary path: Local + Apptainer with enforced cgroup limits.
+# Copy outside the repository; relative paths use this file's directory.
+# Explicit Docker compatibility is documented in docker-runtime.toml; no fallback.
 # Credentials belong only in the external provider env file, never this TOML.
 result_root = "../result"
 input_roots = ["../data"]
 default_format = "raw"
+runtime_backend = "native"
 # profile = "./local-profile.json"  # Optional explicit external protocol profile.
 
 [identity]
@@ -27,10 +30,11 @@ endpoint = "https://provider.example/v1"
 # The env file holds only the key; it must be yours with mode 0600 (chmod 600).
 env_file = "~/.config/labbioagent/provider.env"
 api_key_env = "MIMO_API_KEY"
-model_identifier = "mimo-v2.5-pro"
+model_identifier = "mimo-v2.6-pro"
 thinking_enabled = false                 # Shared model for the other stages.
 interpretation_thinking_enabled = true   # Separate InterpretationAgent only.
-max_output_tokens = 16384
+max_output_tokens = 32768
+max_model_phase_seconds = 300            # Bound for each capability/finalization model phase.
 # max_retries = 2  # Rate limits, overloads and connection failures (0-10).
 # Official OpenAI and Claude reject our schemas in strict mode, and Gemini
 # rejects full stage schemas as too complex: with these providers keep
@@ -56,35 +60,61 @@ max_output_tokens = 16384
 # thinking_level_disabled = "low"
 
 [execution]
+backend = "apptainer"
 default_image = "scientific-python"  # Used when the Agent names no image.
 # Trusted local file limits; these do not change remote Artifact exposure.
-max_output_file_bytes = 8589934592       # 8 GiB per written/collected file, including intermediates.
-max_collected_output_bytes = 34359738368 # 32 GiB of declared outputs per execution, not a disk quota.
-tmpfs_size_mb = 256                     # /tmp uses container memory, not disk.
+max_output_file_bytes = 134217728        # 128 MiB per written/collected file, including intermediates.
+max_collected_output_bytes = 536870912   # 512 MiB of declared outputs per execution.
+# For a larger project, set these explicitly (e.g. 8589934592 and 34359738368 for 8 GiB and 32 GiB).
+# Explicit remote-model permissions; both remain off unless you authorize them.
+# Error text is bounded and best-effort redacted, but can still contain data values.
+include_error_context = false
+# Includes generated RAW logs/files, never original RAW inputs; tool/scope checks remain.
+allow_generated_file_read = false
 
 [execution.resources]
 cpus = 4.0
 memory_mb = 4096
 pids_limit = 128
 timeout_seconds = 900.0
-# gpus = 1   # Most GPUs one execution may request; default 0. Needs the NVIDIA container toolkit.
+# gpus = 1   # Most GPUs one execution may request; default 0. Docker with the NVIDIA container
+#            # toolkit only: local Apptainer refuses GPUs.
 
 # One table per base image; every configured image is a lab image.
 [[execution.images]]
 key = "scientific-python"
-# Replace with the exact immutable identity of an already available image.
+# Replace with the registered SIF file's SHA256, not a Docker image ID.
 reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 available_python_modules = []  # Enter the actual verified image import inventory.
 installed_packages = {}       # Optional verified distribution-to-version inventory.
 # runtimes = ["PYTHON", "SHELL"]  # Default ["PYTHON"]; the default_image must include PYTHON.
 # gpu = "SUPPORTED"               # NONE (default), SUPPORTED or REQUIRED.
 
+[execution.apptainer]
+binary = "/absolute/user/install/prefix/bin/apptainer" # Printed by labbio apptainer-install.
+sif_store = "../sif"                    # Private content-addressed store, mode 0700.
+scratch_root = "../scratch"
+resource_enforcement = "systemd-affinity" # Integer logical cores locked with seccomp; not CPUQuota.
+verify_sif_on_execute = true
+
+[launcher]
+kind = "local"
+
 # Optional Python dependency builds (and conda packages with [environment.conda]). Managed workspaces use USER/Environments,
 # overriding this root; no analysis data is mounted while installing packages.
 # [environment]
 # root = "../Environments"
-# build_timeout_seconds = 600.0
+# include_error_context = false # Opt in to bounded, best-effort redacted import-error text.
 # build_proxy = "http://127.0.0.1:12199" # Build-only proxy; never changes global settings.
+# [environment.local_apptainer]
+# machine = "x86_64"
+# build_dir = "/tmp"
+# download_work_root = "/tmp"
+# cpus = 4.0
+# memory_mb = 4096
+# build_timeout_seconds = 600.0
+# download_memory_mb = 4096
+# download_timeout_seconds = 600.0
 
 # Optional: conda packages in derived environments.
 # [environment.conda]

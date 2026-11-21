@@ -52,6 +52,7 @@ from .environments import (
     normalize_requirements,
 )
 from .images import ApprovedImage
+from .import_probe import import_diagnostics, parse_import_probe
 from .job_ledger import JobLedger, JobPurpose, run_recorded_job
 from .launchers.base import JobLauncher, JobSpec
 from .models import RequestedResources
@@ -258,6 +259,7 @@ class ApptainerEnvironmentBuilder:
                 apptainer_binary=self.policy.apptainer_binary, base_sif=base_sif,
                 wheel_dir=download / "wheels", lock_file=lock_file, output_sif=output_sif,
                 build_dir=self.policy.build_dir, log_dir=logs, import_modules=modules, conda_dir=conda_dir,
+                resources=self.policy.resources,
             ))
             outcome = await self._job(self.build_launcher, workspace, program, self.policy.resources, run_id)
             if outcome is None:
@@ -269,8 +271,7 @@ class ApptainerEnvironmentBuilder:
             except ValueError:
                 return failed("VERIFICATION_FAILED")
             if inventory["failed_imports"]:
-                return failed("IMPORT_CHECK_FAILED", tuple(
-                    {"code": "IMPORT_CHECK_FAILED", "module": module} for module in inventory["failed_imports"][:8]))
+                return failed("IMPORT_CHECK_FAILED", import_diagnostics(inventory))
             if inventory["unshared"]:
                 return failed("IMAGE_NOT_SHAREABLE")  # The paths stay in the probe output log.
             try:
@@ -373,15 +374,10 @@ def _probe_inventory(path: Path, modules: tuple[str, ...], *, conda: bool = Fals
     if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_PROBE_BYTES:
         raise ValueError("The import probe output is unavailable")
     try:
-        inventory = json.loads(path.read_text(encoding="utf-8"))
-        failed, packages = inventory["failed_imports"], inventory["installed_packages"]
+        inventory = parse_import_probe(json.loads(path.read_text(encoding="utf-8")), modules)
     except (OSError, UnicodeError, KeyError, TypeError) as error:
         raise ValueError("The import probe output is invalid") from error
-    if (not isinstance(failed, list) or any(module not in modules for module in failed)
-            or not isinstance(packages, dict)):
-        raise ValueError("The import probe output is invalid")
-    return {"failed_imports": failed, "installed_packages": packages,
-            "conda_packages": probed_conda_packages(inventory, requested=conda),
+    return {**inventory, "conda_packages": probed_conda_packages(inventory, requested=conda),
             "unshared": probed_unshared(inventory)}
 
 

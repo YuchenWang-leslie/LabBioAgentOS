@@ -71,7 +71,7 @@ def local_identity_application(tmp_path):
             endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
-            default_image="identity-python", images=[{"key": "identity-python", "reference": IMAGE}],
+            backend="docker", default_image="identity-python", images=[{"key": "identity-python", "reference": IMAGE}],
             resources=RequestedResources(cpus=1, memory_mb=256, pids_limit=64, timeout_seconds=30),
         ),
     )

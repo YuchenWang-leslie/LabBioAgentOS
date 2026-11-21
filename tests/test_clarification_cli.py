@@ -18,7 +18,7 @@ def waiting_cli(local_cli, monkeypatch, capsys):
     monkeypatch.setattr(cli, "load_settings", lambda _path: settings)
     observed = {"provider": 0, "capability": 0, "finalize": 0}
 
-    async def capability(self, stage_input):
+    async def capability(self, stage_input, *, resolve_finalization=None):
         observed["capability"] += 1
         assert stage_input.stage_id is WorkflowStage.INTAKE
         return CapabilityEvidenceBundle(run_id=stage_input.run_id, stage_id=stage_input.stage_id,
@@ -31,7 +31,7 @@ def waiting_cli(local_cli, monkeypatch, capsys):
                 safe_result={"items": [], "next_offset": None},
             ),))
 
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         observed["finalize"] += 1
         assert not stage_input.workflow_control.request_user_input_available
         assert stage_input.workflow_control.clarification_available

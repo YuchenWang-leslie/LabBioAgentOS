@@ -18,9 +18,6 @@ import sys
 import time
 
 
-DATA_ROOT = Path("/media/desk16/iy1982/WYC/projects/test/TEST1/projects")
-H5AD = DATA_ROOT / "ADVANCED_H5AD/data/pbmc68k_reduced_annotated.h5ad"
-GOLD = DATA_ROOT / "GOLDDEMO/data"
 BASE_IMAGE = "sha256:89f2385fb9a86c72bbe8f28ec4643becf8d356ad61b9eb94bdc1c3f4ab7845cb"
 COLD_IMAGE = "sha256:fe316ce25958c9a5fd10d55a42d2597a2736a1c84f92690cf79cd8a0ada67506"
 TASKS = {
@@ -56,10 +53,15 @@ def main() -> int:
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path, required=True,
+                        help="Explicit workload data root containing ADVANCED_H5AD and GOLDDEMO")
     parser.add_argument("--arm", choices=("baseline", "candidate"), required=True)
     parser.add_argument("--case", choices=tuple(TASKS), required=True)
     parser.add_argument("--replicate", type=int, default=1)
     args = parser.parse_args()
+    data_root = args.data_root.resolve(strict=True)
+    h5ad = data_root / "ADVANCED_H5AD/data/pbmc68k_reduced_annotated.h5ad"
+    gold = data_root / "GOLDDEMO/data"
     source, root = args.source.resolve(strict=True), args.root.resolve()
     sys.path.insert(0, str(source / "src"))
     from labbioagentos import cli
@@ -73,7 +75,7 @@ def main() -> int:
     config = settings.model_dump(mode="json")
     config.update(
         result_root=str(root / "runs"),
-        input_roots=[str(H5AD.parent), str(GOLD)],
+        input_roots=[str(h5ad.parent), str(gold)],
         default_format="raw",
         managed_root=None,
         gold_root=None,
@@ -98,8 +100,8 @@ def main() -> int:
     )
     config["environment"].update(root=str(root / "environments" / name))
     settings = LocalSettings.model_validate(config)
-    paths = [*sorted(GOLD.glob("GSM*.csv")), GOLD / "DATA_CONTEXT.md",
-             GOLD / "SAMPLE_METADATA.tsv"] if large else [H5AD]
+    paths = [*sorted(gold.glob("GSM*.csv")), gold / "DATA_CONTEXT.md",
+             gold / "SAMPLE_METADATA.tsv"] if large else [h5ad]
     task = TASKS[args.case]
     if large:
         task += ("\n已知输入事实：四个文件来自两个患者的肾癌肿瘤/配对癌旁组织，"

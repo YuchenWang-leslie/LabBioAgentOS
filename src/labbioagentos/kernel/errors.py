@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
+from .contracts import FinishReason, ToolCallCapacityIssue
+
 if TYPE_CHECKING:
     from .contracts import InterruptSignal, ProviderRetry, TokenUsage
 
@@ -84,6 +86,18 @@ class ToolBatchRejectedError(KernelContractError):
         self.tool_name = tool_name
         self.validation_type = validation_type
         self.validation_fields = validation_fields
+
+
+class CloseoutRequiredError(ToolBatchRejectedError):
+    """A work admission cannot consume the reserved completion capacity."""
+
+    def __init__(self):
+        super().__init__('CLOSEOUT_REQUIRED',
+            'This batch exceeds the remaining work-tool capacity; the shared total includes '
+            'reserved completion-control calls. No requested work was executed. Inspect '
+            'kernel_budget and choose a fitting work batch or exposed closeout tools. At zero '
+            'work capacity, choose your own handoff from delivered evidence, including limits '
+            'and a legal next action, or state insufficiency. The host chose no evidence or decision.')
 
 
 class ToolResultProjectionError(KernelContractError):
@@ -174,17 +188,35 @@ class ProviderProtocolError(KernelContractError):
         usage: TokenUsage | None = None,
         usage_snapshot: TokenUsage | None = None,
         transport_retries: tuple[ProviderRetry, ...] = (),
+        provider_finish_reason: FinishReason | None = None,
+        tool_call_capacity: ToolCallCapacityIssue | None = None,
     ):
+        if tool_call_capacity is not None and not isinstance(tool_call_capacity, ToolCallCapacityIssue):
+            raise TypeError("tool_call_capacity must contain typed safe capacity facts")
+        if provider_finish_reason is not None and not isinstance(
+            provider_finish_reason, FinishReason
+        ):
+            raise TypeError("provider_finish_reason must be a FinishReason or None")
         super().__init__(
-            "PROVIDER_PROTOCOL_ERROR",
+            "PROVIDER_TOOL_CAPACITY_REJECTED" if tool_call_capacity is not None else "PROVIDER_PROTOCOL_ERROR",
             "The provider returned an unsupported response shape",
         )
         self.validation_type = validation_type
         self.validation_fields = validation_fields
         self.usage = usage
         self.usage_snapshot = usage_snapshot
+        self.provider_finish_reason = provider_finish_reason
+        self.tool_call_capacity = tool_call_capacity
         # Attempts discarded before this failure, for the loop to record.
         self.transport_retries = transport_retries
+
+
+class ToolCallCapacityError(ValueError):
+    """Internal parser signal; the full response must still pass its other checks."""
+
+    def __init__(self, issue: ToolCallCapacityIssue):
+        self.issue = issue
+        super().__init__("A tool-call string exceeds its native channel capacity")
 
 
 # A provider type name is recorded only when it has this plain identifier form.

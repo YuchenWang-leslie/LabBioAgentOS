@@ -52,10 +52,12 @@ Supported modes:
 
 | Launcher | Runtime | Use |
 |---|---|---|
-| Local | Docker | Workstation (macOS, Linux; Windows through WSL2) |
+| Local | Apptainer | Primary Linux local path, with verified systemd/cgroup v2 limits; see [Local Apptainer](LOCAL_APPTAINER.md) |
 | Scheduler | Apptainer | Cluster — the only cluster mode |
+| Local | Docker | Explicit compatibility path (macOS, Linux; Windows through WSL2) |
 
-Any other combination is rejected when the configuration loads. In particular,
+Apptainer is the configuration default; Docker must be explicitly selected.
+Scheduler + Docker is rejected when the configuration loads. In particular,
 running LabBio inside an interactive allocation with local execution is not a
 supported cluster mode.
 
@@ -202,8 +204,8 @@ model_identifier = "<model>"
 [execution]
 backend = "apptainer"
 default_image = "scientific-python"
-max_output_file_bytes = 8589934592
-max_collected_output_bytes = 34359738368
+max_output_file_bytes = 134217728
+max_collected_output_bytes = 536870912
 tmpfs_size_mb = 256   # /tmp in scratch is checked every few seconds; above this, SCRATCH_LIMIT
 
 [[execution.images]]

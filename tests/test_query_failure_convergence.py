@@ -1,6 +1,8 @@
 """Repeated failures stop actual provider turns; no provider or scientific work."""
 import json
+from dataclasses import replace
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -39,6 +41,29 @@ async def test_denied_view_switch_after_feedback_requests_stop_and_retains_failu
     failed = [e for e in sink.read(binding.run_id) if e.event_type.value == 'CAPABILITY_FAILED']
     assert failed[-1].payload['error_details']['repeated_request'] == repeat
     assert 'PRIVATE_CONTENT_SENTINEL' not in json.dumps(second)
+
+
+@pytest.mark.asyncio
+async def test_execute_gets_one_chance_to_recover_from_repeated_denied_read(artifact_query_boundary):
+    _, _, _, tools = artifact_query_boundary
+    tools.binding = replace(tools.binding, stage_id=WorkflowStage.EXECUTE)
+    ref = _register(artifact_query_boundary, ArtifactExposureClass.AGGREGATE,
+                    ArtifactReleaseBasis.TRUSTED_AGGREGATE_INSPECTOR)
+
+    first = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not first["success"]
+    assert "SUMMARY" in first["error"]["query_constraints"]["allowed_view_types"]
+    tools.mark_feedback_delivered((first,))
+    repeat = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not repeat["success"] and repeat["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    assert repeat["error"]["repeated_request"]["previous_capability_invocation_id"] == first["capability_invocation_id"]
+    assert "local execution" in repeat["error"]["safe_message"]
+    assert tools.stop_reason is None
+
+    tools.mark_feedback_delivered((repeat,))
+    third = await tools.artifact_query(str(ref.artifact_id), "TOP_N", 1)
+    assert not third["success"] and third["error"]["error_code"] == "ARTIFACT_EXPOSURE_DENIED"
+    assert tools.stop_reason == "REPEATED_NON_RETRYABLE_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -171,8 +196,76 @@ async def test_invalid_shape_repeat_stops_but_explicit_correction_and_other_id_d
     assert tools.stop_reason is None
     tools.mark_feedback_delivered((corrected, second))
     await tools.artifact_query(str(ref.artifact_id), 'SUMMARY', '2')
+    assert tools.stop_reason is None  # A delivered result ended the earlier failure episode.
+    assert tools.evidence_items()[-1].error_details.repeated_request is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delivered', [False, True])
+async def test_bad_identity_after_new_result_is_not_a_continuous_failure(artifact_query_boundary, delivered):
+    _, _, ref, tools = artifact_query_boundary
+    missing = str(uuid4())
+    first = await tools.artifact_query(missing, 'SUMMARY')
+    tools.mark_feedback_delivered((first,))
+    read = await tools.artifact_query(str(ref.artifact_id), 'SUMMARY')
+    if delivered:
+        tools.mark_feedback_delivered((read,))
+    second = await tools.artifact_query(missing, 'SUMMARY')
+    assert second['error']['error_code'] == 'ARTIFACT_NOT_FOUND'
+    assert (tools.stop_reason is None) is delivered
+    if delivered:
+        assert second['error']['repeated_request'] is None
+        tools.mark_feedback_delivered((second,))
+        third = await tools.artifact_query(missing, 'SUMMARY')
+        assert third['error']['repeated_request']['previous_capability_invocation_id'] == second['capability_invocation_id']
+        assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
+
+
+@pytest.mark.asyncio
+async def test_artifact_list_after_other_delivered_result_starts_new_episode(artifact_query_boundary):
+    _, _, ref, tools = artifact_query_boundary
+    tools.binding = replace(tools.binding, capability_allowlist=('artifact_list', 'artifact_query'))
+    first = await tools.artifact_list()
+    tools.mark_feedback_delivered((first,))
+    read = await tools.artifact_query(str(ref.artifact_id), 'SUMMARY')
+    tools.mark_feedback_delivered((read,))
+    second = await tools.artifact_list()
+    assert second['success'] and second['data'] == first['data']
+    assert tools.stop_reason is None
+    tools.mark_feedback_delivered((second,))
+    assert not (await tools.artifact_list())['success']
     assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
-    assert tools.evidence_items()[-1].error_details.repeated_request.reason == 'REQUEST_UNCHANGED'
+
+
+@pytest.mark.asyncio
+async def test_artifact_list_different_delivered_page_is_new_result(artifact_query_boundary):
+    _, _, _, tools = artifact_query_boundary
+    tools.binding = replace(tools.binding, capability_allowlist=('artifact_list', 'artifact_query'))
+    first = await tools.artifact_list(offset=0, limit=1)
+    tools.mark_feedback_delivered((first,))
+    other_page = await tools.artifact_list(offset=1, limit=1)
+    tools.mark_feedback_delivered((other_page,))
+    reread = await tools.artifact_list(offset=0, limit=1)
+    assert reread['success'] and reread['data'] == first['data']
+    assert tools.stop_reason is None
+
+
+@pytest.mark.asyncio
+async def test_invalid_output_after_new_result_remains_local_error(boundary):
+    tools, validator = _execution_tools(boundary)
+    tools.binding = replace(tools.binding, capability_allowlist=('execution_submit', 'artifact_list'))
+    first = await tools.execution_submit(image_key='approved', script_content='pass')
+    tools.mark_feedback_delivered((first,))
+    discovered = await tools.artifact_list()
+    tools.mark_feedback_delivered((discovered,))
+    second = await tools.execution_submit(image_key='approved', script_content='pass')
+    assert second['error']['error_code'] == 'INVALID_OUTPUT_DECLARATION'
+    assert second['error']['repeated_request'] is None
+    assert tools.stop_reason is None
+    tools.mark_feedback_delivered((second,))
+    assert not (await tools.execution_submit(image_key='approved', script_content='pass'))['success']
+    assert tools.stop_reason == 'REPEATED_NON_RETRYABLE_REQUEST'
+    assert len(validator.calls) == 3
 
 
 @pytest.mark.asyncio

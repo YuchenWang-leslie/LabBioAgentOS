@@ -241,6 +241,8 @@ reference = "sha256:{b}"
 def _write(tmp_path, execution='default_image = "python-base"', images=TWO_IMAGES):
     (tmp_path / "inputs").mkdir(exist_ok=True)
     path = tmp_path / "runtime.toml"
+    if "backend" not in execution:
+        execution = 'backend = "docker"\n' + execution  # The source default is Apptainer since main a6da8a5.
     path.write_text(SETTINGS.format(execution=execution, images=images), encoding="utf-8")
     return path
 

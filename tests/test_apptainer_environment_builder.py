@@ -57,11 +57,18 @@ def step(stage):
         time.sleep(120)
 
 if args[1] == "build":
+    if args[2] == "--mksquashfs-args":
+        packing = args[3].split()
+        assert len(packing) == 4 and packing[0] == "-processors" and packing[2] == "-mem"
+        assert int(packing[1]) >= 1 and packing[3].endswith("M") and int(packing[3][:-1]) > 0
+        args = args[:2] + args[4:]
     if args[2] == "--sandbox":
+        assert len(args) == 5
         step("sandbox")
         Path(args[3]).mkdir()
         (Path(args[3]) / "state.json").write_text(Path(args[4]).read_text())
     else:
+        assert len(args) == 4 and not args[2].startswith("-")
         stage = "pack-check" if args[2].endswith("pack-check.sif") else "pack"
         step(stage)
         Path(args[2]).write_text((Path(args[3]) / "state.json").read_text() if stage == "pack" else "{{}}")
@@ -250,6 +257,26 @@ async def test_build_steps_never_have_network_and_only_the_download_sees_the_pro
             assert ("--network" in call) is not networked
             assert (PROXY in call) is ("--dry-run" in call or "download" in call)
     assert PROXY in (_attempt(cluster) / "download.sh").read_text()
+
+
+@pytest.mark.asyncio
+async def test_production_builder_passes_its_policy_budget_to_both_packing_steps(cluster, monkeypatch):
+    from labbioagentos.execution import apptainer_environment_builder as module
+
+    service = cluster.service()
+    original, observed = module.render_build_program, []
+
+    def render(**options):
+        observed.append(options.get("resources"))
+        return original(**options)
+
+    monkeypatch.setattr(module, "render_build_program", render)
+    receipt = await service.build_environment("base", (), ("basepkg",), run_id=uuid4())
+    assert receipt["status"] == "SUCCEEDED", receipt
+    assert observed == [service.builder.policy.resources]
+    packing = [call for call in cluster.calls() if call[1] == "build" and call[2] != "--sandbox"]
+    assert len(packing) == 2
+    assert all(call[2:4] == ["--mksquashfs-args", "-processors 2 -mem 2048M"] for call in packing)
 
 
 @pytest.mark.asyncio

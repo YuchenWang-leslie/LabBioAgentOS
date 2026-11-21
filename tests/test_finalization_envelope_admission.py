@@ -41,7 +41,7 @@ async def test_completion_admission_can_request_more_than_one_bounded_revision()
         deadline_monotonic=10_000_000_000.0,
     )
     assert result.output == "fits"
-    assert checked == ["too-large", "still-too-large"]
+    assert checked == ["too-large", "still-too-large", "fits"]
     assert len(provider.requests) == 3
 
 
@@ -209,6 +209,9 @@ async def test_completion_gets_handoff_feedback_before_finalizer_capacity_failur
                 feedback = json.loads(request.messages[-1].content)
                 assert feedback["reason"] == "HANDOFF_REQUIRED"
                 assert feedback["serialized_bytes"] > 60_000
+                control = feedback["capacity"]["finalization_control"]
+                assert control["over_by_bytes"] == control["serialized_bytes"] - 60_000
+                assert control["component_bytes"]["capability_evidence"] > 0
                 identity = str(hosts[0].evidence_items()[0].capability_invocation_id)
                 return ModelTurn(tool_calls=(ToolCall(
                     call_id="selected", name="prepare_handoff",

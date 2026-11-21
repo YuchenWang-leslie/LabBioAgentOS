@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -19,6 +21,10 @@ def _parser() -> argparse.ArgumentParser:
         prog="labbio", description="Run a local Agent task without a Python launcher."
     )
     commands = parser.add_subparsers(dest="command", required=True)
+    install = commands.add_parser("apptainer-install", help="Explicitly install the user-local Apptainer runtime")
+    install.add_argument("--prefix", type=Path,
+                         default=Path("~/.local/share/labbioagent/apptainer/1.5.5"),
+                         help="New user-owned installation directory; existing paths are never overwritten")
     run = commands.add_parser("run", help="Submit data and a natural-language task")
     run.add_argument("--data", type=Path, action="append", required=True)
     run.add_argument("--task", required=True)
@@ -53,10 +59,21 @@ def _parser() -> argparse.ArgumentParser:
     revise.add_argument("--task", required=True)
     revise.add_argument("--preference", action="append", default=[])
     revise.add_argument("--artifact-id", type=UUID, action="append", default=[])
+    revise.add_argument("--report-only", action="store_true",
+                        help="Revise a completed report using its registered delivery")
     revise.add_argument("--output", type=Path)
     for name in ("status", "export"):
         command = commands.add_parser(name, help=f"Read persisted run {name} without a model call")
         command.add_argument("--run-dir", type=Path, required=True)
+    package = commands.add_parser("export-replay", help="Export the selected successful execution under the authenticated run owner")
+    package.add_argument("--run-dir", type=Path, required=True)
+    package.add_argument("--output", type=Path, required=True, help="New local directory")
+    package.add_argument("--input-sha256", action="append", default=[], metavar="ARTIFACT_UUID=SHA256",
+                         help="Independent trusted pin for a direct input lacking a registered digest")
+    playback = commands.add_parser("replay", help="Run one verified local bundle in a fresh offline Apptainer workspace")
+    playback.add_argument("--bundle", type=Path, required=True)
+    playback.add_argument("--manifest-sha256", required=True, help="Trusted digest supplied separately by the exporter")
+    playback.add_argument("--output", type=Path, required=True, help="New local result directory")
     image_register = commands.add_parser(
         "image-register", help="Copy a SIF into the controlled store and print its image_reference")
     image_register.add_argument("--sif", type=Path, required=True)
@@ -245,7 +262,7 @@ def _read(args: argparse.Namespace, settings) -> int:
 async def _governance(args: argparse.Namespace, settings) -> int:
     from .contracts import GateUserDecision
     from .local_config import _load_provider, provider_credentials
-    from .local_workspace_cli import configured_curator
+    from .local_workspace_cli import GOLD_RUN_COMMANDS, configured_curator
     from .local_gold import (
         completed_gold_source_record, decide_personal_gold, propose_from_completed_run,
     )
@@ -257,24 +274,63 @@ async def _governance(args: argparse.Namespace, settings) -> int:
     application = build_application(settings, directory, load_provider=False)
     try:
         service = application.configuration.skill_service
-        if args.command in {"gold-propose", "gold-review", "gold-decide"}:
+        if args.command in GOLD_RUN_COMMANDS:
             completed_gold_source_record(application, run_id, settings.principal, settings.workspace)
-        if args.command == "gold-propose":
+        if args.command == "gold-usage":
+            items = []
+            for access in service.store.accesses_for_run(run_id):
+                usage = service.store.get_usage_for_authorization(access.authorization_id)
+                if usage is not None:
+                    items.append(usage.model_dump(mode="json"))
+            _emit({"run_id": str(run_id), "items": items})
+            return 0
+        if args.command in {"gold-propose", "gold-revise"}:
+            if args.command == "gold-propose" and args.evolution and args.from_usage is None:
+                _emit({"error": "GOLD_PARENT_USAGE_REQUIRED",
+                       "detail": "Choose a completed ADAPT use from gold-usage for this run."})
+                return 1
             _load_provider(provider_credentials(application))
-            proposal = await propose_from_completed_run(
-                application, run_id, principal=settings.principal, workspace=settings.workspace,
-                curator=configured_curator(application),
-            )
-            _emit({"event": "gold_proposed", "proposal": proposal.model_dump(mode="json")})
+            curator = configured_curator(application)
+            if args.command == "gold-revise":
+                from .local_gold import revise_personal_gold
+                proposal = await revise_personal_gold(
+                    application, run_id, settings.principal, settings.workspace, curator,
+                    proposal_id=args.proposal_id, feedback=args.feedback,
+                )
+            elif args.from_usage is not None and args.evolution in {None, "auto"}:
+                from .local_gold import propose_evolution_from_usage
+                recommendation, proposal = await propose_evolution_from_usage(
+                    application, run_id, settings.principal, settings.workspace, curator,
+                    from_usage=args.from_usage, feedback=args.feedback,
+                )
+                _emit({"event": "gold_evolution_reviewed", "recommendation": recommendation.model_dump(mode="json"),
+                       "proposal": proposal.model_dump(mode="json") if proposal is not None else None})
+                return 0
+            else:
+                proposal = await propose_from_completed_run(
+                    application, run_id, settings.principal, settings.workspace, curator,
+                    from_usage=args.from_usage, evolution=args.evolution, feedback=args.feedback,
+                )
+            _emit({"event": "gold_revised" if args.command == "gold-revise" else "gold_proposed",
+                   "proposal": proposal.model_dump(mode="json")})
             return 0
         if args.command in {"gold-review", "gold-decide"}:
-            proposal = service.pending_proposal(args.proposal_id)
+            from .local_gold import review_personal_gold
+            proposal = review_personal_gold(service, args.proposal_id, settings.principal)
             if (proposal.source_run_id != run_id
                     or proposal.owner_user_id != settings.principal.user_id
                     or proposal.lab_id != settings.principal.lab_id):
                 raise PermissionError("Proposal does not belong to this source run and user")
             if args.command == "gold-review":
-                _emit({"proposal": proposal.model_dump(mode="json")})
+                from .local_workspace_cli import gold_review_comparison
+                from .skills import SkillDecisionError
+                try:
+                    service.pending_proposal(args.proposal_id)
+                    decision_pending = True
+                except SkillDecisionError:
+                    decision_pending = False
+                _emit({"proposal": proposal.model_dump(mode="json"), "decision_pending": decision_pending,
+                       "comparison": gold_review_comparison(service, proposal, settings.principal)})
             else:
                 gold = decide_personal_gold(
                     service, args.proposal_id, args.gate_id, args.decision == "approve",
@@ -336,8 +392,20 @@ async def _governance(args: argparse.Namespace, settings) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "apptainer-install":
+            from importlib.resources import as_file, files
+
+            environment = {key: value for key, value in os.environ.items() if key in {
+                "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL",
+                "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "CURL_CA_BUNDLE",
+            }}
+            with as_file(files("labbioagentos").joinpath("resources/install-user-apptainer.sh")) as script:
+                return subprocess.run(
+                    ("/bin/bash", str(script), str(args.prefix.expanduser().absolute())),
+                    env=environment, check=False,
+                ).returncode
         from .local_workspace_cli import (
-            ADMIN_COMMANDS, administer, gold_catalog, gold_export, scoped_settings,
+            ADMIN_COMMANDS, GOLD_RUN_COMMANDS, administer, gold_catalog, gold_export, scoped_settings,
         )
         from .local_lab import LAB_COMMANDS, administer_lab
         if args.command in ADMIN_COMMANDS:
@@ -347,6 +415,11 @@ def main(argv: list[str] | None = None) -> int:
             _emit(administer_lab(args))
             return 0
         settings = load_settings(args.config.expanduser())
+        if args.command == "replay":
+            from .local_replay import replay
+            result = asyncio.run(replay(settings, args.bundle, args.manifest_sha256, args.output))
+            _emit(result)
+            return 0 if result["status"] == "SUCCEEDED" else 2
         if args.command in {"image-register", "backend-check"}:
             from .local_backend import check_backend, register_image
             if args.command == "image-register":
@@ -359,6 +432,27 @@ def main(argv: list[str] | None = None) -> int:
         from .local_images import IMAGE_COMMANDS, run_image_command
         if args.command in IMAGE_COMMANDS:
             _emit(run_image_command(settings, args))
+            return 0
+        if args.command == "export-replay":
+            from .local_replay import export_replay
+            if settings.managed_root is None:
+                raise ValueError("Replay export requires managed workspace authentication")
+            pins = {}
+            for spec in args.input_sha256:
+                artifact, digest = spec.split("=", 1)
+                identifier = UUID(artifact)
+                if identifier in pins:
+                    raise ValueError("Duplicate input pin")
+                pins[identifier] = digest
+            directory = _run_directory(settings.result_root, args.run_dir, create=False)
+            run_id = _open_run_id(directory)
+            application = build_application(settings.model_copy(update={"gold_root": None, "environment": None}),
+                                            directory, load_provider=False)
+            try:
+                _emit(export_replay(application, run_id, directory, args.output, pins,
+                    principal=settings.principal, workspace=settings.workspace))
+            finally:
+                _close(application)
             return 0
         if args.command == "run":
             return asyncio.run(_run(args, settings))
@@ -376,8 +470,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "gold-export":
             _emit(gold_export(settings))
             return 0
-        if args.command in {"gate", "decide", "gold-propose", "gold-review", "gold-decide"}:
-            if args.command in {"decide", "gold-propose", "gold-decide"}:
+        if args.command in GOLD_RUN_COMMANDS or args.command in {"gate", "decide"}:
+            if args.command in {"decide", "gold-propose", "gold-revise", "gold-decide"}:
                 from .local_continuation import run_writer
                 directory = _run_directory(settings.result_root, args.run_dir, create=False)
                 with run_writer(directory):
@@ -392,9 +486,10 @@ def main(argv: list[str] | None = None) -> int:
         # Exception messages can contain provider bodies, credentials or raw data.
         from .local_gold_library import GoldExportConflict
         from .local_continuation import RunWriterActiveError
-        from .local_config import ProviderConfigurationError
+        from .local_config import MissingApptainerConfigurationError, ProviderConfigurationError
         from .local_lab import LabError, lab_error_payload
-        if isinstance(exc, ProviderConfigurationError):
+        from .kernel import BudgetExceededError
+        if isinstance(exc, (ProviderConfigurationError, MissingApptainerConfigurationError)):
             # A fixed code, a value-free fix and setting names only.
             _emit({"error": exc.code, "detail": exc.hint, "fields": list(exc.fields)})
             return 1
@@ -411,6 +506,11 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"error": "RUN_WRITER_ACTIVE", "detail":
                    "Another command still owns the run; no continuation was started."})
             return 2
+        if isinstance(exc, BudgetExceededError):
+            _emit({"error": "LOCAL_COMMAND_FAILED", "error_type": type(exc).__name__,
+                   "budget_failure": {"dimension": exc.dimension, "limit": exc.limit,
+                                      "consumed": exc.consumed, "requested": exc.requested}})
+            return 1
         if isinstance(exc, GoldExportConflict):
             _emit({"error": "GOLD_EXPORT_CONFLICT", "detail":
                    "A generated file was changed or is not exporter-owned; it was not overwritten. "

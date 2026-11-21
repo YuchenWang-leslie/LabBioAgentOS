@@ -124,6 +124,29 @@ async def test_redaction_and_imported_generated_file(boundary, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_label_and_secret_redaction_survive_exact_file_pagination(boundary, tmp_path):
+    source = ('{"label":"CD4+/CD45RA+/CD25- Naive T","ratio":"A+/B-"}\n'
+              'api_key="PRIVATE_VALUE"\n/private/input.csv\n')
+    toolset, ref = generated(boundary, tmp_path, source.encode())
+    chunks, offset, views = [], 0, set()
+    while True:
+        result = await toolset.file_read(str(ref.artifact_id), offset=offset, limit=13)
+        assert result['success'], result
+        page = result['data']
+        assert page['sha256'] == sha256(source.encode()).hexdigest()
+        assert page['content_authority'] == 'UNTRUSTED_GENERATED_FILE' and page['redacted']
+        chunks.append(page['content'])
+        views.add(page['view_sha256'])
+        if page['next_offset'] is None:
+            break
+        offset = page['next_offset']
+    text = ''.join(chunks)
+    assert 'CD4+/CD45RA+/CD25- Naive T' in text and 'A+/B-' in text
+    assert 'PRIVATE_VALUE' not in text and '/private/' not in text
+    assert views == {sha256(text.encode()).hexdigest()}
+
+
+@pytest.mark.asyncio
 async def test_binary_generated_result_returns_format_not_garbled_text(boundary, tmp_path):
     toolset, ref = generated(boundary, tmp_path, b'\x89PNG\r\n\x1a\n' + b'\x00' * 64)
     result = await toolset.file_read(str(ref.artifact_id))

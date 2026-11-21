@@ -341,6 +341,34 @@ def test_source_bundle_preserves_path_delegation_instruction_and_safe_refs(tmp_p
     assert bundle.validation_refs
 
 
+def test_source_preserves_failed_artifact_query_without_resolving_its_target(tmp_path):
+    sink, recorder, artifacts, _, service = _trace_environment(tmp_path)
+    run_id, bad_target, call_id = uuid4(), uuid4(), uuid4()
+    recorder.emit(run_id, TraceEventType.RUN_CREATED, status="CREATED")
+    actual = artifacts.register(
+        artifact_type="synthetic-result", exposure_class=ArtifactExposureClass.RAW,
+        representation=ArtifactRepresentation(stored_content="private"), run_id=run_id,
+    )
+    recorder.emit(run_id, TraceEventType.EXECUTION_PLANNED, status="PLANNED",
+                  payload={"execution_id": str(bad_target)})
+    payload = {
+        "capability": "artifact_query", "artifact_id": str(bad_target),
+        "capability_invocation_id": str(call_id), "actor_profile_key": "reporter",
+        "actor_agent_name": "ReportAgent",
+    }
+    recorder.emit(run_id, TraceEventType.CAPABILITY_INVOKED, status="STARTED", payload=payload)
+    recorder.emit(run_id, TraceEventType.CAPABILITY_FAILED, status="FAILED",
+                  payload={**payload, "error_code": "INVALID_REFERENCE_KIND"})
+    recorder.emit(run_id, TraceEventType.RUN_COMPLETED, status="COMPLETED")
+
+    bundle = service.create_source_bundle(sink.read(run_id), run_id=run_id)
+    assert bundle.artifact_ids == (actual.artifact_id,)
+    assert tuple(ref.artifact_id for ref in bundle.artifact_refs) == (actual.artifact_id,)
+    usage, = bundle.capability_usage_refs
+    assert usage.capability_invocation_id == call_id and usage.status == "FAILED"
+    assert usage.reference_ids == (bad_target,)
+
+
 def test_source_bundle_and_gold_store_do_not_copy_raw_artifact_payload(tmp_path):
     raw_token = "RAW_MATRIX_SENTINEL_99172"
     sink, recorder, artifacts, _, service = _trace_environment(tmp_path)

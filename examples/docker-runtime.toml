@@ -1,0 +1,54 @@
+# Optional Local + Docker compatibility. Apptainer is the primary path.
+# Explicit selection only: an unavailable Apptainer never falls back to Docker.
+# Copy outside the repository; relative paths use this file's directory.
+result_root = "../result"
+input_roots = ["../data"]
+default_format = "raw"
+runtime_backend = "native"
+
+[identity]
+user_id = "local-user"
+project_id = "local-project"
+lab_id = "local-lab"
+
+[provider]
+# API formats and per-format options are described in local-runtime.toml.
+api_format = "openai"
+endpoint = "https://provider.example/v1"
+env_file = "~/.config/labbioagent/provider.env"
+api_key_env = "MIMO_API_KEY"
+model_identifier = "mimo-v2.6-pro"
+thinking_enabled = false
+interpretation_thinking_enabled = true
+max_output_tokens = 16384
+max_model_phase_seconds = 300
+
+[execution]
+backend = "docker"
+default_image = "scientific-python"  # Used when the Agent names no image.
+max_output_file_bytes = 134217728
+max_collected_output_bytes = 536870912
+tmpfs_size_mb = 256
+
+[execution.resources]
+cpus = 4.0
+memory_mb = 4096
+pids_limit = 128
+timeout_seconds = 900.0
+# gpus = 1   # Most GPUs one execution may request; default 0. Needs the NVIDIA container toolkit.
+
+# One table per base image; every configured image is a lab image.
+[[execution.images]]
+key = "scientific-python"
+# Replace with an approved immutable Docker image identity, not a SIF digest.
+reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []  # Enter the actual verified image import inventory.
+installed_packages = {}       # Optional verified distribution-to-version inventory.
+# runtimes = ["PYTHON", "SHELL"]  # Default ["PYTHON"]; the default_image must include PYTHON.
+# gpu = "SUPPORTED"               # NONE (default), SUPPORTED or REQUIRED.
+
+# Optional Docker-only environment build configuration.
+# [environment]
+# root = "../Environments"
+# build_timeout_seconds = 600.0
+# build_proxy = "http://127.0.0.1:12199"

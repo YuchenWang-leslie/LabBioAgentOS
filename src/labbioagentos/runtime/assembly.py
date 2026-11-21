@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from labbioagentos.contracts import WorkflowStage
+from labbioagentos.kernel.contracts import DEFAULT_MAX_REQUEST_BYTES
 
 
 @dataclass(frozen=True)
@@ -14,6 +15,7 @@ class RuntimeAgentCapabilitySpec:
 
     profile_key: str
     capability_allowlist: tuple[str, ...] = ()
+    capability_prompt_values: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if not self.profile_key:
@@ -39,11 +41,14 @@ class RuntimeStageAssemblySpec:
     required_capabilities: tuple[str, ...] = ()
     required_any_capabilities: tuple[str, ...] = ()
     max_capability_turns: int = 24
+    max_capability_tokens: int | None = None
     max_no_progress_seconds: int = 300
-    max_request_bytes: int = 256_000
+    max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES
     retry_enabled: bool = True
     user_input_enabled: bool = True
     clarification_enabled: bool = True
+    max_finalization_tokens: int | None = None
+    max_finalization_output_tokens: int = 8_192
 
     def __post_init__(self) -> None:
         if not isinstance(self.retry_enabled, bool):
@@ -62,6 +67,17 @@ class RuntimeStageAssemblySpec:
             raise ValueError("max_delegate_depth must be positive")
         if self.max_capability_turns < 4 or self.max_capability_turns > 128:
             raise ValueError("max_capability_turns must be between 4 and 128")
+        if self.max_capability_tokens is not None and (
+            type(self.max_capability_tokens) is not int or self.max_capability_tokens < 1
+        ):
+            raise ValueError("max_capability_tokens must be a positive integer")
+        if self.max_finalization_tokens is not None and (
+            type(self.max_finalization_tokens) is not int or self.max_finalization_tokens < 1
+        ):
+            raise ValueError("max_finalization_tokens must be a positive integer")
+        if (type(self.max_finalization_output_tokens) is not int
+                or not 1 <= self.max_finalization_output_tokens <= 131_072):
+            raise ValueError("max_finalization_output_tokens must be between 1 and 131072")
         if self.max_no_progress_seconds < 30 or self.max_no_progress_seconds > 1_800:
             raise ValueError("max_no_progress_seconds must be between 30 and 1800")
         if type(self.max_request_bytes) is not int or self.max_request_bytes < 1:

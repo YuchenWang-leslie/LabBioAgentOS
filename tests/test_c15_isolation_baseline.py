@@ -126,7 +126,7 @@ def test_loading_a_configuration_refuses_a_key_file_inside_a_data_root(tmp_path)
         '[identity]\nuser_id = "u"\nproject_id = "p"\nlab_id = "l"\n'
         '[provider]\nenv_file = "data/provider.env"\napi_key_env = "KEY"\n'
         'endpoint = "https://provider.invalid/v1"\nmodel_identifier = "m"\n'
-        '[execution]\ndefault_image = "python"\n'
+        '[execution]\nbackend = "docker"\ndefault_image = "python"\n'
         '[execution.resources]\ncpus = 1.0\nmemory_mb = 512\npids_limit = 32\ntimeout_seconds = 30.0\n'
         f'[[execution.images]]\nkey = "python"\nreference = "sha256:{"1" * 64}"\n',
         encoding="utf-8",

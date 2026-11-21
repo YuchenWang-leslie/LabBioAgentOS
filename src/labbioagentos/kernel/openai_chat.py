@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from time import monotonic
 from typing import Any, Protocol
@@ -17,11 +18,14 @@ from .contracts import (
     FinishReason,
     ModelRequest,
     ModelTurn,
+    MAX_TOOL_ARGUMENT_CHARS,
+    MAX_TOOL_IDENTIFIER_CHARS,
     ProviderBinding,
     ProviderRetry,
     PublicMessage,
     TokenUsage,
     ToolCall,
+    ToolCallCapacityIssue,
     provider_reference,
 )
 from .continuation import PrivateContinuationStore
@@ -30,6 +34,7 @@ from .errors import (
     ProviderBindingMismatchError,
     ProviderProtocolError,
     ProviderTransportError,
+    ToolCallCapacityError,
     unsupported_type_error,
 )
 from .http_stream import (
@@ -43,6 +48,9 @@ from .http_stream import (
     strict_json_loads,
 )
 from .schema_projection import schema_instruction
+
+
+MAX_PRIVATE_REASONING_CHARACTERS = 256_000
 
 
 def _failure_usage(raw) -> TokenUsage | None:
@@ -381,6 +389,7 @@ class OpenAICompatibleChatProvider:
         retries: tuple[ProviderRetry, ...] = (),
     ) -> ModelTurn:
         component = "choices"
+        provider_finish_reason = None
         try:
             choices = response["choices"]
             if not isinstance(choices, list) or len(choices) != 1:
@@ -399,12 +408,18 @@ class OpenAICompatibleChatProvider:
             if content == "" and message.get("tool_calls"):
                 content = None
             component = "message.tool_calls"
-            calls = self._tool_calls(message.get("tool_calls", ()))
+            capacity_issue = None
+            try:
+                calls = self._tool_calls(message.get("tool_calls", ()))
+            except ToolCallCapacityError as exc:
+                # Validate the rest of the complete response before declaring
+                # it eligible for a narrow, zero-dispatch capacity correction.
+                calls, capacity_issue = (), exc.issue
             component = "message.reasoning_content"
             private_reasoning = message.get("reasoning_content")
             if private_reasoning is not None and (
                 not isinstance(private_reasoning, str)
-                or len(private_reasoning) > 64_000
+                or len(private_reasoning) > MAX_PRIVATE_REASONING_CHARACTERS
             ):
                 raise ValueError("Unsupported private reasoning field")
             component = "message.refusal"
@@ -412,10 +427,15 @@ class OpenAICompatibleChatProvider:
             if refusal is not None and not isinstance(refusal, str):
                 raise ValueError("Unsupported provider refusal")
             finish = self._finish_reason(choice.get("finish_reason"))
+            if isinstance(choice.get("finish_reason"), str):
+                provider_finish_reason = finish
+            if content == "" and finish is FinishReason.LENGTH:
+                content = None  # A completed limit response is not a malformed public string.
             if refusal or finish is FinishReason.CONTENT_FILTER:
                 # A refusal or a provider filter is kept only as its finish
                 # reason; no output of the turn enters the history.
                 content, calls, finish = None, (), FinishReason.CONTENT_FILTER
+                capacity_issue = None  # Refusal/filter semantics take priority over repair.
             component = "usage"
             usage = self._usage(response.get("usage"))
             component = "id"
@@ -432,6 +452,13 @@ class OpenAICompatibleChatProvider:
                 private_reasoning_present=private_reasoning is not None,
                 transport_retries=retries,
             )
+            if capacity_issue is not None:
+                field = {"ARGUMENTS_JSON": "arguments_json", "CALL_ID": "call_id",
+                         "TOOL_NAME": "name"}[capacity_issue.field]
+                raise ProviderProtocolError(validation_type="string_too_long",
+                    validation_fields=("message.tool_calls", field), usage=usage,
+                    provider_finish_reason=provider_finish_reason,
+                    tool_call_capacity=capacity_issue)
             if private_reasoning is not None and calls:
                 self._private_reasoning.put(
                     request.kernel_run_id,
@@ -447,6 +474,7 @@ class OpenAICompatibleChatProvider:
                 validation_fields=(component, *(str(item) for item in issues[0]["loc"]))
                 if issues and component == "model_turn" else (component,),
                 usage=_failure_usage(response.get("usage")),
+                provider_finish_reason=provider_finish_reason,
             ) from None
 
     @staticmethod
@@ -455,8 +483,8 @@ class OpenAICompatibleChatProvider:
             return ()
         if not isinstance(raw, (list, tuple)):
             raise ValueError("Tool calls must be a list")
-        calls = []
-        for item in raw:
+        calls, identifiers, capacities = [], [], []
+        for index, item in enumerate(raw):
             if not isinstance(item, dict):
                 raise ValueError("Unsupported tool call")
             if item.get("type", "function") != "function":
@@ -464,13 +492,36 @@ class OpenAICompatibleChatProvider:
             function = item.get("function")
             if not isinstance(function, dict):
                 raise ValueError("Missing tool function")
-            calls.append(
-                ToolCall(
+            try:
+                call = ToolCall(
                     call_id=item.get("id"),
                     name=function.get("name"),
                     arguments_json=function.get("arguments"),
                 )
-            )
+            except ValidationError as exc:
+                issues = exc.errors(include_input=False, include_context=False, include_url=False)
+                fields = {"arguments_json": ("ARGUMENTS_JSON", function.get("arguments"), MAX_TOOL_ARGUMENT_CHARS),
+                    "call_id": ("CALL_ID", item.get("id"), MAX_TOOL_IDENTIFIER_CHARS),
+                    "name": ("TOOL_NAME", function.get("name"), MAX_TOOL_IDENTIFIER_CHARS)}
+                if index >= 64 or not issues or any(error["type"] != "string_too_long"
+                        or error["loc"] not in {(name,) for name in fields} for error in issues):
+                    raise
+                pattern = ToolCall.model_json_schema()["properties"]["call_id"]["pattern"]
+                if any(not isinstance(value, str) or re.fullmatch(pattern, value.strip()) is None
+                        for value in (item.get("id"), function.get("name"))):
+                    raise  # A length issue must not mask an invalid identifier.
+                for error in issues:
+                    field, value, limit = fields[error["loc"][0]]
+                    capacities.append(ToolCallCapacityIssue(field=field, call_index=index,
+                        actual_chars=len(value if field == "ARGUMENTS_JSON" else value.strip()),
+                        limit_chars=limit))
+            else:
+                calls.append(call)
+            identifiers.append(item["id"].strip())
+        if capacities:
+            if len(raw) > 64 or len(set(identifiers)) != len(identifiers):
+                raise ValueError("Invalid tool batch shape")
+            raise ToolCallCapacityError(capacities[0])
         return tuple(calls)
 
     @staticmethod

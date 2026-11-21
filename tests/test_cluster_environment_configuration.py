@@ -98,7 +98,7 @@ def test_cluster_builds_are_wired_to_jobs_that_share_the_run_ledger(tmp_path, pl
 
 
 def test_docker_environment_builds_are_unchanged(tmp_path):
-    settings = load_settings(_write(tmp_path, backend="", apptainer=False,
+    settings = load_settings(_write(tmp_path, backend='backend = "docker"', apptainer=False,
                                     extra='[environment]\nroot = "envs"\n'))
 
     application = build_application(settings, tmp_path / "run", load_provider=False)

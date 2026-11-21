@@ -6,7 +6,10 @@ Run on a node with Apptainer (not through the scheduler, which is phase 3):
         python -m pytest tests/integration/test_apptainer_real.py
 
 Optional: LABBIO_APPTAINER_BINARY (default "apptainer") and
-LABBIO_APPTAINER_RESOURCE_ENFORCEMENT ("scheduler" or "apptainer-cgroups").
+LABBIO_APPTAINER_RESOURCE_ENFORCEMENT ("scheduler", "apptainer-cgroups", or
+"systemd-affinity"). The local affinity mode verifies a systemd user resource
+boundary before running any Apptainer capability probe or execution. Historical
+"scheduler" mode is a site prerequisite, not evidence of local resource limits.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from labbioagentos import (
     ContainerExecutor,
     ExecutionPlan,
     ExecutionPolicy,
+    ExecutionReceipt,
     ExecutionRuntime,
     ExecutionStatus,
     ExecutionWorkspaceManager,
@@ -40,6 +44,8 @@ from labbioagentos import (
 )
 from labbioagentos.execution import ApptainerCommandBuilder, SifStore, SubprocessApptainerRunner
 from labbioagentos.execution.apptainer_probe import probe_capabilities
+from labbioagentos.execution.job_ledger import JobLedger, JobLedgerState
+from labbioagentos.execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("LABBIO_RUN_APPTAINER") != "1" or not sys.platform.startswith("linux"),
@@ -49,6 +55,10 @@ pytestmark = pytest.mark.skipif(
 SENTINEL = "PRIVATE_C13_APPTAINER_SENTINEL_5381"
 BINARY = os.environ.get("LABBIO_APPTAINER_BINARY", "apptainer")
 ENFORCEMENT = os.environ.get("LABBIO_APPTAINER_RESOURCE_ENFORCEMENT", "scheduler")
+RESOURCES = (
+    RequestedResources(cpus=4, memory_mb=4096, pids_limit=128, timeout_seconds=120)
+    if ENFORCEMENT == "systemd-affinity" else RequestedResources(timeout_seconds=120)
+)
 
 
 @pytest.fixture
@@ -57,6 +67,15 @@ def backend(tmp_path):
     sif_store = SifStore(tmp_path / "sif")
     reference = sif_store.register(source)
     runner = SubprocessApptainerRunner(max_output_file_bytes=16_777_216)
+    launcher = ledger = None
+    local_resources = None
+    if ENFORCEMENT == "systemd-affinity":
+        launcher = SystemdLocalLauncher(runner, resource_enforcement=ENFORCEMENT)
+        local_resources = launcher.probe()
+        assert local_resources["status"] == "OK", local_resources
+        runner = SystemdProbeRunner(launcher, RESOURCES)
+        ledger = JobLedger(tmp_path / "jobs.sqlite")
+        assert isinstance(runner, SystemdProbeRunner), "Local probes require the configured resource owner"
     (tmp_path / "probe").mkdir()
     capabilities = probe_capabilities(
         binary=BINARY, sif_path=sif_store.path_for(reference), executable="python",
@@ -81,30 +100,48 @@ def backend(tmp_path):
             resource_enforcement=ENFORCEMENT, apptainer_binary=BINARY,
         ),
         trace_recorder=recorder,
-        isolation_record=capabilities.trace_record(resource_enforcement=ENFORCEMENT),
+        isolation_record={
+            **capabilities.trace_record(resource_enforcement=ENFORCEMENT),
+            **({"local_resources": local_resources} if launcher is not None else {}),
+        },
+        launcher=launcher,
+        job_ledger=ledger,
     )
-    return executor, sink, tmp_path
+    try:
+        yield executor, sink, tmp_path
+    finally:
+        if ledger is not None:
+            ledger.close()
 
 
 def _plan(script: str) -> ExecutionPlan:
     return ExecutionPlan(
         run_id=uuid4(), stage_id=WorkflowStage.EXECUTE, image_key="python-real",
-        script_content=script, resources=RequestedResources(timeout_seconds=120),
+        script_content=script, resources=RESOURCES,
     )
 
 
-def test_minimal_mock_task_runs_through_container_executor(backend):
+@pytest.mark.asyncio
+async def test_minimal_mock_task_runs_through_container_executor(backend):
     executor, sink, _ = backend
 
-    result = executor.execute(_plan("print('c13 apptainer mock task')\n"))
+    result = await executor.execute_async(_plan("print('c13 apptainer mock task')\n"))
 
     assert result.status is ExecutionStatus.SUCCEEDED and result.exit_code == 0
     assert Path(result.stdout_ref.storage_locator).read_bytes() == b"c13 apptainer mock task\n"
     planned = next(event for event in sink.read() if event.event_type is TraceEventType.EXECUTION_PLANNED)
     assert planned.payload["isolation"]["backend"] == "apptainer"
+    assert result.execution_provenance.backend == "apptainer"
+    assert result.execution_provenance.image_digest == result.resolved_image
+    assert ExecutionReceipt.from_result(result).execution_provenance == result.execution_provenance
+    if ENFORCEMENT == "systemd-affinity":
+        entry = executor.job_ledger.get(result.execution_id)
+        assert entry.launcher == "local-systemd" and entry.state is JobLedgerState.COLLECTED
+        assert planned.payload["isolation"]["local_resources"]["status"] == "OK"
 
 
-def test_sandbox_denies_network_secrets_and_writes_outside_outputs(backend, monkeypatch):
+@pytest.mark.asyncio
+async def test_sandbox_denies_network_secrets_and_writes_outside_outputs(backend, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", SENTINEL)
     executor, _, tmp_path = backend
     script = (
@@ -125,7 +162,7 @@ def test_sandbox_denies_network_secrets_and_writes_outside_outputs(backend, monk
         "print(json.dumps(report))\n"
     )
 
-    result = executor.execute(_plan(script))
+    result = await executor.execute_async(_plan(script))
 
     assert result.status is ExecutionStatus.SUCCEEDED
     report = json.loads(Path(result.stdout_ref.storage_locator).read_text())

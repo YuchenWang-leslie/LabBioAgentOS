@@ -20,6 +20,7 @@ from labbioagentos.execution.apptainer_build import (
     DownloadRunner,
     attempt_lease,
     classify_download,
+    download_check_argv,
     prepare_cache_dir,
     remove_stale_downloads,
     render_download_program,
@@ -130,6 +131,7 @@ def test_resolution_keeps_base_packages_and_downloads_exactly_the_result(downloa
         index = call.index(CONTAIN_ARGUMENTS[0])
         assert tuple(call[index:index + len(CONTAIN_ARGUMENTS)]) == CONTAIN_ARGUMENTS
         assert "--network" not in call and "--net" not in call  # This step alone has network.
+        assert "/etc/resolv.conf:/etc/resolv.conf:ro" in call
     assert (paths["download"] / "pins.txt").read_text() == "Example_Pkg==2.0\nfastlib==1.1\n"
     wheels = verify_download(paths["download"], machine="x86_64")
     assert [(wheel.name, wheel.version) for wheel in wheels] == [("example-pkg", "2.0"), ("fastlib", "1.1")]
@@ -163,6 +165,10 @@ def test_a_report_that_could_inject_pip_options_is_refused_before_download(downl
      "PIP_NO_MATCH"),
     ("install", "ERROR: Could not install packages due to an OSError: ProxyError", DownloadExit.RESOLVE_FAILED,
      "NETWORK_FAILURE"),
+    ("install", "WARNING: Retrying: Temporary failure in name resolution\n"
+     "ERROR: No matching distribution found for example-pkg>=9", DownloadExit.RESOLVE_FAILED, "NETWORK_FAILURE"),
+    ("install", "WARNING: Retrying: CERTIFICATE_VERIFY_FAILED\n"
+     "ERROR: No matching distribution found for example-pkg>=9", DownloadExit.RESOLVE_FAILED, "TLS_FAILURE"),
     ("download", "SSLError: certificate verify failed", DownloadExit.DOWNLOAD_FAILED, "TLS_FAILURE"),
     ("download", "something opaque", DownloadExit.DOWNLOAD_FAILED, "BUILD_FAILED"),
 ])
@@ -176,6 +182,16 @@ def test_failures_map_to_the_docker_builder_codes(download, fail, output, status
     assert failure == code
     if code == "PIP_NO_MATCH":
         assert diagnostics == ({"code": "PIP_NO_MATCH", "requirement": "example-pkg>=9"},)
+    if code in {"NETWORK_FAILURE", "TLS_FAILURE"}:
+        assert diagnostics == ({"code": code},)
+
+
+def test_index_check_uses_the_download_nodes_resolver_only_for_networked_steps(tmp_path):
+    command = download_check_argv(apptainer_binary=tmp_path / "bin", base_sif=tmp_path / "base.sif",
+                                  work_dir=tmp_path)
+    bind = "/etc/resolv.conf:/etc/resolv.conf:ro"
+    assert ("--bind", bind) in zip(command, command[1:])
+    assert bind not in ISOLATION_ARGUMENTS and "--net" in ISOLATION_ARGUMENTS
 
 
 def test_a_missing_bind_source_stops_the_download_as_apptainer_does(download, tmp_path):

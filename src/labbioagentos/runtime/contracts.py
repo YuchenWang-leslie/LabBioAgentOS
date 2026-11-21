@@ -17,12 +17,13 @@ from pydantic import (
     StringConstraints,
     create_model,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
 
 from labbioagentos.artifacts import (
-    ArtifactConsumer, ArtifactExposureClass, ArtifactQuery, ArtifactRef,
+    ArtifactConsumer, ArtifactExposureClass, ArtifactOriginKind, ArtifactQuery, ArtifactRef,
     ArtifactViewType, ExposurePolicy,
 )
 from labbioagentos.artifacts.models import (
@@ -52,6 +53,7 @@ from labbioagentos.execution.models import (
 from labbioagentos.execution.registration import ArtifactRegistrationPolicy
 from labbioagentos.execution.process_streams import MAX_CAPTURED_STREAM_BYTES
 from labbioagentos.model_safety import validate_model_visible_json
+from labbioagentos.kernel.contracts import DelegationResult
 
 
 ShortText = Annotated[
@@ -75,7 +77,7 @@ SafeIdentifier = Annotated[
 MAX_CAPABILITY_EVIDENCE_ITEMS = 64
 MAX_CAPABILITY_COMPLETION_CHARS = 64_000
 CapabilityTerminationReason = Literal[
-    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "PROVIDER_USAGE_LIMIT",
+    "MODEL_RETURNED", "PROVIDER_TURN_LIMIT", "COMPLETION_NO_PROGRESS", "PROVIDER_USAGE_LIMIT",
     "PROVIDER_TRANSPORT_STOP",
     "PROVIDER_PROTOCOL_STOP",
     "PROVIDER_DEADLINE_STOP",
@@ -185,6 +187,60 @@ class ExecutionAuditWireType(StrEnum):
     OTHER = "OTHER"
 
 
+class ArtifactAggregateRequestAudit(BaseModel):
+    """Lossy safe selectors, never arbitrary match scalars or request identity."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    artifact_id: UUID | Literal["INVALID_IDENTIFIER"]
+    operation: Literal["SUM", "COUNT", "INVALID_VALUE"]
+    field: StrictStr | None = Field(default=None, max_length=128)
+    field_type: ExecutionAuditWireType
+    match_field: StrictStr | None = Field(default=None, max_length=128)
+    match_field_type: ExecutionAuditWireType
+    match_value_type: ExecutionAuditWireType
+    selector_resolution: Literal["NOT_AUTHORIZED", "AUTHORIZED_SOURCE"] = "NOT_AUTHORIZED"
+    exact_request_identity: Literal[False] = False
+
+    @field_validator("field", "match_field")
+    @classmethod
+    def safe_resolved_field(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_model_visible_json({value: None}, reject_absolute_paths=True)
+            validate_model_visible_json(value, reject_absolute_paths=True)
+        return value
+
+    @model_validator(mode="after")
+    def unresolved_selectors_are_not_names(self) -> "ArtifactAggregateRequestAudit":
+        if self.selector_resolution == "NOT_AUTHORIZED" and (
+            self.field is not None or self.match_field is not None
+        ):
+            raise ValueError("Only authorized source resolution may retain selector names")
+        return self
+
+
+class ArtifactAggregateValidationDetails(BaseModel):
+    """Value-free rejection counts over an authorized SUM selection."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    argument_path: Literal["field"] = "field"
+    source_record_count: int = Field(ge=0)
+    matched_count: int = Field(ge=0)
+    numeric_count: int = Field(ge=0)
+    rejected_type_counts: dict[Literal[
+        "MISSING", "NULL", "STRING", "BOOLEAN", "ARRAY", "OBJECT", "NON_FINITE_NUMBER",
+    ], int] = Field(min_length=1, max_length=7)
+
+    @model_validator(mode="after")
+    def counts_match_selection(self) -> "ArtifactAggregateValidationDetails":
+        if (self.matched_count > self.source_record_count
+                or any(value <= 0 for value in self.rejected_type_counts.values())
+                or self.numeric_count + sum(self.rejected_type_counts.values()) != self.matched_count):
+            raise ValueError("Aggregate rejection counts must cover exactly the matched selection")
+        return self
+
+
 class ExecutionSubmitValidationStatus(StrEnum):
     """Canonical draft-validation outcome without rejected values or messages."""
 
@@ -199,6 +255,7 @@ class ExecutionDraftField(StrEnum):
     RUNTIME = "runtime"
     IMAGE_KEY = "image_key"
     SCRIPT_CONTENT = "script_content"
+    SOURCE_REVISION = "source_revision"
     INPUT_ARTIFACT_IDS = "input_artifact_ids"
     PARAMETERS = "parameters"
     REQUESTED_OUTPUTS = "requested_outputs"
@@ -213,7 +270,7 @@ class ExecutionSubmitRequestAudit(BaseModel):
 
     wire_type: ExecutionAuditWireType
     known_top_level_field_presence: tuple[ExecutionDraftField, ...] = Field(
-        default=(), max_length=8
+        default=(), max_length=len(ExecutionDraftField)
     )
     input_artifact_count: int | None = Field(default=None, ge=0)
     requested_output_count: int | None = Field(default=None, ge=0)
@@ -294,6 +351,14 @@ class RuntimeExecutionCapabilityView(BaseModel):
         ),
     )
     runtime: ExecutionRuntime
+    backend: Literal["apptainer", "docker"] | None = Field(default=None,
+        description="Host-selected container adapter; null means not declared in this snapshot.")
+    placement: Literal["local", "scheduler"] | None = Field(default=None,
+        description="Host job placement, not the program's in-container environment or a preflight result.")
+    program_execution: Literal["HOST_MANAGED_CONTAINER"] | None = Field(default=None,
+        description=("The host launches the selected container and runs the submitted program inside it. "
+                     "The program need not launch a container CLI; its PATH is not a host backend probe. "
+                     "Null means not declared in an older snapshot."))
     image_key: StrictStr = Field(
         min_length=1, max_length=128,
         description=(
@@ -309,7 +374,31 @@ class RuntimeExecutionCapabilityView(BaseModel):
         description="Defaults for omitted execution_submit resource fields; not resource_limits.")
     resource_limits: RequestedResources | None = Field(default=None,
         description="Host-enforced maximum per resource, not automatically allocated. Null is an older snapshot.")
+    cpu_limit_mode: Literal["locked-affinity"] | None = Field(
+        default=None,
+        description=(
+            "Configured locked-affinity requires a positive integer CPU count: "
+            "the whole process tree shares that many locked logical cores, not a "
+            "fractional CPU bandwidth quota. Null means not declared by this snapshot."
+        ),
+    )
     network_required: bool
+    include_error_context: bool | None = Field(
+        default=None,
+        description=(
+            "Host authorization for bounded, best-effort-redacted process error text "
+            "in receipts. False withholds that text, not safe error categories or "
+            "source locations. Null means an older snapshot did not declare it."
+        ),
+    )
+    allow_generated_file_read: bool | None = Field(
+        default=None,
+        description=(
+            "Host exposure policy permits reading generated files, including RAW "
+            "logs, subject to current file_read capability and scope checks. Not "
+            "permission to read original RAW inputs. Null means not declared."
+        ),
+    )
     max_captured_stream_bytes: int | None = Field(
         default=None, ge=1,
         description=(
@@ -367,8 +456,10 @@ class RuntimeExecutionCapabilityView(BaseModel):
         default=(),
         max_length=128,
         description=(
-            "Run input Artifact UUIDs eligible for explicit selection in "
-            "execution_submit.input_artifact_ids; no input is mounted implicitly."
+            "Initial run input Artifact UUIDs eligible for explicit selection in "
+            "execution_submit.input_artifact_ids. Keys from same-run receipt."
+            "registered_outputs may also be selected across invocations, subject "
+            "to host re-authorization; no input is mounted implicitly."
         ),
     )
     approved_output_contracts: tuple[RuntimeApprovedOutputContractView, ...] = Field(
@@ -388,6 +479,10 @@ class RuntimeExecutionCapabilityView(BaseModel):
         image_registry: ApprovedImageRegistry,
         execution_policy: ExecutionPolicy,
         registration_policy: ArtifactRegistrationPolicy,
+        cpu_limit_mode: Literal["locked-affinity"] | None = None,
+        allow_generated_file_read: bool = False,
+        backend: Literal["apptainer", "docker"] | None = None,
+        placement: Literal["local", "scheduler"] | None = None,
     ) -> "RuntimeExecutionCapabilityView":
         """Project only trusted model-relevant configuration, never host identity."""
 
@@ -404,10 +499,16 @@ class RuntimeExecutionCapabilityView(BaseModel):
         )
         return cls(
             runtime=runtime,
+            backend=backend,
+            placement=placement,
+            program_execution="HOST_MANAGED_CONTAINER",
             image_key=image_key,
             resources=resources,
             resource_limits=execution_policy.resource_limits,
+            cpu_limit_mode=cpu_limit_mode,
             network_required=network_required,
+            include_error_context=execution_policy.include_error_context,
+            allow_generated_file_read=allow_generated_file_read,
             max_output_file_bytes=execution_policy.max_output_file_bytes,
             max_captured_stream_bytes=MAX_CAPTURED_STREAM_BYTES,
             max_collected_output_bytes=execution_policy.max_collected_output_bytes,
@@ -453,6 +554,11 @@ class RuntimeInputArtifactUsage(BaseModel):
     producer_run_id: UUID | None = None
     producer_execution_id: UUID | None = None
     source: Literal["RUN_INPUT", "RUN_CONTEXT"]
+    origin_kind: ArtifactOriginKind | None = Field(default=None,
+        description="Registration origin, separate from RUN_INPUT/RUN_CONTEXT membership and remote views. "
+        "Imported registered outputs can be selected for local delivery; scope, access, original-program "
+        "provenance and integrity checks still apply. This is not a delivery authorization or read receipt. "
+        "Null means unavailable in legacy context.")
     exposure_class: ArtifactExposureClass
     remote_view_types: tuple[ArtifactViewType, ...] = Field(
         default=(), max_length=4,
@@ -490,6 +596,7 @@ class RuntimeInputArtifactUsage(BaseModel):
             producer_run_id=ref.run_id,
             producer_execution_id=producer_execution_id,
             source=source,
+            origin_kind=ref.origin_kind,
             exposure_class=ref.exposure_class,
             remote_view_types=tuple(
                 view for view in ArtifactViewType
@@ -593,8 +700,26 @@ class ReportEvidenceReference(BaseModel):
     """Model-selected source and observations; scope is never model-authored."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    artifact_id: UUID = Field(description=(
+        "Copy artifact_read_receipt.artifact_id from the corresponding original "
+        "governed read response; not an execution_id or another source identity."
+    ))
+    observation_ids: list[UUID] = Field(min_length=1, max_length=64, description=(
+        "Copy artifact_read_receipt.observation_id from authentic read responses "
+        "fully delivered to this invocation. All must bind the same Artifact as "
+        "artifact_id; group its distinct observations in one citation item per "
+        "Artifact. An execution_inspect response without an Artifact read receipt "
+        "is not a source-bound citation."
+    ))
+
+
+class ReportReferenceSelection(BaseModel):
+    """Original selected UUID identities, not request prose or raw wire bytes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    index: int = Field(ge=0, le=63)
     artifact_id: UUID
-    observation_ids: list[UUID] = Field(min_length=1, max_length=64)
+    observation_ids: tuple[UUID, ...] = Field(min_length=1, max_length=64)
 
 
 class ArtifactReadReceipt(BaseModel):
@@ -630,6 +755,10 @@ class ReportEvidenceItem(BaseModel):
         "REPORT_OBSERVATION_SOURCE_CHANGED",
     ]
     citation_mode: Literal["LEGACY_COMPLETE_READ", "OBSERVED_SCOPE"] = "LEGACY_COMPLETE_READ"
+    failed_observation_index: int | None = Field(
+        default=None, ge=0, le=63,
+        description="First failing submitted observation_ids index; absent for Artifact-level or unlocated failures.",
+    )
     read_receipts: tuple[ArtifactReadReceipt, ...] = Field(default=(), max_length=64)
     reference_kind: StrictStr | None = Field(default=None, max_length=64)
     record_count: int | None = Field(default=None, ge=0)
@@ -643,12 +772,20 @@ class ReportEvidenceItem(BaseModel):
         ),
     )
 
+    @model_serializer(mode="wrap")
+    def omit_unlocated_observation(self, handler):
+        data = handler(self)
+        if data.get("failed_observation_index") is None:
+            data.pop("failed_observation_index", None)
+        return data
+
 
 class ReportEvidenceCheck(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     authority: Literal["CONTROL_STATE"] = "CONTROL_STATE"
     ready: bool
     scientific_validation: Literal["NOT_PERFORMED"] = "NOT_PERFORMED"
+    receipt_details: Literal["INCLUDED", "OMITTED_FROM_FAILURE_DIAGNOSTICS"] = "INCLUDED"
     items: tuple[ReportEvidenceItem, ...] = Field(default=(), max_length=256)
 
 
@@ -695,6 +832,7 @@ class CapabilityErrorDetails(BaseModel):
     revision_validation: RevisionValidationDetails | None = None
     report_evidence: ReportEvidenceCheck | None = None
     repeated_request: RepeatedRequestDetails | None = None
+    aggregate_validation: ArtifactAggregateValidationDetails | None = None
 
 
 class CapabilityEvidenceItem(BaseModel):
@@ -716,8 +854,13 @@ class CapabilityEvidenceItem(BaseModel):
     execution_review: ExecutionReview | None = None
     correlation_id: UUID | None = None
     artifact_query_request: ArtifactQueryRequestAudit | None = None
+    artifact_aggregate_request: ArtifactAggregateRequestAudit | None = None
     skill_search_request: SkillSearchRequestAudit | None = None
     execution_submit_request: ExecutionSubmitRequestAudit | None = None
+    report_reference_selections: tuple[ReportReferenceSelection, ...] | None = Field(
+        default=None, max_length=64,
+        description="Original scoped identities; null means not audited, not an empty selection.",
+    )
     artifact_read_receipt: ArtifactReadReceipt | None = None
 
     @field_validator("safe_result")
@@ -751,6 +894,8 @@ class CapabilityEvidenceItem(BaseModel):
             raise ValueError(
                 "Skill search request audit is valid only for skill_search"
             )
+        if self.artifact_aggregate_request is not None and self.capability_name != "artifact_aggregate":
+            raise ValueError("Artifact aggregate request audit is valid only for artifact_aggregate")
         if (
             self.execution_submit_request is not None
             and self.capability_name != "execution_submit"
@@ -758,6 +903,11 @@ class CapabilityEvidenceItem(BaseModel):
             raise ValueError(
                 "Execution submit request audit is valid only for execution_submit"
             )
+        if self.report_reference_selections is not None:
+            if self.capability_name not in {"report_check", "report_submit"}:
+                raise ValueError("Report reference selections belong only to report tools")
+            if sum(len(item.observation_ids) for item in self.report_reference_selections) > 64:
+                raise ValueError("At most 64 selected report observations may be audited")
         return self
 
 
@@ -787,6 +937,15 @@ class HandoffObservation(BaseModel):
         return self
 
 
+class AgentStageDecision(BaseModel):
+    """An Agent-owned proposal bound by the host to its input context."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    next_action: NextActionProposal
+    context_sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+    authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+
+
 class PreparedHandoff(BaseModel):
     """Agent-selected exact observations, not a host-authored scientific summary."""
 
@@ -797,6 +956,44 @@ class PreparedHandoff(BaseModel):
     )
     summary_authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
     observations: tuple[HandoffObservation, ...] = Field(min_length=1, max_length=64)
+    stage_decision: AgentStageDecision | None = None
+
+
+class RuntimeHandoffObservationReference(BaseModel):
+    """Host-bound identity of an exact selected public response, not read credit."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    observation_id: UUID
+    sha256: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RuntimeToolRejection(BaseModel):
+    """Value-free kernel batch rejections, not attempted scientific executions."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authority: Literal[InformationAuthority.CONTROL_STATE] = InformationAuthority.CONTROL_STATE
+    execution_started: Literal[False] = False
+    invocation_id: UUID | None = None
+    tool_name: SafeIdentifier | None = None
+    reason_code: SafeIdentifier
+    validation_type: SafeIdentifier | None = None
+    validation_fields: tuple[SafeIdentifier, ...] = Field(default=(), max_length=16)
+    event_ids: tuple[UUID, ...] = Field(min_length=1, max_length=256)
+
+
+class RuntimeHandoffContext(BaseModel):
+    """Original Agent intent and source selection, independent of finalizer prose."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    run_id: UUID
+    stage_id: WorkflowStage
+    source_invocation_id: UUID
+    summary: StrictStr = Field(min_length=1, max_length=8_000)
+    limitations: tuple[Annotated[StrictStr, Field(max_length=2_000)], ...] = Field(default=(), max_length=16)
+    summary_authority: Literal[InformationAuthority.MODEL_CONTEXT] = InformationAuthority.MODEL_CONTEXT
+    next_action: NextActionProposal | None = None
+    termination_reason: StrictStr = Field(min_length=1, max_length=128)
+    observations: tuple[RuntimeHandoffObservationReference, ...] = Field(min_length=1, max_length=64)
 
 
 class CapabilityEvidenceBundle(BaseModel):
@@ -813,6 +1010,7 @@ class CapabilityEvidenceBundle(BaseModel):
         default=(), max_length=MAX_CAPABILITY_EVIDENCE_ITEMS
     )
     delegation_trace_event_ids: tuple[UUID, ...] = Field(default=(), max_length=128)
+    delegations: tuple[DelegationResult, ...] = Field(default=(), max_length=64)
     # A retained provider handoff is not a stage-summary field. Preserve it
     # without truncation under its own transport bound and MODEL_CONTEXT label.
     explicit_completion: Annotated[
@@ -828,6 +1026,11 @@ class CapabilityEvidenceBundle(BaseModel):
     provider_turn_count: int = Field(default=0, ge=0)
     provider_turn_limit: int | None = Field(default=None, ge=1)
     prepared_handoff: PreparedHandoff | None = None
+    decision_context_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    tool_rejections: tuple[RuntimeToolRejection, ...] = Field(default=(), max_length=256)
+    # Host-only delivery attestations; no model tool accepts this field.
+    validated_artifact_reads: tuple[ArtifactReadReceipt, ...] = Field(
+        default=(), max_length=MAX_CAPABILITY_EVIDENCE_ITEMS + 64)
 
 
 class RuntimeReferenceKind(StrEnum):
@@ -1010,6 +1213,15 @@ class RuntimeEvidenceGroundingControl(BaseModel):
         "or numeric claim from prior context unless current authoritative evidence "
         "supports it."
     )
+    operational_fact_rule: Literal[
+        "For operational facts, use exact host diagnostics, permissions and status "
+        "marked CONTROL_STATE. This establishes host operations, not scientific "
+        "validity, and does not promote MODEL_CONTEXT notes or other model-authored content."
+    ] = (
+        "For operational facts, use exact host diagnostics, permissions and status "
+        "marked CONTROL_STATE. This establishes host operations, not scientific "
+        "validity, and does not promote MODEL_CONTEXT notes or other model-authored content."
+    )
     artifact_scope_rule: Literal[
         "Artifact views establish the registered content of that Artifact only. "
         "An execution-produced table may itself contain model-authored assertions. "
@@ -1149,6 +1361,26 @@ class RuntimePriorResultView(BaseModel):
         default=(), max_length=128
     )
     model_next_action: NextActionProposal | None = None
+    handoff_context: RuntimeHandoffContext | None = None
+    tool_rejections: tuple[RuntimeToolRejection, ...] = Field(default=(), max_length=256)
+    delegations: tuple[DelegationResult, ...] = Field(default=(), max_length=64)
+
+    @model_serializer(mode="wrap")
+    def omit_absent_handoff(self, handler):
+        value = handler(self)
+        if self.handoff_context is None:
+            value.pop("handoff_context", None)
+        if not self.tool_rejections:
+            value.pop("tool_rejections", None)
+        if not self.delegations:
+            value.pop("delegations", None)
+        return value
+
+    @model_validator(mode="after")
+    def handoff_stage_matches(self):
+        if self.handoff_context is not None and self.handoff_context.stage_id is not self.stage_id:
+            raise ValueError("Prior handoff stage differs from its result")
+        return self
 
     @field_validator("model_body")
     @classmethod
@@ -1168,6 +1400,9 @@ class RuntimePriorResultView(BaseModel):
             model_body=result.body.model_dump(mode="json"),
             model_references=result.references,
             model_next_action=result.next_action,
+            handoff_context=result.handoff_context,
+            tool_rejections=result.tool_rejections,
+            delegations=result.delegations,
         )
 
 
@@ -1440,6 +1675,21 @@ class RuntimeStageResult(RuntimeStageProposal):
     """Persisted envelope after validation of the model's proposal."""
 
     result_id: UUID = Field(default_factory=uuid4)
+    # Host-only field: the provider response format is RuntimeStageProposal.
+    handoff_context: RuntimeHandoffContext | None = None
+    tool_rejections: tuple[RuntimeToolRejection, ...] = Field(default=(), max_length=256)
+    delegations: tuple[DelegationResult, ...] = Field(default=(), max_length=64)
+
+    @model_serializer(mode="wrap")
+    def omit_absent_handoff(self, handler):
+        value = handler(self)
+        if self.handoff_context is None:
+            value.pop("handoff_context", None)
+        if not self.tool_rejections:
+            value.pop("tool_rejections", None)
+        if not self.delegations:
+            value.pop("delegations", None)
+        return value
 
 
 _STAGE_BODY_TYPES = {

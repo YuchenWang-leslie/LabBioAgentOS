@@ -1,6 +1,7 @@
 """Mechanical arithmetic over an already-authorized complete record table."""
 
 import math
+from collections import Counter
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,9 +20,10 @@ class ArtifactArithmeticError(ValueError):
         "AGGREGATE_NON_NUMERIC_VALUE": "Every matched SUM value must be a finite number; missing, null, string and boolean values are not coerced or skipped.",
     }
 
-    def __init__(self, code):
+    def __init__(self, code, *, value_diagnostics=None):
         self.code = code
         self.safe_message = self.MESSAGES[code]
+        self.value_diagnostics = value_diagnostics
         super().__init__(self.safe_message)
 
 
@@ -60,8 +62,29 @@ def aggregate_records(representation: ArtifactRepresentation, query: ArtifactAgg
         value = len(matched)
     else:
         values = [row.get(query.field) for row in matched]
-        if any(type(v) not in (int, float) or not math.isfinite(v) for v in values):
-            raise ArtifactArithmeticError("AGGREGATE_NON_NUMERIC_VALUE")
+        rejected = Counter()
+        for row in matched:
+            value = row.get(query.field)
+            if query.field not in row:
+                rejected["MISSING"] += 1
+            elif value is None:
+                rejected["NULL"] += 1
+            elif type(value) is bool:
+                rejected["BOOLEAN"] += 1
+            elif type(value) is str:
+                rejected["STRING"] += 1
+            elif type(value) is list:
+                rejected["ARRAY"] += 1
+            elif type(value) is dict:
+                rejected["OBJECT"] += 1
+            elif not math.isfinite(value):
+                rejected["NON_FINITE_NUMBER"] += 1
+        if rejected:
+            raise ArtifactArithmeticError("AGGREGATE_NON_NUMERIC_VALUE", value_diagnostics={
+                "argument_path": "field", "source_record_count": len(records),
+                "matched_count": len(matched), "numeric_count": len(matched) - sum(rejected.values()),
+                "rejected_type_counts": dict(rejected),
+            })
         value = (sum(values) if all(type(v) is int for v in values) else math.fsum(values)) if values else None
         if value is not None and not math.isfinite(value):
             raise ValueError("Aggregate must be finite")

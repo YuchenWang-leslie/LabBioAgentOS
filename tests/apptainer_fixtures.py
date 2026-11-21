@@ -17,6 +17,7 @@ from labbioagentos import (
     RunTraceRecorder,
 )
 from labbioagentos.execution import ApptainerCommandBuilder, SifStore
+from labbioagentos.execution.launchers import LocalLauncher
 
 
 def register_sif(tmp_path, content: bytes = b"synthetic SIF fixture\n"):
@@ -48,7 +49,10 @@ def apptainer_environment(
     traced=False,
     isolation_record=None,
     workspace_root=None,
+    watched_scratch=False,
 ):
+    """watched_scratch: a local launcher test double that claims to poll the scratch directory,
+    as the systemd and scheduler launchers do (C15); without it, Apptainer scratch is refused."""
     sif_store, reference = register_sif(tmp_path)
     sink = InMemoryTraceSink()
     recorder = RunTraceRecorder(sink) if traced else None
@@ -74,8 +78,13 @@ def apptainer_environment(
         command_builder=builder,
         trace_recorder=recorder,
         isolation_record=isolation_record,
+        **({"launcher": _WatchedScratchLauncher(runner)} if watched_scratch else {}),
     )
     return store, executor, sink, sif_store, reference
+
+
+class _WatchedScratchLauncher(LocalLauncher):
+    enforces_scratch_limit = True
 
 
 def bind_fields(argv):

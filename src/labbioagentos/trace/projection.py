@@ -37,6 +37,7 @@ class DelegationProjection(BaseModel):
 
     invocation_id: UUID
     parent_invocation_id: UUID | None = None
+    agent_name: StrictStr | None = None
     caller: StrictStr
     target: StrictStr
     stage_id: WorkflowStage | None = None

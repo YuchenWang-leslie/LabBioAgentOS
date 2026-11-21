@@ -17,7 +17,7 @@ class _BoundHost:
 
     async def invoke(self, capability_name, arguments):
         method = getattr(self.operations, capability_name)
-        return await method(**arguments.model_dump(mode="json"))
+        return await method(**arguments.host_payload())
 
 
 class LocalProvider:

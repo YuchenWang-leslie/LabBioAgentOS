@@ -178,7 +178,7 @@ def test_default_builder_rejects_registered_sif_changed_after_registration(tmp_p
 def test_isolation_record_reaches_trusted_trace_but_not_the_receipt(tmp_path):
     record = {"backend": "apptainer", "resource_enforcement": "scheduler",
               "resource_limits_enforced_by_runtime": False}
-    _, executor, sink, _, _ = apptainer_environment(
+    _, executor, sink, _, digest = apptainer_environment(
         tmp_path, FakeDockerRunner(), traced=True, isolation_record=record,
     )
 
@@ -186,8 +186,11 @@ def test_isolation_record_reaches_trusted_trace_but_not_the_receipt(tmp_path):
 
     planned = [event for event in sink.read() if event.event_type is TraceEventType.EXECUTION_PLANNED]
     assert len(planned) == 1 and planned[0].payload["isolation"] == record
-    receipt = json.dumps(ExecutionReceipt.from_result(result).model_dump(mode="json")).lower()
-    for forbidden in ("apptainer", "sif", "scheduler", "isolation", str(tmp_path).lower()):
+    projected = ExecutionReceipt.from_result(result).model_dump(mode="json")
+    assert projected["execution_provenance"] == {
+        "backend": "apptainer", "image_digest": digest, "network_control_argv": ["--net", "--network", "none"]}
+    receipt = json.dumps(projected).lower()
+    for forbidden in ("sif", "scheduler", "isolation", str(tmp_path).lower()):
         assert forbidden not in receipt
 
 

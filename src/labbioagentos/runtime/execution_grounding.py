@@ -59,6 +59,8 @@ def execution_result_control(
             raise ValueError("Completed execution evidence requires a valid typed receipt") from None
         receipts.append({"capability_invocation_id": str(item.capability_invocation_id),
             "execution_id": str(receipt.execution_id), "status": receipt.status.value,
+            "issue_codes": [code.value for code in receipt.issue_codes],
+            "issue_detail_codes": [code.value for code in receipt.issue_detail_codes],
             "input_artifact_ids": list(map(str, receipt.input_artifact_ids)),
             "output_artifact_ids": list(map(str, receipt.output_artifact_ids))})
     minimum_queryable_output_count = (
@@ -95,6 +97,10 @@ def execution_result_control(
             "of that same receipt's output_artifact_ids. With no current receipt, use "
             "NOT_EXECUTED with null execution_reference and no output references. Execution "
             "identities retain kind EXECUTION, including in issue_references and references. "
+            "Only supplied known_execution_ids may use kind EXECUTION; a capability_invocation_id "
+            "identifies a tool observation, not its execution. Do not interchange them. "
+            "issue_codes and issue_detail_codes are the exact mechanical receipt facts; "
+            "reread that capability observation for diagnostics, not an invented execution ID. "
             "A failed execution remains a valid technical outcome; this does not judge "
             "scientific results. When the minimum queryable output count is not satisfied "
             "by a successful current receipt, do not advance to a downstream stage. "
@@ -108,6 +114,16 @@ def execution_result_response_format(
     base_format: type[RuntimeStageResult], control: dict,
 ) -> type[RuntimeStageResult]:
     variants = []
+    nonexecution_ref = create_model("NonExecutionLink", __base__=RuntimeReference,
+        kind=(Literal[tuple(kind for kind in RuntimeReferenceKind
+                            if kind is not RuntimeReferenceKind.EXECUTION)], ...))
+    linked_ref = nonexecution_ref
+    known_ids = tuple(control["known_execution_ids"])
+    if known_ids:
+        known_execution_ref = create_model("KnownExecutionLink", __base__=RuntimeReference,
+            kind=(Literal[RuntimeReferenceKind.EXECUTION], ...),
+            reference_id=(Literal[known_ids], ...))
+        linked_ref = Union[known_execution_ref, nonexecution_ref]
     qualifying_execution_ids = set(control["qualifying_execution_ids"])
     minimum_queryable_output_count = control["minimum_queryable_output_count"]
     for index, receipt in enumerate(control["completed_execution_receipts"]):
@@ -126,6 +142,7 @@ def execution_result_response_format(
         required_outputs = (minimum_queryable_output_count
                             if receipt["execution_id"] in qualifying_execution_ids else 0)
         variants.append(create_model(f"CurrentExecutionBody{index}", __base__=ExecuteStageBody,
+            issue_references=(tuple[linked_ref, ...], Field(default=(), max_length=64)),
             execution_status=(Literal[receipt["status"]], ...),
             execution_reference=(execution_ref, ...),
             output_artifact_references=(tuple[output_ref, ...],
@@ -133,9 +150,11 @@ def execution_result_response_format(
                     max_length=128 if output_ids else 0))))
     if not variants:
         variants.append(create_model("NotExecutedBody", __base__=ExecuteStageBody,
+            issue_references=(tuple[linked_ref, ...], Field(default=(), max_length=64)),
             execution_status=(Literal["NOT_EXECUTED"], ...), execution_reference=(type(None), None),
             output_artifact_references=(tuple[RuntimeReference, ...], Field(default=(), max_length=0))))
-    fields = {"body": (Union[tuple(variants)], ...)}
+    fields = {"body": (Union[tuple(variants)], ...),
+              "references": (tuple[linked_ref, ...], Field(default=(), max_length=128))}
     if (control["minimum_queryable_output_count"] > 0
             and not control["qualifying_execution_ids"]):
         workflow_control = control["workflow_control"] or {
@@ -213,6 +232,6 @@ def validate_execution_result(result: RuntimeStageResult, control: dict) -> None
     known_execution_ids = set(control["known_execution_ids"])
     for references, code in ((result.references, "execution_reference_kind_mismatch"),
                             (body.issue_references, "execution_issue_reference_kind_mismatch")):
-        if any(ref.kind is not RuntimeReferenceKind.EXECUTION and ref.reference_id in known_execution_ids
+        if any((ref.kind is RuntimeReferenceKind.EXECUTION) != (ref.reference_id in known_execution_ids)
                for ref in references):
             raise ExecutionGroundingError(code)

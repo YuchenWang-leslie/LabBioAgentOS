@@ -34,7 +34,7 @@ async def test_answer_restart_preserves_completed_tools_and_reaches_later_stages
 ):
     observed = []
 
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         observed.append(stage_input)
         result = _next_result(stage_input.stage_id)
         if stage_input.stage_id is WorkflowStage.EXECUTE and not stage_input.clarifications:
@@ -161,7 +161,7 @@ def test_invalid_answer_does_not_unpause_or_change_question(answer):
 
 @pytest.mark.asyncio
 async def test_new_tools_require_explicit_answer_driven_reentry(tmp_path, governed_invokers, monkeypatch):
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         result = _next_result(stage_input.stage_id)
         if stage_input.stage_id is WorkflowStage.EXECUTE:
             if not stage_input.clarifications:
@@ -192,7 +192,7 @@ async def test_new_tools_require_explicit_answer_driven_reentry(tmp_path, govern
 async def test_disconnect_immediately_after_answer_commit_is_recoverable(tmp_path, governed_invokers, monkeypatch):
     from test_c10_durable_control_plane import _SimulatedProcessLoss, _StopAfterCheckpointStore
 
-    async def finalize(self, stage_input, *, capability_evidence=None):
+    async def finalize(self, stage_input, *, capability_evidence=None, resolved_finalization=None):
         result = _next_result(stage_input.stage_id)
         if stage_input.stage_id is WorkflowStage.EXECUTE and not stage_input.clarifications:
             return result.model_copy(update={"next_action": _question()})

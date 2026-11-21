@@ -6,3 +6,7 @@ __pycache__/
 build/
 dist/
 .local/
+
+# AOCI agent host integration (machine-bound; do not commit)
+.codex/config.toml
+.codex/config.toml.backup.*
