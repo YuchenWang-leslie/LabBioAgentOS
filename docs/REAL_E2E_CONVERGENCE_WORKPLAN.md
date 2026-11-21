@@ -1,5 +1,32 @@
 # Real E2E Convergence Workplan
 
+## C15 container images accepted — 2026-11-21
+
+C15 is implemented on branch `feat/container-images` (head `3124359`; not
+pushed, merged, released or deployed). It adds an
+image catalog with lab and personal images, a lab area with roles and uid
+binding, admission from OCI references, archives, SIF files and member lock
+files, promotion, image states, deletion and restore, a SHELL runtime, conda
+packages in derived environments, NVIDIA GPUs, a backend-neutral source
+identity, and cleanup of lost admissions and environment builds.
+
+- Deterministic suite: 3559 passed, 73 skipped.
+- Real Docker on the development host, including an RTX 4060, and a
+  two-account check with real OS accounts.
+- Four rounds on the Slurm + Apptainer test cluster, run from a separate
+  machine with git bundles. Every finding was fixed. The same environment had
+  the same identity on Docker and on the cluster.
+- A fifth cluster round ran a live Agent choosing among images: every
+  choice came from the model, but the model-visible list lacked conda
+  inventories, which `4e11038` fixed. In the sixth round, with complete
+  facts, the model chose existing non-default images itself (acceptance
+  level 3). It never chose a SHELL image; this gap is recorded. A small
+  listing fix from that round is `3124359`.
+
+MOHAN CUI accepted C15 on 2026-11-21; see
+[C15 acceptance](C15_CONTAINER_IMAGES_ACCEPTANCE.md). Living documents are
+updated. No production release or deployment changed.
+
 ## C15 container images decided — 2026-11-11
 
 MOHAN CUI opened C15, an extension of C13. A runtime Agent selects images from

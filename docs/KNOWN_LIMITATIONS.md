@@ -232,6 +232,11 @@ CPU-controller delegation are unavailable; resource limits were not bypassed.
 - Derived and lock-built images built on a cluster before 2026-11-18 may be
   readable only by the building account (the build then ran with umask 077).
   They are deleted and restored, which rebuilds them under the current rule.
+- A live Agent has chosen existing non-default images by itself, but has
+  never chosen a SHELL image: in the cluster validation, an equally valid
+  Python environment with the same tool was listed. The SHELL path, including
+  the refusal of a SHELL image without an explicit runtime, is covered by
+  tests and by real executions with a named image.
 - That another account can run a lab image rebuilt by the holding account was
   checked with two real OS accounts on Docker only. On the test cluster, with
   one account, only the file permissions inside the SIF were checked.
