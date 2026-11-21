@@ -61,11 +61,7 @@ max_model_phase_seconds = 300            # Bound for each capability/finalizatio
 
 [execution]
 backend = "apptainer"
-image_key = "scientific-python"
-# Replace with the registered SIF file's SHA256, not a Docker image ID.
-image_reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-available_python_modules = []  # Enter the actual verified image import inventory.
-installed_packages = {}       # Optional verified distribution-to-version inventory.
+default_image = "scientific-python"  # Used when the Agent names no image.
 # Trusted local file limits; these do not change remote Artifact exposure.
 max_output_file_bytes = 134217728        # 128 MiB per written/collected file, including intermediates.
 max_collected_output_bytes = 536870912   # 512 MiB of declared outputs per execution.
@@ -81,6 +77,18 @@ cpus = 4.0
 memory_mb = 4096
 pids_limit = 128
 timeout_seconds = 900.0
+# gpus = 1   # Most GPUs one execution may request; default 0. Docker with the NVIDIA container
+#            # toolkit only: local Apptainer refuses GPUs.
+
+# One table per base image; every configured image is a lab image.
+[[execution.images]]
+key = "scientific-python"
+# Replace with the registered SIF file's SHA256, not a Docker image ID.
+reference = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+available_python_modules = []  # Enter the actual verified image import inventory.
+installed_packages = {}       # Optional verified distribution-to-version inventory.
+# runtimes = ["PYTHON", "SHELL"]  # Default ["PYTHON"]; the default_image must include PYTHON.
+# gpu = "SUPPORTED"               # NONE (default), SUPPORTED or REQUIRED.
 
 [execution.apptainer]
 binary = "/absolute/user/install/prefix/bin/apptainer" # Printed by labbio apptainer-install.
@@ -92,7 +100,7 @@ verify_sif_on_execute = true
 [launcher]
 kind = "local"
 
-# Optional Python dependency builds. Managed workspaces use USER/Environments,
+# Optional Python dependency builds (and conda packages with [environment.conda]). Managed workspaces use USER/Environments,
 # overriding this root; no analysis data is mounted while installing packages.
 # [environment]
 # root = "../Environments"
@@ -107,3 +115,16 @@ kind = "local"
 # build_timeout_seconds = 600.0
 # download_memory_mb = 4096
 # download_timeout_seconds = 600.0
+
+# Optional: conda packages in derived environments.
+# [environment.conda]
+# micromamba = "/path/to/micromamba"     # Official static release; not writable.
+# micromamba_sha256 = "<64 hex>"
+# channels = ["conda-forge", "bioconda"] # Never the Anaconda defaults.
+
+# Optional: the lab area and this member's private area for admitted images
+# (see docs/LOCAL_WORKSPACES.md). Managed workspaces use USER/Images as member_root.
+# [lab]
+# root = "/path/to/lab"
+# member_root = "~/labbio-member"
+# registry_credentials = "~/.config/labbioagent/registries.json"  # Outside every bindable path.

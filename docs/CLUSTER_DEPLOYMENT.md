@@ -1,12 +1,14 @@
 # Cluster Deployment
 
-> **Status:** the upstream branch was accepted on a test cluster. Native Kernel
-> integration and production deployment remain unvalidated on a real cluster.
+> **Status:** validated on one Slurm test cluster: the upstream branch (C13),
+> full Native Kernel workflows (C14), and image admission, lab images,
+> environment builds with conda, the image lifecycle and GPUs (C15). Production
+> deployment, PBS and LSF remain unvalidated.
 > Not verifiable on the upstream test cluster and still unverified here:
 > downloads running as jobs on a network-capable partition, and a build proxy,
 > CA bundle or private package index (the site has none). Example configuration:
 > `examples/cluster-runtime.toml`. Evidence and limits:
-> `C13_APPTAINER_EXECUTION_ACCEPTANCE.md`.
+> `C13_APPTAINER_EXECUTION_ACCEPTANCE.md`, `C15_CONTAINER_IMAGES_ACCEPTANCE.md`.
 
 Audience: an operator installing LabBioAgentOS on a compute cluster for a lab.
 
@@ -20,9 +22,12 @@ login node (has external network)                 compute nodes
 │  - LLM provider calls                │  poll    │       --net --network none    │
 │  - job submission / ledger           │ ◄─────── │       (analysis script)       │
 │  - capability probe, SIF register    │          │ environment build job         │
-│  - wheel download for environment    │          │  └─ sandbox, locked install,  │
-│    builds (or as a job, see §5)      │          │     pip check, pack SIF,      │
-└──────────────────────────────────────┘          │     import check; no network  │
+│  - wheel download, conda solve and   │          │  └─ sandbox, locked install,  │
+│    download (or as a job, see §5)    │          │     pip check, pack SIF,      │
+│  - OCI pulls for image admission     │          │     import check; no network  │
+└──────────────────────────────────────┘          │ admission conversion job      │
+                                                  │  └─ apptainer build from the  │
+                                                  │     pulled OCI layout         │
                  │                                └───────────────────────────────┘
                  │                                    │
                  └──────── shared filesystem ─────────┘
@@ -34,9 +39,11 @@ login node (has external network)                 compute nodes
 - Analysis scripts always run on compute nodes through the scheduler, inside
   Apptainer, with network disabled by Apptainer itself.
 - The login node runs only light operations: LLM calls, job submission,
-  capability probing, SIF registration, and the wheel download of an
-  environment build (unless downloads run as jobs). Installing, checking and
-  packing an environment run in a compute-node job. The login node never runs
+  capability probing, SIF registration, the wheel download and conda solve and
+  download of an environment build (unless downloads run as jobs), and the
+  registry pull of an image admission. Installing, checking and packing an
+  environment, and converting an admitted OCI image to a SIF, run in
+  compute-node jobs. The login node never runs
   model-authored analysis scripts.
 - Raw data stays on the cluster filesystem. Remote LLMs receive only what the
   Artifact exposure policy allows, exactly as in local mode.
@@ -63,9 +70,10 @@ supported cluster mode.
 | Unprivileged `--net --network none` | Network isolation; without it execution is refused |
 | A filesystem shared by login and compute nodes | Workspace, SIF store, job logs; no data staging is performed |
 | Scheduler CLI on the login node (any scheduler describable by a template) | Job submission and polling |
-| External network on the login node | LLM provider; wheel downloads unless they run as jobs on a network-capable partition |
+| External network on the login node | LLM provider; OCI registry pulls for admissions; conda channels; wheel downloads unless they run as jobs on a network-capable partition |
 | Python 3.11 conda environment on the login node | LabBio itself |
-| Base images with pip 22.2 or later (environment builds only) | Wheels are resolved with `pip install --dry-run --report` |
+| Base images with pip 22.2 or later (wheel environment builds only) and glibc (conda builds) | Wheels are resolved with `pip install --dry-run --report`; the static micromamba needs glibc |
+| A lab group shared by the holding account and every member (multi-account labs only) | The lab area is group-readable and setgid; see §4 |
 | On compute nodes: a writable node-local directory, unprivileged `apptainer build --sandbox`, and SIF packing (environment builds only) | The build job unpacks, installs and packs there; every build job checks this first |
 | Site permission for a long-lived login-node process | The control plane waits for jobs; some sites do not allow this (`KNOWN_LIMITATIONS.md`) |
 
@@ -101,8 +109,11 @@ Checks:
   Slurm: `sbatch --test-only`), a job script built from this configuration
   must be accepted, which checks partition, account, QoS and directives
   without queueing anything.
-- SIF store directory permissions (0700, no symlinks) and the registered
-  SIF's hash.
+- The configured SIF store's permissions (0700, no symlinks) and every
+  configured image's hash. The lab's SIF store is checked by the lab area's own
+  permission check: its files are 0440 for the lab group.
+- The Apptainer `tmp_dir`, created (0700) when missing; reported as
+  `apptainer_tmp_dir` when it cannot be used.
 
 A failed security item stops startup. A failed scheduler or environment
 build check is reported under `configuration_failures` and makes the overall
@@ -114,9 +125,13 @@ The same probe also runs automatically once per process before the first
 execution; if a security item fails, that execution is refused. Read-only
 commands such as `status` and `export` never probe.
 
-## 4. Registering an image
+## 4. Images and the lab area
 
-Images are identified by the sha256 of the SIF file, not by name or tag.
+Configured images are registered SIFs. A configured image's file is its
+identity. Admitted images (below) have a backend-neutral source identity as
+well: the OCI manifest digest, the SIF's own hash, or for an image built from
+locks the hash of its base source and exact locks. The SIF is only that
+source's realization on this cluster.
 
 ```
 labbio image-register --config <site-config>.toml --sif /path/to/scientific-python.sif
@@ -124,13 +139,42 @@ labbio image-register --config <site-config>.toml --sif /path/to/scientific-pyth
 ```
 
 Registration copies the file into the controlled SIF store as
-`<store>/<hash>.sif`, read-only. Put the printed reference into
-`[execution] image_reference`. Replacing an image means registering a new SIF
-and changing the reference; files in the store are never modified in place.
+`<store>/<hash>.sif`, read-only. Put the printed reference into the `reference`
+of an `[[execution.images]]` table. A site may configure several images; each
+needs its own table and key, and `[execution] default_image` names the one used
+when the Agent names none. Replacing an image means registering a new SIF and
+changing the reference; files in the store are never modified in place.
 
 Build or convert the SIF on a machine with network (for example
 `apptainer build scientific-python.sif docker://...` on the login node).
 Compute nodes never pull images.
+
+**Lab area.** With several accounts, one account holds the lab area: create a
+lab group containing the holding account and every member (members log in
+again after joining), then run `labbio lab-init --lab-root <shared path>
+--lab-id <id> --admin-user <holder user id> --group <lab group>` under the
+holding account. The area is created setgid (2750) for the group; only the
+drop directories `requests/` and `usage/` are group-writable (3770, sticky).
+`member-approve` binds each member's user id to their OS uid, and
+`lab-policy` sets the per-image limit, the member and lab quotas and an
+optional registry allowlist. Each member's configuration names the area and
+their own private member root in `[lab]`. Members can fill the shared
+filesystem through `requests/`; only a site disk quota bounds those writes.
+
+**Admitted images.** Members admit finished images themselves, from an OCI
+reference pinned by digest, an OCI archive, a SIF file, or lock files on an
+admitted base: `labbio image-admit`. The pull runs on the login node, the
+conversion in a job, and every admission checks architecture, entry points,
+inventory, the GPU declaration and the quota. A LAB_ADMIN promotes a member's
+image to a lab image under the holding account. State changes, deletion and
+restore follow the same roles. All commands are in
+[local workspaces](LOCAL_WORKSPACES.md).
+
+**Images built before 2026-11-18.** Cluster environment builds ran with umask
+077 until then, so derived and lock-built images from that time may be
+readable only by the building account. Delete and restore them; builds now
+refuse an image whose environment others could not read
+(`IMAGE_NOT_SHAREABLE`).
 
 ## 5. Site configuration
 
@@ -159,17 +203,24 @@ model_identifier = "<model>"
 
 [execution]
 backend = "apptainer"
-image_key = "scientific-python"
-image_reference = "sha256:<from image-register>"
-available_python_modules = []
+default_image = "scientific-python"
 max_output_file_bytes = 134217728
 max_collected_output_bytes = 536870912
+tmpfs_size_mb = 256   # /tmp in scratch is checked every few seconds; above this, SCRATCH_LIMIT
+
+[[execution.images]]
+key = "scientific-python"
+reference = "sha256:<from image-register>"
+available_python_modules = []
+# runtimes = ["PYTHON", "SHELL"]   # default ["PYTHON"]; the default_image must include PYTHON
+# gpu = "SUPPORTED"                # NONE (default), SUPPORTED or REQUIRED
 
 [execution.resources]          # becomes the scheduler request, within policy bounds
 cpus = 4.0
 memory_mb = 16384
 pids_limit = 256
 timeout_seconds = 3600.0       # walltime = timeout + walltime_margin
+# gpus = 1                     # most GPUs one execution may request; default 0
 
 [execution.apptainer]
 binary = "/path/to/apptainer/bin/apptainer"   # absolute; required in scheduler mode
@@ -186,15 +237,21 @@ template = "slurm"             # bundled: slurm, pbs, lsf; or a site template fi
 partition = "regular"
 account = "lab-x"
 # qos = "normal"               # omit when the site has no QoS
+# gpu_partition = "gpu"        # jobs that request GPUs; defaults to partition
 walltime_margin_seconds = 600  # walltime = timeout + 30 s kill grace + margin
 poll_interval_seconds = 30
 max_queue_seconds = 86400      # longer queues are cancelled and reported as a timeout
 completion_grace_seconds = 60  # shared-filesystem lag allowed for the exit record
 extra_directives = []          # single plain lines; never export or login-env flags
 
-[environment]                  # optional: model-requested Python environments (wheels only)
+[environment]                  # optional: model-requested environments (Python wheels, conda packages)
 root = "/shared/lab/labbio/environments"   # shared filesystem
 # build_proxy = "http://proxy.site:3128"   # download step only; no credentials
+
+# [environment.conda]          # optional: conda packages in derived environments
+# micromamba = "/shared/lab/labbio/tools/micromamba"   # official release; not writable
+# micromamba_sha256 = "<64 hex>"
+# channels = ["conda-forge", "bioconda"]               # never the Anaconda defaults
 
 [environment.cluster]          # required with [environment] under Apptainer
 machine = "x86_64"             # required: CPU architecture of compute nodes and base SIFs
@@ -211,11 +268,25 @@ download_cpu_seconds = 1800
 cache_dir = "/shared/lab/labbio/pip-cache"
 # index_url = "https://pypi.site/simple"   # mirror without credentials
 # ca_bundle = "/etc/pki/tls/certs/site-ca.pem"
+
+# Optional: the lab area and this member's private area (see section 4).
+# [lab]
+# root = "/shared/lab/labbio/lab"
+# member_root = "~/labbio-member"          # 0700, this account only
+# registry_credentials = "~/.config/labbioagent/registries.json"   # outside every bindable path
 ```
 
-`tmpfs_size_mb` has no effect under Apptainer: `/tmp` lives in the
-per-execution scratch directory and is bounded only by the per-file size
-limit.
+Under Apptainer, `/tmp` lives in the per-execution scratch directory.
+`tmpfs_size_mb` bounds it: the job checks its size every few seconds and stops
+the execution with `SCRATCH_LIMIT` above this value.
+
+`[execution.apptainer] tmp_dir` is Apptainer's own temporary directory. Apptainer
+creates its cache directory but not this one, so LabBio creates it (mode 0700)
+when it is missing, and `backend-check` reports `apptainer_tmp_dir` when it
+cannot be used. An admission's conversion job keeps its temporary files in its
+own job workspace instead, so they are removed with the workspace, also after a
+cancellation. When a conversion fails, the end of the job's error output is
+kept in the member's `admission-logs/` directory and the error names the file.
 
 ### Provider settings and credentials
 
@@ -270,6 +341,23 @@ When the runtime model asks for an environment, the build runs in three parts:
    provenance. The model sees only the image key and the verified package
    inventory.
 
+With `[environment.conda]`, conda packages are added as follows:
+
+- **Solve and download (login node).** The platform's micromamba, checked by
+  sha256, solves for the compute nodes' `machine` against the allowed channels
+  only, without any user configuration. Each package is downloaded and checked
+  against its sha256. micromamba is copied to the attempt directory on shared
+  storage and the copy is checked again.
+- **Install (build job, no network).** Before the wheels, the job binds
+  micromamba, the packages and the explicit lock read-only into the sandbox
+  and installs them offline into `/opt/labbio-env`. The installer checks every
+  hash again. The job then writes `/.singularity.d/env/96-labbio-conda.sh`
+  from inside the container. The script appends `/opt/labbio-env/bin` to
+  PATH, so the image's own `python` stays the PYTHON entry point.
+- **Check.** The import check confirms that the directory is on the packed
+  image's PATH. The base image needs glibc, because micromamba cannot run on
+  musl images such as Alpine.
+
 Build and download jobs are recorded in the job ledger under the run that
 requested them, so the run's crash cleanup covers them.
 
@@ -280,13 +368,52 @@ job ID pattern, status command, status mapping, cancel command, and the
 directive that disables environment export. Slurm, PBS and LSF templates are
 bundled; other schedulers or site variants use a site template file.
 
+### GPUs
+
+GPUs are off by default. `[execution.resources] gpus` is the most an execution
+may request; the Agent asks for a count explicitly, and an image must be marked
+`SUPPORTED` or `REQUIRED` (`gpu` in `[[execution.images]]`, or the admitted
+record) for a request to be accepted.
+
+- **Directives.** The bundled templates request GPUs with Slurm
+  `--gpus={gpus}`, PBS `-l select=1:ncpus=…:mem=…:ngpus={gpus}` (it replaces
+  the ordinary select line) and LSF `-gpu "num={gpus}"`. A site whose Slurm
+  counts GPUs as generic resources uses a site template with
+  `"gpus" = "--gres=gpu:{gpus}"`. Some sites refuse `--gpus` outright and
+  require `--gres`; `backend-check` then reports `scheduler_gpu_submission`
+  with the scheduler's message, and the site template resolves it. A template
+  without a `gpus` directive cannot be combined with `gpus > 0`; the
+  configuration is refused at load.
+- **Partition.** Jobs that request GPUs go to `[launcher] gpu_partition`, or to
+  `partition` when it is not set. Build and download jobs never request GPUs.
+- **Extra directives.** `--gres`, `--gpus`, `-G`, `--gpus-per-*` and
+  `--cpus-per-gpu` (Slurm) and `-gpu` (LSF) are refused, so GPUs come only from
+  an execution's own request. PBS already refuses every `-l`.
+- **Container.** Apptainer adds `--nv` only when GPUs were requested. The job
+  passes the scheduler's `CUDA_VISIBLE_DEVICES` into the container as
+  `APPTAINERENV_CUDA_VISIBLE_DEVICES` when the scheduler sets it.
+- **Confinement.** `--nv` binds the node's GPU devices into the container. Only
+  the scheduler confines a job to its allocated GPUs (for example Slurm with
+  `ConstrainDevices=yes` in `cgroup.conf`); without that, a job could open
+  every GPU on the node. Check this before enabling GPUs. With it, the
+  container still lists every GPU device node, but only the allocated GPUs can
+  be opened, and `nvidia-smi` shows only those.
+- **Trace.** Before the program starts, the job records on the node, outside
+  the container, its `CUDA_VISIBLE_DEVICES` and the output of `nvidia-smi -L`.
+  The values are checked strictly and added to the execution's completion or
+  failure record as `gpu_allocation`.
+- **backend-check.** With `gpus > 0`, a one-GPU job is also validated with
+  `sbatch --test-only`; a rejection is reported as `scheduler_gpu_submission`.
+- Local Apptainer under systemd does not support GPUs.
+
 ## 6. What jobs receive
 
 - A generated job script with directives taken only from the configuration and
   policy bounds, a file-size limit, the `apptainer exec` command, and log
   redirection into the run workspace.
 - The model-authored analysis script as a separate read-only file at
-  `/labbio/script.py`, never inlined into the job script.
+  `/labbio/script.py` (PYTHON) or `/labbio/script.sh` (SHELL), never inlined
+  into the job script.
 - Submission: the scheduler command runs with an allowlisted environment and
   export-disabling flags (Slurm `--export=NONE`, PBS without `-V`, LSF
   `-env none`), so the submitting environment is not forwarded.
@@ -317,12 +444,26 @@ LabBio refuses to start or to execute when:
 - a build proxy or package index URL carries credentials;
 - `--net --network none` is unavailable unprivileged;
 - a required bind target cannot be created and the image does not provide it;
-- `image_reference` is not a registered SIF, the file is missing, writable, a
-  symlink, or (when verification is enabled) its hash differs;
+- an `[[execution.images]]` reference is not a registered SIF, the file is
+  missing, writable, a symlink, or (when verification is enabled) its hash
+  differs;
 - a resource request exceeds policy;
 - an input or output path contains `:` or `,`;
 - `resource_enforcement = "apptainer-cgroups"` but cgroup flags are
-  unsupported.
+  unsupported;
+- the configuration still uses the single-image settings
+  (`EXECUTION_IMAGES_MIGRATION_REQUIRED`), or the `default_image` does not
+  support PYTHON or requires a GPU;
+- a provider key file, workspace token or registry credentials file lies
+  under a path that can be bound into a container
+  (`CREDENTIAL_UNDER_BOUND_PATH`);
+- `[execution.resources] gpus` is above 0 with a template that has no `gpus`
+  directive, under local systemd placement, or with an extra directive that
+  requests GPUs itself;
+- the `[lab]` area is unreadable, has the wrong permissions, or the user is
+  not an approved member under their registered uid (`LAB_*` codes, listed in
+  [local task entrypoint](LOCAL_TASK_ENTRYPOINT.md));
+- the Apptainer `tmp_dir` cannot be created or written (`apptainer_tmp_dir`).
 
 ## 8. Operations
 
@@ -337,15 +478,32 @@ LabBio refuses to start or to execute when:
   accepts a job but the control plane dies before its job ID is written, the
   ledger stays `UNCONFIRMED`: automatic cancellation cannot be asserted and
   an operator must check the scheduler. Reconciliation never resubmits, and
-  the run remains blocked for review. Wheels left by an interrupted build are
-  deleted by the next build.
+  the run remains blocked for review. An environment build attempt whose
+  process is gone is cleaned up once its run's ledger has no open build job:
+  before the next environment build, by `image-reconcile`, and after the run's
+  `reconcile`. Its downloads and any SIF it registered without a record are
+  removed and the attempt is marked `ABANDONED`; it is never rebuilt
+  automatically.
+- **Crash during an image admission.** Admission jobs, the conversion of an
+  OCI image to a SIF and the download and build jobs of a lock build, are
+  recorded with purpose `ADMISSION` in the member's own ledger,
+  `<member_root>/jobs/jobs.sqlite`. Each admission holds a lease on its
+  attempt directory under `<member_root>/admissions/`. The next `image-admit`
+  or `image-promote-approve`, or `labbio image-reconcile`, resolves the jobs
+  of every attempt whose lease is free in the same way, then deletes the
+  attempt. An attempt whose cancellation is not yet confirmed is kept and
+  retried.
 - **Queue time.** The control plane waits for each job inside a single tool
   call. Runtime progress timers do not cut off that wait, but the login-node
   process must stay alive for the whole queue and run time. Prefer partitions
   with short waits.
 - **Disk.** Per-execution scratch directories are removed automatically.
-  Clean the Apptainer cache and tmp directories per site policy. The SIF store
-  grows through `image-register` and through environment builds, one SIF per
-  distinct environment; keep it on storage that is not purged. Downloaded
-  wheels are deleted after each build; the pip cache directory grows and can
-  be cleared at any time.
+  Clean the Apptainer cache and tmp directories per site policy. The
+  configured SIF store grows through `image-register` and environment builds,
+  one SIF per distinct environment; the member and lab SIF stores grow through
+  admissions and promotions, within the lab's quotas (`image-usage`). Keep
+  them on storage that is not purged. Retired images are removed with
+  `image-delete`, which keeps their records, and brought back with
+  `image-restore`. Downloaded
+  wheels and conda packages, and the conda solver's repodata cache, are deleted
+  after each build; the pip cache directory grows and can be cleared at any time.

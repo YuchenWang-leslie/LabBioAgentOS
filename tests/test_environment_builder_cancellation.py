@@ -40,6 +40,7 @@ async def test_build_wait_owns_fixture_process_until_exit(
         seconds = 0 if outcome == "complete" else 30
         inventory = json.dumps({
             "installed_packages": {"examplepkg": "2.0"}, "failed_imports": [],
+            "unshared_count": 0, "unshared_paths": [],
         })
         code, error = DockerEnvironmentBuilder._run(
             backend.builder,
@@ -98,12 +99,12 @@ async def test_build_wait_owns_fixture_process_until_exit(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command_index", [1, 2], ids=["build", "probe"])
+@pytest.mark.parametrize("command_index", [1, 2, 3], ids=["download", "build", "probe"])
 async def test_environment_commands_declare_a_hard_cpu_limit(backend, command_index):
     backend.builder.cpus = 1.5
     await build(backend)
     command = backend.calls[command_index]
-    if command_index == 1:
+    if command_index == 2:
         assert command[command.index("--cpu-period") + 1] == "100000"
         assert command[command.index("--cpu-quota") + 1] == "150000"
     else:
@@ -272,7 +273,9 @@ async def test_repeated_cancel_waits_for_attempt_cleanup(backend, monkeypatch):
         with pytest.raises(EnvironmentBuildUnconfirmedError) as failed:
             await asyncio.wait_for(task, 2)
         assert failed.value.failure_code == "BUILD_TIMEOUT"
-        assert not any(argv[:2] == ["docker", "run"] for argv in backend.calls)
+        # The download container ran; the verification probe never did.
+        assert not any(argv[:2] == ["docker", "run"] and "labbio-env-check-" + backend.root.name in argv
+                       for argv in backend.calls)
         assert [argv[1] for argv in backend.calls][-1] == "ps"
     finally:
         release_cleanup.set()

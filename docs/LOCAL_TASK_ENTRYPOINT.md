@@ -31,9 +31,14 @@ Docker 只作为兼容后端，使用 `examples/docker-runtime.toml` 并显式�
 - 用户、项目、实验室身份；
 - 模型服务的接口格式、端点、模型、输出预算、重试次数、phase deadline，以及
   仓库外凭据文件中的密钥变量名（见下文"模型服务"）；
-- 已批准并注册的不可变 SIF、Apptainer 和 launcher 配置、模块清单、资源限额、
-  输出限额和网络策略；显式 Docker 兼容配置则绑定其不可变镜像；
-- 可选外部 profile、托管 workspace、个人 Gold 和环境缓存根目录。
+- 已批准的不可变镜像（每个镜像一张 `[[execution.images]]` 表，`[execution] default_image`
+  指定 Agent 没有点名镜像时使用哪一个；Apptainer 下是已注册的 SIF，显式 Docker 兼容配置
+  则是不可变的 Docker 镜像）、Apptainer 和 launcher 配置、模块清单、资源限额（包括
+  `[execution.resources] gpus`，即一次执行最多能申请的 GPU 数，默认 0）、输出限额和网络策略；
+- 实验室区和成员私有区（`[lab] root`、`member_root`，可选 `registry_credentials`），见
+  [多用户工作区](LOCAL_WORKSPACES.md)；
+- 可选外部 profile、托管 workspace、个人 Gold、环境缓存根目录，以及 conda 包的设置
+  （`[environment.conda]`：micromamba 程序、它的 sha256 和允许的渠道）。
 
 任务文字和工具参数不能修改上述权威值。新任务冻结配置与源码内容身份；不匹配
 的旧运行不能由当前源码静默接管。
@@ -145,7 +150,8 @@ ANTHROPIC_API_KEY=<密钥>
 
 ### 配置错误码
 
-模型服务配置有问题时，CLI 只输出固定错误码、改法和字段名，不包含任何值，例如
+模型服务、镜像列表、凭据位置或实验室成员身份有问题时，CLI 只输出固定错误码、改法和字段名，
+不包含任何值，例如
 `{"error": "PROVIDER_ENDPOINT_NOT_HTTPS", "detail": "...", "fields": ["provider.endpoint"]}`。
 
 | 错误码 | 含义 |
@@ -158,6 +164,15 @@ ANTHROPIC_API_KEY=<密钥>
 | `PROVIDER_ENV_FILE_UNAVAILABLE` | 找不到凭据文件 |
 | `PROVIDER_KEY_MISSING` | 凭据文件里没有 `api_key_env` 指定的变量，或者它的值为空或跨行 |
 | `PROVIDER_CREDENTIALS_NOT_LOADED` | 内部组装错误：调用模型前没有加载密钥 |
+| `EXECUTION_IMAGES_MIGRATION_REQUIRED` | 配置还在用单镜像写法（`[execution] image_key` 等），见下文"从单镜像配置迁移" |
+| `LAB_AREA_UNAVAILABLE` | `[lab] root` 不存在、不是实验室区，或者记录无法读取、校验不通过 |
+| `LAB_AREA_PERMISSIONS` | 实验室区或成员私有区权限不对：其他人可写或可读、成员可写，或者共享目录缺少 setgid |
+| `LAB_MEMBER_NOT_APPROVED` | 当前用户不是已批准的成员，或者已被撤销 |
+| `LAB_MEMBER_UID_MISMATCH` | 该成员登记的是另一个操作系统账号 |
+| `LAB_ADMIN_REQUIRED` | 成员管理命令没有在持有账号下、由已登记的管理员执行 |
+| `LAB_MEMBER_ACTION_INVALID` | 成员变更不符合当前状态（例如重复批准，包括批准持有账号本人：`lab-init` 已经把它登记为成员），或者会让实验室没有管理员 |
+| `LAB_USAGE_MISSING` | 实验室区建于镜像使用标记之前，还没有 `usage/` 目录；持有账号运行任意一条 LabBio 命令后会自动补上 |
+| `CREDENTIAL_UNDER_BOUND_PATH` | 凭据文件（模型 API 密钥文件、工作区令牌，或存在时的注册表凭据 `[lab] registry_credentials`）位于可能被挂进容器的目录里，例如数据根、结果根、托管工作区、环境根、SIF 仓库、scratch 或缓存目录；把它移到这些目录之外 |
 
 ### 从旧配置迁移
 
@@ -171,6 +186,101 @@ ANTHROPIC_API_KEY=<密钥>
    在内存中提供密钥，或者给 `NativeRuntimeFactory` 传入自己的构建函数（可以用
    `labbioagentos.kernel.create_provider`）；
 6. 升级后 runtime revision 会变，升级前没跑完的运行不能续跑，请先跑完或取消。
+
+### 从单镜像配置迁移
+
+旧配置在 `[execution]` 里直接写 `image_key`、`image_reference`、
+`available_python_modules` 和 `installed_packages`。现在每个镜像单独一张表，加载
+旧写法会报 `EXECUTION_IMAGES_MIGRATION_REQUIRED`，不会自动转换。迁移步骤：
+
+1. 删掉 `[execution]` 里的这四项，改写成一张 `[[execution.images]]` 表，字段依次
+   改名为 `key`、`reference`、`available_python_modules`、`installed_packages`；
+2. 在 `[execution]` 里加 `default_image = "<原来的 image_key>"`；
+3. 要提供更多镜像，就再加 `[[execution.images]]` 表，每张表的 `key` 不能重复；
+   Apptainer 后端下每个 `reference` 都必须是已登记的 SIF。
+4. 每张表可以写 `runtimes = ["PYTHON", "SHELL"]`，不写时只有 `PYTHON`。`default_image`
+   必须支持 `PYTHON`，因为后端检查会在它里面运行 Python 探测。
+
+### conda 派生环境
+
+派生环境除了 PyPI wheel，还可以加 conda 包（例如 `samtools=1.21`），前提是部署配置了平台
+自己的 micromamba：
+
+```toml
+[environment.conda]
+micromamba = "/path/to/micromamba"          # 官方发布的 micromamba-linux-64；不可写
+micromamba_sha256 = "<64 位十六进制>"        # 每次使用前都核对
+channels = ["conda-forge", "bioconda"]      # 默认值；不接受 defaults、main 等 Anaconda 渠道
+```
+
+- 求解在宿主机上进行：不读任何用户配置（`--no-rc`），只用列出的渠道；每个包必须来自这些
+  渠道（平台子目录或 `noarch`），并带 sha256。
+- 每个包按 sha256 下载校验，再在构建中离线安装到 `/opt/labbio-env`；安装器会再核对一次哈希。
+- 这个环境追加在 PATH 末尾，所以镜像自己的 `python` 仍是 PYTHON 的入口程序，conda 装的
+  命令行工具可以直接调用。micromamba 只依赖 glibc，基础镜像不能是 musl（如 Alpine）。
+- 构建后的检查确认 `/opt/labbio-env/bin` 确实在镜像的 PATH 上，否则报 `VERIFICATION_FAILED`。
+- 同样的基础镜像、锁定的 wheel 和 conda 包，得到同一个 DERIVED 来源身份。
+- 下载的包、micromamba 副本和求解器的 repodata 缓存在构建后删除，只保留锁定清单和日志；
+  因此每次求解都会重新获取渠道元数据。Docker 上 conda 安装阶段的中间镜像带同一个构建标签，
+  构建结束后逐轮删除，只留下环境镜像本身。
+- Apptainer 后端同样支持：求解和下载在执行命令的主机（通常是登录节点）上进行，构建作业
+  无网络，在沙箱里离线安装，再写一个 `/.singularity.d/env/96-labbio-conda.sh` 把目录追加
+  到 PATH。micromamba 先复制到共享存储，复制后再核对一次 sha256；求解使用
+  `[environment.cluster] machine` 指定的计算节点架构。安装失败报 `CONDA_INSTALL_FAILED`。
+- micromamba 在构建时未通过完整性检查，报 `CONDA_UNAVAILABLE`。
+
+配置了实验室区（`[lab]`）时，Agent 构建的环境算在成员自己的镜像配额里，和入库的个人镜像
+共用（DECIDED-C15-H）。构建完成后会检查镜像大小：超过单个镜像上限报 `IMAGE_TOO_LARGE`，
+超过个人配额报 `MEMBER_QUOTA_EXCEEDED`。两种情况下，构建出的镜像都会被删除，不会登记。
+环境记录里会记下镜像大小；C15 以前的记录没有大小，不计入用量。
+
+Agent 用 `environment_list` 查看它能选的全部镜像：配置的镜像、实验室和自己入库的镜像、
+已经建好的环境。每一项列出支持的运行时（PYTHON、SHELL）、用途、GPU 标志、Python 包和
+conda 包；`conda_packages` 参数可以按包名查已装的 conda 版本。只要可选的镜像不止一个
+（配置了 `[lab]` 或多个镜像），PLAN 和 EXECUTE 阶段就提供这个工具；`environment_build`
+仍然只在配置了 `[environment]` 时提供。平台只列出事实，不替 Agent 选镜像。
+
+Agent 提交执行时用 `runtime` 指定运行时：省略即为 `PYTHON`；要用 `sh` 运行就必须明确写
+`SHELL`，平台不会根据脚本或镜像推断。每个镜像都声明自己支持哪些运行时；选了镜像不
+支持的运行时，提交会被拒绝（`IMAGE_NOT_APPROVED`），不会换别的镜像。回执和 trace 都记录
+实际的运行时，以及它是明确给出的（`EXPLICIT`）还是取默认值（`DEFAULT`）；SHELL 只能是
+明确给出的。
+
+```toml
+[execution]
+default_image = "scientific-python"
+
+[[execution.images]]
+key = "scientific-python"
+reference = "sha256:<64 hex>"
+available_python_modules = ["numpy"]
+```
+
+### GPU
+
+GPU 默认关闭。`[execution.resources]` 里的 `gpus` 是每次执行最多能申请的整块 NVIDIA
+GPU 数，默认 0；Agent 每次执行默认申请 0 块，要用 GPU 必须明确写 `gpus`，平台不会自己加。
+
+```toml
+[execution.resources]
+gpus = 1                # 每次执行最多 1 块；0 表示不用 GPU
+
+[[execution.images]]
+key = "cuda-python"
+reference = "sha256:<64 hex>"
+gpu = "SUPPORTED"       # NONE（默认）、SUPPORTED（能用）或 REQUIRED（必须有）
+```
+
+- 镜像的 `gpu` 标志要和申请对得上：标志是 `NONE` 的镜像只能申请 0 块，标志是 `REQUIRED`
+  的镜像至少申请 1 块；对不上时不开始执行，Agent 收到 `EXECUTION_GPU_IMAGE_MISMATCH`。
+  `default_image` 不能是 `REQUIRED`。Agent 在 `environment_list` 里能看到每个镜像的标志。
+- 超过上限时，和其他资源一样报 `EXECUTION_RESOURCE_LIMIT_EXCEEDED`，`exceeded_fields`
+  里有 `gpus`。
+- **Docker**：配置了 `gpus > 0` 时，第一次执行前会在一个不联网、无数据的容器里用 `--gpus all`
+  运行 `nvidia-smi -L`，确认 GPU 运行时可用、GPU 数量不少于上限。失败时拒绝执行，不会改用
+  CPU。每次执行用 `--gpus device=<UUID>` 明确指定前 N 块 GPU，trace 记录这几块 GPU 的编号、
+  型号和 UUID，以及整机的 GPU 清单。需要 NVIDIA Container Toolkit。
+- 本机 Apptainer（systemd 方式）不支持 GPU，配置 `gpus > 0` 时加载配置就报错。
 
 ## 提交任务
 
@@ -212,7 +322,9 @@ include_error_context = false
 allow_generated_file_read = false
 ```
 
-默认单文件上限为 128 MiB，每次执行收集的声明输出合计上限为 512 MiB。只配置更小的合计上限时，默认单文件上限随之降低。显式指定两项时，合计必须覆盖单文件上限。`tmpfs` 计入容器内存。
+默认单文件上限为 128 MiB，每次执行收集的声明输出合计上限为 512 MiB。只配置更小的合计上限时，默认单文件上限随之降低。显式指定两项时，合计必须覆盖单文件上限。Docker 下 `tmpfs` 计入容器内存；
+Apptainer 下 `/tmp` 放在每次执行的 scratch 目录里，作业每隔几秒检查它的大小，超过
+`tmpfs_size_mb` 就停止执行并报 `SCRATCH_LIMIT`。
 这些限制不构成工作目录磁盘配额；大量未声明文件仍需操作侧清理。
 
 声明输出只有在收集、登记、哈希和谱系核对后才成为 Artifact。失败执行可以保留
@@ -237,7 +349,9 @@ labbio revise --conversation my-analysis --from-run <UUID> \
 
 `status` 和 `export` 不加载 provider 凭据或调用模型。恢复前重新验证身份、访问、
 Artifact、工作流状态和 runtime revision。`STAGE_IN_FLIGHT` 等不确定外部副作用
-不会自动重放。
+不会自动重放。`reconcile` 处理完这个运行遗留的作业之后，还会清理进程已经不在的
+Agent 环境构建（输出 `environment_attempts_reconciled`），见
+[多用户工作区](LOCAL_WORKSPACES.md)的"中断的 Agent 环境构建"。
 
 `revise` 创建新运行，不改写原运行。它默认导入所选成功执行的非报告产物、原始
 输入/上下文和原执行程序；旧报告需通过 `--artifact-id` 显式选择。

@@ -1,11 +1,30 @@
-"""One bounded import-failure contract shared by the two image builders."""
+"""One bounded probe contract shared by the two image builders: imports, inventories, permissions."""
 
 import hashlib
 import re
 
 
-PROGRAM = """import contextlib, hashlib, importlib, importlib.metadata, json, sys
+PROGRAM = """import contextlib, glob, hashlib, importlib, importlib.metadata, json, os, stat, sys, sysconfig
 modules = json.loads(sys.argv[1])
+def unshared():
+    # Every lab member runs the image under their own uid: each file must be readable and each
+    # directory searchable by others. Links are not followed.
+    roots = sorted({'/opt/labbio-env', sysconfig.get_paths()['purelib'], sysconfig.get_paths()['platlib']})
+    count, paths = 0, []
+    for root in roots:
+        if not os.path.isdir(root) or os.path.islink(root):
+            continue
+        for base, dirs, files in os.walk(root):
+            for path in [base] * (base == root) + [os.path.join(base, name) for name in dirs + files]:
+                try:
+                    mode = os.lstat(path).st_mode
+                except OSError:
+                    continue
+                need = 0o005 if stat.S_ISDIR(mode) else 0o004
+                if mode & need != need:  # A link's own mode always allows reading.
+                    count += 1
+                    paths.append(path) if len(paths) < 8 else None
+    return count, paths
 failed, errors = [], {}
 with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
     for module in modules:
@@ -21,7 +40,19 @@ with open('/tmp/import-check.log', 'w') as log, contextlib.redirect_stdout(log),
                 detail['missing_module'] = error.name
             errors[module] = detail
     packages = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
-print(json.dumps({'installed_packages': packages, 'failed_imports': failed, 'import_errors': errors}, sort_keys=True))
+    conda = {}
+    for path in sorted(glob.glob('/opt/labbio-env/conda-meta/*.json'))[:4096]:
+        try:
+            with open(path) as stream:
+                record = json.load(stream)
+            conda[record['name']] = record['version']
+        except Exception:
+            pass
+conda_on_path = '/opt/labbio-env/bin' in os.environ.get('PATH', '').split(os.pathsep)
+unshared_count, unshared_paths = unshared()
+print(json.dumps({'installed_packages': packages, 'failed_imports': failed, 'import_errors': errors,
+                  'conda_packages': conda, 'conda_on_path': conda_on_path,
+                  'unshared_count': unshared_count, 'unshared_paths': unshared_paths}, sort_keys=True))
 """
 
 _MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
@@ -59,7 +90,11 @@ def parse_import_probe(value: dict, modules: tuple[str, ...]) -> dict:
         if not detail['truncated'] and hashlib.sha256(
                 detail['message'].encode('utf-8', errors='replace')).hexdigest() != detail['message_sha256']:
             raise ValueError("Invalid import probe")
-    return {'installed_packages': packages, 'failed_imports': failed, 'import_errors': errors}
+    # The conda inventory and the permission check (C15) are validated where they are used:
+    # builder.probed_conda_packages and builder.probed_unshared.
+    extra = {key: value[key] for key in ('conda_packages', 'conda_on_path', 'unshared_count', 'unshared_paths')
+             if key in value}
+    return {'installed_packages': packages, 'failed_imports': failed, 'import_errors': errors, **extra}
 
 
 def import_diagnostics(inventory: dict) -> tuple[dict, ...]:

@@ -1,6 +1,8 @@
 """Where a built container argv runs: the control-plane host or a site scheduler."""
 
 from .base import (
+    SCRATCH_LIMIT_MARKER,
+    SCRATCH_POLL_SECONDS,
     TERMINAL_STATES,
     JobHandle,
     JobLauncher,
@@ -8,6 +10,7 @@ from .base import (
     JobNotFoundError,
     JobSpec,
     JobState,
+    scratch_limit_marker,
 )
 from .job_script import SchedulerPolicy, render_job_script, validate_extra_directives
 from .local import LocalLauncher
@@ -26,9 +29,12 @@ __all__ = [
     "SchedulerCommandRunner",
     "SchedulerLauncher",
     "SchedulerPolicy",
+    "SCRATCH_LIMIT_MARKER",
+    "SCRATCH_POLL_SECONDS",
     "SchedulerTemplate",
     "TERMINAL_STATES",
     "check_scheduler_client",
     "render_job_script",
+    "scratch_limit_marker",
     "validate_extra_directives",
 ]

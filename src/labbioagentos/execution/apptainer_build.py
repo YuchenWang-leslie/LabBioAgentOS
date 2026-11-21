@@ -10,7 +10,6 @@ names; requirements reach the programs only as files.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import math
 import os
@@ -18,36 +17,34 @@ import re
 import shlex
 import shutil
 import stat
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from .apptainer import CONTAIN_ARGUMENTS, ISOLATION_ARGUMENTS, SubprocessApptainerRunner
+from .conda import CONDA_ENV_PREFIX
 # The same import probe and pip diagnosis as the Docker builder.
+from .wheel_lock import MAX_LOCKED_WHEELS, LockedWheel, WheelLockError, lock_wheelhouse
 from .environment_builder import _PROBE, diagnose_pip_log, pip_log_diagnostics
-from .environments import normalize_modules
+from .environments import LEASE_FILE, attempt_lease, normalize_modules  # noqa: F401 - re-exported
 from .models import RequestedResources
 
-MAX_LOCKED_WHEELS = 2048
 MAX_REPORT_BYTES = 16_777_216
 PROBE_OUTPUT = "probe.json"
-LEASE_FILE = "active.lock"
 # The download step runs contained but with the host network; nothing else does.
 # A contained base image can have an empty resolv.conf even on the host network.
 # Resolve through the download node's DNS; installation and analysis keep their isolated network.
 _DOWNLOAD_ARGUMENTS = (*CONTAIN_ARGUMENTS, "--bind", "/etc/resolv.conf:/etc/resolv.conf:ro")
 _MACHINE = re.compile(r"[a-z0-9_]{1,32}")
-_LINUX_PLATFORMS = ("manylinux", "musllinux", "linux_")
 _UNSAFE_PATH = re.compile(r"[\s\x00-\x1f\x7f:,]")  # ':' and ',' would split a bind spec.
 _CHUNK_BYTES = 1_048_576
 # Created in the sandbox only while installing, and removed before packing.
 _BUILD_MOUNT = "/.labbio-build"
+# Apptainer sources /.singularity.d/env/*.sh in order; this one runs after the image's own PATH.
+CONDA_PATH_SCRIPT = "96-labbio-conda.sh"
 _WRITABLE_CHECK = (
     "import sysconfig, tempfile; "
     "tempfile.TemporaryFile(dir=sysconfig.get_paths()['purelib']).close()"
@@ -75,18 +72,6 @@ with open(sys.argv[2], "w", encoding="utf-8") as stream:
 """.replace("MAX_LOCKED_WHEELS", str(MAX_LOCKED_WHEELS))
 
 
-class WheelLockError(ValueError):
-    """The downloaded wheel set cannot be pinned safely."""
-
-
-@dataclass(frozen=True)
-class LockedWheel:
-    name: str
-    version: str
-    filename: str
-    sha256: str
-
-
 class DownloadExit(IntEnum):
     """Download-program exit statuses that the control plane maps to failure codes."""
 
@@ -104,44 +89,7 @@ class BuildExit(IntEnum):
     CHECK_FAILED = 83
     PACK_FAILED = 84
     PROBE_FAILED = 85
-
-
-def lock_wheelhouse(directory: Path, *, machine: str) -> tuple[LockedWheel, ...]:
-    """Pin every wheel of one download by sha256; anything else in the directory is refused."""
-
-    if _MACHINE.fullmatch(machine) is None:
-        raise WheelLockError("Unsupported machine name")
-    directory = Path(directory)
-    if directory.is_symlink() or not directory.is_dir():
-        raise WheelLockError("The wheel directory is unavailable")
-    entries = sorted(directory.iterdir())
-    if len(entries) > MAX_LOCKED_WHEELS:
-        raise WheelLockError("Too many wheels")
-    wheels, names = [], set()
-    for path in entries:
-        if path.is_symlink() or not path.is_file() or path.suffix != ".whl":
-            raise WheelLockError("Only regular wheel files can be locked")
-        try:
-            name, version, _, tags = parse_wheel_filename(path.name)
-        except InvalidWheelFilename:
-            raise WheelLockError("Invalid wheel file name") from None
-        if name in names:
-            raise WheelLockError("More than one wheel for one distribution")
-        if not all(tag.platform == "any" or (tag.platform.startswith(_LINUX_PLATFORMS)
-                                             and tag.platform.endswith("_" + machine))
-                   for tag in tags):
-            raise WheelLockError("A wheel does not match the target platform")
-        names.add(name)
-        wheels.append(LockedWheel(name=str(name), version=str(version), filename=path.name,
-                                  sha256=_sha256(path)))
-    return tuple(wheels)
-
-
-def render_lock(wheels: tuple[LockedWheel, ...]) -> str:
-    """pip requirements that install exactly these files: pinned, hashed, never re-resolved."""
-
-    return "".join(f"{wheel.name}=={wheel.version} --hash=sha256:{wheel.sha256}\n"
-                   for wheel in sorted(wheels, key=lambda item: item.name))
+    CONDA_INSTALL_FAILED = 86
 
 
 def prepare_cache_dir(path: Path) -> None:
@@ -174,12 +122,16 @@ def render_download_program(
     index_url: str | None = None,
     proxy_url: str | None = None,
     ca_bundle: Path | None = None,
+    pinned: bool = False,
 ) -> str:
     """Return the fixed bash program that resolves and downloads wheels; the only networked step.
 
     pip resolves inside the base SIF with --dry-run, so packages the base image
     already satisfies are kept, as in the Docker builder. Exactly the resolved
     distributions are then downloaded without dependency resolution.
+
+    With pinned, the requirements file is a member's hashed lock: nothing is
+    resolved, and pip downloads exactly those files, refusing any other hash.
     """
 
     paths = [apptainer_binary, base_sif, requirements_file, download_dir, work_root, log_dir]
@@ -209,6 +161,25 @@ def render_download_program(
     contained = '"$A" --silent exec "${CONTAIN[@]}" --workdir "$work/tmp" "${BINDS[@]}"'
     base = quote(str(base_sif))
     failed = int(DownloadExit.WORKSPACE_FAILED)
+    if pinned:
+        steps = [
+            f'run {contained} {base} python -I -m pip download --no-deps --require-hashes'
+            f' --dest /labbio/download/wheels "${{PIP[@]}}" -r /labbio/requirements.txt > {log("download.log")} 2>&1'
+            f" || exit {int(DownloadExit.DOWNLOAD_FAILED)}",
+        ]
+    else:
+        steps = [
+            f'run {contained} {base} python -I -m pip install --dry-run --report /labbio/download/report.json'
+            f' "${{PIP[@]}}" -r /labbio/requirements.txt > {log("resolve.log")} 2>&1'
+            f" || exit {int(DownloadExit.RESOLVE_FAILED)}",
+            f"run {contained} {base} python -I -c {quote(_PINS)} /labbio/download/report.json"
+            f" /labbio/download/pins.txt > {log('pins.log')} 2>&1 || exit {int(DownloadExit.PIN_FAILED)}",
+            f"if [ -s {quote(str(download_dir / 'pins.txt'))} ]; then",
+            f'  run {contained} {base} python -I -m pip download --no-deps --dest /labbio/download/wheels'
+            f' "${{PIP[@]}}" -r /labbio/download/pins.txt > {log("download.log")} 2>&1'
+            f" || exit {int(DownloadExit.DOWNLOAD_FAILED)}",
+            "fi",
+        ]
     lines = [
         "#!/bin/bash",
         "# Generated by LabBio from a fixed template. Resolves and downloads the wheels",
@@ -225,16 +196,7 @@ def render_download_program(
         'export APPTAINER_TMPDIR="$work/apptainer-tmp"',
         "BINDS=(" + " ".join(binds) + ")",
         "PIP=(" + " ".join(options) + ")",
-        f'run {contained} {base} python -I -m pip install --dry-run --report /labbio/download/report.json'
-        f' "${{PIP[@]}}" -r /labbio/requirements.txt > {log("resolve.log")} 2>&1'
-        f" || exit {int(DownloadExit.RESOLVE_FAILED)}",
-        f"run {contained} {base} python -I -c {quote(_PINS)} /labbio/download/report.json"
-        f" /labbio/download/pins.txt > {log('pins.log')} 2>&1 || exit {int(DownloadExit.PIN_FAILED)}",
-        f"if [ -s {quote(str(download_dir / 'pins.txt'))} ]; then",
-        f'  run {contained} {base} python -I -m pip download --no-deps --dest /labbio/download/wheels'
-        f' "${{PIP[@]}}" -r /labbio/download/pins.txt > {log("download.log")} 2>&1'
-        f" || exit {int(DownloadExit.DOWNLOAD_FAILED)}",
-        "fi",
+        *steps,
     ]
     return "\n".join(lines) + "\n"
 
@@ -327,7 +289,8 @@ def classify_build(exit_status: int | None, *, timed_out: bool, log_dir: Path) -
 
     if timed_out:
         return "BUILD_TIMEOUT", ({"code": "BUILD_TIMEOUT"},)
-    fixed = {BuildExit.UNAVAILABLE: "BUILDER_UNAVAILABLE", BuildExit.PROBE_FAILED: "VERIFICATION_FAILED"}
+    fixed = {BuildExit.UNAVAILABLE: "BUILDER_UNAVAILABLE", BuildExit.PROBE_FAILED: "VERIFICATION_FAILED",
+             BuildExit.CONDA_INSTALL_FAILED: "CONDA_INSTALL_FAILED"}
     if exit_status in fixed:
         code = fixed[BuildExit(exit_status)]
         return code, ({"code": code},)
@@ -375,28 +338,15 @@ class DownloadRunner(SubprocessApptainerRunner):
                 "--parent-pid", str(self._parent_pid), "--nice", "10")
 
 
-@contextmanager
-def attempt_lease(build_root: Path) -> Iterator[None]:
-    """Held for the whole build attempt; restart cleanup never touches a held attempt."""
-
-    descriptor = os.open(build_root / LEASE_FILE, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o077:
-            raise PermissionError("The attempt lease must be a private regular file")
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        os.close(descriptor)
-
-
 def remove_stale_downloads(attempts_root: Path) -> int:
-    """Delete downloaded wheels that no live attempt holds; logs and receipts stay."""
+    """Delete downloads and solver caches that no live attempt holds; logs and receipts stay."""
 
     removed = 0
     for attempt in sorted(attempts_root.iterdir()):
-        wheels = attempt / "download" / "wheels"
-        if attempt.is_symlink() or wheels.is_symlink() or not wheels.is_dir():
+        downloads = [path for path in (attempt / "download" / "wheels", attempt / "conda" / "pkgs",
+                                       attempt / "conda" / "solve")
+                     if not path.is_symlink() and path.is_dir()]
+        if attempt.is_symlink() or not downloads:
             continue
         try:
             descriptor = os.open(attempt / LEASE_FILE, os.O_RDONLY | os.O_NOFOLLOW)
@@ -408,7 +358,8 @@ def remove_stale_downloads(attempts_root: Path) -> int:
                     fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     continue  # A live process is still using this attempt.
-            shutil.rmtree(wheels)
+            for path in downloads:
+                shutil.rmtree(path)
             removed += 1
         finally:
             if descriptor is not None:
@@ -426,11 +377,19 @@ def render_build_program(
     build_dir: Path,
     log_dir: Path,
     import_modules: tuple[str, ...],
+    conda_dir: Path | None = None,
     resources: RequestedResources | None = None,
 ) -> str:
-    """Return the fixed bash program a build job runs; every value is validated and quoted."""
+    """Return the fixed bash program a build job runs; every value is validated and quoted.
 
-    for path in (apptainer_binary, base_sif, wheel_dir, lock_file, output_sif, build_dir, log_dir):
+    With conda_dir (micromamba, explicit.txt and pkgs/ from the control plane),
+    the locked conda packages are installed offline into CONDA_ENV_PREFIX first,
+    and an environment script appends its bin directory to PATH, so the image's
+    own python stays the PYTHON entry point.
+    """
+
+    for path in (apptainer_binary, base_sif, wheel_dir, lock_file, output_sif, build_dir, log_dir,
+                 *((conda_dir,) if conda_dir is not None else ())):
         _check_path(path)
     modules = normalize_modules(import_modules, max_count=256)
     quote = shlex.quote
@@ -468,6 +427,9 @@ def render_build_program(
         'cleanup() { chmod -R u+w -- "$work" 2>/dev/null; rm -rf -- "$work"; }',
         "trap cleanup EXIT",
         f'mkdir -- "$work/tmp" "$work/apptainer-tmp" "$work/pack-check" || exit {unavailable}',
+        # Everything below is created inside the image, which every lab member must be able to
+        # read; the host side stays private because $work and the log directory are 0700.
+        "umask 022",
         'export APPTAINER_TMPDIR="$work/apptainer-tmp"',
         'sandbox="$work/sandbox"',
         # Capabilities only the node can confirm, checked before any real work.
@@ -478,6 +440,7 @@ def render_build_program(
         f'run "$A" --silent build{packing} "$work/pack-check.sif" "$work/pack-check" > {log("pack-check.log")} 2>&1'
         f" || exit {unavailable}",
         f'mount="$sandbox"{_BUILD_MOUNT}',
+        *(_conda_steps(conda_dir, isolated, log) if conda_dir is not None else ()),
         f"if [ -s {quote(str(lock_file))} ]; then",
         f'  mkdir -- "$mount" "$mount/wheels" && : > "$mount/lock.txt" || exit {int(BuildExit.INSTALL_FAILED)}',
         f'  run {isolated} --writable {binds} "$sandbox" {install} > {log("install.log")} 2>&1'
@@ -493,6 +456,35 @@ def render_build_program(
         f"mv -f -- {partial} {quote(str(output_sif))} || exit {int(BuildExit.PACK_FAILED)}",
     ]
     return "\n".join(lines) + "\n"
+
+
+def _conda_steps(conda_dir: Path, isolated: str, log) -> list[str]:
+    """Offline install of the explicit lock inside the sandbox, then the PATH script.
+
+    The mount point is created fresh (an image entry there makes mkdir fail) and
+    removed, with the installer's package cache, before the wheel step. The PATH script
+    is written from inside the container, so a link in the image cannot redirect
+    the write to the host.
+    """
+
+    quote = shlex.quote
+    failed = int(BuildExit.CONDA_INSTALL_FAILED)
+    conda = f"{_BUILD_MOUNT}/conda"
+    binds = " ".join(f"--bind {quote(f'{conda_dir / name}:{conda}/{name}:ro')}"
+                     for name in ("micromamba", "explicit.txt", "pkgs"))
+    install = (f"{conda}/micromamba create -y -q --no-rc -r {_BUILD_MOUNT}/root -p {CONDA_ENV_PREFIX}"
+               f" --offline --file {conda}/explicit.txt")
+    script = ("import os; os.makedirs('/.singularity.d/env', exist_ok=True); "
+              f"open('/.singularity.d/env/{CONDA_PATH_SCRIPT}', 'x').write("
+              f"'export PATH=\"$PATH:{CONDA_ENV_PREFIX}/bin\"\\n')")
+    return [
+        f'mkdir -- "$mount" "$mount/conda" "$mount/conda/pkgs" "$mount/root" && : > "$mount/conda/micromamba"'
+        f' && : > "$mount/conda/explicit.txt" || exit {failed}',
+        f'run {isolated} --writable {binds} "$sandbox" {install} > {log("conda.log")} 2>&1 || exit {failed}',
+        f'chmod -R u+w -- "$mount" && rm -rf -- "$mount" || exit {failed}',
+        f'run {isolated} --writable "$sandbox" python -I -c {quote(script)} > {log("conda-path.log")} 2>&1'
+        f" || exit {failed}",
+    ]
 
 
 # Each step runs in the background so that a cancel, timeout or parent death stops it at once.
@@ -524,11 +516,3 @@ def _tail(path: Path, limit: int = 65_536) -> str:
     with path.open("rb") as stream:
         stream.seek(max(0, path.stat().st_size - limit))
         return stream.read(limit).decode("utf-8", errors="replace")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(_CHUNK_BYTES):
-            digest.update(chunk)
-    return digest.hexdigest()

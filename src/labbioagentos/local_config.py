@@ -16,7 +16,7 @@ from uuid import UUID
 
 from dotenv import dotenv_values
 from pydantic import (
-    BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator,
+    BaseModel, ConfigDict, Field, PrivateAttr, SecretStr, ValidationError, field_validator,
     model_serializer, model_validator,
 )
 from pydantic_core import PydanticCustomError
@@ -45,6 +45,7 @@ from labbioagentos.kernel.contracts import (
     DEFAULT_MAX_REQUEST_BYTES, AnthropicEffort, GeminiThinkingLevel, ReasoningEffort,
 )
 from labbioagentos.kernel.http_stream import DEFAULT_MAX_RETRIES, MAX_RETRIES_LIMIT
+from labbioagentos.execution.models import GpuSupport
 from labbioagentos.workflow.definition import report_revision_workflow_definition, runtime_workflow_definition
 
 
@@ -80,6 +81,16 @@ _PROVIDER_FIX_HINTS = {
     ),
     "PROVIDER_CREDENTIALS_NOT_LOADED": (
         "The provider key was not loaded before a model call; this is a composition error."
+    ),
+    "EXECUTION_IMAGES_MIGRATION_REQUIRED": (
+        "Move each image into its own [[execution.images]] table with key, reference, "
+        "available_python_modules and installed_packages, and set [execution] default_image "
+        "to the key used when the Agent names no image."
+    ),
+    "CREDENTIAL_UNDER_BOUND_PATH": (
+        "Move the named credential file out of every directory that can be mounted into a "
+        "container: data and result roots, the managed workspace, environment, SIF, scratch, "
+        "cache and build directories."
     ),
 }
 
@@ -283,13 +294,40 @@ class LocalApptainerSettings(_SettingsModel):
     verify_sif_on_execute: bool = Field(default=True, strict=True)
 
 
+class LocalImageSettings(_SettingsModel):
+    """One operator-configured base image; every configured image is a lab image."""
+
+    key: str
+    reference: str
+    # Runtime families the image supports: python runs PYTHON scripts and sh runs SHELL ones.
+    runtimes: tuple[Literal["PYTHON", "SHELL"], ...] = Field(default=("PYTHON",), min_length=1)
+    available_python_modules: tuple[str, ...] = ()
+    installed_packages: dict[str, str] = Field(default_factory=dict)
+    # Whether the image can use (SUPPORTED) or needs (REQUIRED) NVIDIA GPUs; the operator vouches for it.
+    gpu: Literal["NONE", "SUPPORTED", "REQUIRED"] = "NONE"
+
+    def approved(self) -> ApprovedImage:
+        from .execution.admission import DEFAULT_ENTRY_POINTS
+
+        return ApprovedImage(
+            key=self.key, reference=self.reference,
+            entry_points={ExecutionRuntime(name): DEFAULT_ENTRY_POINTS[ExecutionRuntime(name)]
+                          for name in dict.fromkeys(self.runtimes)},
+            available_python_modules=self.available_python_modules,
+            installed_packages=self.installed_packages, gpu=GpuSupport(self.gpu),
+        )
+
+
+# Settings that described the one image before C15; they now live in [[execution.images]].
+_SINGLE_IMAGE_SETTINGS = ("image_key", "image_reference", "available_python_modules",
+                          "installed_packages")
+
+
 class LocalExecutionSettings(_SettingsModel):
     backend: Literal["docker", "apptainer"] = "apptainer"
     apptainer: LocalApptainerSettings | None = None
-    image_key: str
-    image_reference: str
-    available_python_modules: tuple[str, ...] = ()
-    installed_packages: dict[str, str] = Field(default_factory=dict)
+    images: tuple[LocalImageSettings, ...] = Field(min_length=1, max_length=32)
+    default_image: str  # The key execution_submit uses when the Agent names none.
     resources: RequestedResources
     max_output_file_bytes: int = Field(default=DEFAULT_OUTPUT_FILE_BYTES, ge=1, strict=True)
     max_collected_output_bytes: int = Field(default=DEFAULT_COLLECTED_OUTPUT_BYTES, ge=1, strict=True)
@@ -307,24 +345,33 @@ class LocalExecutionSettings(_SettingsModel):
             data.pop("apptainer", None)
         return data
 
-    def approved_image(self) -> ApprovedImage:
-        return ApprovedImage(
-            key=self.image_key, reference=self.image_reference,
-            runtime=ExecutionRuntime.PYTHON,
-            available_python_modules=self.available_python_modules,
-            installed_packages=self.installed_packages,
-        )
+    def approved_images(self) -> tuple[ApprovedImage, ...]:
+        return tuple(image.approved() for image in self.images)
+
+    def default_approved_image(self) -> ApprovedImage:
+        return next(image for image in self.approved_images() if image.key == self.default_image)
 
     @model_validator(mode="after")
     def validate_image(self) -> "LocalExecutionSettings":
-        self.approved_image()
+        keys = [image.key for image in self.images]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Each [[execution.images]] key must be unique")
+        if self.default_image not in keys:
+            raise ValueError("default_image must name one of the [[execution.images]] keys")
+        if "PYTHON" not in next(image for image in self.images if image.key == self.default_image).runtimes:
+            # The backend check and the default capability run a Python probe in it.
+            raise ValueError("default_image must support the PYTHON runtime")
+        if next(image for image in self.images if image.key == self.default_image).gpu == "REQUIRED":
+            # The default capability and the backend check run without GPUs.
+            raise ValueError("default_image must not require GPUs")
+        self.approved_images()
         if self.backend == "apptainer":
             if self.apptainer is None:
                 raise PydanticCustomError(
                     MissingApptainerConfigurationError.code, MissingApptainerConfigurationError.hint,
                 )
-            if re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_reference) is None:
-                raise ValueError("Apptainer image_reference must be a registered sha256:<64 hex> SIF")
+            if any(re.fullmatch(r"sha256:[0-9a-f]{64}", image.reference) is None for image in self.images):
+                raise ValueError("Apptainer image references must be registered sha256:<64 hex> SIFs")
         if self.max_output_file_bytes > self.max_collected_output_bytes:
             raise ValueError("Total collection limit must be at least the per-file limit")
         return self
@@ -382,6 +429,21 @@ class LocalClusterBuildSettings(LocalApptainerBuildSettings):
         return self
 
 
+class LocalCondaSettings(_SettingsModel):
+    """The platform's own micromamba and the channels derived environments may use."""
+
+    micromamba: Path
+    micromamba_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    channels: tuple[str, ...] = ("conda-forge", "bioconda")
+
+    @field_validator("channels")
+    @classmethod
+    def check_channels(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        from .execution.conda import validate_channels
+
+        return validate_channels(value)
+
+
 class LocalEnvironmentSettings(_SettingsModel):
     root: Path
     build_proxy: str | None = None
@@ -389,12 +451,14 @@ class LocalEnvironmentSettings(_SettingsModel):
     include_error_context: bool = Field(default=False, strict=True)
     cluster: LocalClusterBuildSettings | None = None
     local_apptainer: LocalApptainerBuildSettings | None = None
+    conda: LocalCondaSettings | None = None
 
     @model_serializer(mode="wrap")
     def omit_absent_local_apptainer(self, handler):
         data = handler(self)
-        if data.get("local_apptainer") is None:
-            data.pop("local_apptainer", None)
+        for name in ("local_apptainer", "conda"):
+            if data.get(name) is None:
+                data.pop(name, None)
         return data
 
     @model_validator(mode="after")
@@ -417,6 +481,7 @@ class LocalLauncherSettings(_SettingsModel):
     partition: str | None = None
     account: str | None = None
     qos: str | None = None
+    gpu_partition: str | None = None  # Jobs that request GPUs; defaults to partition.
     walltime_margin_seconds: int = Field(default=600, ge=0, le=86_400, strict=True)
     poll_interval_seconds: float = Field(default=30.0, gt=0, le=3_600)
     max_queue_seconds: float = Field(default=86_400.0, gt=0, le=30 * 86_400)
@@ -425,7 +490,7 @@ class LocalLauncherSettings(_SettingsModel):
 
     @model_validator(mode="after")
     def validate_kind(self) -> "LocalLauncherSettings":
-        scheduler_fields = (self.template, self.partition, self.account, self.qos)
+        scheduler_fields = (self.template, self.partition, self.account, self.qos, self.gpu_partition)
         if self.kind == "template" and self.template is None:
             raise ValueError("kind = 'template' requires a scheduler template")
         if self.kind == "local" and (any(scheduler_fields) or self.extra_directives):
@@ -443,6 +508,19 @@ class LocalLauncherSettings(_SettingsModel):
         return SchedulerTemplate.model_validate(tomllib.loads(path.read_text(encoding="utf-8")))
 
 
+class LocalLabSettings(_SettingsModel):
+    """The lab area other members read, and this member's own private area."""
+
+    root: Path
+    member_root: Path
+    # Registry credentials for private OCI pulls; default <member_root>/registries.json. Like any
+    # credential file, it must lie outside every path a container can be given (DECIDED-C15-G2).
+    registry_credentials: Path | None = None
+
+    def registry_credentials_file(self) -> Path:
+        return self.registry_credentials or self.member_root / "registries.json"
+
+
 class LocalSettings(_SettingsModel):
     runtime_backend: Literal["native"] = "native"
     result_root: Path
@@ -456,6 +534,9 @@ class LocalSettings(_SettingsModel):
     gold_root: Path | None = None
     environment: LocalEnvironmentSettings | None = None
     launcher: LocalLauncherSettings | None = None
+    lab: LocalLabSettings | None = None
+    # Set only by bind_lab from the lab member registry; TOML cannot supply a role.
+    _lab_roles: frozenset = PrivateAttr(default=frozenset())
 
     @model_validator(mode="after")
     def validate_placement(self) -> "LocalSettings":
@@ -475,6 +556,9 @@ class LocalSettings(_SettingsModel):
                 raise ValueError("Local Apptainer requires a systemd resource owner; scheduler placement does not")
             if resource_owner == "systemd-affinity" and not float(self.execution.resources.cpus).is_integer():
                 raise ValueError("systemd-affinity requires an integer CPU count")
+            if local and self.execution.resources.gpus > 0:
+                # --nv exposes every device and systemd cannot confine them (DECIDED-C15-F).
+                raise ValueError("Local Apptainer does not support GPUs; set [execution.resources] gpus = 0")
         if self.environment is not None:
             if (placement == ("apptainer", "template")) != (self.environment.cluster is not None):
                 raise ValueError("[environment.cluster] is required only for Scheduler + Apptainer")
@@ -488,6 +572,9 @@ class LocalSettings(_SettingsModel):
 
     @property
     def principal(self) -> Principal:
+        if self._lab_roles:
+            return Principal(user_id=self.identity.user_id, lab_id=self.identity.lab_id,
+                             roles=self._lab_roles)
         return Principal(user_id=self.identity.user_id, lab_id=self.identity.lab_id)
 
     @property
@@ -560,6 +647,12 @@ def load_settings(path: Path) -> LocalSettings:
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     if isinstance(raw.get("provider"), dict) and "base_url_env" in raw["provider"]:
         raise ProviderConfigurationError("PROVIDER_ENDPOINT_MOVED", ("provider.base_url_env",))
+    execution = raw.get("execution")
+    legacy = [name for name in _SINGLE_IMAGE_SETTINGS if isinstance(execution, dict) and name in execution]
+    if legacy:
+        # Not converted silently: the operator states the image list and the default.
+        raise ProviderConfigurationError("EXECUTION_IMAGES_MIGRATION_REQUIRED",
+                                         tuple(f"execution.{name}" for name in legacy))
     settings = _validated_settings(raw)
 
     def absolute(value: Path) -> Path:
@@ -580,13 +673,26 @@ def load_settings(path: Path) -> LocalSettings:
             "root": absolute(settings.environment.root),
             "cluster": _absolute_cluster_build(settings.environment.cluster, absolute),
             "local_apptainer": _absolute_cluster_build(settings.environment.local_apptainer, absolute),
+            "conda": settings.environment.conda.model_copy(update={
+                "micromamba": absolute(settings.environment.conda.micromamba),
+            }) if settings.environment.conda else None,
         }) if settings.environment else None,
         "provider": settings.provider.model_copy(update={"env_file": absolute(settings.provider.env_file)}),
         "execution": settings.execution.model_copy(update={
             "apptainer": _absolute_apptainer(settings.execution.apptainer, absolute),
         }) if settings.execution.apptainer else settings.execution,
         "launcher": _absolute_launcher(settings.launcher, absolute),
+        "lab": settings.lab.model_copy(update={
+            "root": absolute(settings.lab.root), "member_root": absolute(settings.lab.member_root),
+            "registry_credentials": (absolute(settings.lab.registry_credentials)
+                                     if settings.lab.registry_credentials else None),
+        }) if settings.lab else None,
     })
+    if settings.launcher is not None and settings.launcher.kind == "template":
+        scheduler_policy(settings)  # Partitions are checked as executions will use them.
+        template = settings.launcher.scheduler_template()
+        if settings.execution.resources.gpus > 0 and "gpus" not in template.directives:
+            raise ValueError("GPUs are allowed, but the scheduler template has no gpus directive")
     if settings.environment is not None and settings.environment.cluster is not None:
         # Partitions and directives are checked as the build and download jobs will use them.
         environment_scheduler_policy(settings)
@@ -595,7 +701,57 @@ def load_settings(path: Path) -> LocalSettings:
         # A present env file is checked at load; an absent one fails only when
         # a command needs the key, so read-only commands work without it.
         _check_env_file(settings.provider.env_file)
+    check_credentials_outside_bound_paths(settings)
     return settings
+
+
+def _bindable_roots(settings: LocalSettings) -> tuple[tuple[str, Path], ...]:
+    """Every configured directory whose contents a container or build job can see."""
+
+    roots = [("result_root", settings.result_root),
+             *((f"input_roots.{index}", root) for index, root in enumerate(settings.input_roots))]
+    if settings.managed_root is not None:
+        roots.append(("managed_root", settings.managed_root))
+    apptainer = settings.execution.apptainer
+    if apptainer is not None:
+        roots += [("execution.apptainer.sif_store", apptainer.sif_store),
+                  ("execution.apptainer.scratch_root", apptainer.scratch_root)]
+        if apptainer.cache_dir is not None:
+            roots.append(("execution.apptainer.cache_dir", apptainer.cache_dir))
+    environment = settings.environment
+    if environment is not None:
+        roots.append(("environment.root", environment.root))
+        # build_dir and download_work_root are not listed: jobs bind only a fresh
+        # mktemp subdirectory of them, which cannot already hold a credential.
+        for table in ("cluster", "local_apptainer"):
+            build = getattr(environment, table)
+            if build is not None and build.cache_dir is not None:
+                roots.append((f"environment.{table}.cache_dir", build.cache_dir))
+    return tuple(roots)
+
+
+def check_credentials_outside_bound_paths(
+    settings: LocalSettings, credentials: tuple[tuple[str, Path], ...] = (),
+) -> None:
+    """Refuse a credential file that a container could read (DECIDED-C15-G).
+
+    With a lab, the member's registry credentials are checked too when the file exists;
+    without it there is nothing to protect, and private registries are simply not reachable.
+    """
+
+    files = [("provider.env_file", settings.provider.env_file), *credentials]
+    if settings.lab is not None:
+        registry = settings.lab.registry_credentials_file()
+        if registry.exists() or registry.is_symlink():
+            files.append(("lab.registry_credentials", registry))
+    roots = [(name, root.expanduser().resolve()) for name, root in _bindable_roots(settings)]
+    for credential_name, credential in files:
+        path = credential.expanduser().resolve()
+        for root_name, root in roots:
+            if path.is_relative_to(root):
+                raise ProviderConfigurationError(
+                    "CREDENTIAL_UNDER_BOUND_PATH", (credential_name, root_name),
+                )
 
 
 def _absolute_cluster_build(cluster: LocalClusterBuildSettings | None, absolute):
@@ -694,10 +850,14 @@ def runtime_manifest(
                 WorkflowStage.INTERPRET, WorkflowStage.REPORT,
             } else stage for stage in profile.stages
         )})
-    if settings.environment is not None:
+    # The Agent chooses among every selectable image, so listing is offered whenever there is more
+    # than one to choose from; building needs [environment] (cluster validation, round 5).
+    listing = settings.lab is not None or len(settings.execution.images) > 1
+    if settings.environment is not None or listing:
         environment_tools = {
             WorkflowStage.PLAN: ("environment_list",),
-            WorkflowStage.EXECUTE: ("environment_list", "environment_build"),
+            WorkflowStage.EXECUTE: (("environment_list", "environment_build") if settings.environment is not None
+                                    else ("environment_list",)),
         }
         profile = profile.model_copy(update={"stages": tuple(
             stage.model_copy(update={"capabilities": tuple(dict.fromkeys((
@@ -874,6 +1034,7 @@ def scheduler_policy(settings: LocalSettings):
     return SchedulerPolicy(
         max_output_file_bytes=settings.execution.max_output_file_bytes,
         partition=launcher.partition, account=launcher.account, qos=launcher.qos,
+        gpu_partition=launcher.gpu_partition,
         walltime_margin_seconds=launcher.walltime_margin_seconds,
         poll_interval_seconds=launcher.poll_interval_seconds,
         max_queue_seconds=launcher.max_queue_seconds,
@@ -903,8 +1064,105 @@ def environment_scheduler_policy(settings: LocalSettings, *, download: bool = Fa
     )
 
 
-def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> dict:
-    """Environment builds: Docker on the control-plane host, or cluster builds in jobs."""
+def bind_lab(settings: LocalSettings) -> LocalSettings:
+    """Run only as an approved lab member under the approved OS account (DECIDED-C15-B).
+
+    The lab id and roles come from the lab area, never from TOML or task text.
+    """
+    if settings.lab is None:
+        return settings
+    from .local_lab import LabArea
+
+    area = LabArea(settings.lab.root)
+    area.check_permissions()
+    member = area.require_member(settings.identity.user_id, os.getuid())
+    bound = settings.model_copy(update={
+        "identity": settings.identity.model_copy(update={"lab_id": area.manifest().lab_id}),
+    })
+    bound._lab_roles = member.roles
+    return bound
+
+
+def _image_catalog(settings: LocalSettings):
+    """Configured images are lab images; the user's own builds are personal.
+
+    With a lab area, its catalog holds lab images and state events, and the
+    member's private area holds personal ones.
+    """
+    from .execution.catalog import CatalogStore, ExecutionBackendName, ImageCatalog
+    from .local_lab import LabArea, private_member_root
+
+    lab = personal = None
+    if settings.lab is not None:
+        lab = LabArea(settings.lab.root).catalog
+        personal = CatalogStore(private_member_root(settings.lab.member_root) / "catalog").initialize()
+    return ImageCatalog(
+        owner_user_id=settings.principal.user_id,
+        backend=ExecutionBackendName(settings.execution.backend.upper()),
+        configured_keys=(image.key for image in settings.execution.images),
+        configured_gpu={image.key: GpuSupport(image.gpu) for image in settings.execution.images},
+        lab=lab, personal=personal,
+    )
+
+
+def _conda_policy(settings: LocalSettings, machine: str | None = None):
+    """The conda builder policy, or None when this deployment configures no conda.
+
+    Docker builds solve for this host; cluster builds for the compute nodes' machine.
+    """
+    conda = settings.environment.conda if settings.environment else None
+    if conda is None:
+        return None
+    import platform as host_platform
+
+    from .execution.conda import CondaPolicy
+
+    return CondaPolicy(micromamba=conda.micromamba, micromamba_sha256=conda.micromamba_sha256,
+                       channels=conda.channels, machine=machine or host_platform.machine(),
+                       proxy_url=settings.environment.build_proxy)
+
+
+def _use_recorder(settings: LocalSettings, catalog):
+    """With a lab, every image use is recorded in the member's reference index (DECIDED-C15-H)."""
+    from .local_image_references import UseRecorder, member_index
+
+    index = member_index(settings)
+    return None if index is None else UseRecorder(settings, catalog, index)
+
+
+def _run_use_recorder(settings: LocalSettings, catalog, run_root: Path):
+    recorder = _use_recorder(settings, catalog)
+    return None if recorder is None else (lambda key, run_id: recorder.run(key, run_id, run_root))
+
+
+def _environment_use_recorder(settings: LocalSettings, catalog):
+    recorder = _use_recorder(settings, catalog)
+    return None if recorder is None else recorder.environment
+
+
+def _environment_limits(settings: LocalSettings, catalog):
+    """With a lab, Agent-built environments count against the member's quota (DECIDED-C15-H)."""
+    if settings.lab is None:
+        return None
+    from .execution.environments import EnvironmentLimits
+    from .local_lab import LabArea
+
+    def limits() -> tuple[int, int]:
+        policy = LabArea(settings.lab.root).policy()  # Read when the build ends: the policy may change.
+        return policy.max_image_bytes, policy.member_quota_bytes
+
+    return EnvironmentLimits(limits=limits, admitted_bytes=lambda: sum(
+        record.size_bytes or 0 for key, record in catalog.personal.records().items() if not catalog.deleted(key)))
+
+
+def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger, catalog, *, sif_store=None,
+                        job_purpose=None) -> dict:
+    """Environment builds: Docker on the control-plane host, or cluster builds in jobs.
+
+    sif_store replaces the default chain, for example so that a member's lock
+    build registers its SIF in the member's own store; job_purpose then records
+    its jobs as admission jobs.
+    """
     from .execution.environments import EnvironmentService
 
     environment = settings.environment
@@ -916,15 +1174,16 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
                 root=environment.root, image_registry=registry,
                 builder=DockerEnvironmentBuilder(
                     proxy_url=environment.build_proxy, timeout_seconds=environment.build_timeout_seconds,
-                    cpus=settings.execution.resources.cpus,
+                    cpus=settings.execution.resources.cpus, conda=_conda_policy(settings),
                 ),
-                owner_user_id=settings.principal.user_id,
+                owner_user_id=settings.principal.user_id, catalog=catalog,
+                limits=_environment_limits(settings, catalog),
+                use_recorder=_environment_use_recorder(settings, catalog),
                 include_error_context=environment.include_error_context,
             )
 
         return {"environment_service_factory": docker_service}
 
-    from .execution.apptainer import SifStore
     from .execution.apptainer_build import DownloadRunner
     from .execution.apptainer_environment_builder import ApptainerBuildPolicy, ApptainerEnvironmentBuilder
     from .execution.launchers import SchedulerLauncher
@@ -969,15 +1228,63 @@ def _environment_wiring(settings: LocalSettings, run_root: Path, job_ledger) -> 
         return EnvironmentService(
             root=environment.root, image_registry=registry,
             builder=ApptainerEnvironmentBuilder(
-                sif_store=SifStore(apptainer.sif_store), policy=policy, build_launcher=build_launcher,
+                # Bases may be lab or personal SIFs; builds are registered in the configured store.
+                sif_store=sif_store or sif_stores(settings), policy=policy, build_launcher=build_launcher,
                 workspace_root=jobs_root, job_ledger=job_ledger, **placement,
+                conda=_conda_policy(settings, cluster.machine),
+                **({"job_purpose": job_purpose} if job_purpose is not None else {}),
             ),
-            owner_user_id=settings.principal.user_id,
+            owner_user_id=settings.principal.user_id, catalog=catalog,
+            limits=_environment_limits(settings, catalog),
+            use_recorder=_environment_use_recorder(settings, catalog),
             include_error_context=environment.include_error_context,
         )
 
     # Crash cleanup reaches build and download jobs through the launcher of their shared root.
     return {"environment_service_factory": cluster_service, "environment_job_launcher": build_launcher}
+
+
+def sif_stores(settings: LocalSettings):
+    """The configured SIF store, then the lab's and the member's own when a lab is configured."""
+    from .execution.apptainer import SifStore, SifStoreChain
+    from .local_lab import LabArea, private_member_root
+
+    stores = [SifStore(settings.execution.apptainer.sif_store)]
+    if settings.lab is not None:
+        stores.append(LabArea(settings.lab.root).sif_store())
+        stores.append(SifStore(private_member_root(settings.lab.member_root) / "sif"))
+    return SifStoreChain(tuple(stores))
+
+
+def _docker_gpu_execution(settings: LocalSettings) -> dict:
+    """Docker with GPUs: the inventory is probed before the first execution (DECIDED-C15-F)."""
+    from .execution.docker import DockerCommandBuilder
+    from .execution.gpu import DockerGpuInventory
+
+    inventory = DockerGpuInventory(settings.execution.default_approved_image().resolved_reference,
+                                   minimum=settings.execution.resources.gpus)
+    return {
+        "command_builder": DockerCommandBuilder(max_output_file_bytes=settings.execution.max_output_file_bytes,
+                                                tmpfs_size_mb=settings.execution.tmpfs_size_mb,
+                                                gpu_inventory=inventory),
+        # Refuses every execution until the GPU runtime answers; never a CPU fallback.
+        "backend_check": inventory.probe,
+    }
+
+
+def prepare_apptainer_tmp_dir(path: Path | None) -> bool:
+    """Create the configured Apptainer tmp_dir (0700) when it is missing; True when it is usable.
+
+    Apptainer creates its cache directory itself but not its temporary directory, and a
+    job whose APPTAINER_TMPDIR does not exist fails (cluster validation, 2026-11-18).
+    """
+    if path is None:
+        return True
+    try:
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        return False
+    return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
 
 
 def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
@@ -989,8 +1296,9 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     from .execution.launchers.systemd import SystemdLocalLauncher, SystemdProbeRunner
 
     apptainer, launcher = settings.execution.apptainer, settings.launcher
-    image = settings.execution.approved_image()
-    store = SifStore(apptainer.sif_store)
+    prepare_apptainer_tmp_dir(apptainer.tmp_dir)  # backend-check reports one that cannot be used.
+    image = settings.execution.default_approved_image()
+    store = sif_stores(settings)
     runner = SubprocessApptainerRunner(
         max_output_file_bytes=settings.execution.max_output_file_bytes,
         cache_dir=apptainer.cache_dir, tmp_dir=apptainer.tmp_dir,
@@ -1005,10 +1313,13 @@ def _cluster_execution(settings: LocalSettings, run_root: Path) -> dict:
     probe_runner = SystemdProbeRunner(job_launcher, settings.execution.resources) if local else runner
 
     def backend_check() -> dict:
+        check = store.verify if apptainer.verify_sif_on_execute else store.path_for
+        for other in settings.execution.approved_images():
+            check(other.reference)  # Every configured SIF must be present, not only the probed default.
         sif_path = (store.verify(image.reference) if apptainer.verify_sif_on_execute
                     else store.path_for(image.reference))
         capabilities = probe_capabilities(
-            binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
+            binary=apptainer.binary, sif_path=sif_path, executable=image.entry_point(ExecutionRuntime.PYTHON)[0],
             runner=probe_runner, scratch_root=apptainer.scratch_root,
         )
         capabilities.require(resource_enforcement=apptainer.resource_enforcement)
@@ -1039,6 +1350,7 @@ def build_application(
     settings: LocalSettings, run_root: Path, *, load_provider: bool = True,
 ) -> LabBioApplication:
     """Assemble known owners without selecting methods or installing dependencies."""
+    settings = bind_lab(settings)  # Idempotent; a library caller cannot skip the membership check.
     runtime_file = run_root / "RUNTIME.json"
     saved_runtime = json.loads(runtime_file.read_text()) if runtime_file.is_file() else {}
     report_only = saved_runtime.get("workflow_scope") == "report"
@@ -1202,11 +1514,15 @@ def build_application(
         else:
             from .execution.job_ledger import JobLedger
             execution_wiring = {"job_ledger": JobLedger(run_root / "jobs.sqlite")}
+            if settings.execution.resources.gpus > 0:
+                execution_wiring.update(_docker_gpu_execution(settings))
         cleanup.callback(execution_wiring["job_ledger"].close)
+        image_catalog = _image_catalog(settings)
         environment_wiring = {}
         if settings.environment is not None:
             # Build jobs share the execution ledger, so the run's crash cleanup covers them.
-            environment_wiring = _environment_wiring(settings, run_root, execution_wiring.get("job_ledger"))
+            environment_wiring = _environment_wiring(
+                settings, run_root, execution_wiring.get("job_ledger"), image_catalog)
         application = LabBioApplication(ApplicationRuntimeConfiguration(
             artifact_root=run_root / "artifacts", execution_workspace_root=run_root / "executions",
             runtime_revision=manifest["runtime_revision"], allowed_input_roots=settings.input_roots,
@@ -1217,7 +1533,9 @@ def build_application(
             profile_catalog=catalog, stage_assemblies=assemblies,
             workflow_definition=(report_revision_workflow_definition() if report_only
                                  else runtime_workflow_definition()),
-            approved_images=(settings.execution.approved_image(),), output_contracts=(profile.output_contract,),
+            approved_images=settings.execution.approved_images(), image_catalog=image_catalog,
+            image_use_recorder=_run_use_recorder(settings, image_catalog, run_root),
+            output_contracts=(profile.output_contract,),
             report_delivery_artifact_ids=report_delivery_artifact_ids,
             exposure_policy=ExposurePolicy(
                 allow_generated_file_read=settings.execution.allow_generated_file_read,
@@ -1225,13 +1543,16 @@ def build_application(
             execution_policy=ExecutionPolicy(
                 allow_network=False, max_cpus=resources.cpus, max_memory_mb=resources.memory_mb,
                 max_pids=resources.pids_limit, max_timeout_seconds=resources.timeout_seconds,
+                max_gpus=resources.gpus,
                 max_output_file_bytes=settings.execution.max_output_file_bytes,
                 max_collected_output_bytes=settings.execution.max_collected_output_bytes,
                 tmpfs_size_mb=settings.execution.tmpfs_size_mb,
                 include_error_context=settings.execution.include_error_context,
             ),
             execution_profile=ApplicationExecutionProfile(
-                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.image_key, resources=resources,
+                # The configured table bounds requests; the default request uses no GPU.
+                runtime=ExecutionRuntime.PYTHON, image_key=settings.execution.default_image,
+                resources=resources.model_copy(update={"gpus": 0}),
                 network_required=False, output_contract_ids=(profile.output_contract.contract_id,),
                 minimum_queryable_output_count=1,
             ),

@@ -362,8 +362,9 @@ class RuntimeExecutionCapabilityView(BaseModel):
     image_key: StrictStr = Field(
         min_length=1, max_length=128,
         description=(
-            "Default approved image key. If environment tools are configured, "
-            "their verified image keys are also valid execution choices."
+            "Default approved image key. Every image listed by environment_list, "
+            "including SHELL tool images and verified built environments, is an "
+            "equally valid execution choice."
         ),
     )
     resources: RequestedResources = Field(description=(
@@ -425,8 +426,10 @@ class RuntimeExecutionCapabilityView(BaseModel):
     tmpfs_size_mb: int | None = Field(
         default=None, ge=1,
         description=(
-            "Capacity of memory-backed /tmp in MiB, subject to container memory "
-            "and per-file limits. None means unspecified in an older snapshot."
+            "Capacity of /tmp in MiB, subject to container memory and per-file "
+            "limits. Where /tmp is disk-backed, its size is checked every few "
+            "seconds and exceeding it stops the execution with SCRATCH_LIMIT. "
+            "None means unspecified in an older snapshot."
         ),
     )
     available_python_modules: tuple[StrictStr, ...] = Field(
@@ -680,7 +683,7 @@ class RevisionValidationIssue(BaseModel):
     field: Literal[
         "request", "execution_id", "expected_script_hash", "edits", "edits.old", "edits.new",
         "image_key", "requested_outputs", "resources", "resources.cpus", "resources.memory_mb",
-        "resources.pids_limit", "resources.timeout_seconds",
+        "resources.pids_limit", "resources.timeout_seconds", "resources.gpus",
         "input_artifact_ids", "parameters",
     ]
     item_index: int | None = Field(default=None, ge=0)

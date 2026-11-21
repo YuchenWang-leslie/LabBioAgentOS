@@ -151,7 +151,7 @@ SIF 存储目录必须由当前用户持有且权限为 `0700`；注册文件按
 labbio image-register --config .local/runtime.toml --sif /absolute/path/base.sif
 ```
 
-把返回的 `image_reference` 填入 `[execution]`。这个 SHA256 是 SIF 文件内容的哈希，不是 Docker image ID。
+把返回的 `image_reference` 填入该镜像 `[[execution.images]]` 表的 `reference`。这个 SHA256 是 SIF 文件内容的哈希，不是 Docker image ID。
 
 本机基镜像：
 
@@ -204,9 +204,7 @@ max_retries = 2
 
 [execution]
 backend = "apptainer"
-image_key = "scientific-python"
-image_reference = "sha256:YOUR_REGISTERED_SIF_SHA256"
-available_python_modules = ["anndata", "h5py", "numpy", "pandas", "scipy"]
+default_image = "scientific-python"
 include_error_context = false
 allow_generated_file_read = false
 max_output_file_bytes = 134217728
@@ -218,6 +216,11 @@ cpus = 4.0
 memory_mb = 4096
 pids_limit = 128
 timeout_seconds = 900.0
+
+[[execution.images]]
+key = "scientific-python"
+reference = "sha256:YOUR_REGISTERED_SIF_SHA256"
+available_python_modules = ["anndata", "h5py", "numpy", "pandas", "scipy"]
 
 [execution.apptainer]
 binary = "/absolute/path/to/apptainer"
@@ -232,7 +235,7 @@ verify_sif_on_execute = true
 kind = "local"
 ```
 
-配置不含 API 密钥。`installed_packages` 可额外填写经核查的 distribution/version 映射。镜像 `image_key` 是配置中的逻辑名，实际执行绑定不可变 `image_reference`。
+配置不含 API 密钥。每个镜像一张 `[[execution.images]]` 表，`installed_packages` 可额外填写经核查的 distribution/version 映射。镜像的 `key` 是配置中的逻辑名，实际执行绑定不可变的 `reference`；`default_image` 是 Agent 没有点名镜像时使用的 key。
 
 ### 5.1 凭据文件
 

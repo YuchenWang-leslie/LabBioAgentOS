@@ -103,6 +103,14 @@ actor, consumer, execution policy, Artifact access, and resource limits.
 Provider arguments contain task choices only and cannot override those trusted
 facts.
 
+Images are such facts too (C15). The host merges the configured lab images,
+the lab's admitted images and the member's own admitted images into one
+catalog, with lab membership, roles and the OS uid taken from the lab area,
+never from configuration or task text. The model sees a bounded projection of
+the selectable images (key, scope, purpose, GPU flag, inventory origin and
+size), never a raw reference, registry or host path, and names an image only
+by its key.
+
 Capability results become bounded, safe observations plus typed evidence.
 Finalization consumes a frozen evidence bundle and cannot call tools.
 
@@ -118,10 +126,21 @@ owner locks integer logical-core affinity with inherited seccomp, and uses
 delegated memory/pids cgroups; it does not require CPU-controller delegation.
 The original fractional-quota mode remains explicit and requires CPU delegation.
 User namespace and resource capabilities are checked, never bypassed by the
-user-level installer. Native cluster acceptance remains separate. Execution receives
-read-only registered inputs, declared writable output locations, resource
-limits, and network policy. Outputs become evidence only after collection,
-registration, hashing, and lineage checks.
+user-level installer. Scheduler + Apptainer has been validated on a Slurm test
+cluster but is not activated in production. Execution receives read-only
+registered inputs, declared writable output locations, resource limits
+(including a GPU count up to the configured maximum), network policy, and the
+image and runtime (PYTHON or SHELL) the Agent chose; the host never chooses
+an image or runtime for it and never falls back to another. Outputs become
+evidence only after collection, registration, hashing, and lineage checks.
+
+Every image has two identities: a backend-neutral source identity (an OCI
+manifest digest, a SIF hash, or a hash of a base source plus exact package
+locks and recipe for a derived environment) and a backend realization (a
+Docker image id or a SIF). Trace and Gold provenance record the source, so the
+same environment is recognized on Docker and Apptainer. Image admission,
+promotion, state changes, deletion and restore are operator commands under
+the lab's roles; see [local workspaces](LOCAL_WORKSPACES.md).
 
 ### External behavior plane
 
@@ -143,10 +162,11 @@ filename or modification time.
 
 ## Current evidence boundary
 
-The previously recorded deterministic suite passed 1382 tests with 10 intentional
-skips. Current development regression and the still-open acceptance gates are
-recorded at the top of [the convergence workplan](REAL_E2E_CONVERGENCE_WORKPLAN.md);
-a green suite alone does not establish scientific acceptance or activate a release.
+The deterministic suite currently passes 4754 tests with 82 intentional
+skips (C15 merged with `main`, branch `feat/container-images`). Current
+development regression and the still-open acceptance gates are recorded at the
+top of [the convergence workplan](REAL_E2E_CONVERGENCE_WORKPLAN.md); a green
+suite alone does not establish scientific acceptance or activate a release.
 Generic live model behavior, dynamic collaboration, interruption/recovery,
 Docker execution, and one bounded ordinary-user PBMC3k task through an
 Agent-authored report have been observed. This does not establish independent

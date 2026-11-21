@@ -78,7 +78,8 @@ from .execution import (
     RequestedResources,
     StructuredOutputContract,
 )
-from .execution.environments import EnvironmentService
+from .execution.catalog import ImageCatalog, ImageState
+from .execution.environments import EnvironmentService, ImageListing
 from .governance import (
     AccessAction,
     AccessService,
@@ -586,6 +587,10 @@ class ApplicationRuntimeConfiguration:
     command_builder: ContainerCommandBuilder | None = None
     backend_check: Callable[[], Mapping[str, Any]] | None = None
     environment_service_factory: Callable[[ApprovedImageRegistry], EnvironmentService] | None = None
+    # Scope and state of images; admitted images join the registry (DECIDED-C15-H).
+    image_catalog: ImageCatalog | None = None
+    # Records each image a run uses, so that deleting an image finds its live references.
+    image_use_recorder: Callable[[str, UUID], None] | None = None
     literature_search: LiteratureSearchService | None = None
     skill_service: GoldSkillService | None = None
     memory_service: MemoryGovernanceService | None = None
@@ -721,7 +726,12 @@ class LabBioApplication:
         self.registration_policy = ArtifactRegistrationPolicy(
             configuration.output_contracts
         )
-        self.image_registry = ApprovedImageRegistry(configuration.approved_images)
+        catalog = configuration.image_catalog
+        # A revoked image never enters the registry, so nothing can execute it.
+        self.image_registry = ApprovedImageRegistry(tuple(
+            image for image in configuration.approved_images
+            if catalog is None or catalog.state(image.key) is not ImageState.REVOKED
+        ) + (catalog.admitted_images() if catalog is not None else ()))
         environment_service = (
             configuration.environment_service_factory(self.image_registry)
             if configuration.environment_service_factory is not None else None
@@ -798,6 +808,8 @@ class LabBioApplication:
             trace_recorder=self.trace_recorder,
             allow_generated_file_read=configuration.exposure_policy.allow_generated_file_read,
             job_ledger=configuration.job_ledger,
+            image_catalog=catalog,
+            image_use_recorder=configuration.image_use_recorder,
         )
         self.execution_preflight = ExecutionPreflightService(
             artifact_store=self.artifact_store,
@@ -819,6 +831,10 @@ class LabBioApplication:
             artifact_exposure=self.artifact_exposure,
             execution_submission=self.execution_submission,
             environment_service=environment_service,
+            # Without environment builds, the images the user may select are still listed.
+            image_listing=None if environment_service is not None else ImageListing(
+                self.image_registry, catalog=catalog,
+                owner_user_id=catalog.owner_user_id if catalog is not None else None),
             literature_search=configuration.literature_search,
             skill_service=configuration.skill_service,
             memory_service=configuration.memory_service,

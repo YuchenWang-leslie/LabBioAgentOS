@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -25,9 +26,10 @@ from labbioagentos.trace import RunTraceRecorder, TraceEventType
 
 from .models import (
     ExecutionDiagnostic, ExecutionDiagnosticCode, ExecutionPlan, ExecutionPlanDraft,
-    ExecutionReceipt, ExecutionResult, ExecutionScriptLocation, ExecutionSourceEdit,
-    SourceRevisionExecutionDraft, SourceRevisionOrigin,
+    ExecutionReceipt, ExecutionResult, ExecutionRuntime, ExecutionScriptLocation, ExecutionSourceEdit,
+    RuntimeSource, SourceRevisionExecutionDraft, SourceRevisionOrigin,
 )
+from .catalog import ImageCatalog, ImageState
 from .errors import ExecutionInputSelectionError, ExecutionScriptValidationError
 from .job_ledger import JobLedger
 
@@ -105,7 +107,12 @@ class ExecutionSubmissionService:
         trace_recorder: RunTraceRecorder | None = None,
         allow_generated_file_read: bool = False,
         job_ledger: JobLedger | None = None,
+        image_catalog: ImageCatalog | None = None,
+        image_use_recorder: Callable[[str, UUID], None] | None = None,
     ):
+        self.image_catalog = image_catalog
+        # Records each image a run uses before it executes, so deleting it finds the run.
+        self.image_use_recorder = image_use_recorder
         self.artifact_store = artifact_store
         self.access_service = access_service
         self.executor = executor
@@ -165,13 +172,22 @@ class ExecutionSubmissionService:
             draft.input_artifact_ids
         ).issubset(set(mountable_input_artifact_ids) | registered):
             raise ExecutionInputSelectionError()
-        try:
-            ast.parse(draft.script_content)
-        except SyntaxError as exc:
-            raise ExecutionScriptValidationError(
-                script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
-                diagnostics=(self._syntax_diagnostic(exc, draft.script_content),),
-            ) from exc
+        catalog = self.image_catalog
+        if catalog is not None and catalog.state(draft.image_key) is not ImageState.ACTIVE:
+            # A deprecated image serves only runs that already executed with it.
+            catalog.require_selectable(
+                draft.image_key, used_by_run=draft.image_key in self._run_image_keys(run_id))
+        # An omitted runtime is the documented PYTHON default; the source is recorded either way.
+        runtime = draft.runtime or ExecutionRuntime.PYTHON
+        source = RuntimeSource.EXPLICIT if draft.runtime is not None else RuntimeSource.DEFAULT
+        if runtime is ExecutionRuntime.PYTHON:
+            try:
+                ast.parse(draft.script_content)
+            except SyntaxError as exc:
+                raise ExecutionScriptValidationError(
+                    script_hash=sha256(draft.script_content.encode("utf-8")).hexdigest(),
+                    diagnostics=(self._syntax_diagnostic(exc, draft.script_content),),
+                ) from exc
         for artifact_id in draft.input_artifact_ids:
             ref = self.artifact_store.get_ref(artifact_id)
             self._require_exact_workspace(ref, workspace)
@@ -179,7 +195,8 @@ class ExecutionSubmissionService:
                 principal, ref, AccessAction.READ_ARTIFACT
             )
         plan = ExecutionPlan(
-            **draft.model_dump(),
+            **{**draft.model_dump(), "runtime": runtime},
+            runtime_source=source,
             run_id=run_id,
             stage_id=stage_id,
             invocation_id=invocation_id,
@@ -187,6 +204,8 @@ class ExecutionSubmissionService:
             project_id=workspace.project_id,
             lab_id=workspace.lab_id,
         )
+        if self.image_use_recorder is not None:
+            self.image_use_recorder(plan.image_key, run_id)  # Fails closed: no record, no execution.
         self._emit(
             run_id,
             stage_id,
@@ -196,6 +215,8 @@ class ExecutionSubmissionService:
             {
                 "execution_id": str(plan.execution_id),
                 "image_key": plan.image_key,
+                "runtime": plan.runtime.value,
+                "runtime_source": plan.runtime_source.value,
                 "input_artifact_ids": [str(item) for item in plan.input_artifact_ids],
                 "revision_of": str(revision_of) if revision_of is not None else None,
                 "resources": plan.resources.model_dump(mode="json"),
@@ -487,6 +508,17 @@ class ExecutionSubmissionService:
                 "source": source[source_offset:end],
             },
         }
+
+    def _run_image_keys(self, run_id: UUID) -> set[str]:
+        """Image keys this run has already executed with, from its exact submissions."""
+        keys = {value.receipt.image_key for value in self._submitted_executions.values()
+                if value.script_ref.run_id == run_id and value.receipt is not None}
+        if self.job_ledger is not None:
+            for execution_id in self.job_ledger.execution_submission_ids(run_id):
+                payload = self.job_ledger.execution_submission(run_id, execution_id)
+                if payload is not None:
+                    keys.add(_SubmissionBinding.model_validate_json(payload).receipt.image_key)
+        return keys
 
     def _require_confirmed_submissions(self, run_id: UUID) -> None:
         pending = self.job_ledger.unreceipted_executions(run_id) if self.job_ledger else ()

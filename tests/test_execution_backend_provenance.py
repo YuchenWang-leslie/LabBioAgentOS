@@ -144,7 +144,7 @@ async def test_result_receipt_sqlite_reopen_inspect_and_native_projection_preser
     tmp_path, boundary, monkeypatch,
 ):
     _, recorder, access, _, _, _, _ = boundary
-    store, executor, _, _, digest = apptainer_environment(tmp_path / "backend", FakeDockerRunner())
+    store, executor, _, _, digest = apptainer_environment(tmp_path / "backend", FakeDockerRunner(), watched_scratch=True)
     exposure = ArtifactExposureService(store, ExposurePolicy(), access_service=access)
     boundary = (*boundary[:5], store, exposure)
     ledger_path = tmp_path / "submissions.sqlite"

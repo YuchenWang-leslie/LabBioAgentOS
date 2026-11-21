@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import hashlib
 import json
 
@@ -37,13 +38,15 @@ endpoint = "https://provider.invalid/v1"
 model_identifier = "test-provider-model"
 [execution]
 {execution}
-image_key = "python-local"
-image_reference = "{reference}"
+default_image = "python-local"
 [execution.resources]
 cpus = 1.0
 memory_mb = 512
 pids_limit = 64
 timeout_seconds = 60.0
+[[execution.images]]
+key = "python-local"
+reference = "{reference}"
 {apptainer}
 {launcher}
 '''
@@ -249,7 +252,7 @@ def test_backend_check_report(tmp_path, enforcement, capabilities, passed, failu
     assert calls[0]["scratch_root"] == tmp_path / "scratch"
 
 
-def _healthy_scheduler(template, policy, work_root):
+def _healthy_scheduler(template, policy, work_root, *, gpus=False):
     return {"template": template.name, "test_submission": "ACCEPTED",
             "clients": {"sbatch": True, "squeue": True, "scancel": True}}
 
@@ -265,7 +268,7 @@ def test_backend_check_refuses_an_unusable_scheduler(tmp_path, scheduler, expect
     cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))])
     seen = []
 
-    def scheduler_check(template, policy, work_root):
+    def scheduler_check(template, policy, work_root, *, gpus=False):
         seen.append((template.name, policy.partition, work_root))
         return {"template": template.name, **scheduler}
 
@@ -275,3 +278,52 @@ def test_backend_check_refuses_an_unusable_scheduler(tmp_path, scheduler, expect
     assert not ok and report["status"] == "REFUSED"
     assert report["security_failures"] == [] and report["configuration_failures"] == expected
     assert seen == [("slurm", "regular", tmp_path / "scratch")]
+
+
+# --- Apptainer's temporary directory (cluster validation, 2026-11-18) ---
+
+
+def _with_tmp_dir(tmp_path, tmp_dir):
+    config = _write(tmp_path)
+    text = config.read_text().replace('cache_dir = "cache"\n', f'cache_dir = "cache"\ntmp_dir = "{tmp_dir}"\n')
+    config.write_text(text)
+    return config
+
+
+def test_a_missing_tmp_dir_is_created_private_by_backend_check_and_the_wiring(tmp_path):
+    from labbioagentos.local_config import _cluster_execution
+
+    config = _with_tmp_dir(tmp_path, "apptainer-tmp/nested")
+    cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))])
+    report, ok = check_backend(load_settings(config), probe=lambda **_: _capabilities(),
+                               scheduler_check=_healthy_scheduler)
+    created = tmp_path / "apptainer-tmp" / "nested"
+    assert ok and report["configuration_failures"] == [] and created.is_dir()
+    assert created.stat().st_mode & 0o777 == 0o700
+
+    created.rmdir()
+    wiring = _cluster_execution(load_settings(config), tmp_path / "run")
+    wiring["job_ledger"].close()
+    assert created.is_dir()  # Jobs never start with an APPTAINER_TMPDIR that does not exist.
+
+
+def test_a_tmp_dir_that_cannot_be_used_refuses_backend_check(tmp_path):
+    (tmp_path / "taken").write_text("a file, not a directory")
+    config = _with_tmp_dir(tmp_path, "taken")
+    cli.main(["image-register", "--config", str(config), "--sif", str(_sif(tmp_path))])
+    report, ok = check_backend(load_settings(config), probe=lambda **_: _capabilities(),
+                               scheduler_check=_healthy_scheduler)
+    assert not ok and report["configuration_failures"] == ["apptainer_tmp_dir"]
+
+
+def test_without_a_tmp_dir_nothing_is_created(tmp_path):
+    from labbioagentos.local_config import prepare_apptainer_tmp_dir
+
+    assert prepare_apptainer_tmp_dir(None) is True
+    readonly = tmp_path / "readonly"
+    readonly.mkdir(mode=0o500)
+    try:
+        assert prepare_apptainer_tmp_dir(readonly / "child") is False
+        assert prepare_apptainer_tmp_dir(readonly) is (os.geteuid() == 0)  # Exists, but not writable.
+    finally:
+        readonly.chmod(0o700)

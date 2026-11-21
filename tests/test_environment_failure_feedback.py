@@ -46,7 +46,7 @@ def test_apptainer_decoder_retains_probe_details(tmp_path):
         'message_sha256': hashlib.sha256(b'ABI mismatch').hexdigest(), 'truncated': False}}
     probe = tmp_path / 'probe.json'
     probe.write_text(json.dumps({'installed_packages': {'outer-pkg': '1.0'},
-        'failed_imports': ['outer_pkg'], 'import_errors': details}))
+        'failed_imports': ['outer_pkg'], 'import_errors': details, 'unshared_count': 0}))  # C15 probe field.
     assert _probe_inventory(probe, ('outer_pkg',))['import_errors'] == details
 
 
@@ -189,7 +189,7 @@ def test_local_apptainer_wires_explicit_build_text_policy(tmp_path, enabled):
         + str(enabled).lower() + '\n[environment.local_apptainer]\nmachine = "x86_64"\n'))
     settings = load_settings(path)
     with closing(JobLedger(tmp_path / 'run/jobs.sqlite')) as ledger:
-        service = _environment_wiring(settings, tmp_path / 'run', ledger)[
+        service = _environment_wiring(settings, tmp_path / 'run', ledger, None)[
             'environment_service_factory'](ApprovedImageRegistry(()))
         assert service.include_error_context is enabled
         assert service.builder.build_launcher.resource_enforcement == 'systemd-affinity'

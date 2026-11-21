@@ -39,9 +39,10 @@ async def test_real_docker_build_and_probe_respect_the_environment_contract(tmp_
         result = await service.build_environment("base", (), (), run_id=uuid4())
         assert result["status"] == "SUCCEEDED"
         assert result["cache_hit"] is False
-        image_id = result["image_reference"]
+        # C15: the receipt names only the image key; the reference stays in the registry.
+        assert "image_reference" not in result
+        image_id = registry.resolve(result["image_key"]).resolved_reference
         assert image_id != base_id
-        assert registry.resolve(result["image_key"]).resolved_reference == image_id
         attempt = next((service.attempts_root).iterdir())
         receipt = json.loads((attempt / "receipt.json").read_text())
         assert receipt["status"] == "SUCCEEDED" and receipt["image_id"] == image_id

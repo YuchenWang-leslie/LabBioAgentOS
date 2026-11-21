@@ -21,6 +21,7 @@ from .execution.apptainer_build import (
     prepare_cache_dir,
 )
 from .execution.apptainer_probe import probe_capabilities
+from .execution.models import ExecutionRuntime
 from .execution.launchers import check_scheduler_client
 from .local_config import LocalSettings, scheduler_policy
 
@@ -112,7 +113,9 @@ def check_backend(
             store, scratch_root=apptainer.scratch_root,
             resource_enforcement=apptainer.resource_enforcement, apptainer_binary=apptainer.binary,
         )
-        image = settings.execution.approved_image()
+        for other in settings.execution.approved_images():
+            store.verify(other.reference)  # Every configured SIF, not only the probed default.
+        image = settings.execution.default_approved_image()
         sif_path = store.verify(image.reference)
     except (SifStoreError, ValueError, OSError) as exc:
         report.update(status="REFUSED", security_failures=["image_store"], detail=type(exc).__name__)
@@ -130,7 +133,7 @@ def check_backend(
         local_resources = (local_check or launcher.probe)()
         runner = SystemdProbeRunner(launcher, settings.execution.resources)
     capabilities = probe(
-        binary=apptainer.binary, sif_path=sif_path, executable=image.executable[0],
+        binary=apptainer.binary, sif_path=sif_path, executable=image.entry_point(ExecutionRuntime.PYTHON)[0],
         runner=runner,
         scratch_root=apptainer.scratch_root,
     )
@@ -138,6 +141,10 @@ def check_backend(
     if apptainer.resource_enforcement == "apptainer-cgroups" and not capabilities.cgroup_limits:
         failures.append("cgroup_limits")
     configuration_failures = []
+    from .local_config import prepare_apptainer_tmp_dir
+
+    if not prepare_apptainer_tmp_dir(apptainer.tmp_dir):
+        configuration_failures.append("apptainer_tmp_dir")
     scheduler = None
     if local:
         report["local_resources"] = local_resources
@@ -145,11 +152,14 @@ def check_backend(
     else:
         scheduler = scheduler_check(
             settings.launcher.scheduler_template(), scheduler_policy(settings), apptainer.scratch_root,
+            gpus=settings.execution.resources.gpus > 0,
         )
         if not all(scheduler["clients"].values()):
             configuration_failures.append("scheduler_client")
         if scheduler["test_submission"] == "REJECTED":
             configuration_failures.append("scheduler_submission")
+        if scheduler.get("gpu_test_submission") == "REJECTED":
+            configuration_failures.append("scheduler_gpu_submission")
     if settings.environment is not None:
         report["environment"] = (
             {"download_placement": "local-systemd", "build_capabilities": "CHECKED_BY_EACH_BUILD_JOB",

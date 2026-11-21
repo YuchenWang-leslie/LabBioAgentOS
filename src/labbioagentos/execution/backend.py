@@ -16,6 +16,11 @@ from .mounts import ExecutionWorkspace, ResolvedMount
 CONTAINER_SCRIPT_PATH = PurePosixPath("/labbio/script.py")
 
 
+def container_script_path(runtime) -> PurePosixPath:
+    """Where the submitted program is mounted; its suffix names the runtime it is for."""
+    return CONTAINER_SCRIPT_PATH if runtime.value == "PYTHON" else PurePosixPath("/labbio/script.sh")
+
+
 @dataclass(frozen=True)
 class ProcessOutcome:
     """Internal captured process streams; they never enter ExecutionResult."""
@@ -26,6 +31,8 @@ class ProcessOutcome:
     duration_seconds: float
     timed_out: bool = False
     output_limit_exceeded: bool = False
+    # What a scheduler job recorded about its GPUs (gpu.parse_gpu_allocation); None without GPUs.
+    gpu_allocation: dict | None = None
     host_termination: ExecutionHostTermination | None = None
 
 
@@ -56,6 +63,9 @@ class ContainerCommandBuilder(Protocol):
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         """Host directories this backend creates for one execution and nothing else uses."""
+
+    def scratch_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        """Disk-backed directories holding the container's /tmp; their size is polled."""
 
     def model_stderr(self, stderr: bytes) -> bytes:
         """Drop lines the container runtime itself wrote before stderr is projected for a model."""

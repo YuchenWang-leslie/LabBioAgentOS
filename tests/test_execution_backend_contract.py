@@ -37,11 +37,12 @@ def _docker(argv) -> Sandbox:
         fields = dict(part.split("=", 1) for part in value.split(",") if "=" in part)
         mounts.append((fields["source"], fields["target"], value.endswith(",readonly")))
     image = argv.index(_image().resolved_reference)
+    # The program is the forced entry point plus the arguments after the image.
     return Sandbox(
         network_disabled=_values(argv, "--network") == ["none"],
         mounts=tuple(mounts),
         env_names=frozenset(item.split("=", 1)[0] for item in _values(argv, "--env")),
-        program=tuple(argv[image + 1:]),
+        program=(*_values(argv, "--entrypoint"), *argv[image + 1:]),
     )
 
 
@@ -94,6 +95,26 @@ def test_shared_sandbox_contract(backend, tmp_path, monkeypatch):
     flattened = "\0".join(argv)
     assert SECRET not in flattened and "OPENAI_API_KEY" not in flattened
     assert "/var/run/docker.sock" not in flattened and "--privileged" not in argv
+
+
+@pytest.mark.parametrize("executable", [("python",), ("python", "-I")])
+def test_docker_always_overrides_the_image_entry_point(executable, tmp_path):
+    # Without --entrypoint, an image ENTRYPOINT runs in place of the Agent's script.
+    from labbioagentos import DockerCommandBuilder
+    from labbioagentos.execution.mounts import ExecutionWorkspaceManager
+
+    from labbioagentos.execution.models import ExecutionRuntime
+
+    image, plan = _image().model_copy(update={"entry_points": {ExecutionRuntime.PYTHON: executable}}), _plan()
+    workspace = ExecutionWorkspaceManager(tmp_path / "work").prepare(plan)
+
+    argv = DockerCommandBuilder().build(plan, image, workspace, ())
+
+    reference = argv.index(image.resolved_reference)
+    assert argv.count("--entrypoint") == 1
+    assert argv[argv.index("--entrypoint") + 1] == executable[0]
+    assert argv.index("--entrypoint") < reference
+    assert argv[reference + 1:] == (*executable[1:], "/labbio/script.py")
 
 
 @pytest.mark.parametrize("backend, character", [

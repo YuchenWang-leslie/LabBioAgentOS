@@ -87,6 +87,9 @@ def test_qos_is_refused_where_the_template_cannot_express_it(tmp_path):
     ("slurm", "--comment=`id`"), ("slurm", "--comment='x'"), ("slurm", "constraint=avx2"),
     ("pbs", "-V"), ("pbs", "-v OPENAI_API_KEY"), ("pbs", "-l walltime=999:00:00"),
     ("lsf", "-env all"), ("lsf", "-L /bin/bash"), ("lsf", "-W 9999"),
+    # C15: GPUs come only from an execution's own request.
+    ("slurm", "--gres=gpu:1"), ("slurm", "--gpus=1"), ("slurm", "-G 1"), ("slurm", "--gpus-per-node=2"),
+    ("slurm", "--gpus-per-task=1"), ("slurm", "--cpus-per-gpu=4"), ("lsf", '-gpu num=1'),
 ])
 def test_unsafe_extra_directives_are_rejected(template, directive):
     with pytest.raises(ValueError):
@@ -94,7 +97,8 @@ def test_unsafe_extra_directives_are_rejected(template, directive):
 
 
 @pytest.mark.parametrize("template, directive", [
-    ("slurm", "--constraint=avx2"), ("slurm", "--gres=gpu:1"), ("slurm", "--tmp=20G"),
+    ("slurm", "--constraint=avx2"), ("slurm", "--tmp=20G"),
+    ("slurm", "--gpu-bind=closest"),
     ("pbs", "-m n"), ("lsf", "-R span[hosts=1]"),
 ])
 def test_ordinary_extra_directives_are_accepted(template, directive):

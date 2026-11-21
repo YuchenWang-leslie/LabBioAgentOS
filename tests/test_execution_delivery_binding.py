@@ -27,7 +27,7 @@ class OutputRunner(ProcessRunner):
 @pytest.mark.parametrize('fault', [None, 'missing', 'conflicting'])
 async def test_delivery_validates_program_binding_not_submission_lifecycle(tmp_path, boundary, monkeypatch, fault):
     _, _, access, principal, workspace, _, _ = boundary
-    store, executor, *_ = apptainer_environment(tmp_path / 'execution', OutputRunner(), traced=True)
+    store, executor, *_ = apptainer_environment(tmp_path / 'execution', OutputRunner(), traced=True, watched_scratch=True)
     recorder = executor.trace_recorder
     service = ExecutionSubmissionService(artifact_store=store, access_service=access,
         executor=executor, trace_recorder=recorder)

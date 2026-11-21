@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
-from .base import JobSpec
+from .base import SCRATCH_POLL_SECONDS, JobSpec, scratch_limit_marker
 from .templates import SchedulerTemplate
 
 # Characters a shell or a directive parser could treat as structure.
@@ -17,6 +17,8 @@ _UNSAFE_DIRECTIVE = re.compile(r"[\x00-\x1f\x7f$`;|&<>\\'\"]")
 _POLICY_VALUE = re.compile(r"[A-Za-z0-9._,+-]{1,128}")
 EXIT_RECORD = re.compile(r"(0|[1-9][0-9]{0,2}) (0|[1-9][0-9]{0,9}) ([01])\n?")
 JOB_PATH = "/usr/local/bin:/usr/bin:/bin"
+GPU_RECORD = "gpus.txt"  # What the node allocated, written in the job before the program starts.
+MAX_GPU_RECORD_BYTES = 65_536
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,7 @@ class SchedulerPolicy:
     partition: str | None = None
     account: str | None = None
     qos: str | None = None
+    gpu_partition: str | None = None  # For jobs that request GPUs; defaults to partition.
     walltime_margin_seconds: int = 600
     kill_after_seconds: int = 30
     poll_interval_seconds: float = 30.0
@@ -39,7 +42,7 @@ class SchedulerPolicy:
     def __post_init__(self) -> None:
         if type(self.max_output_file_bytes) is not int or self.max_output_file_bytes < 1:
             raise ValueError("max_output_file_bytes must be a positive integer")
-        for name in ("partition", "account", "qos"):
+        for name in ("partition", "account", "qos", "gpu_partition"):
             value = getattr(self, name)
             if value is not None and _POLICY_VALUE.fullmatch(value) is None:
                 raise ValueError(f"{name} must be a plain scheduler identifier")
@@ -65,7 +68,9 @@ def validate_extra_directives(template: SchedulerTemplate, directives: tuple[str
         if not directive or len(directive) > 256 or _UNSAFE_DIRECTIVE.search(directive):
             raise ValueError("Extra directives must be single plain lines without shell metacharacters")
         flag = re.split(r"[\s=]", directive.strip(), maxsplit=1)[0]
-        if not flag.startswith("-") or flag in template.forbidden_extra_flags:
+        forbidden = any(flag == item or (item.endswith("*") and flag.startswith(item[:-1]))
+                        for item in template.forbidden_extra_flags)
+        if not flag.startswith("-") or forbidden:
             raise ValueError(f"Extra directive flag {flag!r} is not allowed for {template.name}")
 
 
@@ -79,29 +84,34 @@ def render_job_script(
     """Return the complete batch script; the analysis program stays a separate file."""
 
     validate_extra_directives(template, policy.extra_directives)
-    for path in (job_dir, *spec.cleanup_paths):
+    marker = scratch_limit_marker(spec.workspace_root)
+    for path in (job_dir, *spec.cleanup_paths, *spec.scratch_paths, marker):
         if not _safe_path(path):
             raise ValueError("Job paths must be plain absolute paths")
     for name, value in environment.items():
         if re.fullmatch(r"[A-Z][A-Z0-9_]*", name) is None or any(c in value for c in "\n\r\0"):
             raise ValueError("Job environment entries must be plain single-line values")
     timeout = max(1, math.ceil(spec.timeout_seconds))
+    gpus = spec.resources.gpus
+    if gpus and "gpus" not in template.directives:
+        raise ValueError(f"The {template.name} template cannot request GPUs")  # Never run without them.
     values = {
         "job_name": f"labbio-{spec.execution_id.hex[:12]}",
         "walltime": _walltime(timeout + policy.kill_after_seconds + policy.walltime_margin_seconds,
                               template.walltime_format),
         "cpus": max(1, math.ceil(spec.resources.cpus)),
         "memory_mb": spec.resources.memory_mb,
-        "partition": policy.partition,
+        "gpus": gpus,
+        "partition": (policy.gpu_partition or policy.partition) if gpus else policy.partition,
         "account": policy.account,
         "qos": policy.qos,
         "log": str(job_dir / "scheduler.log"),
     }
     lines = ["#!/bin/bash"]
-    for key in ("job_name", "walltime", "cpus", "memory", "partition", "account", "qos",
+    for key in ("job_name", "walltime", "cpus", "memory", "gpus", "partition", "account", "qos",
                 "log", "error_log"):
         configured = key not in {"partition", "account", "qos"} or values[key] is not None
-        if not configured:
+        if not configured or (key == "gpus" and not gpus) or (gpus and key in template.gpu_replaces):
             continue
         if key not in template.directives:
             if key in {"partition", "account", "qos"}:
@@ -114,6 +124,11 @@ def render_job_script(
     quote = shlex.quote
     exit_path, temporary = job_dir / "exit_code", job_dir / "exit_code.tmp"
     assignments = " ".join(f"{name}={quote(value)}" for name, value in sorted(environment.items()))
+    if gpus:
+        # The scheduler names the allocated devices in the job's own environment. Apptainer
+        # passes APPTAINERENV_ variables through --cleanenv; when the scheduler sets nothing,
+        # nothing is set, because an empty CUDA_VISIBLE_DEVICES would hide every GPU.
+        assignments += ' ${CUDA_VISIBLE_DEVICES+"APPTAINERENV_CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"}'
     cleanup = " ".join(quote(str(path)) for path in spec.cleanup_paths)
     lines += [
         "# Generated by LabBio from a fixed template. The analysis program is a separate",
@@ -122,12 +137,17 @@ def render_job_script(
         "trap cleanup EXIT",
         f"cd -- {quote(str(job_dir))} || exit 1",
         f"ulimit -f {max(1, policy.max_output_file_bytes // 1024)}",
+        *(_gpu_record(job_dir) if gpus else ()),
         "started=$SECONDS",
         f"timeout --kill-after={policy.kill_after_seconds} {timeout} env -i {assignments} "
         + " ".join(quote(item) for item in spec.argv)
         + f" < /dev/null > {quote(str(job_dir / 'stdout.log'))}"
-        + f" 2> {quote(str(job_dir / 'stderr.log'))}",
+        + f" 2> {quote(str(job_dir / 'stderr.log'))} &",
+        "main=$!",
+        *_scratch_watcher(spec, marker, policy.kill_after_seconds),
+        'wait "$main"',
         "status=$?",
+        *(['kill "$watcher" 2>/dev/null', 'wait "$watcher" 2>/dev/null'] if spec.scratch_paths else []),
         "elapsed=$((SECONDS - started))",
         "timed_out=0",
         'if { [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; } '
@@ -138,6 +158,45 @@ def render_job_script(
         'exit "$status"',
     ]
     return "\n".join(lines) + "\n"
+
+
+def _gpu_record(job_dir: Path) -> list[str]:
+    """Record, on the node and outside the container, the GPUs the scheduler allocated."""
+    record = shlex.quote(str(job_dir / GPU_RECORD))
+    return [
+        "{ printf 'CUDA_VISIBLE_DEVICES=%s\\n' \"${CUDA_VISIBLE_DEVICES-}\";"
+        " if command -v nvidia-smi >/dev/null 2>&1; then nvidia-smi -L 2>/dev/null; fi; }"
+        f" | head -c {MAX_GPU_RECORD_BYTES} > {record}",
+    ]
+
+
+def _scratch_watcher(spec: JobSpec, marker: Path, kill_after: int) -> list[str]:
+    """Poll disk-backed /tmp; over the limit, record the marker and stop the program."""
+    if not spec.scratch_paths:
+        return []
+    if spec.scratch_limit_bytes is None or spec.scratch_limit_bytes < 1:
+        raise ValueError("Watched scratch paths need a positive size limit")
+    quote = shlex.quote
+    paths = " ".join(quote(str(path)) for path in spec.scratch_paths)
+    limit_kib = spec.scratch_limit_bytes // 1024
+    # timeout leads its own process group, so the group kill reaches the program too.
+    return [
+        "watch_scratch() {",
+        '  while kill -0 "$main" 2>/dev/null; do',
+        f"    sleep {SCRATCH_POLL_SECONDS}",
+        f"    used=$(du -skx -- {paths} 2>/dev/null | awk '{{s += $1}} END {{print s + 0}}')",
+        f'    if [ "$used" -gt {limit_kib} ]; then',
+        f"      : > {quote(str(marker))}",
+        '      kill -TERM "$main" 2>/dev/null',
+        f"      sleep {kill_after}",
+        '      kill -KILL -- "-$main" "$main" 2>/dev/null',
+        "      return",
+        "    fi",
+        "  done",
+        "}",
+        "watch_scratch &",
+        "watcher=$!",
+    ]
 
 
 def _walltime(total_seconds: int, style: str) -> str:

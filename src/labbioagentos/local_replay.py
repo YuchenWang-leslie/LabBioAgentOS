@@ -260,8 +260,9 @@ async def replay(settings, bundle_directory, manifest_sha256, destination):
     if (settings.execution.backend != "apptainer" or ap is None or not ap.verify_sif_on_execute
             or settings.launcher is not None and settings.launcher.kind != "local"
             or ap.resource_enforcement != b.resource_enforcement
-            or settings.execution.image_reference != b.sif_reference
-            or settings.execution.image_key != draft.image_key):
+            # Only an operator-configured image is trusted here; catalog images are not opened (C15).
+            or {image.key: image.reference for image in settings.execution.images}.get(draft.image_key)
+            != b.sif_reference):
         raise ValueError("Replay requires a trusted matching local Apptainer image with digest verification")
     if b.replay_runtime_sha256 != _package_hash():
         raise ValueError("Replay requires the same LabBio exporter and runner build")

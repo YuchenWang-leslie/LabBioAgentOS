@@ -52,7 +52,7 @@ class InspectingRunner(SubprocessDockerRunner):
         assert argv[argv.index("--tmpfs") + 1] == (
             f"/tmp:rw,noexec,nosuid,size={execution.tmpfs_size_mb}m"
         )
-        assert execution.image_reference in argv
+        assert execution.images[0].reference in argv
         assert "--privileged" not in argv
         assert not any("/var/run/docker.sock" in value for value in argv)
         self.container_names.append(argv[argv.index("--name") + 1])
@@ -87,7 +87,8 @@ def local_docker(tmp_path, request):
             endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
-            backend="docker", image_key="file-limit-python", image_reference=image,
+            backend="docker", default_image="file-limit-python",
+            images=[{"key": "file-limit-python", "reference": image}],
             resources=RequestedResources(cpus=1, memory_mb=256, pids_limit=64, timeout_seconds=30),
             **limits,
         ),
@@ -147,7 +148,7 @@ for name, size in parameters["files"].items():
 '''
     return await application.execution_submission.submit(
         ExecutionPlanDraft(
-            image_key=settings.execution.image_key, script_content=script,
+            image_key=settings.execution.default_image, script_content=script,
             parameters={
                 "files": files, "uid": os.getuid(), "schema_id": contract.schema_id,
                 "tmpfs_bytes": settings.execution.tmpfs_size_mb * MIB,
