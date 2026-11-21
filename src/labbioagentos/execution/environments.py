@@ -466,7 +466,9 @@ class ImageListing:
             facts.append({"requirement": value, "installed_version": version,
                 "version_satisfied": req.specifier.contains(version, prereleases=True) if version is not None else None,
                 "extras_verified": True if req.extras.issubset(documented_extras.get(name, set())) else None})
-        known_satisfied = all(item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
+        # Without requirements nothing was asked, so nothing is claimed (cluster validation, round 6).
+        known_satisfied = bool(facts) and all(
+            item["version_satisfied"] is True and item["extras_verified"] is True for item in facts)
         # Raw references stay hidden from models; provenance names the base by its key.
         base_key = next((base.key for base in self.image_registry.list()
                          if record and base.resolved_reference == record["base_image_reference"]), None)

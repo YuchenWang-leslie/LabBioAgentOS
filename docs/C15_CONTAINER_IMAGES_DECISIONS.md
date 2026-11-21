@@ -641,6 +641,21 @@ After the fifth cluster round (MOHAN CUI, 2026-11-21):
   equally valid execution choice. No model guidance on which image to prefer
   is added.
 
+After the sixth cluster round (MOHAN CUI, 2026-11-21):
+
+- With the facts complete, the live Agent chose existing non-default images
+  itself (an existing samtools environment, and the lab's `six` image).
+- `requirements_satisfied` answers only a question that was asked. When
+  `environment_list` is called without `requirements`, it is `null` for
+  every image; before, it was `true` for every image, including images
+  whose inventory is unknown. With requirements, it is unchanged.
+- The live Agent never chose the SHELL image, because an equally valid
+  Python environment with samtools existed. This is recorded as a gap in
+  level 3; the SHELL path stays covered at levels 1, 2 and 4. No further
+  cluster round is run for it.
+- Accepted deviation from acceptance criterion 12: the registry format did
+  not change, so there is no v1-to-v2 migration command.
+
 ## Not decided here
 
 These are outside C15. Each needs its own decision before any change:

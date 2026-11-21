@@ -76,6 +76,30 @@ def test_named_conda_packages_report_their_recorded_versions(tmp_path, names, ex
         assert items[key]["conda_packages"] == ({name: version} if version else {})
 
 
+def test_without_requirements_no_image_claims_to_satisfy_them(tmp_path):
+    """Cluster round 6: an empty request read as satisfied, even for an unknown inventory."""
+    catalog, registry = _catalog(tmp_path)
+    unknown = ApprovedImage(key="cuda-12-6", reference="sha256:" + "c" * 64, entry_points={"PYTHON": ("python",)})
+    registry = ApprovedImageRegistry((*registry.list(), unknown))
+    items = _items(ImageListing(registry, owner_user_id="admin", catalog=catalog).list())
+    assert items["cuda-12-6"]["inventory_known"] is False
+    assert {key: item["requirements_satisfied"] for key, item in items.items()} == dict.fromkeys(items, None)
+
+
+@pytest.mark.parametrize("requirement, expected", [
+    ("pip", {"py-base": True, "samtools-1-21": None, "cuda-12-6": None}),
+    ("pip>=99", {"py-base": False, "samtools-1-21": None, "cuda-12-6": None}),
+    (("pip", "six"), {"py-base": None, "samtools-1-21": None, "cuda-12-6": None}),  # One fact unknown.
+])
+def test_with_requirements_the_answer_is_unchanged(tmp_path, requirement, expected):
+    catalog, registry = _catalog(tmp_path)
+    unknown = ApprovedImage(key="cuda-12-6", reference="sha256:" + "c" * 64, entry_points={"PYTHON": ("python",)})
+    registry = ApprovedImageRegistry((*registry.list(), unknown))
+    items = _items(ImageListing(registry, owner_user_id="admin", catalog=catalog).list(
+        requirement if isinstance(requirement, tuple) else (requirement,)))
+    assert {key: items[key]["requirements_satisfied"] for key in expected} == expected
+
+
 @pytest.mark.parametrize("value", ["https://example.org/x.conda", "conda-forge::samtools", "samtools --force"])
 def test_a_conda_name_that_is_not_a_package_is_refused(tmp_path, value):
     catalog, registry = _catalog(tmp_path)
