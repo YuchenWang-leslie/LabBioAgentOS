@@ -4,19 +4,39 @@ import hashlib
 import re
 
 from .models import ExecutionErrorContext
+from .python_diagnostics import SAFE_PYTHON_EXCEPTION_TYPES
 
 _SCAN_BYTES = 65_536
 _LINE_CHARS = 1200
+_LONG_LINE = re.compile(rf"^[^\r\n]{{{_LINE_CHARS + 1},}}", re.MULTILINE)
 _TRACEBACK = "Traceback (most recent call last):"
 _OMISSION = "[oversized line omitted]"
-_EXCEPTION = re.compile(r"((?:[A-Za-z_]\w*\.)*[A-Z]\w*):", re.ASCII)
+_EXCEPTION = re.compile(r"((?:[a-z_][a-z0-9_]*\.)*[A-Z][A-Za-z0-9]*):", re.ASCII)
 _FRAME = re.compile(r'(?m)^[ \t]+File "[^"\r\n]{1,1024}", line [0-9]{1,12}\b')
 _KEY_BOUNDARY = re.compile(rb"-----(BEGIN|END) [^-\r\n]*PRIVATE KEY-----")
 
 
 def _omitted_line(prefix: str, has_traceback: bool) -> str:
     match = _EXCEPTION.match(prefix[:128]) if has_traceback else None
-    return f"{match[1]}: {_OMISSION}" if match else _OMISSION
+    if match:
+        name = match[1]
+        if name in SAFE_PYTHON_EXCEPTION_TYPES or name.endswith(("Error", "Exception", "Warning", "Failure")):
+            return f"{name}: {_OMISSION}"
+    return _OMISSION
+
+
+def _omit_long_records(text: str) -> tuple[str, int]:
+    # Test the physical line before secret/path replacement can shorten it.
+    def replace(match: re.Match[str]) -> str:
+        line = match[0]
+        prelude = text[:match.start()]
+        has_trace = _TRACEBACK in prelude and _TRACEBACK in redact_process_text(prelude)
+        placeholder = _omitted_line(line, has_trace)
+        # Carry only PEM delimiters across the omission for multiline redaction.
+        boundaries = _KEY_BOUNDARY.finditer(line.encode("utf-8"))
+        return "\\n".join([placeholder, *(f"-----{m[1].decode()} PRIVATE KEY-----" for m in boundaries)])
+
+    return _LONG_LINE.subn(replace, text)
 
 
 def _inside_private_key(stderr: bytes, offset: int) -> bool:
@@ -72,9 +92,10 @@ def bounded_error_context(stderr: bytes, *, raw_stderr: bytes | None = None) -> 
     # Backend filtering may precede this projection; bind the retained RAW log.
     raw_stderr = stderr if raw_stderr is None else raw_stderr
     scanned, omitted = _scan_tail(stderr)
+    scanned, long_records = _omit_long_records(scanned)
     text = redact_process_text(scanned)
-    redacted = omitted or text != scanned or stderr != raw_stderr
-    truncated = len(stderr) > _SCAN_BYTES
+    redacted = omitted or bool(long_records) or text != scanned or stderr != raw_stderr
+    truncated = len(stderr) > _SCAN_BYTES or bool(long_records)
     start = text.find(_TRACEBACK)
     source = "PYTHON_TRACEBACK" if start >= 0 else "STDERR_TAIL"
     if start >= 0:

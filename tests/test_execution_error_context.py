@@ -249,3 +249,29 @@ def test_line_budget_boundary(size):
     expected = 'RuntimeError: [oversized line omitted]' if size > 1200 else line.decode()
     assert result.text.splitlines()[-1] == expected
     assert result.truncated == (size > 1200)
+
+
+@pytest.mark.parametrize('size', [6000, 90_000])
+@pytest.mark.parametrize('label', [b'PRIVATE_ROW_ID', b'SampleCount'])
+@pytest.mark.parametrize('payload', [b'PRIVATE_VALUE ', b'api_key='])
+def test_oversized_data_header_after_traceback_is_not_an_exception_class(size, label, payload):
+    stderr = (b'Traceback (most recent call last):\n  File "main.py", line 9\n'
+              + label + b': ' + payload + b'x' * size)
+    result = bounded_error_context(stderr)
+    assert result.source == 'PYTHON_TRACEBACK' and result.truncated and result.redacted
+    assert result.text.splitlines()[-1] == '[oversized line omitted]'
+    assert 'PRIVATE' not in result.text
+
+
+def test_oversized_builtin_exception_without_an_error_suffix_keeps_its_type():
+    result = bounded_error_context(
+        b'Traceback (most recent call last):\nStopIteration: ' + b'x' * 90_000)
+    assert result.text.splitlines()[-1] == 'StopIteration: [oversized line omitted]'
+
+
+def test_oversized_line_with_key_boundary_preserves_multiline_secret_redaction():
+    stderr = (b'Traceback (most recent call last):\nRuntimeError: ' + b'x' * 4000
+              + b'-----BEGIN PRIVATE KEY-----\nPRIVATE_MATERIAL\n-----END PRIVATE KEY-----\n')
+    result = bounded_error_context(stderr)
+    assert 'RuntimeError: [oversized line omitted]' in result.text
+    assert 'PRIVATE' not in result.text and '[REDACTED_KEY]' in result.text
