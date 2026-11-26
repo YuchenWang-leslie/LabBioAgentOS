@@ -294,11 +294,19 @@ class OutputValidationDetails(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    code: Literal["SCALAR_REQUIRED", "STRING_TOO_LONG"]
+    code: Literal["SCALAR_REQUIRED", "STRING_TOO_LONG", "SCHEMA_ID_MISMATCH"]
     field_name: StrictStr | None = Field(
         default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
     )
     max_length: int | None = Field(default=None, ge=1, le=65_536)
+    expected_schema_id: StrictStr | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_serializer(mode="wrap")
+    def omit_absent_schema_id(self, handler):
+        data = handler(self)
+        if self.expected_schema_id is None:
+            data.pop("expected_schema_id", None)
+        return data
 
 
 class ExecutionIssue(BaseModel):
