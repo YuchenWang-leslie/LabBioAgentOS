@@ -102,13 +102,14 @@ async def test_discovery_build_feedback_and_submission_share_registry(artifact_q
     assert result["success"] and result["data"]["status"] == "SUCCEEDED"
     # The selected key is obtained only from real service feedback, not prefilled.
     chosen = result["data"]["image_key"]
-    assert environment.registry.resolve(chosen).resolved_reference == result["data"]["image_reference"]
+    reference = environment.registry.resolve(chosen).resolved_reference
+    assert "image_reference" not in result["data"] and reference not in json.dumps(result)
     response = await toolset.execution_submit(image_key=chosen, script_content="print(1)")
     assert response["success"]
     assert submission.drafts[-1].image_key == chosen
     item = toolset.evidence_items()[-2]
     assert item.safe_result["image_key"] == chosen
-    assert item.safe_result["image_reference"] == result["data"]["image_reference"]
+    assert reference not in json.dumps(item.safe_result)
     assert item.safe_result["build_provenance"]["verified_import_modules"] == ["examplepkg"]
     # An explicit old key remains the old choice: building is not a hidden switch.
     old_choice = await toolset.execution_submit(image_key=base["image_key"], script_content="print(1)")

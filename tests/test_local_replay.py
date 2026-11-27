@@ -69,7 +69,8 @@ async def test_scoped_success_exports_original_bytes_and_replays_without_origina
     from labbioagentos.governance import AccessService, InMemoryProjectStore, Project
     from labbioagentos.execution.apptainer import SifStoreError
     from labbioagentos.execution.submission import ExecutionInspectionError
-    from labbioagentos.local_config import LocalApptainerSettings, load_settings, runtime_manifest
+    from labbioagentos.local_config import (LocalApptainerSettings, LocalImageSettings, load_settings,
+                                            runtime_manifest)
     from labbioagentos.run_state import RunRecoveryState
     from labbioagentos.runtime.contracts import ExecuteStageBody, RuntimeReference
     from apptainer_fixtures import apptainer_environment
@@ -77,7 +78,7 @@ async def test_scoped_success_exports_original_bytes_and_replays_without_origina
 
     original = tmp_path/"original"
     runner = FakeDockerRunner()
-    store, executor, _, _, sif = apptainer_environment(original, runner, verify_sif_on_execute=True)
+    store, executor, _, _, sif = apptainer_environment(original, runner, verify_sif_on_execute=True, watched_scratch=True)
     _, recorder, access, principal, workspace, _, _ = boundary
     ledger = JobLedger(original/"jobs.sqlite")
     service = ExecutionSubmissionService(artifact_store=store, access_service=access,
@@ -110,7 +111,8 @@ async def test_scoped_success_exports_original_bytes_and_replays_without_origina
     ap = LocalApptainerSettings(sif_store=original/"sif-store", scratch_root=tmp_path/"isolated-scratch",
                                 resource_enforcement="systemd-affinity")
     settings = settings.model_copy(update={"execution":settings.execution.model_copy(update={
-        "backend":"apptainer","image_key":"python-analysis","image_reference":sif,"apptainer":ap})})
+        "backend":"apptainer","default_image":"python-analysis",
+        "images":(LocalImageSettings(key="python-analysis", reference=sif),),"apptainer":ap})})
     manifest = runtime_manifest(settings)
     (original/"RUNTIME.json").write_text(json.dumps(manifest))
     record = SimpleNamespace(owner_user_id=principal.user_id, project_id=workspace.project_id, lab_id=workspace.lab_id,
@@ -183,7 +185,7 @@ async def test_scoped_success_exports_original_bytes_and_replays_without_origina
             raise ContainerStartError("Simulated start rejection")
 
     runner = RefusedStart() if start_rejected else FakeDockerRunner()
-    replay_store, replay_executor, _, _, _ = apptainer_environment(fixture_root,runner,verify_sif_on_execute=True)
+    replay_store, replay_executor, _, _, _ = apptainer_environment(fixture_root,runner,verify_sif_on_execute=True, watched_scratch=True)
     plans = []
     execute = replay_executor.execute_async
     async def capture(plan):
@@ -220,6 +222,13 @@ async def test_scoped_success_exports_original_bytes_and_replays_without_origina
     with pytest.raises(SifStoreError):
         await local_replay.replay(settings,bundle,result["manifest_sha256"],work)
     hidden.rename(blob)
+    # C15: the replayed key must be a configured image with the exported reference.
+    for images in ((LocalImageSettings(key="other", reference=sif),),
+                   (LocalImageSettings(key="python-analysis", reference="sha256:" + "f" * 64),)):
+        mismatched = settings.model_copy(update={"execution": settings.execution.model_copy(update={
+            "images": images, "default_image": images[0].key})})
+        with pytest.raises(ValueError, match="trusted matching local Apptainer image"):
+            await local_replay.replay(mismatched, bundle, result["manifest_sha256"], work)
     assert not work.exists() and runner.calls == []
     after = await local_replay.replay(settings,bundle,result["manifest_sha256"],work)
     assert len(runner.calls) == len(plans) == 1

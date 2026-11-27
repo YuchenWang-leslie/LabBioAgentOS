@@ -45,7 +45,7 @@ labbio image-register --config /absolute/user/runtime.toml --sif /absolute/user/
 labbio backend-check --config /absolute/user/runtime.toml
 ```
 
-把注册返回的 `image_reference` 填入配置后，检查必须通过才运行数据任务。
+把注册返回的 `image_reference` 填入配置中该镜像的 `[[execution.images]] reference` 后，检查必须通过才运行数据任务。
 该步骤不会安装科研库、替 Agent 写分析程序或选择科研方法。
 
 ## 无管理员模式的实际边界

@@ -9,6 +9,7 @@ from uuid import UUID
 
 from labbioagentos.artifacts import ArtifactStore
 from labbioagentos.contracts import RunStatus, WorkflowStage
+from labbioagentos.execution.identity import SourceIdentity
 from labbioagentos.trace import (
     InstructionRecord,
     TraceEvent,
@@ -320,6 +321,7 @@ class SkillSourceProjector:
                 state["resolved_image"] = _string(
                     event.payload.get("resolved_image")
                 )
+                state["image_source_identity"] = _source_identity(event.payload.get("image_source"))
                 state["script_hash"] = _string(event.payload.get("script_hash"))
                 state["script_artifact_id"] = _uuid(
                     event.payload.get("script_artifact_id")
@@ -446,3 +448,11 @@ def _uuid_tuple(value: Any) -> tuple[UUID, ...]:
 
 def _string(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _source_identity(value: Any) -> str | None:
+    """A malformed source in a trace is recorded as unknown, never repaired."""
+    try:
+        return SourceIdentity.model_validate(value, strict=False).canonical
+    except ValueError:
+        return None

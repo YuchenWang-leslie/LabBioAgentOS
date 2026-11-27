@@ -23,11 +23,29 @@ from pydantic import (
 from labbioagentos.artifacts import ArtifactExposureClass, ArtifactRef
 from labbioagentos.contracts import WorkflowStage
 
+from .identity import SourceIdentity
+
+
+class GpuSupport(StrEnum):
+    """Whether an image can use, or needs, NVIDIA GPUs (DECIDED-C15-F)."""
+
+    NONE = "NONE"
+    SUPPORTED = "SUPPORTED"
+    REQUIRED = "REQUIRED"
+
 
 class ExecutionRuntime(StrEnum):
     """Runtime families supported by the deterministic executor contract."""
 
     PYTHON = "PYTHON"
+    SHELL = "SHELL"  # The program runs with sh; an image must declare it (DECIDED-C15-C).
+
+
+class RuntimeSource(StrEnum):
+    """Whether the Agent named the runtime or it was the documented default."""
+
+    EXPLICIT = "EXPLICIT"
+    DEFAULT = "DEFAULT"
 
 
 class ExecutionStatus(StrEnum):
@@ -47,6 +65,7 @@ class ExecutionFailureClass(StrEnum):
     CONTAINER_START_FAILURE = "CONTAINER_START_FAILURE"
     TIMEOUT = "TIMEOUT"
     LOG_LIMIT = "LOG_LIMIT"
+    SCRATCH_LIMIT = "SCRATCH_LIMIT"
     NON_ZERO_EXIT = "NON_ZERO_EXIT"
     OUTPUT_CONTRACT_FAILURE = "OUTPUT_CONTRACT_FAILURE"
     ARTIFACT_REGISTRATION_FAILURE = "ARTIFACT_REGISTRATION_FAILURE"
@@ -93,6 +112,8 @@ class RequestedResources(BaseModel):
     memory_mb: int = Field(default=512, ge=16)
     pids_limit: int = Field(default=128, ge=1)
     timeout_seconds: float = Field(default=300.0, gt=0)
+    # Whole NVIDIA GPUs; the platform never adds one that was not requested.
+    gpus: int = Field(default=0, ge=0, le=64, strict=True)
 
 
 class ExecutionResourceRejection(BaseModel):
@@ -102,8 +123,8 @@ class ExecutionResourceRejection(BaseModel):
 
     requested: RequestedResources
     limits: RequestedResources
-    exceeded_fields: tuple[Literal["cpus", "memory_mb", "pids_limit", "timeout_seconds"], ...] = Field(
-        min_length=1, max_length=4
+    exceeded_fields: tuple[Literal["cpus", "memory_mb", "pids_limit", "timeout_seconds", "gpus"], ...] = Field(
+        min_length=1, max_length=5
     )
 
 
@@ -198,6 +219,7 @@ class ExecutionPlan(BaseModel):
     project_id: StrictStr = Field(default="local-project", min_length=1)
     lab_id: StrictStr = Field(default="local-lab", min_length=1)
     runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = RuntimeSource.DEFAULT
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
     input_artifact_ids: tuple[UUID, ...] = ()
@@ -225,13 +247,27 @@ class ExecutionPlan(BaseModel):
             raise ValueError("requested output paths must be unique")
         return self
 
+    @model_validator(mode="after")
+    def require_named_shell(self) -> "ExecutionPlan":
+        # Only PYTHON is ever a default; SHELL is named or not used (DECIDED-C15-C).
+        if self.runtime is not ExecutionRuntime.PYTHON and self.runtime_source is RuntimeSource.DEFAULT:
+            raise ValueError("A runtime other than PYTHON must be named explicitly")
+        return self
+
+
+RUNTIME_DESCRIPTION = (
+    "Runtime family of script_content. Omit it for PYTHON. Name SHELL to run the script "
+    "with sh, in an image whose runtimes include SHELL. The host never infers a runtime "
+    "from the script or the image."
+)
+
 
 class ExecutionPlanDraft(BaseModel):
     """Untrusted model intent; trusted identity, provenance, paths and argv are absent."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime: ExecutionRuntime | None = Field(default=None, description=RUNTIME_DESCRIPTION)
     image_key: ExecutionImageKey
     script_content: ExecutionScriptContent
     input_artifact_ids: ExecutionInputArtifactIds = ()
@@ -551,6 +587,10 @@ class ExecutionResult(BaseModel):
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1)
     resolved_image: StrictStr = Field(min_length=1)
+    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = RuntimeSource.DEFAULT
+    # Which environment ran, independent of backend; None in results from before C15.
+    image_source: SourceIdentity | None = None
     execution_provenance: ExecutionProvenance | None = None
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
     script_ref: ArtifactRef
@@ -584,6 +624,11 @@ class ExecutionReceipt(BaseModel):
     execution_id: UUID
     status: ExecutionStatus
     image_key: StrictStr = Field(min_length=1, max_length=128)
+    runtime: ExecutionRuntime = ExecutionRuntime.PYTHON
+    runtime_source: RuntimeSource = Field(
+        default=RuntimeSource.DEFAULT,
+        description="EXPLICIT when the request named the runtime; DEFAULT when it was omitted (PYTHON).",
+    )
     execution_provenance: ExecutionProvenance | None = Field(default=None,
         description="Host-selected adapter/image for this attempt, not proof of sandbox startup or analysis success. In-image binary discovery does not identify the host backend. Null means unknown in a legacy or custom result.")
     script_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
@@ -638,6 +683,7 @@ class ExecutionReceipt(BaseModel):
             ExecutionFailureClass.CONTAINER_START_FAILURE,
             ExecutionFailureClass.TIMEOUT,
             ExecutionFailureClass.NON_ZERO_EXIT,
+            ExecutionFailureClass.SCRATCH_LIMIT,
         }
         codes = tuple(issue.error_class for issue in result.issues)
         detail_codes = tuple(
@@ -659,6 +705,8 @@ class ExecutionReceipt(BaseModel):
             execution_id=result.execution_id,
             status=result.status,
             image_key=result.image_key,
+            runtime=result.runtime,
+            runtime_source=result.runtime_source,
             execution_provenance=result.execution_provenance,
             script_hash=result.script_hash,
             exit_code=result.exit_code,

@@ -47,7 +47,7 @@ def local_cli(tmp_path, monkeypatch):
         },
         "execution": {
             "backend": "docker",
-            "image_key": "python", "image_reference": "sha256:" + "1" * 64,
+            "default_image": "python", "images": [{"key": "python", "reference": "sha256:" + "1" * 64}],
             "resources": {"cpus": 1.0, "memory_mb": 512,
                           "pids_limit": 32, "timeout_seconds": 30.0},
         },

@@ -92,6 +92,15 @@ def host(value):
     return value
 
 command = [host(value) for value in args[index + 1:]]
+if command[0].endswith("/micromamba"):  # C15: the offline conda install into the sandbox.
+    step("conda")
+    state = json.loads((image / "state.json").read_text())
+    for line in open(command[command.index("--file") + 1]):
+        if line.startswith("file://"):
+            name, version, _ = line.split("#")[0].rsplit("/", 1)[1].rsplit("-", 2)
+            state.setdefault("conda", {{}})[name] = version
+    (image / "state.json").write_text(json.dumps(state))
+    sys.exit(0)
 if "-m" in command:
     action = command[command.index("-m") + 2]
     if action == "install" and "--dry-run" in command:
@@ -104,9 +113,9 @@ if "-m" in command:
     elif action == "download":
         step("download")
         for line in open(command[command.index("-r") + 1]):
-            name, version = line.strip().split("==")
+            name, version = line.split()[0].split("==")  # A member's lock line also carries hashes.
             wheel = Path(command[command.index("--dest") + 1]) / f"{{name.replace('-', '_')}}-{{version}}-py3-none-any.whl"
-            wheel.write_text(line)
+            wheel.write_text(name + "==" + version)
     elif action == "install":
         step("install")
         state = json.loads((image / "state.json").read_text())
@@ -118,16 +127,25 @@ if "-m" in command:
         step("check")
     sys.exit(0)
 code = command[command.index("-c") + 1]
+if "singularity.d" in code:
+    step("conda-path")
+    state = json.loads((image / "state.json").read_text())
+    state["conda_on_path"] = config.get("path_script", True)
+    (image / "state.json").write_text(json.dumps(state))
+    sys.exit(0)
 if "TemporaryFile" in code:
     step("writable")
     sys.exit(0)
 if "name_pattern" in code:
     sys.exit(subprocess.call([sys.executable, "-I", *command[command.index("-c"):]]))
 step("probe")
-packages = json.loads(image.read_text())["packages"]
+state = json.loads(image.read_text())
+packages = state["packages"]
 importable = {{name.replace("-", "_") for name in packages}}
-print(json.dumps({{"installed_packages": packages,
-                  "failed_imports": [module for module in json.loads(command[-1]) if module not in importable]}}))
+print(json.dumps({{"installed_packages": packages, "conda_packages": state.get("conda", {{}}),
+                  "conda_on_path": state.get("conda_on_path", False),
+                  "failed_imports": [module for module in json.loads(command[-1]) if module not in importable],
+                  "unshared_count": config.get("unshared", 0), "unshared_paths": []}}))
 """
 
 
@@ -157,7 +175,7 @@ def cluster(tmp_path):
     def configure(**settings):
         (fake.parent / "fake.json").write_text(json.dumps({"log": str(log), **settings}))
 
-    def service(*, scheduler=None, download="login", timeout=60.0, **policy_options):
+    def service(*, scheduler=None, download="login", timeout=60.0, conda=None, **policy_options):
         scheduler = scheduler or FakeSlurm(tmp_path)
         launcher = SchedulerLauncher(template=BUILTIN_TEMPLATES["slurm"], policy=_scheduler_policy(),
                                      workspace_root=state.jobs, command_runner=scheduler)
@@ -170,7 +188,8 @@ def cluster(tmp_path):
         placement = ({"download_runner": DownloadRunner(max_file_bytes=64 << 20, cpu_seconds=60)}
                      if download == "login" else {"download_launcher": launcher})
         builder = ApptainerEnvironmentBuilder(sif_store=sif_store, policy=policy, build_launcher=launcher,
-                                              workspace_root=state.jobs, job_ledger=ledger, **placement)
+                                              workspace_root=state.jobs, job_ledger=ledger, conda=conda,
+                                              **placement)
         state.scheduler, state.launcher = scheduler, launcher
         return EnvironmentService(root=tmp_path / "environments", image_registry=ApprovedImageRegistry((base,)),
                                   builder=builder, owner_user_id="user-one")
@@ -207,7 +226,8 @@ async def test_environment_is_downloaded_locked_built_in_a_job_and_registered(cl
     receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=run_id)
 
     assert receipt["status"] == "SUCCEEDED", receipt
-    reference = receipt["image_reference"]
+    reference = service.image_registry.resolve(receipt["image_key"]).resolved_reference
+    assert reference not in json.dumps(receipt)
     assert json.loads(cluster.sif_store.path_for(reference).read_text())["packages"] == {
         "basepkg": "1.0", "examplepkg": "2.0"}
     assert service.image_registry.resolve(receipt["image_key"]).resolved_reference == reference
@@ -277,7 +297,7 @@ async def test_requirements_already_in_the_base_image_build_without_downloading(
     ("sandbox", "", "BUILDER_UNAVAILABLE"),
     ("writable", "", "BUILDER_UNAVAILABLE"),
     ("pack-check", "", "BUILDER_UNAVAILABLE"),
-    ("install", "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "BUILD_FAILED"),
+    ("install", "ERROR: THESE PACKAGES DO NOT MATCH THE HASHES", "WHEEL_LOCK_MISMATCH"),
     ("check", "examplepkg 2.0 has requirement other>=3", "PIP_CHECK_FAILED"),
     ("pack", "", "BUILD_FAILED"),
     ("probe", "", "VERIFICATION_FAILED"),
@@ -454,3 +474,18 @@ def test_exactly_one_download_placement_is_required(cluster):
                                     build_launcher=cluster.launcher, workspace_root=cluster.jobs,
                                     job_ledger=cluster.ledger,
                                     download_runner=builder.download_runner, download_launcher=cluster.launcher)
+
+
+
+@pytest.mark.asyncio
+async def test_an_image_others_could_not_read_is_not_registered(cluster):
+    """Every member runs a lab image under their own uid (cluster validation, 2026-11-18)."""
+    cluster.configure(unshared=3)
+    service = cluster.service()
+    before = set((cluster.tmp_path / "sif").iterdir())
+
+    receipt = await service.build_environment("base", ("examplepkg>=1",), ("examplepkg",), run_id=uuid4())
+
+    assert receipt["status"] == "FAILED" and receipt["failure_code"] == "IMAGE_NOT_SHAREABLE"
+    assert "could not read" in receipt["diagnostics"][0]["message"]
+    assert set((cluster.tmp_path / "sif").iterdir()) == before

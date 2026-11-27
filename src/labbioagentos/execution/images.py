@@ -13,8 +13,10 @@ from pydantic import (
     model_validator,
 )
 
-from .errors import ExecutionPlanRejected, ExecutionResourceLimitError, ImageNotApprovedError
-from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, RequestedResources
+from .errors import (ExecutionGpuImageMismatchError, ExecutionPlanRejected, ExecutionResourceLimitError,
+                     ImageNotApprovedError)
+from .identity import SourceIdentity, legacy_identity
+from .models import ExecutionPlan, ExecutionResourceRejection, ExecutionRuntime, GpuSupport, RequestedResources
 
 
 DEFAULT_OUTPUT_FILE_BYTES = 128 * 1024**2
@@ -42,8 +44,8 @@ class ApprovedImage(BaseModel):
     )
     reference: StrictStr = Field(min_length=1, max_length=512)
     digest: StrictStr | None = None
-    runtime: ExecutionRuntime
-    executable: tuple[StrictStr, ...] = ("python",)
+    # Each runtime family the image supports and the program that runs a script for it.
+    entry_points: dict[ExecutionRuntime, tuple[StrictStr, ...]] = Field(min_length=1, max_length=8)
     network_allowed: bool = False
     available_python_modules: tuple[StrictStr, ...] = Field(
         default=(),
@@ -57,6 +59,61 @@ class ApprovedImage(BaseModel):
         default_factory=dict, max_length=2048,
         description="Verified distribution versions for this immutable image.",
     )
+    source: SourceIdentity | None = Field(
+        default=None,
+        description="Backend-neutral source identity; None means a legacy image.",
+    )
+    conda_packages: dict[StrictStr, StrictStr] = Field(
+        default_factory=dict, max_length=4096,
+        description="Verified conda packages of the derived environment, on PATH after the image's own.",
+    )
+    gpu: GpuSupport = Field(default=GpuSupport.NONE, description="Whether the image can use, or needs, GPUs.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_single_runtime_form(cls, data):
+        """Records written before C15 name one runtime and its executable; read them as one entry point.
+
+        A model-level validator makes JSON input arrive as Python values, so the JSON
+        forms of these fields (arrays, string keys) are restated as tuples and enums.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        if "runtime" in data:
+            if "entry_points" in data:
+                raise ValueError("Give entry_points or the single-runtime form, not both")
+            data["entry_points"] = {data.pop("runtime"): data.pop("executable", ("python",))}
+        if isinstance(data.get("entry_points"), dict):
+            data["entry_points"] = {
+                ExecutionRuntime(key) if isinstance(key, str) else key:
+                tuple(value) if isinstance(value, list) else value
+                for key, value in data["entry_points"].items()
+            }
+        if isinstance(data.get("available_python_modules"), list):
+            data["available_python_modules"] = tuple(data["available_python_modules"])
+        if isinstance(data.get("gpu"), str):
+            data["gpu"] = GpuSupport(data["gpu"])
+        return data
+
+    @field_validator("entry_points")
+    @classmethod
+    def validate_entry_points(cls, value: dict) -> dict:
+        for program in value.values():
+            if (not program or program[0].startswith("-")
+                    or any(not item or any(c.isspace() for c in item) for item in program)):
+                raise ValueError("Each entry point is a non-empty program of plain argv tokens")
+        return value
+
+    @property
+    def runtimes(self) -> frozenset[ExecutionRuntime]:
+        return frozenset(self.entry_points)
+
+    def entry_point(self, runtime: ExecutionRuntime) -> tuple[str, ...]:
+        try:
+            return self.entry_points[runtime]
+        except KeyError:
+            raise ImageNotApprovedError(f"Image key {self.key!r} does not support runtime {runtime.value}") from None
 
     @field_validator("reference")
     @classmethod
@@ -106,6 +163,15 @@ class ApprovedImage(BaseModel):
             return self.reference
         return f"{self.reference}@{self.digest}"
 
+    @property
+    def source_identity(self) -> SourceIdentity:
+        """Without a recorded source, the realization is the only identity there is."""
+        return self.source if self.source is not None else legacy_identity(self.resolved_reference)
+
+    def with_reference(self, reference: str) -> "ApprovedImage":
+        """The same image run from another file of the same source, for example a restored one."""
+        return type(self).model_validate({**self.model_dump(), "reference": reference, "digest": None})
+
 
 class ApprovedImageRegistry:
     """In-memory trusted image-key registry; it never pulls or builds images."""
@@ -139,7 +205,7 @@ class ApprovedImageRegistry:
             raise ImageNotApprovedError(
                 f"Image key {image_key!r} is not present in the approved registry"
             )
-        if runtime is not None and image.runtime is not runtime:
+        if runtime is not None and runtime not in image.runtimes:
             raise ImageNotApprovedError(
                 f"Image key {image_key!r} does not support runtime {runtime.value}"
             )
@@ -157,6 +223,7 @@ class ExecutionPolicy(BaseModel):
     max_memory_mb: int = Field(default=8192, ge=16)
     max_pids: int = Field(default=512, ge=1)
     max_timeout_seconds: float = Field(default=3600.0, gt=0)
+    max_gpus: int = Field(default=0, ge=0, le=64)  # 0 disables GPUs (DECIDED-C15-F).
     max_output_file_bytes: int = Field(default=DEFAULT_OUTPUT_FILE_BYTES, ge=1)
     max_collected_output_bytes: int = Field(default=DEFAULT_COLLECTED_OUTPUT_BYTES, ge=1)
     tmpfs_size_mb: int = Field(default=64, ge=1)
@@ -180,7 +247,7 @@ class ExecutionPolicy(BaseModel):
     @property
     def resource_limits(self) -> RequestedResources:
         return RequestedResources(cpus=self.max_cpus, memory_mb=self.max_memory_mb,
-            pids_limit=self.max_pids, timeout_seconds=self.max_timeout_seconds)
+            pids_limit=self.max_pids, timeout_seconds=self.max_timeout_seconds, gpus=self.max_gpus)
 
     def validate_request(
         self,
@@ -198,6 +265,10 @@ class ExecutionPolicy(BaseModel):
         if exceeded:
             raise ExecutionResourceLimitError(ExecutionResourceRejection(
                 requested=requested, limits=limits, exceeded_fields=exceeded))
+        # GPUs only for an image that can use them; an image that needs them always gets one.
+        if (requested.gpus > 0 and image.gpu is GpuSupport.NONE) or (
+                requested.gpus == 0 and image.gpu is GpuSupport.REQUIRED):
+            raise ExecutionGpuImageMismatchError(requested.gpus, image.gpu.value)
         if network_required and has_local_inputs:
             raise ExecutionPlanRejected(
                 "Network is prohibited when local input Artifacts are mounted"

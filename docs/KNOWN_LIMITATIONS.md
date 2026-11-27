@@ -156,6 +156,12 @@ Schema-valid output can still be scientifically or semantically poor. Host
 validation enforces authority, structure, lineage, and release policy—not
 scientific usefulness.
 
+A structured response with one field the stage schema does not allow fails
+local validation (`extra_forbidden`), and the run fails at that stage; there
+is no correction turn for it. This was seen once with `gemini-3.6-flash` in
+JSON-object mode during the C15 cluster validation and is recorded for a
+separate decision.
+
 ## Data exposure
 
 Raw matrices and unrestricted files remain local, but explicitly enabled
@@ -200,14 +206,24 @@ does not truncate declared scientific output files. Scheduler log files remain
 on disk and are only read in bounded portions by the control plane. Docker
 environment-build logs use a 16 MiB polling threshold, not a hard disk quota.
 An interrupted Docker build/probe may continue in the daemon after its client
-is killed; such attempts are marked `UNCONFIRMED` and require operator
-reconciliation rather than automatic replay.
+is killed. An environment build attempt holds a lease for as long as it runs;
+an attempt whose lease is free and that has no final receipt (none, or
+`UNCONFIRMED`) is cleaned up before the next environment build, by
+`image-reconcile` and after a run's `reconcile`, and marked `ABANDONED`. It
+is never rebuilt automatically. On a cluster, an attempt is cleaned up only
+once its run's ledger has no open build job; an attempt started before this
+rule, or whose run directory and ledger were removed, is kept, since its jobs
+cannot be confirmed stopped.
 
-The platform trusts the local Docker engine, host kernel, configured images,
-and local administrator. It does not defend against their compromise.
+The platform trusts the local Docker engine, host kernel, configured and
+admitted images, and local administrator. It does not defend against their
+compromise; admission checks an image's source, architecture, entry points
+and inventory, not its honesty.
 
-The source Scheduler + Apptainer backend has not been validated on a real
-cluster with the Native Kernel or deployed. In a narrow crash window
+The Scheduler + Apptainer backend has been validated on one Slurm test
+cluster (C14 full workflows; C15 executions, admissions, environment builds,
+image lifecycle and GPUs), not on PBS or LSF, and is not deployed. In a narrow
+crash window
 between scheduler acceptance and persistence of the returned job ID, orphan
 reconciliation records `UNCONFIRMED` and requires operator inspection; it
 cannot guarantee automatic cancellation. See
@@ -218,6 +234,97 @@ primary `systemd-affinity` mode instead requires enforced integer-core affinity
 and delegated memory/pids, without CPU-controller delegation. See
 [Local Apptainer](LOCAL_APPTAINER.md) for the separate current host checks and
 evidence boundary; these checks do not establish scientific or release acceptance.
+
+## Lab area and images
+
+- If an Apptainer admission process dies after its SIF is registered but
+  before its record is written, the SIF stays in the member's or the lab's
+  SIF store without a record. Crash cleanup stops the admission's jobs and
+  deletes its attempt, but files in a SIF store are never deleted
+  automatically (DECIDED-C15-H).
+
+- Members may write the lab area's `requests/` drop directory, so a member can
+  fill the shared filesystem with request payloads. LabBio limits each member
+  to a few pending requests and checks sizes when an administrator approves,
+  but only a site disk quota bounds the writes themselves.
+- An admitted image supplies its own interpreter, so a malicious image can
+  falsify results; container isolation cannot prevent that. Personal images
+  serve only their owner, lab images need a LAB_ADMIN, and trace records which
+  image and source ran.
+- Image admission pulls on the host where the command runs, which on a cluster
+  is the login node; only the Apptainer conversion runs in a job.
+- Apptainer's `/tmp` lives in the execution's scratch directory and is
+  checked every few seconds, not enforced as a quota: a program can exceed
+  `tmpfs_size_mb` between two checks before it is stopped with
+  `SCRATCH_LIMIT`.
+- Conda environments are solved on the host where the command runs. The
+  solver's repodata cache is not kept, so each conda build fetches the channel
+  metadata again.
+- Permissions a conda package carries itself are kept (for example 775 on a
+  program); a SIF is read-only, so others can read and run it. Every other
+  file in an image's conda environment and Python site-packages must be
+  readable by others, or the build fails with `IMAGE_NOT_SHAREABLE`.
+- Derived and lock-built images built on a cluster before 2026-11-18 may be
+  readable only by the building account (the build then ran with umask 077).
+  They are deleted and restored, which rebuilds them under the current rule.
+- A live Agent has chosen existing non-default images by itself, but has
+  never chosen a SHELL image: in the cluster validation, an equally valid
+  Python environment with the same tool was listed. The SHELL path, including
+  the refusal of a SHELL image without an explicit runtime, is covered by
+  tests and by real executions with a named image.
+- That another account can run a lab image rebuilt by the holding account was
+  checked with two real OS accounts on Docker only. On the test cluster, with
+  one account, only the file permissions inside the SIF were checked.
+- An Apptainer conversion of the same OCI source is not byte-reproducible
+  (D4): a restored or separately converted SIF can differ from the original.
+  Identity is the source and the inventory, which are checked on every
+  restore, not the SIF's own hash.
+- Registry credentials are static (username and password or token). Tokens
+  that expire, such as AWS ECR's, need the file refreshed by hand, and the
+  Docker credential-helper protocol is not supported.
+- A member's conda lock is checked by solving exactly its builds against the
+  current channel metadata. A lock naming a file the channel no longer serves,
+  or whose metadata changed, is refused with `CONDA_LOCK_MISMATCH`, even if
+  the member still has the file.
+- A lab image's references from members are seen only through the `usage/`
+  markers. A member can forge a marker, which only blocks a deletion, or
+  remove their own marker, which only puts their own runs at risk. Markers
+  are brought in line with a member's live references when that member runs
+  `image-references`, so a stale marker blocks deletion until then.
+- On Docker, a lab image and a member's personal image of the same manifest
+  are one Docker image. Deleting the lab image keeps the file when the lab
+  image was promoted from a member's image, but not when a member admitted
+  the same manifest separately; that member restores it with image-restore.
+- A personal image admitted from a SIF file is deleted on its owner's own
+  confirmation (`--confirm-no-upstream`); only a lab image's deletion needs an
+  administrator.
+- The reference index finds runs that existed before it only under the
+  member's result roots; a run directory placed elsewhere with `--output`
+  under another root is not found until it executes again.
+- Environments the Agent built before C15 have no recorded size, so they do
+  not count against the member's quota until they are rebuilt.
+
+## GPUs
+
+- On Docker, each execution is given the first N GPUs of the host's
+  inventory. Docker has no scheduler, so concurrent runs on the same host can
+  share a GPU and its memory.
+- An image's GPU flag is the operator's or member's declaration. Admission
+  checks that an image declared for GPUs contains a CUDA runtime library, but
+  not that its CUDA version suits the hosts' drivers, and configured images
+  are not checked at all.
+- AMD ROCm and multi-node GPU jobs are not supported.
+- Under a scheduler, only the scheduler confines a job to its allocated GPUs
+  (for example Slurm `ConstrainDevices=yes`); `--nv` itself binds every GPU
+  device node of the node. On the Slurm test cluster `--nv` worked together
+  with LabBio's isolation options, `CUDA_VISIBLE_DEVICES` reached the
+  container, and with `ConstrainDevices` only the allocated GPU could be used.
+  The PBS and LSF GPU directives are tested only against fake scheduler
+  output.
+- Some Slurm sites refuse `--gpus` and require `--gres`; such a site needs a
+  site template, and `backend-check` reports the refusal.
+- Local Apptainer under systemd does not support GPUs; a configuration with
+  `gpus > 0` is refused at load.
 
 ## Persistence and concurrency
 

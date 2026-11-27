@@ -15,14 +15,15 @@ from uuid import UUID, uuid4
 from labbioagentos.artifacts import ArtifactStore
 from labbioagentos.trace import RunTraceRecorder
 
-from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
+from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner, container_script_path
 from .errors import ContainerStartError
 from .executor import ContainerExecutor
+from .gpu import DockerGpuInventory, GpuDevice, GpuUnavailableError
 from .job_ledger import JobLedger
 from .images import DEFAULT_OUTPUT_FILE_BYTES, ApprovedImage, ApprovedImageRegistry, ExecutionPolicy
 from .launchers import JobLauncher
 from .launchers.base import JobLauncherError
-from .models import DOCKER_BRIDGE_NETWORK_ARGV, DOCKER_OFFLINE_NETWORK_ARGV, ExecutionPlan
+from .models import DOCKER_BRIDGE_NETWORK_ARGV, DOCKER_OFFLINE_NETWORK_ARGV, ExecutionPlan, ExecutionRuntime
 from .mounts import (
     ExecutionWorkspace,
     ExecutionWorkspaceManager,
@@ -251,6 +252,7 @@ class DockerCommandBuilder:
         *,
         max_output_file_bytes: int = DEFAULT_OUTPUT_FILE_BYTES,
         tmpfs_size_mb: int = 64,
+        gpu_inventory: DockerGpuInventory | None = None,
     ):
         if not docker_binary or docker_binary.startswith("-"):
             raise ValueError("docker_binary must be a configured executable name")
@@ -261,6 +263,15 @@ class DockerCommandBuilder:
         self.docker_binary = docker_binary
         self.max_output_file_bytes = max_output_file_bytes
         self.tmpfs_size_mb = tmpfs_size_mb
+        self.gpu_inventory = gpu_inventory  # Set only when the policy allows GPUs.
+
+    def assigned_gpus(self, plan: ExecutionPlan) -> tuple[GpuDevice, ...]:
+        """The exact GPUs an execution receives: none unless it asked for some."""
+        if plan.resources.gpus == 0:
+            return ()
+        if self.gpu_inventory is None:
+            raise GpuUnavailableError("GPUs are not available to Docker executions")
+        return self.gpu_inventory.assign(plan.resources.gpus)
 
     @staticmethod
     def network_control_argv(network_required: bool) -> tuple[str, ...]:
@@ -274,6 +285,9 @@ class DockerCommandBuilder:
         input_mounts: tuple[ResolvedMount, ...],
     ) -> tuple[str, ...]:
         numeric_thread_limit = max(1, math.ceil(plan.resources.cpus))
+        devices = self.assigned_gpus(plan)
+        # Named devices only when GPUs were requested; quoted so a list stays one value.
+        gpu_arguments = ("--gpus", '"device=' + ",".join(device.uuid for device in devices) + '"') if devices else ()
         argv = [
             self.docker_binary,
             "run",
@@ -295,6 +309,7 @@ class DockerCommandBuilder:
             f"{plan.resources.memory_mb}m",
             "--pids-limit",
             str(plan.resources.pids_limit),
+            *gpu_arguments,
             "--ulimit",
             f"fsize={self.max_output_file_bytes}:{self.max_output_file_bytes}",
             "--read-only",
@@ -321,7 +336,7 @@ class DockerCommandBuilder:
             "--env",
             f"NUMEXPR_NUM_THREADS={numeric_thread_limit}",
             "--mount",
-            self._mount(workspace.script_path, self.SCRIPT_TARGET, read_only=True),
+            self._mount(workspace.script_path, container_script_path(plan.runtime), read_only=True),
             "--mount",
             self._mount(
                 workspace.parameters_path,
@@ -350,29 +365,36 @@ class DockerCommandBuilder:
                     self._mount(mount.source, mount.target, mount.read_only),
                 ]
             )
+        # An image ENTRYPOINT would otherwise wrap, or replace, the Agent's program.
         argv.extend(
             [
+                "--entrypoint",
+                image.entry_point(plan.runtime)[0],
                 image.resolved_reference,
-                *image.executable,
-                str(self.SCRIPT_TARGET),
+                *image.entry_point(plan.runtime)[1:],
+                str(container_script_path(plan.runtime)),
             ]
         )
         return tuple(argv)
 
     def import_probe_argv(
-        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
+        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...],
+        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
     ) -> tuple[str, ...]:
         return (
             self.docker_binary, "run", "--rm", "--pull", "never", "--name", "labbio-" + uuid4().hex,
             *DOCKER_OFFLINE_NETWORK_ARGV, "--read-only", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--user", "65534:65534",
             "--memory", "256m", "--cpus", "1", "--pids-limit", "32",
-            "--entrypoint", image.executable[0], image.resolved_reference,
+            "--entrypoint", image.entry_point(runtime)[0], image.resolved_reference,
             *interpreter_arguments,
         )
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         return ()  # Docker's /tmp is a tmpfs that disappears with the container.
+
+    def scratch_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        return ()  # The tmpfs size option already bounds /tmp.
 
     def model_stderr(self, stderr: bytes) -> bytes:
         return stderr

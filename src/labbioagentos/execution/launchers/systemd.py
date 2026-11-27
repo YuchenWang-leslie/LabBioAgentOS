@@ -20,7 +20,10 @@ from ..errors import ContainerStartError
 from ..host_termination import systemd_host_termination
 from ..models import ExecutionHostTermination, RequestedResources
 from ..process_streams import capture_process, read_bounded_stream
-from .base import JobHandle, JobLauncher, JobLauncherError, JobNotFoundError, JobSpec, JobState
+from .base import (
+    JobHandle, JobLauncher, JobLauncherError, JobNotFoundError, JobSpec, JobState,
+    scratch_limit_marker,
+)
 from ._local_supervisor import affinity_enforced, enforced
 
 
@@ -35,6 +38,7 @@ class SystemdLocalLauncher(JobLauncher):
     """No unbounded fallback; a verified cgroup owns analysis and build processes."""
 
     kind = "local-systemd"
+    enforces_scratch_limit = True
 
     def __init__(self, runner: SubprocessApptainerRunner, *, resource_enforcement="systemd-cgroups"):
         if resource_enforcement not in {"systemd-cgroups", "systemd-affinity"}:
@@ -84,6 +88,8 @@ class SystemdLocalLauncher(JobLauncher):
             *(f"{key}={value}" for key, value in self.runner.environment().items()),
             sys.executable, "-I", str(Path(__file__).with_name("_local_supervisor.py")),
             str(resource.cpus), str(resource.memory_mb * 1024 * 1024), str(resource.pids_limit),
+            str(spec.scratch_limit_bytes or 0), str(scratch_limit_marker(spec.workspace_root)),
+            str(len(spec.scratch_paths)), *(str(path) for path in spec.scratch_paths),
             *supervisor_options, *spec.argv,
         )
         # systemd ExecStart expands dollars even without a shell. Escape all data.

@@ -1,0 +1,444 @@
+"""Image catalog: append-only image records, state events and the merged view.
+
+Records and events are one file each. A file is written to a temporary name and
+then linked into place, so an existing file is never replaced; a state change is
+a new event file (DECIDED-C15-H). The lab area may sit on a shared filesystem
+that other members read while an administrator writes, so no database is used.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import stat
+from collections.abc import Iterable, Mapping
+from datetime import datetime
+from enum import StrEnum
+from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+
+from labbioagentos.append_only import (
+    AppendOnlyError, add_file, event_name, list_files, next_event_time, read_events, read_file,
+)
+
+from .errors import ImageNotApprovedError
+from .identity import SourceIdentity, SourceKind
+from .images import ApprovedImage
+from .inventory import InventoryOrigin, validate_purpose
+from .models import ExecutionImageKey, ExecutionRuntime, GpuSupport
+
+_RECORD_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}\.json")
+
+
+class ImageScope(StrEnum):
+    PERSONAL = "PERSONAL"  # Only its owner's runs can see and select it.
+    LAB = "LAB"  # Configured by the deployment or approved by a LAB_ADMIN.
+
+
+class ImageState(StrEnum):
+    ACTIVE = "ACTIVE"
+    DEPRECATED = "DEPRECATED"  # Hidden from models; runs that already used it may continue.
+    REVOKED = "REVOKED"  # Never executes again; its record stays for provenance.
+
+
+class ExecutionBackendName(StrEnum):
+    DOCKER = "DOCKER"
+    APPTAINER = "APPTAINER"
+
+
+# A REVOKED image is never reactivated; a new admission is a new record.
+_TRANSITIONS = {
+    ImageState.ACTIVE: {ImageState.DEPRECATED, ImageState.REVOKED},
+    ImageState.DEPRECATED: {ImageState.ACTIVE, ImageState.REVOKED},
+    ImageState.REVOKED: set(),
+}
+
+
+class CatalogError(AppendOnlyError):
+    """The catalog on disk is unreadable, inconsistent or would be changed unsafely."""
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class Realization(_Model):
+    """One backend's file for a source, produced by a recorded platform procedure."""
+
+    backend: ExecutionBackendName
+    resolved_image: StrictStr = Field(min_length=1, max_length=512)
+    produced_by: StrictStr = Field(min_length=1, max_length=128)
+
+
+class InventorySnapshot(_Model):
+    origin: InventoryOrigin
+    packages: dict[StrictStr, StrictStr] = Field(default_factory=dict, max_length=4096)
+    invalid_count: int = Field(default=0, ge=0)
+    truncated: bool = False
+
+
+class ImageRecord(_Model):
+    key: ExecutionImageKey
+    scope: ImageScope
+    owner_user_id: StrictStr | None = Field(default=None, min_length=1, max_length=128)
+    source: SourceIdentity
+    # host/name an OCI source can be pulled from again by its digest; never shown to models.
+    repository: StrictStr | None = Field(default=None, max_length=255,
+                                         pattern=r"^[a-z0-9.:-]+/[a-z0-9._/-]+$")
+    realizations: tuple[Realization, ...] = Field(min_length=1, max_length=16)
+    entry_points: dict[ExecutionRuntime, tuple[StrictStr, ...]] = Field(min_length=1, max_length=8)
+    available_python_modules: tuple[StrictStr, ...] = Field(default=(), max_length=256)
+    inventory: InventorySnapshot
+    purpose: StrictStr | None = None
+    gpu: GpuSupport = GpuSupport.NONE
+    size_bytes: int | None = Field(default=None, ge=0)
+    admitted_by: StrictStr = Field(min_length=1, max_length=128)
+    admitted_at: datetime
+
+    @field_validator("purpose")
+    @classmethod
+    def check_purpose(cls, value: str | None) -> str | None:
+        return None if value is None else validate_purpose(value)
+
+    @model_validator(mode="after")
+    def check_owner(self) -> "ImageRecord":
+        if (self.scope is ImageScope.PERSONAL) != (self.owner_user_id is not None):
+            raise ValueError("A personal image has an owner and a lab image has none")
+        backends = [item.backend for item in self.realizations]
+        if len(set(backends)) != len(backends):
+            raise ValueError("One realization per backend")
+        return self
+
+    def approved_image(self, backend: ExecutionBackendName, *, resolved_image: str | None = None
+                       ) -> ApprovedImage | None:
+        """The execution view on one backend; None when this backend has no realization.
+
+        resolved_image replaces the recorded file, for a realization restored after deletion.
+        """
+        realization = next((item for item in self.realizations if item.backend is backend), None)
+        if realization is None and resolved_image is None:
+            return None
+        return ApprovedImage(
+            key=self.key, reference=resolved_image or realization.resolved_image,
+            entry_points=dict(self.entry_points),
+            available_python_modules=self.available_python_modules,
+            # Conda metadata and Python distributions are different namespaces.
+            installed_packages=(dict(self.inventory.packages)
+                                if self.inventory.origin is InventoryOrigin.PYTHON else {}),
+            conda_packages=(dict(self.inventory.packages)
+                            if self.inventory.origin is InventoryOrigin.CONDA_META else {}),
+            source=self.source, gpu=self.gpu,
+        )
+
+
+class ImageEvent(_Model):
+    key: ExecutionImageKey
+    state: ImageState
+    actor: StrictStr = Field(min_length=1, max_length=128)
+    reason: StrictStr = Field(min_length=1, max_length=500)
+    at: datetime
+
+
+class RealizationAction(StrEnum):
+    DELETED = "DELETED"  # The file was removed; the record stays (DECIDED-C15-H).
+    RESTORED = "RESTORED"  # A new realization of the same source identity.
+
+
+class RealizationEvent(_Model):
+    """A change to one backend's realization of a record, which itself is never rewritten."""
+
+    key: ExecutionImageKey
+    backend: ExecutionBackendName
+    resolved_image: StrictStr = Field(min_length=1, max_length=512)
+    action: RealizationAction
+    produced_by: StrictStr | None = Field(default=None, max_length=256)  # How a restored file was made.
+    actor: StrictStr = Field(min_length=1, max_length=128)
+    reason: StrictStr = Field(min_length=1, max_length=500)
+    at: datetime
+
+
+class KeptLocks(_Model):
+    """The lock files an image was built from, kept so it can be rebuilt (DECIDED-C15-H, 2026-11-18).
+
+    Filed under the derived identity they rebuild; each lock's text sits in its own
+    file beside this one and is checked against its sha256 on every read.
+    """
+
+    source: SourceIdentity
+    base_key: ExecutionImageKey
+    base_source: SourceIdentity
+    wheel_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    conda_sha256: StrictStr | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def check_locks(self) -> "KeptLocks":
+        if self.wheel_sha256 is None and self.conda_sha256 is None:
+            raise ValueError("At least one lock is kept")
+        return self
+
+
+_LOCK_KINDS = ("wheel", "conda")
+_MAX_LOCK_FILE_BYTES = 4_194_304
+
+
+class CatalogStore:
+    """One directory of image records and state events; files are only ever added."""
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.records_root = self.root / "records"
+        self.events_root = self.root / "events"
+        self.realizations_root = self.root / "realizations"
+        self.locks_root = self.root / "locks"
+
+    def initialize(self) -> "CatalogStore":
+        for directory in (self.root, self.records_root, self.events_root, self.realizations_root,
+                          self.locks_root):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        return self
+
+    def keep_locks(self, *, source: SourceIdentity, base_key: str, base_source: SourceIdentity,
+                   texts: Mapping[str, str], private: bool) -> None:
+        """File the locks that rebuild `source`; keeping the same locks again changes nothing.
+
+        `texts` maps "wheel" and "conda" to lock texts. Private stores keep 0600 files;
+        the lab's are 0640 for its group. The first locks filed for a source stay.
+        """
+        if not texts or set(texts) - set(_LOCK_KINDS) or source.kind is not SourceKind.DERIVED:
+            raise CatalogError("Locks are kept for a derived identity, by kind")
+        if not self.locks_root.is_dir():
+            if private:
+                self.locks_root.mkdir(mode=0o700)
+            else:
+                raise CatalogError("The lab area has no kept-locks directory yet")
+        name, mode = source.digest.removeprefix("sha256:"), 0o600 if private else 0o640
+        kept = KeptLocks(source=source, base_key=base_key, base_source=base_source,
+                         **{f"{kind}_sha256": hashlib.sha256(text.encode()).hexdigest()
+                            for kind, text in texts.items()})
+        if self.kept_locks(source) is not None:
+            return
+        for kind, text in texts.items():
+            _add_bytes(self.locks_root / f"{name}.{kind}.lock", text.encode(), mode)
+        try:
+            add_file(self.locks_root / f"{name}.json", "locks", kept.model_dump(mode="json"), mode)
+        except AppendOnlyError:
+            if self.kept_locks(source) is None:  # Another writer filed other locks just now.
+                raise CatalogError("Kept locks are unreadable") from None
+
+    def kept_locks(self, source: SourceIdentity) -> tuple[KeptLocks, dict[str, str]] | None:
+        """The kept locks for `source` and their verified texts; None when none were kept."""
+        name = source.digest.removeprefix("sha256:")
+        path = self.locks_root / f"{name}.json"
+        if not (path.exists() or path.is_symlink()):
+            return None
+        kept = self._guard(read_file, path, "locks", KeptLocks)
+        if kept.source != source:
+            raise CatalogError("Kept locks do not match their name")
+        texts = {}
+        for kind in _LOCK_KINDS:
+            expected = getattr(kept, f"{kind}_sha256")
+            if expected is not None:
+                body = _read_bytes(self.locks_root / f"{name}.{kind}.lock")
+                if hashlib.sha256(body).hexdigest() != expected:
+                    raise CatalogError("A kept lock fails its integrity check")
+                try:
+                    texts[kind] = body.decode("utf-8")
+                except UnicodeError:
+                    raise CatalogError("A kept lock is unreadable") from None
+        return kept, texts
+
+    def add_realization_event(self, event: RealizationEvent) -> None:
+        self._guard(add_file, self.realizations_root / event_name(event.at), "event",
+                    event.model_dump(mode="json"))
+
+    def realization_events(self) -> list[RealizationEvent]:
+        """Oldest first; an area created before realization events has none."""
+        return self._guard(read_events, self.realizations_root, RealizationEvent)
+
+    def add_record(self, record: ImageRecord) -> None:
+        if record.key in self.records():
+            raise CatalogError("An image record with this key already exists")
+        self._guard(add_file, self.records_root / f"{record.key}.json", "record",
+                    record.model_dump(mode="json"))
+
+    def add_event(self, event: ImageEvent, *, current: ImageState) -> None:
+        if event.state not in _TRANSITIONS[current]:
+            raise CatalogError(f"An image cannot change from {current.value} to {event.state.value}")
+        self._guard(add_file, self.events_root / event_name(event.at), "event", event.model_dump(mode="json"))
+
+    def records(self) -> dict[str, ImageRecord]:
+        records = {}
+        for path in self._guard(list_files, self.records_root, _RECORD_NAME):
+            record = self._guard(read_file, path, "record", ImageRecord)
+            if path.name != f"{record.key}.json":
+                raise CatalogError("An image record file does not match its key")
+            records[record.key] = record
+        return records
+
+    def events(self) -> list[ImageEvent]:
+        return self._guard(read_events, self.events_root, ImageEvent)
+
+    @staticmethod
+    def _guard(function, *arguments):
+        try:
+            return function(*arguments)
+        except CatalogError:
+            raise
+        except AppendOnlyError as exc:
+            raise CatalogError(str(exc)) from None
+
+
+def _add_bytes(path: Path, body: bytes, mode: int) -> None:
+    """Write a file under its final name only if absent; an identical existing file is fine."""
+    temporary = path.with_name(f".{os.urandom(16).hex()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if _read_bytes(path) != body:
+                raise CatalogError("A different kept lock already has this name") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _read_bytes(path: Path) -> bytes:
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > _MAX_LOCK_FILE_BYTES:
+            raise ValueError()
+        return path.read_bytes()
+    except (OSError, ValueError):
+        raise CatalogError("A kept lock is unreadable") from None
+
+
+class ImageCatalog:
+    """Merged view of the lab and personal catalogs for one user on one backend.
+
+    Configured base images are lab images. Images the user's own environment
+    builds produce are personal. A key held by both scopes fails closed rather
+    than letting a personal image stand in for a lab one.
+    """
+
+    def __init__(self, *, owner_user_id: str, backend: ExecutionBackendName,
+                 configured_keys: Iterable[str] = (), lab: CatalogStore | None = None,
+                 configured_gpu: Mapping[str, GpuSupport] | None = None,
+                 personal: CatalogStore | None = None):
+        self.owner_user_id, self.backend = owner_user_id, backend
+        self.lab, self.personal = lab, personal
+        self.configured_keys = frozenset(configured_keys)
+        self.configured_gpu = dict(configured_gpu or {})  # Configured images have no record.
+        self._lab_records = lab.records() if lab is not None else {}
+        self._personal_records = personal.records() if personal is not None else {}
+        if any(record.scope is not ImageScope.LAB for record in self._lab_records.values()):
+            raise CatalogError("The lab catalog holds a personal image")
+        if any(record.owner_user_id != owner_user_id for record in self._personal_records.values()):
+            raise CatalogError("The personal catalog holds another member's image")
+        lab_keys = self.configured_keys | set(self._lab_records)
+        if lab_keys & set(self._personal_records) or self.configured_keys & set(self._lab_records):
+            raise CatalogError("An image key is held twice")
+        self._states = {**self._replay(lab), **self._replay(personal)}
+        # The file each (key, backend) runs from now; None once deleted and not restored.
+        self._realizations: dict[tuple[str, ExecutionBackendName], str | None] = {}
+        for store in (lab, personal):
+            for event in store.realization_events() if store is not None else ():
+                self._realizations[(event.key, event.backend)] = (
+                    None if event.action is RealizationAction.DELETED else event.resolved_image)
+
+    @staticmethod
+    def _replay(store: CatalogStore | None) -> dict[str, ImageState]:
+        states: dict[str, ImageState] = {}
+        for event in store.events() if store is not None else ():
+            current = states.get(event.key, ImageState.ACTIVE)
+            if event.state not in _TRANSITIONS[current]:
+                raise CatalogError("The catalog events contain an illegal state change")
+            states[event.key] = event.state
+        return states
+
+    def state(self, key: str) -> ImageState:
+        return self._states.get(key, ImageState.ACTIVE)
+
+    def scope(self, key: str) -> ImageScope:
+        lab = key in self.configured_keys or key in self._lab_records
+        return ImageScope.LAB if lab else ImageScope.PERSONAL
+
+    def held_keys(self) -> set[str]:
+        """Every key this view knows: configured, lab and personal images."""
+        return set(self.configured_keys) | set(self._lab_records) | set(self._personal_records)
+
+    def record(self, key: str) -> ImageRecord | None:
+        return self._lab_records.get(key) or self._personal_records.get(key)
+
+    def admitted_images(self) -> tuple[ApprovedImage, ...]:
+        """Executable admitted images on this backend; revoked or deleted ones are never registered."""
+        images = []
+        for key, record in sorted({**self._lab_records, **self._personal_records}.items()):
+            image = record.approved_image(self.backend, resolved_image=self.realization(key))
+            if image is not None and self.state(key) is not ImageState.REVOKED and not self.deleted(key):
+                images.append(image)
+        return tuple(images)
+
+    def realization(self, key: str) -> str | None:
+        """A restored file replaces the record's; None means the record's own realization."""
+        return self._realizations.get((key, self.backend))
+
+    def deleted(self, key: str) -> bool:
+        """The realization on this backend was deleted and has not been restored."""
+        return (key, self.backend) in self._realizations and self._realizations[(key, self.backend)] is None
+
+    def record_realization(self, key: str, *, resolved_image: str, action: RealizationAction, actor: str,
+                           reason: str, produced_by: str | None = None) -> None:
+        """Append a realization change to the store that owns the key (records stay as written)."""
+        store = self.lab if self.scope(key) is ImageScope.LAB else self.personal
+        if store is None:
+            raise CatalogError("No catalog store owns this image")
+        if store is self.lab:
+            store.realizations_root.mkdir(exist_ok=True)  # Only the lab's holder writes here.
+        else:
+            store.realizations_root.mkdir(mode=0o700, exist_ok=True)
+        store.add_realization_event(RealizationEvent(
+            key=key, backend=self.backend, resolved_image=resolved_image, action=action, produced_by=produced_by,
+            actor=actor, reason=reason, at=next_event_time(store.realizations_root)))
+        self._realizations[(key, self.backend)] = None if action is RealizationAction.DELETED else resolved_image
+
+    def visible(self, key: str) -> bool:
+        """Shown to the model: only ACTIVE images."""
+        return self.state(key) is ImageState.ACTIVE
+
+    def require_selectable(self, key: str, *, used_by_run: bool) -> None:
+        state = self.state(key)
+        if state is ImageState.REVOKED:
+            raise ImageNotApprovedError(f"Image key {key!r} has been revoked")
+        if state is ImageState.DEPRECATED and not used_by_run:
+            raise ImageNotApprovedError(
+                f"Image key {key!r} is deprecated; only runs that already used it may continue")
+
+    def describe(self, key: str) -> dict:
+        """Model-visible catalog facts: no reference, registry, path or owner identity."""
+        record = self.record(key)
+        scope = self.scope(key)
+        return {
+            "scope": "LAB" if scope is ImageScope.LAB else "YOURS",
+            "purpose": record.purpose if record else None,
+            "gpu": (record.gpu if record else self.configured_gpu.get(key, GpuSupport.NONE)).value,
+            "inventory_origin": record.inventory.origin.value if record else None,
+            "size_mb": (round(record.size_bytes / 1_048_576) if record and record.size_bytes is not None
+                        else None),
+        }
+
+    def set_state(self, key: str, state: ImageState, *, actor: str, reason: str) -> None:
+        """Append a state event to the store that owns the key."""
+        store = self.lab if self.scope(key) is ImageScope.LAB else self.personal
+        if store is None:
+            raise CatalogError("No catalog store owns this image")
+        event = ImageEvent(key=key, state=state, actor=actor, reason=reason,
+                           at=next_event_time(store.events_root))
+        store.add_event(event, current=self.state(key))
+        self._states[key] = state

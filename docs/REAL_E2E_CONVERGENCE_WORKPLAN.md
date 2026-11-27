@@ -6,11 +6,60 @@ Task 2 的 Kang 源尝试 S1 自然终止为 FAILED。执行 28ab336c 的 2,412 
 
 五套相关回归通过 169 项。完整 SDK 测试及其子进程绑定同一隔离检出后，4,030 项通过、82 项跳过。独立复核的原件、单字符对照及边界用例通过 4/4，清单 SHA-256 为 `6ad27718e4d8318966a592b563a0a4a0509f95c042b695b75b6bec4e15e580b4`。这些结果验证的是 SDK 错误反馈。S1 的科学程序、分析结果与源资格保留原审计结论，本次复核未调用新的科学模型。
 
+## C15 container images accepted — 2026-11-21
+
+C15 is implemented on branch `feat/container-images` (head `3124359`; not
+pushed, merged, released or deployed). It adds an
+image catalog with lab and personal images, a lab area with roles and uid
+binding, admission from OCI references, archives, SIF files and member lock
+files, promotion, image states, deletion and restore, a SHELL runtime, conda
+packages in derived environments, NVIDIA GPUs, a backend-neutral source
+identity, and cleanup of lost admissions and environment builds.
+
+- Deterministic suite: 3559 passed, 73 skipped.
+- Real Docker on the development host, including an RTX 4060, and a
+  two-account check with real OS accounts.
+- Four rounds on the Slurm + Apptainer test cluster, run from a separate
+  machine with git bundles. Every finding was fixed. The same environment had
+  the same identity on Docker and on the cluster.
+- A fifth cluster round ran a live Agent choosing among images: every
+  choice came from the model, but the model-visible list lacked conda
+  inventories, which `4e11038` fixed. In the sixth round, with complete
+  facts, the model chose existing non-default images itself (acceptance
+  level 3). It never chose a SHELL image; this gap is recorded. A small
+  listing fix from that round is `3124359`.
+
+MOHAN CUI accepted C15 on 2026-11-21; see
+[C15 acceptance](C15_CONTAINER_IMAGES_ACCEPTANCE.md). Living documents are
+updated. No production release or deployment changed.
+
 ## 2026-11-20 公布 Gold 工程阶段更新
 
 - 更新覆盖 Native 工具协议、执行修订及收集、阶段交接和 Gold 复盘。工具允许指定字段的一层 JSON 解包，并继续执行原类型和授权校验。精确修订失败提供失败项索引和匹配数；缺件登记保留后续合规制品；失败请求的待核制品 ID 不再进入 Gold 来源清单。
 - 真实单细胞工程验收已观察到多候选选择、精确版本授权、实际 ADAPT、正式报告与清单、使用后自主 UPDATE 建议及反馈重拟。独立核验发现报告的聚合口径和候选适用范围仍需审查。UPDATE 晋升、FORK、父子路由和框架冻结仍待验收。
 - 本次沿用预印本分支同步源码、回归与可公开文档。站点配置、内部运行证据和盲测材料保存在服务器。评测入口见 [Gold 预印本评测方案](GOLD_BENCHMARK_DESIGN.md)。
+
+## C15 container images decided — 2026-11-11
+
+MOHAN CUI opened C15, an extension of C13. A runtime Agent selects images from
+a governed catalog, and lab members admit their own images, on Docker and
+Apptainer. Analyses run on a cluster by default. Branch
+`feat/container-images` starts from `main` at `7827b49`. The
+[gap memo](C15_CONTAINER_IMAGES_GAP_MEMO.md) audits the current single-image,
+Python-only, wheel-only behavior. All decisions, DECIDED-C15-0 to
+DECIDED-C15-H, are in [C15 decisions](C15_CONTAINER_IMAGES_DECISIONS.md). They
+add:
+- a SHELL runtime;
+- conda-derived environments;
+- NVIDIA GPU support;
+- a two-layer source and realization identity, which resolves OPEN-C13-I;
+- an administrator-held lab area enforced by OS permissions;
+- generic OCI registry support.
+
+This entry changes documentation only. No source, test, release or
+deployment changed. The local development host now has Docker Engine 29.9.3
+and NVIDIA Container Toolkit 1.20.2, so local GPU validation is possible.
+Implementation has not started; each step needs MOHAN CUI's instruction.
 
 ## Authorized main publication and PR 3 merge — 2026-10-28
 

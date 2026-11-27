@@ -15,7 +15,7 @@ from .docker import (
 )
 from .executor import ContainerExecutor
 from .job_ledger import JobLedger, JobLedgerEntry, JobLedgerState, JobPurpose
-from .job_reconciliation import OrphanAction, ReconciledJob, reconcile_orphan_jobs
+from .job_reconciliation import OrphanAction, ReconciledJob, reconcile_admission_jobs, reconcile_orphan_jobs
 from .launchers import (
     JobHandle,
     JobLauncher,
@@ -142,5 +142,6 @@ __all__ = [
     "StructuredOutputContract",
     "SubprocessApptainerRunner",
     "SubprocessDockerRunner",
+    "reconcile_admission_jobs",
     "reconcile_orphan_jobs",
 ]

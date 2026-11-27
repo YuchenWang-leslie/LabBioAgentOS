@@ -15,10 +15,10 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 from uuid import UUID, uuid4
 
-from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner
+from .backend import CONTAINER_SCRIPT_PATH, ProcessOutcome, ProcessRunner, container_script_path
 from .errors import ContainerStartError, ExecutionPlanRejected, ImageNotApprovedError
 from .images import ApprovedImage
-from .models import APPTAINER_OFFLINE_NETWORK_ARGV, ExecutionPlan
+from .models import APPTAINER_OFFLINE_NETWORK_ARGV, ExecutionPlan, ExecutionRuntime
 from .mounts import ExecutionWorkspace, ResolvedMount
 from .process_streams import capture_process
 
@@ -55,17 +55,34 @@ def _reject_aliases(path: Path) -> Path:
 class SifStore:
     """Read-only, content-addressed SIF files named by their sha256."""
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, *, shared_owner: int | None = None):
+        """A private store of this user, or, with shared_owner, the lab's store.
+
+        A lab store is held by the lab's holding account and only read by members
+        through the lab group: nobody else may write it, and files are read-only.
+        """
         self.root = _reject_aliases(Path(root))
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        info = self.root.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o077):
-            raise SifStoreError("SIF store must be a private directory owned by this user")
+        self.owner = os.getuid() if shared_owner is None else shared_owner
+        self.shared = shared_owner is not None
+        if not self.shared:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            info = self.root.lstat()
+        except OSError as exc:
+            raise SifStoreError("SIF store is unavailable") from exc
+        closed = 0o027 if self.shared else 0o077
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner or info.st_mode & closed:
+            raise SifStoreError("SIF store must be a closed directory owned by its holder")
 
     def register(self, source: str | Path) -> str:
         """Copy one SIF into the store and return its immutable reference."""
+        return self.register_new(source)[0]
 
+    def register_new(self, source: str | Path) -> tuple[str, bool]:
+        """Register a SIF; also say whether this call created the file (False: it was already stored)."""
+
+        if self.owner != os.getuid():
+            raise SifStoreError("Only the store's holder may register into it")
         source = Path(source).expanduser().absolute()
         try:
             descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
@@ -93,18 +110,31 @@ class SifStore:
             target = self._file(reference)
             if target.exists() or target.is_symlink():
                 self.verify(reference)  # Idempotent only for an intact identical file.
-                return reference
-            os.chmod(temporary, 0o444)
+                return reference, False
+            os.chmod(temporary, 0o440 if self.shared else 0o444)
             os.rename(temporary, target)
             directory = os.open(self.root, os.O_RDONLY)
             try:
                 os.fsync(directory)
             finally:
                 os.close(directory)
-            return reference
+            return reference, True
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+    def remove(self, reference: str) -> None:
+        """Delete one stored SIF; only the store's holder may, and only a file the store would serve."""
+
+        if self.owner != os.getuid():
+            raise SifStoreError("Only the store's holder may remove from it")
+        path = self.path_for(reference)
+        path.unlink()
+        directory = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
     def path_for(self, reference: str) -> Path:
         """Return the stored file for a reference, refusing anything mutable or aliased."""
@@ -115,7 +145,7 @@ class SifStore:
         except OSError as exc:
             raise SifStoreError("Referenced SIF is not registered") from exc
         if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != os.getuid() or info.st_mode & 0o222):
+                or info.st_uid != self.owner or info.st_mode & 0o222):
             raise SifStoreError("Registered SIF must be a single read-only regular file")
         return path
 
@@ -141,6 +171,42 @@ class SifStore:
         return self.root / f"{match.group(1)}.sif"
 
 
+class SifStoreChain:
+    """Several content-addressed stores searched in order for one reference.
+
+    The first store holding a file with the referenced name answers; a file that
+    is present but fails its checks is an error, never a reason to try the next store.
+    """
+
+    def __init__(self, stores: tuple[SifStore, ...]):
+        if not stores:
+            raise ValueError("At least one SIF store is required")
+        self.stores = tuple(stores)
+        self.root = self.stores[0].root
+
+    def register(self, source: str | Path) -> str:
+        return self.stores[0].register(source)
+
+    def register_new(self, source: str | Path) -> tuple[str, bool]:
+        return self.stores[0].register_new(source)
+
+    def remove(self, reference: str) -> None:
+        self._holder(reference).remove(reference)
+
+    def path_for(self, reference: str) -> Path:
+        return self._holder(reference).path_for(reference)
+
+    def verify(self, reference: str) -> Path:
+        return self._holder(reference).verify(reference)
+
+    def _holder(self, reference: str) -> SifStore:
+        for store in self.stores:
+            path = store._file(reference)
+            if path.exists() or path.is_symlink():
+                return store
+        raise SifStoreError("Referenced SIF is not registered")
+
+
 class ApptainerCommandBuilder:
     """Construct fixed `apptainer exec` argv equivalent to the Docker sandbox contract."""
 
@@ -153,7 +219,7 @@ class ApptainerCommandBuilder:
 
     def __init__(
         self,
-        sif_store: SifStore,
+        sif_store: SifStore | SifStoreChain,
         *,
         scratch_root: str | Path,
         resource_enforcement: ResourceEnforcement,
@@ -204,6 +270,9 @@ class ApptainerCommandBuilder:
             "--pwd",
             "/workspace",
         ]
+        if plan.resources.gpus:
+            # Only when GPUs were requested; the scheduler's allocation limits which ones.
+            argv.append("--nv")
         if self.resource_enforcement == "apptainer-cgroups":
             argv.extend([
                 "--cpus",
@@ -226,7 +295,7 @@ class ApptainerCommandBuilder:
         ):
             argv.extend(["--env", value])
         for source, target, read_only in (
-            (workspace.script_path, self.SCRIPT_TARGET, True),
+            (workspace.script_path, container_script_path(plan.runtime), True),
             (workspace.parameters_path, self.PARAMETERS_TARGET, True),
             (workspace.input_manifest_path, self.INPUT_MANIFEST_TARGET, True),
             (workspace.input_identities_path, self.INPUT_IDENTITIES_TARGET, True),
@@ -234,12 +303,16 @@ class ApptainerCommandBuilder:
             *((mount.source, mount.target, mount.read_only) for mount in input_mounts),
         ):
             argv.extend(["--bind", self._bind(source, target, read_only)])
-        argv.extend([str(sif), *image.executable, str(self.SCRIPT_TARGET)])
+        argv.extend([str(sif), *image.entry_point(plan.runtime), str(container_script_path(plan.runtime))])
         return tuple(argv)
 
     def cleanup_paths(self, execution_id: UUID) -> tuple[Path, ...]:
         # The per-execution --workdir holds the container's /tmp and /var/tmp.
         return (self.scratch_root / execution_id.hex,)
+
+    def scratch_paths(self, execution_id: UUID) -> tuple[Path, ...]:
+        # Apptainer has no sized tmpfs, so the launcher polls the --workdir instead.
+        return self.cleanup_paths(execution_id)
 
     def model_stderr(self, stderr: bytes) -> bytes:
         # --silent keeps INFO/WARNING out; FATAL/ERROR lines would name the runtime and
@@ -251,11 +324,12 @@ class ApptainerCommandBuilder:
         )
 
     def import_probe_argv(
-        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...]
+        self, image: ApprovedImage, interpreter_arguments: tuple[str, ...],
+        runtime: ExecutionRuntime = ExecutionRuntime.PYTHON,
     ) -> tuple[str, ...]:
         return (
             self.apptainer_binary, "--silent", "exec", *ISOLATION_ARGUMENTS,
-            str(self._sif(image)), image.executable[0], *interpreter_arguments,
+            str(self._sif(image)), image.entry_point(runtime)[0], *interpreter_arguments,
         )
 
     def _sif(self, image: ApprovedImage) -> Path:

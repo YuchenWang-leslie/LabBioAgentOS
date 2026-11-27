@@ -39,6 +39,7 @@ from .models import (
     ExecutionPlan,
     ExecutionProvenance,
     ExecutionResult,
+    ExecutionRuntime,
     ExecutionStatus,
     OutputContractFailureCode,
 )
@@ -53,7 +54,10 @@ from .python_diagnostics import (
     script_error_locations,
 )
 from .job_ledger import JobLedger
-from .launchers import JobLauncher, JobSpec, LocalLauncher, TERMINAL_STATES
+from .launchers import (
+    SCRATCH_POLL_SECONDS, TERMINAL_STATES, JobLauncher, JobSpec, LocalLauncher,
+    scratch_limit_marker,
+)
 from .launchers.base import JobLauncherError
 from .registration import OutputCollector
 from .process_streams import MAX_CAPTURED_STREAM_BYTES
@@ -116,6 +120,7 @@ class ContainerExecutor:
         self.backend_check = backend_check
         self._backend_checked = backend_check is None
         self._execution_lock = asyncio.Lock()
+        self._gpu_allocations: dict = {}
 
     def build_command(self, plan: ExecutionPlan) -> tuple[str, ...]:
         """Prepare the workspace and return deterministic argv without launching."""
@@ -155,6 +160,10 @@ class ContainerExecutor:
             await asyncio.to_thread(self._ensure_backend)
             prepared = self._prepare(plan)
             launcher = self.launcher or LocalLauncher(self.process_runner)
+            scratch = self.command_builder.scratch_paths(plan.execution_id)
+            if scratch and not launcher.enforces_scratch_limit:
+                # A disk-backed /tmp without a watcher would have no size limit at all.
+                raise ContainerStartError("This placement cannot enforce the scratch size limit")
             ledger = self.job_ledger
             if ledger is not None:
                 ledger.record_intent(run_id=plan.run_id, execution_id=plan.execution_id,
@@ -170,6 +179,9 @@ class ContainerExecutor:
                         resources=plan.resources,
                         workspace_root=prepared.workspace.root,
                         cleanup_paths=self.command_builder.cleanup_paths(plan.execution_id),
+                        scratch_paths=scratch,
+                        scratch_limit_bytes=(self.execution_policy.tmpfs_size_mb * 1_048_576
+                                             if scratch else None),
                     )))
                     # Cancellation of this waiter cannot cancel an in-flight
                     # acceptance or erase the handle needed to stop the job.
@@ -295,6 +307,9 @@ class ContainerExecutor:
         planned: dict[str, Any] = {
             "image_key": plan.image_key,
             "resolved_image": image.resolved_reference,
+            "image_source": image.source_identity.model_dump(mode="json"),
+            "runtime": plan.runtime.value,
+            "runtime_source": plan.runtime_source.value,
             "script_hash": workspace.script_hash,
             "script_artifact_id": str(script_ref.artifact_id),
             "input_artifact_ids": [
@@ -307,8 +322,13 @@ class ContainerExecutor:
                 "memory_mb": plan.resources.memory_mb,
                 "pids_limit": plan.resources.pids_limit,
                 "timeout_seconds": plan.resources.timeout_seconds,
+                "gpus": plan.resources.gpus,
             },
         }
+        assigned = getattr(self.command_builder, "assigned_gpus", None)
+        if plan.resources.gpus and assigned is not None:
+            # The exact devices this execution was given, as named on its command line.
+            planned["gpu_devices"] = [device.record() for device in assigned(plan)]
         if self.isolation_record is not None:
             planned["isolation"] = self.isolation_record
         self._emit(plan, TraceEventType.EXECUTION_PLANNED, "PLANNED", planned)
@@ -349,23 +369,36 @@ class ContainerExecutor:
     def _finish(
         self, plan: ExecutionPlan, prepared: _PreparedExecution, outcome: ProcessOutcome,
     ) -> ExecutionResult:
+        # The GPUs a scheduler job was actually given join its completion or failure record.
+        if outcome.gpu_allocation is not None:
+            self._gpu_allocations[plan.execution_id] = outcome.gpu_allocation
+        try:
+            return self._finish_recorded(plan, prepared, outcome)
+        finally:
+            self._gpu_allocations.pop(plan.execution_id, None)
+
+    def _finish_recorded(
+        self, plan: ExecutionPlan, prepared: _PreparedExecution, outcome: ProcessOutcome,
+    ) -> ExecutionResult:
         started_at, image, workspace, script_ref = (
             prepared.started_at, prepared.image, prepared.workspace, prepared.script_ref,
         )
+        scratch_exceeded = scratch_limit_marker(workspace.root).exists()
+        stopped = outcome.output_limit_exceeded or outcome.timed_out or scratch_exceeded
         try:
             stdout_ref = self._store_stream(
                 plan,
                 workspace.log_root / "stdout.log",
                 outcome.stdout,
                 "stdout",
-                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
+                complete=not stopped,
             )
             stderr_ref = self._store_stream(
                 plan,
                 workspace.log_root / "stderr.log",
                 outcome.stderr,
                 "stderr",
-                complete=not (outcome.output_limit_exceeded or outcome.timed_out),
+                complete=not stopped,
             )
         except (ArtifactStoreError, OSError) as exc:
             completed_at = datetime.now(timezone.utc)
@@ -395,6 +428,20 @@ class ContainerExecutor:
         # The stored stderr Artifact stays complete; model-facing projections drop
         # lines the container runtime wrote about itself.
         model_stderr = self.command_builder.model_stderr(outcome.stderr)
+        if scratch_exceeded:
+            message = (
+                f"The container /tmp exceeded its {self.execution_policy.tmpfs_size_mb} MiB "
+                "capacity, so the execution was stopped. Usage is checked every "
+                f"{SCRATCH_POLL_SECONDS} seconds and can briefly exceed the capacity first."
+            )
+            self._emit_failure(plan, ExecutionFailureClass.SCRATCH_LIMIT, message)
+            return self._result(
+                plan, image, workspace, script_ref, status=ExecutionStatus.FAILED,
+                started_at=started_at, completed_at=completed_at,
+                duration_seconds=outcome.duration_seconds, exit_code=outcome.exit_code,
+                stdout_ref=stdout_ref, stderr_ref=stderr_ref,
+                error_class=ExecutionFailureClass.SCRATCH_LIMIT, error_message=message,
+            )
         if outcome.output_limit_exceeded:
             limit_message = (
                 f"Process output exceeded the {MAX_CAPTURED_STREAM_BYTES}-byte capture limit per stdout/stderr. "
@@ -482,6 +529,7 @@ class ContainerExecutor:
                 issues=issues,
                 error_context=(bounded_error_context(model_stderr, raw_stderr=outcome.stderr)
                     if self.execution_policy.include_error_context else None),
+                # Python tracebacks are parsed for PYTHON only; SHELL keeps stderr and the exit code.
                 diagnostics=self._safe_python_diagnostics(
                     model_stderr,
                     script_content=plan.script_content,
@@ -489,7 +537,7 @@ class ContainerExecutor:
                         model_stderr, image, self.process_runner,
                         self.command_builder,
                     ),
-                ),
+                ) if plan.runtime is ExecutionRuntime.PYTHON else (),
             )
 
         queryable_output_count = sum(
@@ -642,11 +690,14 @@ class ContainerExecutor:
         return ExecutionResult(
             execution_id=plan.execution_id,
             run_id=plan.run_id,
+            runtime=plan.runtime,
+            runtime_source=plan.runtime_source,
             stage_id=plan.stage_id,
             invocation_id=plan.invocation_id,
             status=status,
             image_key=plan.image_key,
             resolved_image=image.resolved_reference,
+            image_source=image.source_identity,
             execution_provenance=execution_provenance,
             script_hash=workspace.script_hash,
             script_ref=script_ref,
@@ -700,6 +751,9 @@ class ContainerExecutor:
     ) -> None:
         if self.trace_recorder is None:
             return
+        allocation = self._gpu_allocations.get(plan.execution_id)
+        if allocation is not None:  # Set only while _finish writes the final record.
+            payload = {**payload, "gpu_allocation": allocation}
         self.trace_recorder.emit(
             plan.run_id,
             event_type,

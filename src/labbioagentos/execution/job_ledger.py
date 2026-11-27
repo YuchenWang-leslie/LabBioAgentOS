@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -11,7 +12,9 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import UUID
 
-from .launchers.base import JobLauncherError
+from .backend import ProcessOutcome
+from .errors import ContainerStartError
+from .launchers.base import JobLauncher, JobLauncherError, JobSpec
 
 
 class JobLedgerState(StrEnum):
@@ -34,6 +37,7 @@ class JobPurpose(StrEnum):
 
     EXECUTION = "EXECUTION"  # An analysis execution.
     ENVIRONMENT_BUILD = "ENVIRONMENT_BUILD"  # A download or build job of an environment build.
+    ADMISSION = "ADMISSION"  # A conversion or lock build job of an image admission.
 
 
 @dataclass(frozen=True)
@@ -155,6 +159,14 @@ class JobLedger:
         ).fetchall()
         return tuple(_entry(row) for row in rows)
 
+    def open_runs(self, purpose: JobPurpose) -> tuple[UUID, ...]:
+        """The runs that still have an open job of this purpose."""
+        rows = self._connection.execute(
+            "SELECT DISTINCT run_id FROM jobs WHERE purpose = ? AND state IN (?, ?) ORDER BY run_id",
+            (JobPurpose(purpose).value, *sorted(state.value for state in OPEN_STATES)),
+        ).fetchall()
+        return tuple(UUID(row[0]) for row in rows)
+
     def get(self, execution_id: UUID) -> JobLedgerEntry | None:
         row = self._connection.execute(
             "SELECT run_id, execution_id, launcher, job_id, state, workspace_root, purpose FROM jobs"
@@ -186,3 +198,35 @@ def _entry(row) -> JobLedgerEntry:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+async def run_recorded_job(ledger: JobLedger, launcher: JobLauncher, spec: JobSpec, *, run_id: UUID,
+                           purpose: JobPurpose) -> ProcessOutcome | None:
+    """Submit, wait for and collect one job recorded in the ledger; None if it was refused.
+
+    The intent is recorded before submission. When the waiting coroutine is
+    cancelled, the job is asked to stop but its entry stays open: the job may
+    still be queued or running, so crash cleanup confirms it later
+    (DECIDED-C13-4).
+    """
+
+    ledger.record_intent(run_id=run_id, execution_id=spec.execution_id, launcher=launcher.kind,
+                         workspace_root=spec.workspace_root, purpose=purpose)
+    try:
+        handle = await launcher.submit(spec)
+    except ContainerStartError:
+        ledger.record_not_submitted(spec.execution_id)
+        return None
+    ledger.record_submitted(spec.execution_id, handle.job_id)
+    try:
+        await launcher.wait(handle)
+    except asyncio.CancelledError:
+        # Cancelling the coroutine does not stop a service or a scheduler job.
+        await asyncio.shield(launcher.cancel(handle))
+        raise
+    try:
+        outcome = await launcher.collect(handle)
+    except ContainerStartError:  # The job ended without an exit status.
+        outcome = ProcessOutcome(exit_code=None, stdout=b"", stderr=b"", duration_seconds=0.0)
+    ledger.record_collected(spec.execution_id)
+    return outcome

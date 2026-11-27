@@ -26,7 +26,9 @@ from .base import (
     JobSpec,
     JobState,
 )
-from .job_script import EXIT_RECORD, JOB_PATH, SchedulerPolicy, render_job_script, validate_extra_directives
+from ..gpu import parse_gpu_allocation
+from .job_script import (EXIT_RECORD, GPU_RECORD, JOB_PATH, MAX_GPU_RECORD_BYTES, SchedulerPolicy,
+                         render_job_script, validate_extra_directives)
 from .templates import SchedulerTemplate
 
 
@@ -66,34 +68,46 @@ def check_scheduler_client(
     policy: SchedulerPolicy,
     work_root: Path,
     command_runner: SchedulerCommandRunner | None = None,
+    *,
+    gpus: bool = False,
 ) -> dict:
-    """Operator preflight: clients on PATH and, where supported, a validation-only submit."""
+    """Operator preflight: clients on PATH and, where supported, a validation-only submit.
+
+    With gpus, a one-GPU job is validated as well, so the GPU directive and the
+    GPU partition are checked before any execution asks for them.
+    """
 
     runner = command_runner or SchedulerCommandRunner(template.passthrough_environment)
     search_path = runner.environment().get("PATH", "")
     names = dict.fromkeys(command[0] for command in (template.submit, template.status, template.cancel))
     clients = {name: shutil.which(name, path=search_path) is not None for name in names}
     report = {"template": template.name, "clients": clients, "test_submission": "UNSUPPORTED"}
+    if gpus:
+        report["gpu_test_submission"] = "UNSUPPORTED"
     if not template.test_submit or not all(clients.values()):
         return report
-    directory = Path(tempfile.mkdtemp(prefix="labbio-scheduler-check-", dir=work_root))
-    try:
-        job_dir = directory / "job"
-        job_dir.mkdir()
-        spec = JobSpec(execution_id=uuid4(), argv=("true",), timeout_seconds=60.0,
-                       resources=RequestedResources(), workspace_root=directory)
-        script = job_dir / "job.sh"
-        script.write_text(render_job_script(template, policy, spec, job_dir, {"PATH": JOB_PATH}),
-                          encoding="utf-8")
-        argv = tuple(item.replace("{script}", str(script)) for item in template.test_submit)
-        outcome = runner.run(argv)
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
-    accepted = outcome.exit_code == 0 and not outcome.timed_out
-    report["test_submission"] = "ACCEPTED" if accepted else "REJECTED"
-    if not accepted:
-        lines = (outcome.stderr or outcome.stdout).decode("utf-8", "replace").strip().splitlines()
-        report["detail"] = lines[0][:300] if lines else None
+    checks = [("test_submission", "detail", RequestedResources())]
+    if gpus:
+        checks.append(("gpu_test_submission", "gpu_detail", RequestedResources(gpus=1)))
+    for name, detail, resources in checks:
+        directory = Path(tempfile.mkdtemp(prefix="labbio-scheduler-check-", dir=work_root))
+        try:
+            job_dir = directory / "job"
+            job_dir.mkdir()
+            spec = JobSpec(execution_id=uuid4(), argv=("true",), timeout_seconds=60.0,
+                           resources=resources, workspace_root=directory)
+            script = job_dir / "job.sh"
+            script.write_text(render_job_script(template, policy, spec, job_dir, {"PATH": JOB_PATH}),
+                              encoding="utf-8")
+            argv = tuple(item.replace("{script}", str(script)) for item in template.test_submit)
+            outcome = runner.run(argv)
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+        accepted = outcome.exit_code == 0 and not outcome.timed_out
+        report[name] = "ACCEPTED" if accepted else "REJECTED"
+        if not accepted:
+            lines = (outcome.stderr or outcome.stdout).decode("utf-8", "replace").strip().splitlines()
+            report[detail] = lines[0][:300] if lines else None
     return report
 
 
@@ -110,6 +124,7 @@ class SchedulerLauncher(JobLauncher):
     """Job files live in the shared execution workspace; the exit record decides completion."""
 
     kind = "scheduler"
+    enforces_scratch_limit = True
 
     def __init__(
         self,
@@ -236,6 +251,11 @@ class SchedulerLauncher(JobLauncher):
         stdout = self._read(job_dir / "stdout.log")
         stderr = self._read(job_dir / "stderr.log")
         limited = max(len(stdout), len(stderr)) > MAX_CAPTURED_STREAM_BYTES
+        allocation = None
+        record_path = job_dir / GPU_RECORD
+        if record_path.is_file() and not record_path.is_symlink():
+            record = record_path.read_bytes()[:MAX_GPU_RECORD_BYTES].decode("utf-8", "replace")
+            allocation = parse_gpu_allocation(record)
         return ProcessOutcome(
             exit_code=None if timed_out or limited else status,
             stdout=stdout[:MAX_CAPTURED_STREAM_BYTES],
@@ -243,6 +263,7 @@ class SchedulerLauncher(JobLauncher):
             duration_seconds=float(elapsed),
             timed_out=timed_out,
             output_limit_exceeded=limited,
+            gpu_allocation=allocation,
         )
 
     async def _query(self, job_id: str) -> str | None:

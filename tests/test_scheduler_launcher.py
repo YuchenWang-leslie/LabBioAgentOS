@@ -56,6 +56,10 @@ class PythonBuilder:
     def cleanup_paths(self, execution_id):
         return (self.scratch_root / execution_id.hex,)
 
+    def scratch_paths(self, execution_id):
+        # Like Apptainer: the scratch directory is disk-backed, so the job watches it.
+        return self.cleanup_paths(execution_id)
+
     def model_stderr(self, stderr):
         return stderr
 

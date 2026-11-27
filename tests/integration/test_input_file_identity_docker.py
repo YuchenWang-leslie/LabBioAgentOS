@@ -71,7 +71,7 @@ def local_identity_application(tmp_path):
             endpoint="https://provider.invalid/v1", model_identifier="unused-test-model",
         ),
         execution=LocalExecutionSettings(
-            backend="docker", image_key="identity-python", image_reference=IMAGE,
+            backend="docker", default_image="identity-python", images=[{"key": "identity-python", "reference": IMAGE}],
             resources=RequestedResources(cpus=1, memory_mb=256, pids_limit=64, timeout_seconds=30),
         ),
     )
@@ -167,7 +167,7 @@ output = Path(os.environ["LABBIO_OUTPUT_DIR"])
 '''
     receipt = await application.execution_submission.submit(
         ExecutionPlanDraft(
-            image_key=settings.execution.image_key, script_content=script,
+            image_key=settings.execution.default_image, script_content=script,
             input_artifact_ids=tuple(ref.artifact_id for ref in refs),
             parameters={"expected": expected, "schema_id": contract.schema_id},
             requested_outputs=(

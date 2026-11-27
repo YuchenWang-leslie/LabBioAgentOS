@@ -12,7 +12,9 @@ See [user installation](USER_INSTALL.md) for App and non-setuid runtime setup.
 - Memory and pids controllers delegated to that user manager. The primary
   `systemd-affinity` mode does not require CPU-controller delegation.
 - Working native-ABI seccomp filtering and CPU affinity; integer CPU requests only.
-- A configured absolute Apptainer binary; a registered, hash-verified Python SIF.
+- A configured absolute Apptainer binary; registered, hash-verified SIFs for the
+  configured images. The `default_image` must support PYTHON; another image may
+  declare SHELL only.
 - Apptainer network isolation, read-only input binds and writable output binds
   must pass `backend-check`.
 - Rootless host `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are preserved for
@@ -45,9 +47,12 @@ Change only the backend and placement sections:
 ```toml
 [execution]
 backend = "apptainer"
-image_key = "python-local"
-image_reference = "sha256:<registered SIF digest>"
+default_image = "python-local"
 # Retain the existing [execution.resources] settings.
+
+[[execution.images]]          # One table per image; every reference is a registered SIF.
+key = "python-local"
+reference = "sha256:<registered SIF digest>"
 
 [execution.apptainer]
 binary = "/absolute/path/to/apptainer"
@@ -79,8 +84,15 @@ download_timeout_seconds = 1800
 `[environment.cluster]` remains exclusive to scheduler placement.
 `[environment.local_apptainer]` has no scheduler partition or login-node fallback.
 The Agent declares requirements; the existing resolver, wheel hashes, locked
-installation, import check and SIF registration are reused. Downloads alone may
-use network; analysis and installation remain network-disabled.
+installation, import check and SIF registration are reused. Conda packages work
+the same way when `[environment.conda]` is configured: they are solved and
+downloaded on the host and installed offline. Downloads alone may use network;
+analysis and installation remain network-disabled.
+
+GPUs are not supported under this placement: a configuration with
+`[execution.resources] gpus` above 0 is refused at load. `/tmp` lives in each
+execution's scratch directory, and the supervisor stops an execution whose
+`/tmp` grows beyond `tmpfs_size_mb` with `SCRATCH_LIMIT`.
 
 ### Error feedback permissions
 
@@ -147,7 +159,9 @@ budget; the host never invents a handoff to make a truncated task succeed.
 ## Verification and known boundary
 
 Run the existing `image-register` and `backend-check` CLI commands using the
-configuration. A successful local check includes `local_resources.status = "OK"`
+configuration. With a `[lab]` area, members admit further images with
+`image-admit` and list what they may select with `image-list`; see
+[local workspaces](LOCAL_WORKSPACES.md). A successful local check includes `local_resources.status = "OK"`
 and observed cgroup limits. It does **not** prove an environment build or a
 scientific task succeeded.
 
@@ -218,7 +232,9 @@ is neither restarted nor treated as stopped. This includes nonzero client exits
 after a daemon may already have created the container, not only timeouts.
 After attachment ends, exact-container
 removal confirms the process boundary even if the attachment client failed.
-Container flags, input mounts, resource budgets and Agent programs are unchanged.
+Input mounts, resource budgets and Agent programs are unchanged; since C15, every
+Docker execution also sets `--entrypoint`, so an image's own entry point cannot
+replace the Agent's program.
 Nonzero creation replies can also have accepted side effects: only successful
 removal of the exact created container confirms termination; a missing name alone
 cannot exclude delayed daemon creation.

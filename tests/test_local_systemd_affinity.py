@@ -94,7 +94,8 @@ def test_observed_affinity_lock_requires_a_real_eperm(monkeypatch, denial):
 
 @pytest.mark.parametrize("actual", [[2], [4]])
 def test_supervisor_checks_the_selected_cpu_identity_before_execution(monkeypatch, capsys, actual):
-    monkeypatch.setattr("sys.argv", ["supervisor", "1", "268435456", "32",
+    # No scratch limit (0), its marker path and no watched paths, then the supervisor options (C15).
+    monkeypatch.setattr("sys.argv", ["supervisor", "1", "268435456", "32", "0", "/nonexistent", "0",
                                      "--systemd-affinity", "2", "--probe"])
     monkeypatch.setattr(supervisor, "read_affinity_limits", lambda: {**_limits(), "cpu.affinity": actual})
     monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("executed"))

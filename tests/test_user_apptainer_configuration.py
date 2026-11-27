@@ -30,7 +30,7 @@ def test_user_builds_and_downloads_keep_the_selected_resource_owner(tmp_path):
     ))
     root = tmp_path / "run"
     with closing(JobLedger(root / "jobs.sqlite")) as ledger:
-        wiring = _environment_wiring(settings, root, ledger)
+        wiring = _environment_wiring(settings, root, ledger, None)  # No image catalog.
         builder = wiring["environment_service_factory"](ApprovedImageRegistry(())).builder
         assert builder.build_launcher.resource_enforcement == "systemd-affinity"
         assert builder.download_launcher is builder.build_launcher
