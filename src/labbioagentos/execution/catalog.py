@@ -20,7 +20,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
 
 from labbioagentos.append_only import (
-    AppendOnlyError, add_file, event_name, list_files, next_event_time, read_events, read_file,
+    AppendOnlyError, add_file, event_name, list_files, next_event_time, read_events, read_file, writer_lock,
 )
 
 from .errors import ImageNotApprovedError
@@ -438,7 +438,10 @@ class ImageCatalog:
         store = self.lab if self.scope(key) is ImageScope.LAB else self.personal
         if store is None:
             raise CatalogError("No catalog store owns this image")
-        event = ImageEvent(key=key, state=state, actor=actor, reason=reason,
-                           at=next_event_time(store.events_root))
-        store.add_event(event, current=self.state(key))
-        self._states[key] = state
+        with writer_lock(store.root):
+            # A different command may have changed the state since this view was constructed.
+            self._states.update(self._replay(store))
+            event = ImageEvent(key=key, state=state, actor=actor, reason=reason,
+                               at=next_event_time(store.events_root))
+            store.add_event(event, current=self.state(key))
+            self._states[key] = state

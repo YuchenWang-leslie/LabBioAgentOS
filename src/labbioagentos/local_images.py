@@ -147,6 +147,44 @@ class _AdmissionJobs:
     realizer: Callable[[AdmissionAttempt], Realizer]
     probe: Callable
     builder: object | None
+    probe_factory: Callable[[AdmissionAttempt], Callable] | None = None
+
+    def probe_for(self, attempt: AdmissionAttempt) -> Callable:
+        return self.probe_factory(attempt) if self.probe_factory is not None else self.probe
+
+
+class _AdmissionProbeRunner:
+    """Untrusted image entry points run as resource-bounded, recorded admission jobs."""
+
+    def __init__(self, attempt, ledger, launcher, root, resources):
+        self.attempt, self.ledger, self.launcher = attempt, ledger, launcher
+        self.root, self.resources = root, resources
+
+    def run(self, argv, *, timeout_seconds):
+        from .execution.job_ledger import JobPurpose, run_recorded_job
+        from .execution.launchers import JobSpec
+
+        execution_id = uuid4()
+        workspace = self.root / str(execution_id)
+        workspace.mkdir(parents=True, mode=0o700)
+        timeout = min(timeout_seconds, self.resources.timeout_seconds)
+        resources = self.resources.model_copy(update={"timeout_seconds": timeout, "gpus": 0})
+        spec = JobSpec(execution_id=execution_id, argv=argv, timeout_seconds=timeout,
+                       resources=resources, workspace_root=workspace)
+        try:
+            outcome = asyncio.run(run_recorded_job(self.ledger, self.launcher, spec,
+                                                   run_id=self.attempt.id, purpose=JobPurpose.ADMISSION))
+        except JobLauncherError:
+            # Keep an unconfirmed job's workspace for the attempt's reconciliation.
+            raise AdmissionError("PROBE_FAILED") from None
+        shutil.rmtree(workspace)
+        if outcome is None:
+            raise AdmissionError("PROBE_FAILED")
+        return outcome
+
+
+def _unbound_admission_probe(*_args):
+    raise AdmissionError("PROBE_FAILED")  # No image is probed outside its recorded attempt.
 
 
 @contextmanager
@@ -229,7 +267,9 @@ def _admission_jobs(settings: LocalSettings, member_root: Path, *, sif_store=Non
 
         yield _AdmissionJobs(
             attempts=AdmissionAttempts(attempts_root, ledger=ledger, launchers=launchers),
-            realizer=realizer, probe=probe_with(wiring["command_builder"], wiring["process_runner"]),
+            realizer=realizer, probe=_unbound_admission_probe,
+            probe_factory=lambda attempt: probe_with(wiring["command_builder"], _AdmissionProbeRunner(
+                attempt, ledger, launcher, conversions, settings.execution.resources)),
             builder=builder,
         )
     finally:
@@ -313,7 +353,7 @@ def image_admit(settings: LocalSettings, args) -> dict:
         with jobs.attempts.attempt() as attempt:
             admission = ImageAdmission(
                 store=catalog.personal, scope=ImageScope.PERSONAL, owner_user_id=settings.principal.user_id,
-                admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe,
+                admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe_for(attempt),
                 machine=_machine(settings), staging_root=attempt.root,
                 limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
                                        quota_bytes=policy.member_quota_bytes,
@@ -558,7 +598,7 @@ def promote_decide(settings: LocalSettings, args, outcome: PromotionOutcome) -> 
             with jobs.attempts.attempt() as attempt:
                 admission = ImageAdmission(
                     store=area.catalog, scope=ImageScope.LAB, owner_user_id=None,
-                    admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe,
+                    admitted_by=settings.principal.user_id, realizer=jobs.realizer(attempt), probe=jobs.probe_for(attempt),
                     machine=_machine(settings), staging_root=attempt.root,
                     limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
                                            quota_bytes=policy.lab_quota_bytes,
@@ -798,7 +838,7 @@ def image_restore(settings: LocalSettings, args) -> dict:
             admission = ImageAdmission(
                 store=area.catalog if lab else catalog.personal, scope=scope,
                 owner_user_id=None if lab else settings.principal.user_id, admitted_by=actor,
-                realizer=jobs.realizer(attempt), probe=jobs.probe, machine=_machine(settings),
+                realizer=jobs.realizer(attempt), probe=jobs.probe_for(attempt), machine=_machine(settings),
                 staging_root=attempt.root,
                 limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
                                        quota_bytes=policy.lab_quota_bytes if lab else policy.member_quota_bytes,
@@ -860,7 +900,7 @@ def _restore_locked(settings: LocalSettings, catalog, area: LabArea, record, arg
         with jobs.attempts.attempt() as attempt:
             admission = ImageAdmission(
                 store=store, scope=catalog.scope(record.key), owner_user_id=None if lab else record.owner_user_id,
-                admitted_by=actor, realizer=jobs.realizer(attempt), probe=jobs.probe, machine=_machine(settings),
+                admitted_by=actor, realizer=jobs.realizer(attempt), probe=jobs.probe_for(attempt), machine=_machine(settings),
                 staging_root=attempt.root,
                 limits=AdmissionLimits(max_image_bytes=policy.max_image_bytes,
                                        quota_bytes=policy.lab_quota_bytes if lab else policy.member_quota_bytes,

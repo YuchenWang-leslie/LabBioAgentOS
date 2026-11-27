@@ -466,6 +466,8 @@ class ImageAdmission:
                 raise AdmissionError("SOURCE_MISMATCH")
             realized = (self.realizer.realize_layout(acquired, staging) if isinstance(acquired, AcquiredImage)
                         else self.realizer.realize_sif(acquired))
+            if source.kind is SourceKind.SIF and realized.reference != source.digest:
+                raise AdmissionError("SOURCE_MISMATCH")
             approved = ApprovedImage(key=key, reference=realized.reference, entry_points=entry_points,
                                      source=source)
             # Every declared entry point must start; Python, when declared, reports the inventory.
@@ -606,12 +608,28 @@ class ImageAdmission:
         except OciError as exc:
             raise AdmissionError(exc.code) from None
         path = Path(sif)
-        info = path.lstat() if path.exists() or path.is_symlink() else None
-        if info is None or not stat.S_ISREG(info.st_mode):
-            raise AdmissionError("SIF_INVALID")
-        if info.st_size > self.limits.max_image_bytes:
-            raise AdmissionError("IMAGE_TOO_LARGE")
-        return path, info.st_size, "sif"
+        # A promotion's incoming file remains member-writable. Hash and realize
+        # one holder-private snapshot, never reopen that mutable source later.
+        snapshot = staging / "source.sif"
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise AdmissionError("SIF_INVALID")
+                if info.st_size > self.limits.max_image_bytes:
+                    raise AdmissionError("IMAGE_TOO_LARGE")
+                total = 0
+                output_fd = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(output_fd, "wb") as output:
+                    while chunk := source.read(min(1_048_576, self.limits.max_image_bytes - total + 1)):
+                        total += len(chunk)
+                        if total > self.limits.max_image_bytes:
+                            raise AdmissionError("IMAGE_TOO_LARGE")
+                        output.write(chunk)
+        except OSError:
+            raise AdmissionError("SIF_INVALID") from None
+        return snapshot, total, "sif"
 
 
 def _file_digest(path: Path) -> str:

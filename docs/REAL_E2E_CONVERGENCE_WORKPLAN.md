@@ -1,5 +1,24 @@
 # Real E2E Convergence Workplan
 
+## PR 4 integration review branch — 2026-11-27
+
+The user authorized integrating container-images PR `#4` at `4b4a65b` into
+`review/container-images-20261127`, keeping `main` at `4010891`. The workplan
+conflict preserves both the C15 acceptance and the November 26 schema-feedback
+record. The unmodified merged candidate passed 4,782 tests with 82 skipped.
+
+Review then reproduced boundaries absent from that suite: archive expansion
+before size checks and repeated blob moves; stale concurrent catalog/member
+events and lost policy updates; reopening a member-writable SIF after checking
+its source; and cluster admission probes bypassing recorded scheduler jobs.
+The branch adds streamed bounded archive acquisition, private SIF snapshots
+and source checks, serialized state transactions, and attempt-bound admission
+probe jobs. Eighteen added regression cases pass locally; final Linux
+integration results are recorded separately after testing the frozen source.
+No live model, Docker, GPU, or scheduler acceptance was rerun for these fixes.
+README introduction changes remain a draft for user review; no production
+release, deployment, or main-branch update is authorized by this integration.
+
 ## 2026-11-26 结构化输出的 schema 标识错误回执
 
 Task 2 的 Kang 源尝试 S1 自然终止为 FAILED。执行 28ab336c 的 2,412 字节、20 条记录的原始摘要 SHA-256 为 `01fa0cc86b1fb83e4b5219599a124146193be61136eec254d2dec41285b1c626`。旧 SDK 将错误的顶层 schema 标识报告为通用 `INVALID_DOCUMENT`。修复后，回执另给 `SCHEMA_ID_MISMATCH`、固定字段名及受信合同允许展示的期望标识。原件仍归为 RAW。独立回放只改标识中的一个字符时，正确文档仍获 DERIVED。

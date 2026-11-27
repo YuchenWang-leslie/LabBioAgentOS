@@ -8,9 +8,12 @@ holds one JSON payload and its sha256, checked on every read.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import re
+import stat
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -23,6 +26,22 @@ EVENT_NAME = re.compile(r"[0-9]{8}T[0-9]{12}Z-[0-9a-f]{32}\.json")
 
 class AppendOnlyError(ValueError):
     """A file is unreadable, fails its integrity check, or would replace another."""
+
+
+@contextmanager
+def writer_lock(root: Path):
+    """Serialize a read-validate-append transaction; keep the lock outside event directories."""
+    descriptor = os.open(root / ".writer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         0o600)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise AppendOnlyError("The writer lock must be a private unaliased regular file")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
 
 
 def digest(payload: dict) -> str:

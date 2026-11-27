@@ -21,7 +21,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
-from .append_only import AppendOnlyError, add_file, event_name, next_event_time, read_events, read_file
+from .append_only import AppendOnlyError, add_file, event_name, next_event_time, read_events, read_file, writer_lock
 from .execution.catalog import CatalogStore
 from .governance.models import PrincipalRole
 
@@ -340,16 +340,18 @@ class LabArea:
 
     def change(self, action: MemberAction, *, user_id: str, uid: int | None, reason: str) -> MemberEvent:
         """Apply one member change as the registered LAB_ADMIN of this holding account."""
-        actor = self._acting_admin()
-        members = self.members()
-        if uid is None:
-            if user_id not in members:
-                raise LabError("LAB_MEMBER_ACTION_INVALID")
-            uid = members[user_id].uid
-        event = MemberEvent(user_id=user_id, uid=uid, action=action, actor=actor.user_id, reason=reason,
-                            at=next_event_time(self.members_root))
-        _replay([*read_events(self.members_root, MemberEvent), event])  # Refuse before writing.
-        self._append(event)
+        self._acting_admin()  # Refuse other accounts before opening the holder's private lock.
+        with writer_lock(self.root):
+            actor = self._acting_admin()
+            members = self.members()
+            if uid is None:
+                if user_id not in members:
+                    raise LabError("LAB_MEMBER_ACTION_INVALID")
+                uid = members[user_id].uid
+            event = MemberEvent(user_id=user_id, uid=uid, action=action, actor=actor.user_id, reason=reason,
+                                at=next_event_time(self.members_root))
+            _replay([*read_events(self.members_root, MemberEvent), event])  # Refuse before writing.
+            self._append(event)
         return event
 
     def policy(self) -> LabPolicy:
@@ -360,13 +362,15 @@ class LabArea:
         return events[-1] if events else LabPolicy()
 
     def set_policy(self, *, reason: str, **limits) -> LabPolicy:
-        actor = self._acting_admin()
-        for host in limits.get("allowed_registries", ()):
-            if not re.fullmatch(_HOST, host):
-                raise LabError("LAB_MEMBER_ACTION_INVALID", ("allowed_registries",))
-        policy = LabPolicy(**{**self.policy().model_dump(exclude={"actor", "reason", "at"}), **limits},
-                           actor=actor.user_id, reason=reason, at=next_event_time(self.policy_root))
-        add_file(self.policy_root / event_name(policy.at), "event", policy.model_dump(mode="json"))
+        self._acting_admin()
+        with writer_lock(self.root):
+            actor = self._acting_admin()
+            for host in limits.get("allowed_registries", ()):
+                if not re.fullmatch(_HOST, host):
+                    raise LabError("LAB_MEMBER_ACTION_INVALID", ("allowed_registries",))
+            policy = LabPolicy(**{**self.policy().model_dump(exclude={"actor", "reason", "at"}), **limits},
+                               actor=actor.user_id, reason=reason, at=next_event_time(self.policy_root))
+            add_file(self.policy_root / event_name(policy.at), "event", policy.model_dump(mode="json"))
         return policy
 
     def require_admin(self) -> LabMember:

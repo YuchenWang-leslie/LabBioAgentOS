@@ -298,7 +298,7 @@ def _write_index(layout: Path, digest: str, media_type: str, size: int) -> None:
 def _check_config(layout: Path, manifest: dict, platform: str) -> str:
     path = layout / "blobs" / "sha256" / manifest["config"]["digest"].split(":")[1]
     try:
-        config = json.loads(path.read_bytes())
+        config = json.loads(_read_document(path))
     except ValueError:
         raise OciError("MANIFEST_UNSUPPORTED") from None
     os_name, _, architecture = platform.partition("/")
@@ -308,6 +308,15 @@ def _check_config(layout: Path, manifest: dict, platform: str) -> str:
     return architecture
 
 
+def _read_document(path: Path) -> bytes:
+    """Archive metadata has the same bounded size as registry metadata."""
+    with path.open("rb") as stream:
+        body = stream.read(_MAX_DOCUMENT_BYTES + 1)
+    if len(body) > _MAX_DOCUMENT_BYTES:
+        raise OciError("MANIFEST_TOO_LARGE")
+    return body
+
+
 def read_archive(archive: Path, *, platform: str, layout: Path, max_bytes: int) -> AcquiredImage:
     """Unpack an OCI layout archive safely and verify it as a pulled image would be."""
     if archive.is_symlink() or not archive.is_file() or archive.stat().st_size > max_bytes:
@@ -315,23 +324,38 @@ def read_archive(archive: Path, *, platform: str, layout: Path, max_bytes: int) 
     staging = layout.with_name(layout.name + ".unpack")
     staging.mkdir(mode=0o700)
     try:
+        extracted_bytes = 0
         with tarfile.open(archive, "r:") as tar:
             for member in tar:
                 path = PurePosixPath(member.name)
-                if (path.is_absolute() or ".." in path.parts or not (member.isfile() or member.isdir())):
+                if not path.parts and member.isdir():
+                    continue  # Standard tar archives commonly include the root directory '.'.
+                if (not path.parts or path.is_absolute() or ".." in path.parts
+                        or member.issparse() or not (member.isfile() or member.isdir())):
                     raise OciError("ARCHIVE_INVALID")  # No links, devices or escapes.
                 if member.isdir():
                     continue
                 if path.parts[0] not in {"blobs", "index.json", "oci-layout", "manifest.json", "repositories"}:
                     raise OciError("ARCHIVE_INVALID")
+                if member.size < 0 or member.size > max_bytes - extracted_bytes:
+                    raise OciError("IMAGE_TOO_LARGE")
+                extracted_bytes += member.size
                 target = staging.joinpath(*path.parts)
                 target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 source = tar.extractfile(member)
-                with open(target, "xb") as output:
-                    output.write(source.read())
-        index = json.loads((staging / "index.json").read_bytes())
+                if source is None:
+                    raise OciError("ARCHIVE_INVALID")
+                with source, open(target, "xb") as output:
+                    remaining = member.size
+                    while remaining:
+                        chunk = source.read(min(1_048_576, remaining))
+                        if not chunk:
+                            raise OciError("ARCHIVE_INVALID")
+                        output.write(chunk)
+                        remaining -= len(chunk)
+        index = json.loads(_read_document(staging / "index.json"))
         manifest_digest, media_type = _layout_manifest(staging, index, platform)
-        body = (staging / "blobs" / "sha256" / manifest_digest.split(":")[1]).read_bytes()
+        body = _read_document(staging / "blobs" / "sha256" / manifest_digest.split(":")[1])
         _verify_file(staging, manifest_digest)
         manifest = json.loads(body)
         blobs = _blobs(manifest)
@@ -340,10 +364,15 @@ def read_archive(archive: Path, *, platform: str, layout: Path, max_bytes: int) 
             raise OciError("IMAGE_TOO_LARGE")
         _new_layout(layout)
         _write_blob(layout, manifest_digest, body)
+        moved = set()
         for blob in blobs:
+            if blob["digest"] in moved:
+                _verify_file(layout, blob["digest"], blob["size"])
+                continue
             _verify_file(staging, blob["digest"], blob["size"])
             name = blob["digest"].split(":")[1]
             os.replace(staging / "blobs" / "sha256" / name, layout / "blobs" / "sha256" / name)
+            moved.add(blob["digest"])
         architecture = _check_config(layout, manifest, platform)
         _write_index(layout, manifest_digest, media_type, len(body))
     except (OSError, ValueError, KeyError, tarfile.TarError) as exc:
@@ -361,7 +390,7 @@ def _layout_manifest(staging: Path, index: dict, platform: str) -> tuple[str, st
     if len(entries) == 1 and entries[0].get("mediaType") in INDEX_TYPES:
         nested = entries[0]["digest"]
         _verify_file(staging, nested)
-        index = json.loads((staging / "blobs" / "sha256" / nested.split(":")[1]).read_bytes())
+        index = json.loads(_read_document(staging / "blobs" / "sha256" / nested.split(":")[1]))
         entries = index.get("manifests", ())
     entries = _without_attached(entries)
     if len(entries) == 1 and "platform" not in entries[0]:
