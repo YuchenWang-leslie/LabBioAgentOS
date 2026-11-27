@@ -1,21 +1,31 @@
 # LabBioAgentOS
 
-**A research-stage framework for reproducible, governed bioinformatics agents.**
+**Reusable scientific experience for bioinformatics agents.**
 
-LabBioAgentOS connects natural-language scientific tasks to a structured
-workflow, local analysis execution, traceable evidence, and user-visible
-delivery. It keeps biological data, Agent reasoning, and system control within
-explicit boundaries so that a run can be inspected, safely continued where
-allowed, and reviewed by a human.
+LabBioAgentOS is a research-stage system for running bioinformatics analyses
+and carrying useful experience across projects. Agents plan analyses, execute
+programs on local or cluster data, and produce traceable results and reports.
 
-> **中文简介：** LabBioAgentOS 是一个本地优先、证据受控、可中断恢复的生信
-> 多 Agent 运行系统。科学方法、参数、分析程序、解释和报告由运行中的 Agent
-> 决定；平台负责工作流、权限、执行、Artifact、持久状态与审计边界。项目仍处于
-> 研究开发阶段，生成的分析与科学结论需要研究人员核查。
+Completed analyses can be distilled into versioned **Gold Skills** that capture
+reusable procedures, applicability conditions, adaptation points, and validation
+checks. Researchers can review these skills, request revisions, and approve
+their use in later tasks. The goal is to preserve valid analytical decisions
+while adapting designs, parameters, and checks to the current question.
 
-The active source uses an independently designed and implemented **LabBio
-Native Kernel**. It owns the runtime contracts directly and has no hidden
-fallback to another Agent framework.
+Built on the **LabBio Native Kernel**, the platform connects skill reuse with
+controlled execution, evidence provenance, and recoverable workflows.
+Scientific decisions remain with the agents and researchers; the host manages
+permissions, execution boundaries, and persistent records. Remote models
+receive only policy-approved metadata, bounded previews, and derived evidence.
+
+> **中文简介：** LabBioAgentOS 是一个支持分析经验积累与迁移的生物信息 Agent
+> 系统。Agent 从完成的分析中提炼版本化 Skill，结合研究者反馈修订，并在新任务中
+> 重新判断适用条件、参数与验证要求。平台提供本地或集群执行、过程与结果溯源，
+> 以及可恢复的工作流，支持研究人员核查分析过程和科学结论。
+
+The project remains under active research and development. Cross-task benefits
+are being evaluated, and generated analyses require independent scientific
+review.
 
 ## Architecture
 
