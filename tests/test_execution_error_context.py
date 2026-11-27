@@ -164,3 +164,114 @@ def test_local_setting_is_explicit_and_part_of_runtime_identity(tmp_path):
     assert settings.model_copy(update={'include_error_context': True}).model_dump()['include_error_context']
     with pytest.raises(ValidationError):
         ExecutionPlanDraft(image_key='approved', script_content='pass', include_error_context=True)
+
+
+@pytest.mark.parametrize('ending', [b'', b'\n', b'\r\n'])
+@pytest.mark.parametrize('size', [65_536, 90_000])
+def test_oversized_exception_preserves_frames_and_omits_entire_payload(ending, size):
+    stderr = (b'private progress\nTraceback (most recent call last):\n'
+              b'  File "/labbio/script.py", line 7, in run\n'
+              b'    PRIVATE_LOCAL_EXPRESSION\n'
+              b'package.LookupFailure: PRIVATE_ROW_ID api_key=PRIVATE_TOKEN '
+              + b'x' * size + ending)
+    result = bounded_error_context(stderr)
+    assert result.source == 'PYTHON_TRACEBACK'
+    assert 'File "<submitted_script>", line 7' in result.text
+    assert 'package.LookupFailure: [oversized line omitted]' in result.text
+    assert 'PRIVATE' not in result.text and 'private progress' not in result.text
+    assert len(result.text) <= 6000 and result.truncated and result.redacted
+    assert result.stderr_sha256 == hashlib.sha256(stderr).hexdigest()
+
+
+def test_line_omitted_at_scan_boundary_does_not_hide_following_short_exception():
+    stderr = (b'Traceback (most recent call last):\n  File "/labbio/script.py", line 12\n'
+              b'KeyError: PRIVATE_ROW ' + b'x' * 100_000
+              + b'\nRuntimeError: retry rejected token=PRIVATE_TOKEN\n')
+    result = bounded_error_context(stderr)
+    assert result.source == 'PYTHON_TRACEBACK'
+    assert 'KeyError: [oversized line omitted]' in result.text
+    assert 'RuntimeError: retry rejected token=[REDACTED]' in result.text
+    assert 'PRIVATE' not in result.text
+
+
+def test_unstructured_oversized_tail_is_withheld_without_inventing_an_exception():
+    result = bounded_error_context(b'PRIVATE_DATA: ' + b'x' * 90_000)
+    assert result.text == '[oversized line omitted]'
+    assert result.source == 'STDERR_TAIL' and result.truncated
+
+
+def test_line_just_below_scan_limit_does_not_expose_the_payload_prefix():
+    stderr = (b'Traceback (most recent call last):\n  File "/labbio/script.py", line 8\n'
+              b'ValueError: PRIVATE_ROW_ID ' + b'x' * 64000)
+    result = bounded_error_context(stderr)
+    assert result.text.endswith('ValueError: [oversized line omitted]')
+    assert 'PRIVATE' not in result.text and len(result.text) <= 6000
+
+
+def test_short_traceback_preserves_unchanged_authorized_diagnostic():
+    stderr = b'Traceback (most recent call last):\n  File "main.py", line 7\nTypeError: invalid dimension\n'
+    result = bounded_error_context(stderr)
+    assert result.text == stderr.decode().rstrip('\n')
+    assert not result.truncated and not result.redacted
+
+
+def test_private_key_redaction_survives_cut_and_traceback_shaped_secret_text():
+    stderr = (b'Traceback (most recent call last):\n  File "main.py", line 7\n'
+              b'-----BEGIN PRIVATE KEY-----\nPrivateIdentifier: ' + b'x' * 90_000
+              + b'\nTraceback (most recent call last):\nPRIVATE_SUFFIX\n-----END PRIVATE KEY-----\n'
+              b'RuntimeError: operation failed\n')
+    result = bounded_error_context(stderr, raw_stderr=b'PRIVATE_BACKEND_LINE\n' + stderr)
+    assert result.text.endswith('RuntimeError: operation failed') and '[REDACTED_KEY]' in result.text
+    assert 'PrivateIdentifier' not in result.text and 'PRIVATE' not in result.text
+    assert result.stderr_sha256 == hashlib.sha256(b'PRIVATE_BACKEND_LINE\n' + stderr).hexdigest()
+
+
+def test_receipt_budget_discards_complete_lines_and_retains_terminal_message():
+    lines = [str(index) + 'x' * 1199 for index in range(7)] + ['RuntimeError: failed']
+    result = bounded_error_context('\n'.join(lines).encode())
+    assert result.text.splitlines() == lines[-5:]
+    assert len(result.text) <= 6000 and result.truncated
+
+
+def test_byte_window_on_a_newline_retains_the_first_complete_line():
+    header = b'Traceback (most recent call last):\n'
+    last = b'\nRuntimeError: failed\n'
+    tail = header + b'\n' * (65_536 - len(header + last)) + last
+    result = bounded_error_context(b'progress\n' + tail)
+    assert result.source == 'PYTHON_TRACEBACK' and result.text.endswith('RuntimeError: failed')
+
+
+@pytest.mark.parametrize('size', [1200, 1201])
+def test_line_budget_boundary(size):
+    prefix = b'RuntimeError: '
+    line = prefix + b'x' * (size - len(prefix))
+    result = bounded_error_context(b'Traceback (most recent call last):\n' + line)
+    expected = 'RuntimeError: [oversized line omitted]' if size > 1200 else line.decode()
+    assert result.text.splitlines()[-1] == expected
+    assert result.truncated == (size > 1200)
+
+
+@pytest.mark.parametrize('size', [6000, 90_000])
+@pytest.mark.parametrize('label', [b'PRIVATE_ROW_ID', b'SampleCount'])
+@pytest.mark.parametrize('payload', [b'PRIVATE_VALUE ', b'api_key='])
+def test_oversized_data_header_after_traceback_is_not_an_exception_class(size, label, payload):
+    stderr = (b'Traceback (most recent call last):\n  File "main.py", line 9\n'
+              + label + b': ' + payload + b'x' * size)
+    result = bounded_error_context(stderr)
+    assert result.source == 'PYTHON_TRACEBACK' and result.truncated and result.redacted
+    assert result.text.splitlines()[-1] == '[oversized line omitted]'
+    assert 'PRIVATE' not in result.text
+
+
+def test_oversized_builtin_exception_without_an_error_suffix_keeps_its_type():
+    result = bounded_error_context(
+        b'Traceback (most recent call last):\nStopIteration: ' + b'x' * 90_000)
+    assert result.text.splitlines()[-1] == 'StopIteration: [oversized line omitted]'
+
+
+def test_oversized_line_with_key_boundary_preserves_multiline_secret_redaction():
+    stderr = (b'Traceback (most recent call last):\nRuntimeError: ' + b'x' * 4000
+              + b'-----BEGIN PRIVATE KEY-----\nPRIVATE_MATERIAL\n-----END PRIVATE KEY-----\n')
+    result = bounded_error_context(stderr)
+    assert 'RuntimeError: [oversized line omitted]' in result.text
+    assert 'PRIVATE' not in result.text and '[REDACTED_KEY]' in result.text

@@ -4,6 +4,80 @@ import hashlib
 import re
 
 from .models import ExecutionErrorContext
+from .python_diagnostics import SAFE_PYTHON_EXCEPTION_TYPES
+
+_SCAN_BYTES = 65_536
+_LINE_CHARS = 1200
+_LONG_LINE = re.compile(rf"^[^\r\n]{{{_LINE_CHARS + 1},}}", re.MULTILINE)
+_TRACEBACK = "Traceback (most recent call last):"
+_OMISSION = "[oversized line omitted]"
+_EXCEPTION = re.compile(r"((?:[a-z_][a-z0-9_]*\.)*[A-Z][A-Za-z0-9]*):", re.ASCII)
+_FRAME = re.compile(r'(?m)^[ \t]+File "[^"\r\n]{1,1024}", line [0-9]{1,12}\b')
+_KEY_BOUNDARY = re.compile(rb"-----(BEGIN|END) [^-\r\n]*PRIVATE KEY-----")
+
+
+def _omitted_line(prefix: str, has_traceback: bool) -> str:
+    match = _EXCEPTION.match(prefix[:128]) if has_traceback else None
+    if match:
+        name = match[1]
+        if name in SAFE_PYTHON_EXCEPTION_TYPES or name.endswith(("Error", "Exception", "Warning", "Failure")):
+            return f"{name}: {_OMISSION}"
+    return _OMISSION
+
+
+def _omit_long_records(text: str) -> tuple[str, int]:
+    # Test the physical line before secret/path replacement can shorten it.
+    def replace(match: re.Match[str]) -> str:
+        line = match[0]
+        prelude = text[:match.start()]
+        has_trace = _TRACEBACK in prelude and _TRACEBACK in redact_process_text(prelude)
+        placeholder = _omitted_line(line, has_trace)
+        # Carry only PEM delimiters across the omission for multiline redaction.
+        boundaries = _KEY_BOUNDARY.finditer(line.encode("utf-8"))
+        return "\\n".join([placeholder, *(f"-----{m[1].decode()} PRIVATE KEY-----" for m in boundaries)])
+
+    return _LONG_LINE.subn(replace, text)
+
+
+def _inside_private_key(stderr: bytes, offset: int) -> bool:
+    # Preserve multiline redaction when a scan or omitted line splits a PEM.
+    is_open = False
+    for match in _KEY_BOUNDARY.finditer(stderr, 0, offset):
+        is_open = match[1] == b"BEGIN"
+    return is_open
+
+
+def _scan_tail(stderr: bytes) -> tuple[str, bool]:
+    """Decode bounded windows. Never copy a partial data line to the model."""
+    cut = max(0, len(stderr) - _SCAN_BYTES)
+    if not cut:
+        return stderr.decode("utf-8", errors="replace"), False
+
+    resume = cut
+    prefix = ""
+    omitted = False
+    if stderr[cut - 1] != ord("\n"):
+        start = stderr.rfind(b"\n", 0, cut) + 1
+        end = stderr.find(b"\n", cut)
+        resume = end + 1 if end >= 0 else len(stderr)
+        if resume - start > _LINE_CHARS:
+            # The byte window intersects a long record. Recover only traceback
+            # frame locations from its bounded prelude, never source expressions.
+            window = max(0, start - _SCAN_BYTES)
+            prelude = stderr[window:start].decode("utf-8", errors="replace")
+            if _inside_private_key(stderr, window):
+                prelude = "-----BEGIN PRIVATE KEY-----\n" + prelude
+            prelude = redact_process_text(prelude)
+            header = prelude.rfind(_TRACEBACK)
+            if header >= 0:
+                prefix = "\n".join([_TRACEBACK, *_FRAME.findall(prelude, header)]) + "\n"
+            name = stderr[start:start + 128].decode("ascii", errors="replace")
+            show_type = header >= 0 and not _inside_private_key(stderr, start)
+            prefix += _omitted_line(name, show_type) + "\n"
+            omitted = True
+    if _inside_private_key(stderr, resume):
+        prefix += "-----BEGIN PRIVATE KEY-----\n"
+    return prefix + stderr[resume:].decode("utf-8", errors="replace"), omitted
 
 
 def bounded_error_context(stderr: bytes, *, raw_stderr: bytes | None = None) -> ExecutionErrorContext | None:
@@ -17,25 +91,29 @@ def bounded_error_context(stderr: bytes, *, raw_stderr: bytes | None = None) -> 
         return None
     # Backend filtering may precede this projection; bind the retained RAW log.
     raw_stderr = stderr if raw_stderr is None else raw_stderr
-    tail = stderr[-65_536:]
-    truncated = len(tail) != len(stderr)
-    text = tail.decode("utf-8", errors="replace")
-    if truncated:
-        # Do not expose an arbitrary partial line at the scan boundary.
-        text = text.partition("\n")[2]
-    start = text.find("Traceback (most recent call last):")
+    scanned, omitted = _scan_tail(stderr)
+    scanned, long_records = _omit_long_records(scanned)
+    text = redact_process_text(scanned)
+    redacted = omitted or bool(long_records) or text != scanned or stderr != raw_stderr
+    truncated = len(stderr) > _SCAN_BYTES or bool(long_records)
+    start = text.find(_TRACEBACK)
     source = "PYTHON_TRACEBACK" if start >= 0 else "STDERR_TAIL"
     if start >= 0:
         text = text[start:]
-    original = text
-    text = redact_process_text(text)
-    redacted = text != original or stderr != raw_stderr
-    # Retain the terminal exception; make all length loss explicit.
     lines = text.splitlines()
-    truncated |= len(lines) > 80 or any(len(line) > 1200 for line in lines)
-    text = "\n".join(line[:1200] for line in lines[-80:])
-    truncated |= len(text) > 6000
-    text = text[-6000:]
+    truncated |= len(lines) > 80
+    kept = []
+    for line in lines[-80:]:
+        if len(line) > _LINE_CHARS:
+            line = _omitted_line(line, start >= 0)
+            truncated = redacted = True
+        kept.append(line)
+    text = "\n".join(kept)
+    if len(text) > 6000:
+        # Bound the receipt at a complete line; each individual line fits.
+        cut = len(text) - 6000
+        text = text[cut:] if text[cut - 1] == "\n" else text[text.index("\n", cut) + 1:]
+        truncated = True
     return ExecutionErrorContext(
         source=source, text=text, truncated=truncated, redacted=redacted,
         stderr_sha256=hashlib.sha256(raw_stderr).hexdigest(),

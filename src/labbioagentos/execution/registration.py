@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -271,8 +272,14 @@ class ArtifactRegistrationPolicy:
                 OutputContractFailureCode.INVALID_DOCUMENT
             )
         if document["schema_id"] != contract.schema_id:
+            # Approved IDs may contain unrestricted text. Only expose an identifier token.
+            safe_expected = re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.:-]*", contract.schema_id)
             raise _OutputContractValidationError(
-                OutputContractFailureCode.INVALID_DOCUMENT
+                OutputContractFailureCode.INVALID_DOCUMENT,
+                validation=OutputValidationDetails(
+                    code="SCHEMA_ID_MISMATCH", field_name="schema_id",
+                    expected_schema_id=contract.schema_id if safe_expected else None,
+                ),
             )
         records = document["records"]
         if not isinstance(records, list):

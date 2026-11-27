@@ -17,15 +17,17 @@ from test_phase6_docker_execution import FakeDockerRunner, _image
 from test_runtime_milestone_b import boundary, _toolset  # noqa: F401
 
 
-def assess(tmp_path, value, *, field="value", extra=False):
-    contract = StructuredOutputContract(contract_id="fixture", schema_id="fixture.v1",
+def assess(tmp_path, value, *, field="value", extra=False, trusted_schema="fixture.v1",
+           submitted_schema=None):
+    contract = StructuredOutputContract(contract_id="fixture", schema_id=trusted_schema,
         allowed_fields=frozenset({"record_type", field}), required_fields=frozenset({"record_type"}),
         max_scalar_string_length=32, declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS)
     record = {"record_type": "synthetic", field: value}
     if extra:
         record["PRIVATE_UNKNOWN_KEY"] = "PRIVATE_VALUE"
     path = tmp_path / "records.json"
-    path.write_text(json.dumps({"schema_id": contract.schema_id, "records": [record]}))
+    schema_id = contract.schema_id if submitted_schema is None else submitted_schema
+    path.write_text(json.dumps({"schema_id": schema_id, "records": [record]}))
     spec = OutputArtifactSpec(relative_path=path.name, artifact_type="fixture",
         requested_exposure=ArtifactExposureClass.DERIVED, output_contract_id=contract.contract_id)
     return ArtifactRegistrationPolicy((contract,)).assess(spec, path)
@@ -70,20 +72,32 @@ def test_unknown_record_key_is_not_promoted_to_a_declared_field(tmp_path):
     assert "PRIVATE_UNKNOWN_KEY" not in repr(decision) and "PRIVATE_VALUE" not in repr(decision)
 
 
+def test_path_like_contract_schema_is_not_copied_into_failure_feedback(tmp_path):
+    decision = assess(tmp_path, "valid", trusted_schema="/private/contract/schema", submitted_schema="wrong")
+    assert decision.actual_exposure is ArtifactExposureClass.RAW
+    assert decision.validation.code == "SCHEMA_ID_MISMATCH"
+    assert decision.validation.field_name == "schema_id"
+    assert "expected_schema_id" not in decision.validation.model_dump()
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_value,code", [(["PRIVATE_VALUE"], "SCALAR_REQUIRED"),
-                                         ("PRIVATE_VALUE" * 8, "STRING_TOO_LONG")])
+@pytest.mark.parametrize("bad_value,code,submitted_schema", [
+    (["PRIVATE_VALUE"], "SCALAR_REQUIRED", "fixture.v1"),
+    ("PRIVATE_VALUE" * 8, "STRING_TOO_LONG", "fixture.v1"),
+    ("PRIVATE_VALUE", "SCHEMA_ID_MISMATCH", "fixture-v1"),
+    ("PRIVATE_VALUE", "SCHEMA_ID_MISMATCH", "/home/private/GENE_X/Bearer_private_test_string"),
+])
 async def test_model_visible_feedback_receipt_trace_and_archive_match_without_repair(
-    boundary, tmp_path, bad_value, code,
+    boundary, tmp_path, bad_value, code, submitted_schema,
 ):
     _, recorder, access, _, _, store, _ = boundary
-    state = {"value": bad_value}
+    state = {"value": bad_value, "schema": submitted_schema}
     contract = StructuredOutputContract(contract_id="fixture", schema_id="fixture.v1",
         allowed_fields=frozenset({"record_type", "value"}), required_fields=frozenset({"record_type"}),
         max_scalar_string_length=32, declassification_mode=OutputDeclassificationMode.BOUNDED_SCALARS)
 
     def write(directory):
-        (directory / "records.json").write_text(json.dumps({"schema_id": contract.schema_id,
+        (directory / "records.json").write_text(json.dumps({"schema_id": state["schema"],
             "records": [{"record_type": "synthetic", "value": state["value"]}]}))
 
     runner = FakeDockerRunner(output_writer=write)
@@ -108,8 +122,13 @@ async def test_model_visible_feedback_receipt_trace_and_archive_match_without_re
     assert len(runner.calls) == 1 and state["value"] == bad_value
     issue = rejected["data"]["output_issues"][0]
     expected = {"code": code, "field_name": "value", "max_length": 32 if code == "STRING_TOO_LONG" else None}
+    if code == "SCHEMA_ID_MISMATCH":
+        expected.update(field_name="schema_id", expected_schema_id=contract.schema_id)
+        assert issue["detail_code"] == "INVALID_DOCUMENT" and issue["record_index"] is None
     assert issue["validation"] == expected
     assert "PRIVATE_VALUE" not in json.dumps(rejected)
+    if code == "SCHEMA_ID_MISMATCH":
+        assert submitted_schema not in json.dumps(rejected)
     archived = observations.load(tools.binding, UUID(rejected["capability_invocation_id"]))
     assert archived.public_response == rejected
     assert archived.item.safe_result["output_issues"][0]["validation"] == expected
@@ -123,6 +142,7 @@ async def test_model_visible_feedback_receipt_trace_and_archive_match_without_re
     # A distinct caller action changes its synthetic output; the platform did not
     # rewrite a file, fill parameters or automatically repeat the rejected run.
     state["value"] = "valid"
+    state["schema"] = contract.schema_id
     corrected = await provider.call_tool("execution_submit", request)
     assert corrected["success"] and corrected["data"]["status"] == "SUCCEEDED"
     assert corrected["data"]["output_issues"] == [] and len(runner.calls) == 2
