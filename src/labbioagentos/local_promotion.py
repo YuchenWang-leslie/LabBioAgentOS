@@ -307,4 +307,3 @@ def request_summary(request: PromotionRequest | None, request_id: str, problem: 
             "payload": request.payload, "purpose": request.record.purpose, "problem": problem,
             "base": request.base, "locks": sorted(lock.kind.value for lock in request.locks),
             "at": request.at.isoformat()}
-

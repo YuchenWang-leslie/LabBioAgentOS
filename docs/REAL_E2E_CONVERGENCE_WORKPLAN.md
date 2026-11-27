@@ -16,8 +16,9 @@ and source checks, serialized state transactions, and attempt-bound admission
 probe jobs. Eighteen added regression cases pass locally. On frozen source
 `51e36f0`, Python 3.11.16 on Linux passes 273 focused tests and the full suite
 passes 4,800 tests with 82 skipped (162.93 seconds). The subsequent workplan
-update is documentation-only; source and test files remain identical to the
-tested commit. The README blob also remains identical to `main`.
+updates change documentation and remove one trailing blank line from
+`local_promotion.py`; its AST is unchanged. Other source and test files remain
+identical to the tested commit. The README blob also remains identical to `main`.
 No live model, Docker, GPU, or scheduler acceptance was rerun for these fixes.
 README introduction changes remain a draft for user review; no production
 release, deployment, or main-branch update is authorized by this integration.
