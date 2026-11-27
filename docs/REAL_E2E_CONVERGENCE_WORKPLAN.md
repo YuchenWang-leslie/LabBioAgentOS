@@ -13,8 +13,11 @@ events and lost policy updates; reopening a member-writable SIF after checking
 its source; and cluster admission probes bypassing recorded scheduler jobs.
 The branch adds streamed bounded archive acquisition, private SIF snapshots
 and source checks, serialized state transactions, and attempt-bound admission
-probe jobs. Eighteen added regression cases pass locally; final Linux
-integration results are recorded separately after testing the frozen source.
+probe jobs. Eighteen added regression cases pass locally. On frozen source
+`51e36f0`, Python 3.11.16 on Linux passes 273 focused tests and the full suite
+passes 4,800 tests with 82 skipped (162.93 seconds). The subsequent workplan
+update is documentation-only; source and test files remain identical to the
+tested commit. The README blob also remains identical to `main`.
 No live model, Docker, GPU, or scheduler acceptance was rerun for these fixes.
 README introduction changes remain a draft for user review; no production
 release, deployment, or main-branch update is authorized by this integration.
